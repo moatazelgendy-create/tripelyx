@@ -60,3 +60,9 @@ test('publicConfig exposes no secrets', () => {
   const json = JSON.stringify(publicConfig(c));
   for (const s of ['secretpw', 'sk_live_123', 'whsec', 'paymob']) assert.ok(!json.includes(s), `leaks ${s}`);
 });
+
+test('database URL can be assembled from separate parts (AWS Secrets Manager)', () => {
+  const c = loadConfig({ APP_ENV: 'staging', DATABASE_ENV: 'staging', DATABASE_HOST: 'db.example.internal', DATABASE_NAME: 'tripelyx', DATABASE_USER: 'tx', DATABASE_PASSWORD: 'p@ss/word' });
+  assert.equal(c.databaseUrl, 'postgres://tx:p%40ss%2Fword@db.example.internal:5432/tripelyx');
+  assert.throws(() => loadConfig({ APP_ENV: 'staging', DATABASE_HOST: 'h' }), /DATABASE_NAME/);
+});

@@ -78,21 +78,51 @@ exactly the same mapping from vendor-like raw data, so swapping one in is a conf
 
 ## Deploy
 
-**Render (recommended, server and Postgres together).** `render.yaml` is a Blueprint: in Render choose
-New > Blueprint, pick this repository, and it creates the `tripelyx-staging` web service and its own
-Postgres database. It runs as `APP_ENV=staging` with demo inventory and `PAYMENT_MODE=test`, so it is
-safe to share publicly. The free plan sleeps when idle, so the first request after a while is slow.
+### AWS (via GitHub Actions)
 
-**Any other host.** Use the `Dockerfile` (Railway, Fly.io, Cloud Run, a VPS) or plain
-`npm ci --omit=dev && npm start`. Set the variables from `.env.example` in the host's settings, never
-in the repo. Behind a proxy or load balancer set `TRUST_PROXY=true`. The health check is `GET /healthz`.
+Every push to `main` runs the tests, builds the Docker image, pushes it to Amazon ECR and updates the
+`tripelyx-staging` CloudFormation stack (`infra/app.yaml`). The stack holds:
 
-**Quick demo without a database.** `APP_ENV=staging DATABASE_URL=memory` uses the in-memory store.
-Bookings disappear on every restart, and production refuses this setting.
+- ECS Fargate running the app behind an Application Load Balancer, with health checks on `/healthz`
+  and automatic rollback if a new version fails them.
+- Its own private, encrypted PostgreSQL database on RDS. RDS keeps the password in Secrets Manager,
+  and the app receives it at start-up; it never appears in GitHub or in the image.
+- Logs in CloudWatch (`/tripelyx/staging`).
 
-**Going to production** needs its own Postgres (`APP_ENV=production`, `DATABASE_ENV=production`), the
-verticals switched on with `ENABLE_*`, real supplier adapters, and a live payment processor as described
-above. Until then, keep public deployments on `staging`.
+GitHub signs in to AWS with OpenID Connect, so no AWS keys are stored in GitHub. The deploy role only
+works for workflow runs on `main` of this repository.
+
+**One-time setup (about 5 minutes):**
+
+1. In the AWS console, pick a region, open **CloudFormation → Create stack → With new resources**,
+   choose **Upload a template file** and upload `infra/bootstrap.yaml`. Name the stack
+   `tripelyx-bootstrap`, keep the defaults, tick the IAM acknowledgement, and create it. If the
+   account already has a GitHub identity provider (`token.actions.githubusercontent.com`), set
+   `CreateOidcProvider` to `false`.
+2. When it finishes, open the stack's **Outputs** tab and copy `DeployRoleArn`.
+3. In GitHub, open the repository's **Settings → Secrets and variables → Actions → Variables** and add
+   `AWS_ROLE_ARN` (the value you copied) and `AWS_REGION` (for example `eu-central-1`).
+4. Merge to `main`, or run **Actions → Deploy to AWS → Run workflow**. The first run takes about
+   15 minutes, mostly creating the database. The run summary shows the site's address.
+
+Optional repository variables: `APP_ENV=production` deploys a separate `tripelyx-production` stack
+with its own database (Multi-AZ, deletion protection). `CERTIFICATE_ARN` is an ACM certificate for
+your domain, which turns on HTTPS. Then point the domain at the load balancer with a CNAME.
+
+Staging runs demo inventory with `PAYMENT_MODE=test`, so it is safe to share. A staging stack
+costs roughly USD 40 to 50 a month (load balancer, a small database, one small container). If a
+first deploy fails, delete the `tripelyx-staging` stack in CloudFormation before running it again.
+
+### Other hosts
+
+The `Dockerfile` runs anywhere containers run, and `render.yaml` is a ready Render Blueprint. Set the
+variables from `.env.example` in the host's settings, never in the repo. Behind a proxy or load
+balancer set `TRUST_PROXY=true`. `APP_ENV=staging DATABASE_URL=memory` runs a throwaway demo
+without a database: bookings disappear on restart, and production refuses it.
+
+**Going to production** needs its own database, the verticals switched on with `ENABLE_*`, real
+supplier adapters and a live payment processor as described above. Until then, keep public
+deployments on `staging`.
 
 ## Demo data isolation
 

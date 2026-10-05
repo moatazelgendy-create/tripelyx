@@ -1,0 +1,85 @@
+# Deploys Tripelyx to AWS on every push to main (or by hand from the Actions tab).
+# One-time setup: see "Deploy to AWS" in README.md. GitHub signs in to AWS with OIDC, so no AWS
+# keys are stored in GitHub. Repository variables used: AWS_ROLE_ARN, AWS_REGION, and optionally
+# APP_ENV (default staging) and CERTIFICATE_ARN (HTTPS on your own domain).
+name: Deploy to AWS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-${{ vars.APP_ENV || 'staging' }}
+  cancel-in-progress: false
+
+env:
+  APP_ENV: ${{ vars.APP_ENV || 'staging' }}
+  AWS_REGION: ${{ vars.AWS_REGION }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check setup
+        run: |
+          if [ -z "${{ vars.AWS_ROLE_ARN }}" ] || [ -z "${{ vars.AWS_REGION }}" ]; then
+            echo "::error::Set the repository variables AWS_ROLE_ARN and AWS_REGION first (see README, Deploy to AWS)."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push the image
+        id: image
+        env:
+          IMAGE: ${{ steps.ecr.outputs.registry }}/tripelyx:${{ github.sha }}
+        run: |
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "uri=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy the stack
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          aws cloudformation deploy \
+            --stack-name "tripelyx-${APP_ENV}" \
+            --template-file infra/app.yaml \
+            --role-arn "arn:aws:iam::${ACCOUNT_ID}:role/tripelyx-cfn-execution" \
+            --capabilities CAPABILITY_IAM \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              AppEnv="${APP_ENV}" \
+              ImageUri="${{ steps.image.outputs.uri }}" \
+              CertificateArn="${{ vars.CERTIFICATE_ARN }}"
+
+      - name: Show the site address
+        run: |
+          URL=$(aws cloudformation describe-stacks --stack-name "tripelyx-${APP_ENV}" \
+            --query "Stacks[0].Outputs[?OutputKey=='SiteUrl'].OutputValue" --output text)
+          echo "Tripelyx (${APP_ENV}) is live at ${URL}"
+          echo "### Tripelyx (${APP_ENV}) is live at ${URL}" >> "$GITHUB_STEP_SUMMARY"

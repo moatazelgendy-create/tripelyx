@@ -1,0 +1,129 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Tripelyx one-time setup. Lets GitHub Actions in the tripelyx repository deploy to this AWS
+  account without stored AWS keys (GitHub OIDC), and creates the container registry.
+
+Parameters:
+  GitHubOwner:
+    Type: String
+    Default: moatazelgendy-create
+  GitHubRepo:
+    Type: String
+    Default: tripelyx
+  DeployBranch:
+    Type: String
+    Default: main
+    Description: Only workflow runs on this branch can deploy.
+  CreateOidcProvider:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'true'
+    Description: >-
+      Set to false if this AWS account already has the token.actions.githubusercontent.com
+      identity provider (an account can only have one).
+
+Conditions:
+  MakeOidcProvider: !Equals [!Ref CreateOidcProvider, 'true']
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: MakeOidcProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+
+  Repository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: tripelyx
+      ImageScanningConfiguration: { ScanOnPush: true }
+      ImageTagMutability: IMMUTABLE
+      LifecyclePolicy:
+        LifecyclePolicyText: >-
+          {"rules":[{"rulePriority":1,"description":"Keep the last 20 images",
+          "selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":20},
+          "action":{"type":"expire"}}]}
+
+  # CloudFormation uses this role to create the app's resources (network, database, containers).
+  # Only the CloudFormation service can assume it; GitHub can only hand it to CloudFormation.
+  CloudFormationExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: tripelyx-cfn-execution
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: cloudformation.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+
+  GitHubDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: tripelyx-github-deploy
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubOwner}/${GitHubRepo}:ref:refs/heads/${DeployBranch}
+      Policies:
+        - PolicyName: deploy-tripelyx
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: EcrLogin
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
+              - Sid: EcrPush
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:BatchGetImage
+                  - ecr:CompleteLayerUpload
+                  - ecr:DescribeImages
+                  - ecr:InitiateLayerUpload
+                  - ecr:PutImage
+                  - ecr:UploadLayerPart
+                Resource: !GetAtt Repository.Arn
+              - Sid: ManageAppStack
+                Effect: Allow
+                Action:
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:GetTemplateSummary
+                Resource:
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/tripelyx-*/*
+              - Sid: ValidateTemplates
+                Effect: Allow
+                Action: cloudformation:ValidateTemplate
+                Resource: '*'
+              - Sid: HandRoleToCloudFormation
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt CloudFormationExecutionRole.Arn
+                Condition:
+                  StringEquals: { iam:PassedToService: cloudformation.amazonaws.com }
+
+Outputs:
+  DeployRoleArn:
+    Description: Put this in the GitHub repository variable AWS_ROLE_ARN.
+    Value: !GetAtt GitHubDeployRole.Arn
+  CloudFormationExecutionRoleArn:
+    Value: !GetAtt CloudFormationExecutionRole.Arn
+  RepositoryUri:
+    Value: !GetAtt Repository.RepositoryUri

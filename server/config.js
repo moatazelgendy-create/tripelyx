@@ -11,6 +11,15 @@ function bool(value, fallback) {
   return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
 }
 
+function databaseUrlFromParts(env) {
+  if (!env.DATABASE_HOST) return null;
+  if (!env.DATABASE_NAME || !env.DATABASE_USER || !env.DATABASE_PASSWORD) {
+    throw new Error('DATABASE_HOST needs DATABASE_NAME, DATABASE_USER and DATABASE_PASSWORD too');
+  }
+  const port = env.DATABASE_PORT || '5432';
+  return `postgres://${encodeURIComponent(env.DATABASE_USER)}:${encodeURIComponent(env.DATABASE_PASSWORD)}@${env.DATABASE_HOST}:${port}/${encodeURIComponent(env.DATABASE_NAME)}`;
+}
+
 function loadConfig(env = process.env) {
   const appEnv = env.APP_ENV || 'development';
   if (!APP_ENVS.includes(appEnv)) throw new Error(`APP_ENV must be one of ${APP_ENVS.join(', ')} (got "${appEnv}")`);
@@ -53,7 +62,9 @@ function loadConfig(env = process.env) {
   // so a staging deploy can't be pointed at the production database by a copy-paste.
   // DATABASE_URL=memory is an explicit opt-in to the in-memory store for a throwaway staging demo
   // (bookings vanish on restart); production never accepts it.
-  const databaseUrl = env.DATABASE_URL || null;
+  // On AWS the database password comes from Secrets Manager as separate parts, so DATABASE_HOST /
+  // DATABASE_NAME / DATABASE_USER / DATABASE_PASSWORD (and DATABASE_PORT) are accepted instead of a URL.
+  const databaseUrl = env.DATABASE_URL || databaseUrlFromParts(env);
   if (appEnv !== 'development' && !databaseUrl) throw new Error(`DATABASE_URL is required when APP_ENV=${appEnv}`);
   if (databaseUrl === 'memory' && isProduction) throw new Error('DATABASE_URL=memory is not allowed when APP_ENV=production');
   if (databaseUrl && env.DATABASE_ENV && env.DATABASE_ENV !== appEnv) {
@@ -68,6 +79,8 @@ function loadConfig(env = process.env) {
     trustProxy: bool(env.TRUST_PROXY, false),
     databaseUrl,
     databaseSsl: bool(env.DATABASE_SSL, appEnv !== 'development'),
+    // CA bundle for the database's TLS certificate (Amazon RDS uses its own CA; the Docker image ships it).
+    databaseSslCaFile: env.DATABASE_SSL_CA_FILE || null,
     flags,
     providers,
     allowDemoInventory,

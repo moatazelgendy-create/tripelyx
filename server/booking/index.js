@@ -3,7 +3,7 @@ const { PostgresStore } = require('./PostgresStore');
 
 function createStore(config) {
   if (config.databaseUrl === 'memory') return new MemoryStore();
-  if (config.databaseUrl) return new PostgresStore({ connectionString: config.databaseUrl, ssl: config.databaseSsl });
+  if (config.databaseUrl) return new PostgresStore({ connectionString: config.databaseUrl, ssl: config.databaseSsl, caFile: config.databaseSslCaFile });
   // config.js guarantees these in-memory branches never run in production.
   return new MemoryStore();
 }

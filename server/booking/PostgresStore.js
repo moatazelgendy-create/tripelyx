@@ -1,4 +1,5 @@
 // Postgres store for staging and production (and development when DATABASE_URL is set). Each
+const fs = require('fs');
 // environment points at its own database via DATABASE_URL. Rows keep the queryable fields as columns
 // and the full normalized record as JSONB, so the schema doesn't churn as verticals evolve.
 const { Pool } = require('pg');
@@ -43,9 +44,10 @@ CREATE TABLE IF NOT EXISTS tx_partner_leads (
 `;
 
 class PostgresStore {
-  constructor({ connectionString, ssl }) {
+  constructor({ connectionString, ssl, caFile = null }) {
     this.kind = 'postgres';
-    this.pool = new Pool({ connectionString, ssl: ssl ? { rejectUnauthorized: true } : false, max: 10 });
+    const tls = ssl ? { rejectUnauthorized: true, ...(caFile ? { ca: fs.readFileSync(caFile, 'utf8') } : {}) } : false;
+    this.pool = new Pool({ connectionString, ssl: tls, max: 10 });
   }
 
   async init() { await this.pool.query(SCHEMA); }
