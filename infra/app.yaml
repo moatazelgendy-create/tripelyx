@@ -29,7 +29,8 @@ Parameters:
     Default: 'true'
   DbInstanceClass:
     Type: String
-    Default: db.t4g.micro
+    Default: db.t3.micro
+    Description: db.t4g.micro is not offered for Postgres 17 in every region (for example us-east-1).
 
 Conditions:
   HasCertificate: !Not [!Equals [!Ref CertificateArn, '']]
