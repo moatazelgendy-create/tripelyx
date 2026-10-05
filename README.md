@@ -92,7 +92,8 @@ Every push to `main` runs the tests, builds the Docker image, pushes it to Amazo
 GitHub signs in to AWS with OpenID Connect, so no AWS keys are stored in GitHub. The deploy role only
 works for workflow runs on `main` of this repository.
 
-**One-time setup (about 5 minutes):**
+The Tripelyx AWS account (`eu-central-1`) is already set up, and the workflow uses it by default.
+To deploy into a different AWS account, do this **one-time setup (about 5 minutes):**
 
 1. In the AWS console, pick a region, open **CloudFormation → Create stack → With new resources**,
    choose **Upload a template file** and upload `infra/bootstrap.yaml`. Name the stack
