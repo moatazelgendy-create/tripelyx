@@ -35,6 +35,17 @@ function exampleCard(p, budget) {
   </li>`;
 }
 
+// The third tile when the engine found no upgrade worth its price: the honest answer, not a filler trip.
+function keepTile(keep) {
+  return html`<li class="tb-example-card tb-example-keep">
+    <div>
+      <span class="tb-kicker">Keep your money</span>
+      <h3>${dollars(keep.spare)} <small>stays with you</small></h3>
+      <p>We couldn’t find a good reason to spend the other ${dollars(keep.spare)}: nothing we priced improved on our pick without giving something up.</p>
+    </div>
+  </li>`;
+}
+
 function homeView(ctx, { example, levels, dreamDestinations, origins, user, recent }) {
   const budget = example.query.budget;
   const body = html`
@@ -64,11 +75,11 @@ ${recent ? html`<section class="tb-section tb-section-tight" aria-label="Your un
     </div>
     <div class="tb-example" data-example>
       <ol class="tb-building" data-building aria-live="polite">
-        <li>Finding destinations within your budget…</li><li>Checking flight options…</li><li>Finding the best hotels…</li><li>Optimizing your ${dollars(budget)}…</li><li>Building your best matches…</li>
+        <li>Finding destinations within your budget…</li><li>Checking flight options…</li><li>Finding the best hotels…</li><li>Optimizing your ${dollars(budget)}…</li><li>Deciding what’s worth your money…</li>
       </ol>
       <div class="tb-example-result" data-example-result>
-        <p class="tb-example-head">Three trips. One budget. You choose.</p>
-        <ul class="tb-example-grid">${example.picks.map(p => exampleCard(p, budget))}</ul>
+        <p class="tb-example-head">Three answers. One budget. You choose.</p>
+        <ul class="tb-example-grid">${example.picks.map(p => exampleCard(p, budget))}${example.picks.length < 3 && example.keepMoney && example.keepMoney.spare > 0 ? keepTile(example.keepMoney) : ''}</ul>
         <p class="tb-example-foot">From ${example.originCity} · ${plural(example.query.travelers, 'traveler')} · every price includes taxes, mandatory fees and our service fee. <a href="/trips?${example.params}">See these trips ${icon('arrow')}</a></p>
       </div>
     </div>

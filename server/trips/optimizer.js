@@ -1,15 +1,18 @@
 // The trip optimization engine. Given a budget and a few preferences it builds every sensible
 // combination of flight, hotel, experiences and transfer for each destination, prices each one in
-// full (taxes, mandatory fees and the service fee included) and picks three:
-//   Best Match  – the strongest fit for the traveler's preferences within the budget
-//   Best Value  – the most trip for the money within the budget
-//   Save More   – a good trip well under the budget
-// The constraint is total <= budget unless the traveler explicitly allowed up to 10% over, and those
-// trips are always labeled. Ranking only uses customer-facing qualities; platform margin is never an
-// input (the internal economics aren't even passed in).
+// full (taxes, mandatory fees and the service fee included) and picks up to three answers:
+//   Our pick   – the trip we'd book: the cheapest of the near-equal strongest fits at or under the budget
+//   Save more  – a strong trip that leaves real money unspent, usually somewhere else
+//   Upgrade    – only if worth it: costs more and improves something real without giving anything up
+// When no upgrade earns its price the result says so (`keepMoney`) instead of filling the third slot.
+// The budget is a ceiling, not a target. The constraint is total <= budget unless the traveler
+// explicitly allowed up to 10% over, and those trips are always labeled. Ranking only uses
+// customer-facing qualities; platform margin is never an input (the internal economics aren't even
+// passed in).
 const { addDays, daysBetween, today, isIsoDate } = require('../lib/dates');
 const { AppError } = require('../lib/errors');
 const { priceTrip, roomsFor } = require('./pricing');
+const { classifyChanges } = require('./facts');
 
 const STYLES = ['beach', 'city', 'adventure', 'romantic', 'family', 'all-inclusive', 'surprise'];
 const PRIORITIES = ['hotel', 'flights', 'longer', 'activities', 'price'];
@@ -166,7 +169,7 @@ function whyThisTrip(t, ctx) {
   const out = [];
   if (ctx.budget) {
     const diff = ctx.budget - t.total;
-    out.push(diff >= 0 ? `${fmt(diff)} under your budget` : `${fmt(-diff)} over your budget (you allowed up to 10% more)`);
+    out.push(diff >= 0 ? `Leaves ${fmt(diff)} of your budget unspent` : `${fmt(-diff)} over your budget (you allowed up to 10% more)`);
   }
   if (t.flight.stops === 0) out.push('Nonstop flights');
   out.push(`${t.hotel.stars}-star hotel rated ${t.hotel.rating}/5 (demo supplier rating)`);
@@ -177,6 +180,27 @@ function whyThisTrip(t, ctx) {
   if (ctx.style && ctx.style !== 'surprise' && t.dest.styles.includes(ctx.style)) out.push(`A strong ${ctx.style === 'city' ? 'city break' : ctx.style} destination`);
   if (t.typical > t.total * 1.05) out.push(`About ${Math.round((1 - t.total / t.typical) * 100)}% below this trip’s typical price (demo price history)`);
   return out.slice(0, 6);
+}
+
+// What an upgrade actually buys, in words built from the two trips' facts. Only the kinds in
+// REAL_UPGRADE make an upgrade worth showing on their own.
+const REAL_UPGRADE = new Set(['hotel', 'flight', 'nights', 'area', 'meals', 'time']);
+function upgradeGets(improvements, a, b) {
+  const words = {
+    hotel: `a ${b.hotel.stars}-star hotel${b.hotel.stars === a.hotel.stars ? ` rated ${b.hotel.rating}/5` : ''}`,
+    flight: b.flight.stops === 0 && a.flight.stops > 0 ? 'nonstop flights' : `shorter flights (${Math.round(b.flight.durationMinutes / 60)}h each way)`,
+    nights: `${b.spec.nights} nights instead of ${a.spec.nights}`,
+    area: 'a beachfront hotel',
+    meals: b.hotel.features.allInclusive ? 'meals and drinks included' : 'breakfast included',
+    time: 'more usable vacation time',
+    experiences: b.activities.length > a.activities.length ? `${b.activities.length - a.activities.length} more experience${b.activities.length - a.activities.length === 1 ? '' : 's'}` : 'more experiences',
+    transfer: 'an airport transfer',
+    bags: 'checked bags',
+    flex: 'more flexible cancellation',
+  };
+  const order = ['hotel', 'flight', 'nights', 'area', 'meals', 'time', 'experiences', 'transfer', 'bags', 'flex'];
+  const parts = order.filter(k => improvements.some(r => r.key === k)).map(k => words[k]).slice(0, 3);
+  return parts.length <= 1 ? parts.join('') : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
 }
 
 function fmt(cents) {
@@ -255,25 +279,60 @@ function search(inventory, rawQuery, { settings, now = new Date() }) {
   const eligible = all.filter(x => x.trip.total <= cap);
   const destsConsidered = new Set(all.map(x => x.trip.dest.id)).size;
 
+  // Prefer a different destination than the ones already picked, but never return nothing when
+  // the only strong candidates share one.
   const pick = (list, key, avoid = []) => {
     const sorted = [...list].sort((a, b) => key(b) - key(a) || a.trip.total - b.trip.total);
-    return sorted.find(x => !avoid.includes(x.trip.dest.id)) || sorted.find(x => !avoid.length || x !== null) || null;
+    return sorted.find(x => !avoid.includes(x.trip.dest.id)) || sorted[0] || null;
   };
   let picks = [];
+  let keepMoney = null;
   if (eligible.length) {
-    const bestMatch = pick(eligible, x => x.match);
-    const bestValue = pick(eligible.filter(x => x.trip.hotel.stars >= 3), x => x.valueMetric, [bestMatch.trip.dest.id]);
-    const saveLimit = Math.round(q.budget * 0.85);
-    const used = [bestMatch.trip.dest.id, bestValue && bestValue.trip.dest.id].filter(Boolean);
-    let saveMore = pick(eligible.filter(x => x.trip.total <= saveLimit && x.match >= 55), x => x.match, used);
-    if (!saveMore) {
-      const cheaper = eligible.filter(x => x.trip.total < Math.min(bestMatch.trip.total, bestValue ? bestValue.trip.total : Infinity) * 0.95 && x.match >= 50);
-      saveMore = pick(cheaper, x => -x.trip.total, used);
+    const byMatch = (a, b) => b.match - a.match || a.trip.total - b.trip.total;
+    // Our pick: among trips at or under the budget itself, the top match; then the cheapest of those
+    // within 3 points of it. Only when nothing fits the budget does the allowed 10% come into play,
+    // and that pick is flagged so the page never calls it within budget.
+    const under = eligible.filter(x => x.trip.total <= q.budget);
+    let ourPick;
+    if (under.length) {
+      const top = [...under].sort(byMatch)[0];
+      ourPick = under.filter(x => x.match >= top.match - 3).sort((a, b) => a.trip.total - b.trip.total || b.match - a.match)[0];
+    } else {
+      ourPick = { ...[...eligible].sort(byMatch)[0], over: true };
     }
+    const ours = ourPick.trip;
+
+    // Save more: a strong trip that is clearly cheaper, preferably somewhere else.
+    const strongCheaper = eligible.filter(x => x.trip.total < ours.total && (x.trip.total <= Math.round(q.budget * 0.85) || x.trip.total <= ours.total * 0.9) && x.match >= 55);
+    let saveMore = pick(strongCheaper, x => x.match, [ours.dest.id]);
+    if (!saveMore) saveMore = pick(eligible.filter(x => x.trip.total <= ours.total * 0.95 && x.match >= 50), x => -x.trip.total, [ours.dest.id]);
+
+    // Upgrade, only if worth it: judged with the budget taken out of the score, it must improve at
+    // least one thing and give nothing up, cost at most 35% more, and improve something that is
+    // not just an activity or a transfer.
+    const qctx = { ...ctx, budget: null };
+    const baseMatch = scoreTrip(ours, qctx).match;
+    const dearer = eligible.filter(x => x.trip.total > ours.total);
+    const improved = dearer.map(x => ({ ...x, changes: classifyChanges(ours, x.trip), plainMatch: scoreTrip(x.trip, qctx).match }))
+      .filter(x => x.changes.improvements.length >= 1 && x.changes.tradeoffs.length === 0 && x.plainMatch > baseMatch);
+    const worthIt = improved.filter(x => x.trip.total - ours.total <= ours.total * 0.35 && x.changes.improvements.some(r => REAL_UPGRADE.has(r.key)));
+    let upgrade = null;
+    if (worthIt.length) {
+      const topPlain = Math.max(...worthIt.map(x => x.plainMatch));
+      const pool = worthIt.filter(x => x.plainMatch >= topPlain - 2);
+      const sameDest = pool.filter(x => x.trip.dest.id === ours.dest.id);
+      const cand = (sameDest.length ? sameDest : pool).sort((a, b) => a.trip.total - b.trip.total || b.plainMatch - a.plainMatch)[0];
+      const delta = cand.trip.total - ours.total;
+      const gets = upgradeGets(cand.changes.improvements, ours, cand.trip);
+      upgrade = { ...cand, upgrade: { delta, improvements: cand.changes.improvements, gets, over: cand.trip.total > q.budget }, blurb: `+${fmt(delta)} gets ${gets}.` };
+    } else {
+      keepMoney = { considered: dearer.length, spare: q.budget - ours.total, dear: improved.length };
+    }
+
     picks = [
-      { kind: 'best-match', label: 'Best Match', blurb: 'The strongest fit for what you told us, within your budget.', ...bestMatch },
-      bestValue && { kind: 'best-value', label: 'Best Value', blurb: 'The most trip for your money.', ...bestValue },
-      saveMore && { kind: 'save-more', label: 'Save More', blurb: 'A good trip that leaves real money in your pocket.', ...saveMore },
+      { kind: 'our-pick', label: 'Our pick', blurb: ourPick.over ? 'The best fit we built; it needs the extra you allowed.' : 'The trip we’d book: the strongest fit for what you told us, at the lowest price that fit earns.', ...ourPick },
+      saveMore && { kind: 'save-more', label: 'Save more', blurb: 'A strong trip that leaves real money unspent.', ...saveMore },
+      upgrade && { kind: 'upgrade', label: 'Upgrade, only if worth it', ...upgrade },
     ].filter(Boolean);
     // Never show the same package twice.
     const seen = new Set();
@@ -291,7 +350,7 @@ function search(inventory, rawQuery, { settings, now = new Date() }) {
   const cheapestByDest = {};
   for (const x of all) if (!(x.trip.dest.id in cheapestByDest) || x.trip.total < cheapestByDest[x.trip.dest.id]) cheapestByDest[x.trip.dest.id] = x.trip.total;
   const eligibleDestinations = new Set(eligible.map(x => x.trip.dest.id)).size;
-  return { query: q, ctx, picks, closest, cheapest, cheapestEligible, cheapestByDest, considered: all.length, destinations: destsConsidered, eligibleDestinations, airport };
+  return { query: q, ctx, picks, keepMoney, closest, cheapest, cheapestEligible, cheapestByDest, considered: all.length, destinations: destsConsidered, eligibleDestinations, airport };
 }
 
 // Journey B: a dream destination and a maximum budget. Returns the strongest trip to that destination

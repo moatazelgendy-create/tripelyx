@@ -632,3 +632,34 @@ a.tb-pill:hover { border-color: var(--blue-500); }
   .tb-locks label, .tb-locks .btn { width: 100%; justify-content: center; }
   .tb-better-row .btn { width: 100%; }
 }
+
+/* ---------- You gave us / We need / You keep, and the keep-your-money answers ---------- */
+.tb-keep { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 14px 0 16px; padding: 0; }
+.tb-keep > div { background: var(--bg-soft); border-radius: var(--radius); padding: 12px 14px; min-width: 0; }
+.tb-keep dt { font-size: 12.5px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); font-weight: 700; margin-bottom: 4px; }
+.tb-keep dd { margin: 0; font-size: 24px; font-weight: 700; letter-spacing: -0.02em; color: var(--ink); line-height: 1.15; }
+.tb-keep > div:last-child dd { color: #0c5e43; }
+.tb-keep.is-over > div:last-child dd { color: var(--danger); }
+.tb-decide .tb-keep > div { background: rgba(255, 255, 255, .09); }
+.tb-decide .tb-keep dt { color: var(--blue-300); }
+.tb-decide .tb-keep dd { color: #fff; }
+.tb-decide .tb-keep > div:last-child dd { color: #a7e3c6; }
+.tb-decide .tb-keep.is-over > div:last-child dd { color: #ffb4a8; }
+.tb-keep-note { display: flex; gap: 8px; align-items: flex-start; }
+.tb-keep-note .icon { width: 18px; height: 18px; flex: none; margin-top: 3px; }
+.tb-decide .tb-keep-note { color: #fff; }
+.tb-decide .tb-keep-note .icon { color: #a7e3c6; }
+.tb-card-upgrade { display: flex; gap: 8px; align-items: flex-start; margin: 0; font-size: 14.5px; font-weight: 600; color: #0c5e43; line-height: 1.4; }
+.tb-card-upgrade .icon { width: 16px; height: 16px; flex: none; margin-top: 2px; }
+.tb-card-keep { background: var(--sky-50); border: 1.5px dashed var(--blue-500); justify-content: center; }
+.tb-card-keep .tb-card-body { justify-content: center; }
+.tb-card-keep h2 { font-size: 26px; margin: 0; }
+.tb-card-keep p { margin: 0; line-height: 1.5; font-size: 15px; }
+.tb-card-keep-sum { font-size: 17px !important; }
+.tb-card-keep-sum b { font-size: 26px; color: #0c5e43; }
+.tb-card-keep .tb-card-actions { margin-top: 10px; }
+.tb-example-keep { display: flex; align-items: center; background: var(--sky-50); border: 1.5px dashed var(--blue-500); }
+.tb-example-keep p { color: var(--text); margin-top: 6px !important; }
+@media (max-width: 480px) {
+  .tb-keep { grid-template-columns: 1fr; }
+}

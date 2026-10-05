@@ -14,7 +14,7 @@
     if (input.value) formatBudget(input);
   });
 
-  // "Finding destinations… Checking flights… Building your best matches" before results appear.
+  // "Finding destinations… Checking flights… Deciding what’s worth your money" before results appear.
   function build(box, done) {
     var list = box.querySelector('[data-building]');
     if (!list || reduceMotion) return done && done();

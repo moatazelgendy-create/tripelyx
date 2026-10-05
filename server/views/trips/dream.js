@@ -66,8 +66,8 @@ function dreamView(ctx, { dest, q, originCity, best, under, gap, closers, cx, us
   </section>` : ''}
 
   <div class="tb-cards tb-cards-2">
-    ${underT ? tripCard({ ...under, label: gap > 0 ? 'Best version under budget' : 'Best Match', why: under.why }, q, cx, { rank: 0 }) : ''}
-    ${gap > 0 ? tripCard({ ...best, label: 'Your dream version', why: best.why }, q, cx, { over: true, rank: 1 }) : (best && underT && best.trip !== underT ? tripCard({ ...best, label: 'Best Match', why: best.why }, q, cx, { rank: 1 }) : '')}
+    ${underT ? tripCard({ ...under, label: gap > 0 ? 'Best version under budget' : 'Our pick', why: under.why }, q, cx, { rank: 0 }) : ''}
+    ${gap > 0 ? tripCard({ ...best, label: 'Your dream version', why: best.why }, q, cx, { over: true, rank: 1 }) : (best && underT && best.trip !== underT ? tripCard({ ...best, label: 'Our pick', why: best.why }, q, cx, { rank: 1 }) : '')}
   </div>
 
   <section class="tb-more" aria-label="Other options">

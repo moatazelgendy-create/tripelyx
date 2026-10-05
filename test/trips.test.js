@@ -75,17 +75,58 @@ test('pricing: lines add up, taxes and fees are inside the total, internals neve
   assert.ok(!JSON.stringify(pub).includes('supplierCost'));
 });
 
-test('optimizer: never over budget unless allowed, three distinct picks, margin is not an input', () => {
+test('optimizer: our pick, save more, an upgrade only if worth it (or keep your money); margin is not an input', () => {
   const settings = DEFAULT_SETTINGS;
   const { query, missing } = optimizer.parseSearch(QUERY, { maps: inv.maps });
   assert.deepEqual(missing, []);
   const r = optimizer.search(inv, query, { settings });
-  assert.equal(r.picks.length, 3);
-  assert.deepEqual(r.picks.map(p => p.kind), ['best-match', 'best-value', 'save-more']);
-  for (const p of r.picks) assert.ok(p.trip.total <= query.budget, `${p.kind} ${p.trip.total} <= ${query.budget}`);
-  assert.equal(new Set(r.picks.map(p => p.trip.dest.id)).size, 3, 'three different destinations');
-  assert.ok(r.picks[2].trip.total <= query.budget * 0.85 || r.picks[2].trip.total < r.picks[0].trip.total, 'Save More really saves');
-  for (const p of r.picks) assert.ok(p.why.length >= 2 && p.match > 0);
+  assert.ok(r.picks.length >= 2 && r.picks.length <= 3, 'two or three answers');
+  assert.deepEqual(r.picks.slice(0, 2).map(p => p.kind), ['our-pick', 'save-more']);
+  assert.match(r.picks[0].why[0], /^Leaves \$[\d,]+ of your budget unspent$/);
+
+  // The invariants, for every budget and priority: our pick is at or under the budget whenever
+  // anything is; save more is cheaper; an upgrade improves something real and gives nothing up,
+  // scores higher with the budget taken out, and costs at most 35% more; otherwise keepMoney says so.
+  const check = (res, budget, cap, name) => {
+    const kinds = res.picks.map(p => p.kind);
+    assert.ok(kinds.every(k => ['our-pick', 'save-more', 'upgrade'].includes(k)), name);
+    assert.equal(new Set(kinds).size, kinds.length, `${name}: one of each kind`);
+    assert.equal(new Set(res.picks.map(p => JSON.stringify(p.trip.spec))).size, res.picks.length, `${name}: never the same package twice`);
+    const ours = res.picks.find(p => p.kind === 'our-pick');
+    if (!ours) { assert.equal(res.picks.length, 0, name); assert.ok(res.closest.length > 0 || res.considered === 0, name); return; }
+    for (const p of res.picks) { assert.ok(p.trip.total <= cap, `${name}: ${p.kind} ${p.trip.total} <= ${cap}`); assert.ok(p.why.length >= 2 && p.match > 0 && p.label, name); }
+    if (ours.over) assert.ok(ours.trip.total > budget && res.cheapestEligible.trip.total > budget, `${name}: over only when nothing fits the budget`);
+    else assert.ok(ours.trip.total <= budget, `${name}: our pick ${ours.trip.total} <= ${budget}`);
+    const save = res.picks.find(p => p.kind === 'save-more');
+    if (save) assert.ok(save.trip.total < ours.trip.total && save.match >= 50, `${name}: save more really saves`);
+    const up = res.picks.find(p => p.kind === 'upgrade');
+    const plain = { ...res.ctx, budget: null };
+    if (up) {
+      const ch = decision.classifyChanges(ours.trip, up.trip);
+      assert.ok(ch.improvements.length >= 1, `${name}: upgrade improves something`);
+      assert.equal(ch.tradeoffs.length, 0, `${name}: upgrade gives nothing up`);
+      assert.ok(optimizer.scoreTrip(up.trip, plain).match > optimizer.scoreTrip(ours.trip, plain).match, `${name}: upgrade scores higher without the budget`);
+      assert.equal(up.upgrade.delta, up.trip.total - ours.trip.total, name);
+      assert.ok(up.upgrade.delta > 0 && up.upgrade.delta <= ours.trip.total * 0.35, `${name}: worth it`);
+      assert.ok(up.upgrade.improvements.some(i => ['hotel', 'flight', 'nights', 'area', 'meals', 'time'].includes(i.key)), `${name}: a real improvement`);
+      assert.equal(up.upgrade.over, up.trip.total > budget, name);
+      assert.ok(up.upgrade.gets && up.blurb.startsWith('+$'), name);
+      assert.equal(res.keepMoney, null, name);
+    } else {
+      assert.ok(res.keepMoney, `${name}: keepMoney when no upgrade`);
+      assert.equal(res.keepMoney.spare, budget - ours.trip.total, name);
+      assert.ok(res.keepMoney.considered >= 0 && res.keepMoney.dear <= res.keepMoney.considered, name);
+    }
+  };
+  check(r, query.budget, query.budget, '$1500 hotel');
+  for (const b of [900, 1200, 1500, 2500, 4000]) for (const prio of ['hotel', 'price', 'flights']) {
+    const res = optimizer.search(inv, { ...query, budget: b * 100, priority: prio }, { settings });
+    check(res, b * 100, b * 100, `$${b} ${prio}`);
+  }
+  for (const b of [900, 1500]) {
+    const res = optimizer.search(inv, { ...query, budget: b * 100, allowOver: 10 }, { settings });
+    check(res, b * 100, Math.round(b * 100 * 1.1), `$${b} +10%`);
+  }
 
   const over = optimizer.search(inv, { ...query, allowOver: 10 }, { settings });
   for (const p of over.picks) assert.ok(p.trip.total <= Math.round(query.budget * 1.1));
@@ -241,13 +282,27 @@ test('decide-for-me pages: our call, compare, before and after, the reality chec
   }
   assert.match(results.text, /What almost won/);
   assert.match(results.text, /What would change our mind/);
-  assert.ok((results.text.match(/tb-fit-/g) || []).length >= 3, 'every card carries a verdict');
+  assert.ok((results.text.match(/tb-fit-/g) || []).length >= 2, 'every trip card carries a verdict');
+  // You gave us / we need / you keep, then either an upgrade worth its price or "keep your money".
+  assert.match(results.text, /You gave us/);
+  assert.match(results.text, /You keep/);
+  assert.match(results.text, /couldn’t find a good reason|Upgrade, only if worth it/);
+  for (const extra of [{ b: '900', ov: '10' }, { b: '1200' }, { b: '2500' }, { b: '4000' }, { prio: 'price' }, { prio: 'flights' }]) {
+    const res = await c.req(`/trips?${new URLSearchParams({ ...QUERY, ...extra })}`);
+    assert.equal(res.status, 200, JSON.stringify(extra));
+    noInline(`/trips ${JSON.stringify(extra)}`, res.text);
+    if (/we’d book|The closest is/.test(res.text)) {
+      assert.match(res.text, /You gave us/, JSON.stringify(extra));
+      if (/Keep your money/.test(res.text)) assert.match(res.text, /trips?, and a reason to keep your money|couldn’t find a good reason/);
+      else if (/we’d book/.test(res.text)) assert.match(res.text, /Upgrade, only if worth it/, JSON.stringify(extra));
+    }
+  }
   const compare = results.text.match(/href="(\/compare\?[^"]*)"/)[1].replace(/&amp;/g, '&');
   const cmp = await c.req(compare);
   assert.equal(cmp.status, 200);
-  assert.match(cmp.text, /Compare your 3 trips/);
+  assert.match(cmp.text, /Compare your [23] trips/);
   assert.match(cmp.text, /Our verdict/);
-  assert.match(cmp.text, /Best Match/);
+  assert.match(cmp.text, /Our pick/);
   noInline('/compare', cmp.text);
   assert.ok((await c.req(compare + '&all=1')).text.match(/<tr/g).length >= cmp.text.match(/<tr/g).length);
 
@@ -316,6 +371,8 @@ test('pages render without inline scripts or styles; corporate site moves to /co
   assert.match(home, /How much do you<br>want to spend\?/);
   assert.match(home, /Surprise me/i);
   assert.match(home, /Demo inventory/);
+  assert.match(home, /Three answers\. One budget\. You choose\./);
+  assert.match(home, /Our pick/);
   assert.match(home, /Beat my quote/);
   assert.match(home, /I have to be there on/);
   assert.equal((await fetch(app.base + '/trips-under-7')).status, 404);
