@@ -208,6 +208,7 @@ Resources:
             - { Name: APP_ENV, Value: !Ref AppEnv }
             - { Name: PORT, Value: '4100' }
             - { Name: TRUST_PROXY, Value: 'true' }
+            - { Name: HTTPS_ONLY, Value: !If [HasCertificate, 'true', 'false'] }
             - { Name: PAYMENT_MODE, Value: !Ref PaymentMode }
             - { Name: ALLOW_DEMO_INVENTORY, Value: !Ref AllowDemoInventory }
             - { Name: DATABASE_ENV, Value: !Ref AppEnv }
