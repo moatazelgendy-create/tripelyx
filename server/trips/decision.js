@@ -258,7 +258,7 @@ function nameYourPrice(inventory, t, settings, ctx = {}, target, { now = new Dat
   const rung = c => {
     const row = c.changes.tradeoffs[0] || c.changes.neutral[0] || c.changes.improvements[0] || null;
     const noteKind = c.changes.tradeoffs[0] ? 'tradeoff' : c.changes.neutral[0] ? 'neutral' : c.changes.improvements[0] ? 'improvement' : null;
-    return { total: c.total, label: c.label, labelText: RUNG_LABELS[c.label], trip: c.trip, match: c.match, delta: c.delta, cliff: c === cliffRung, current: false, note: row ? changeText(row) : null, noteRow: row, noteKind };
+    return { total: c.total, label: c.label, labelText: RUNG_LABELS[c.label], trip: c.trip, match: c.match, delta: c.delta, cliff: c === cliffRung, current: false, note: row ? changeText(row) : null, noteRow: row, noteKind, changes: c.changes, compromises: c.compromises };
   };
   const ladder = [
     { total: t.total, label: currentLabel, labelText: RUNG_LABELS[currentLabel], trip: t, match: currentV.match, delta: 0, cliff: false, current: true, note: null, noteRow: null, noteKind: null },

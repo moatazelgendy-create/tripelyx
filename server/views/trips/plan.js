@@ -226,8 +226,8 @@ function decisionBand(picks, q, cx, keepMoney) {
     <div><dt>${spare < 0 ? 'Over by' : 'You keep'}</dt><dd>${money(Math.abs(spare))}</dd></div>
   </dl>`;
   const money_ = upgrade
-    ? html`<p class="tb-keep-note">${icon('trend')} Spending ${money(upgrade.upgrade.delta)} more would get you ${upgrade.upgrade.gets}. Your call: <a href="#card-upgrade">see the upgrade below</a>, or ${spare > 0 ? `keep the ${money(spare)}` : 'keep it as it is'}.</p>`
-    : keepMoney && keepMoney.spare > 0 ? html`<p class="tb-keep-note">${icon('check')} ${keepSentence(keepMoney, q)}</p>` : '';
+    ? html`<p class="tb-keep-note">${icon('trend')}<span>Spending ${money(upgrade.upgrade.delta)} more would get you ${upgrade.upgrade.gets}. Your call: <a href="#card-upgrade">see the upgrade below</a>, or ${spare > 0 ? `keep the ${money(spare)}` : 'keep it as it is'}.</span></p>`
+    : keepMoney && keepMoney.spare > 0 ? html`<p class="tb-keep-note">${icon('check')}<span>${keepSentence(keepMoney, q)}</span></p>` : '';
   return html`<section class="tb-decide" aria-labelledby="decide-title">
     <p class="tb-kicker">Our call</p>
     <h2 id="decide-title">${headline}</h2>

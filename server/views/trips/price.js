@@ -38,9 +38,24 @@ function unchangedChips(t, c) {
 }
 
 // "It means: ..." for a version we don't recommend: its compromises for this traveler, then what it gives up.
-function meansList(c) {
-  const texts = [...new Set([...c.compromises.filter(x => x.w >= 2).map(x => x.text), ...c.changes.tradeoffs.map(r => `${r.label.toLowerCase()}: ${r.b}`)])];
+// A compromise sentence already says what a trade-off row would repeat, so a row is listed only
+// when no sentence covers its subject.
+const COVERS = { hotel: /hotel/i, area: /on the beach|location|area/i, flight: /flight|fare|stop/i, time: /departure|arrival|last day|first day|overnight/i, nights: /night/i, meals: /breakfast|all-inclusive/i, bags: /bag|personal item/i, transfer: /transfer/i, experiences: /experience/i, flex: /refundable/i };
+function meansList(c, t) {
+  const said = c.compromises.filter(x => x.w >= 1).map(x => x.text);
+  const rows = c.changes.tradeoffs.filter(r => !(COVERS[r.key] && said.some(x => COVERS[r.key].test(x)))).map(r => fmtRow(r, t, c.trip)).map(r => `${r.label.toLowerCase()}: ${r.a} → ${r.b}`);
+  const texts = [...new Set([...said, ...rows])];
   return texts.length ? html`<ul class="tb-list">${texts.map(x => html`<li>${x}</li>`)}</ul>` : '';
+}
+
+// One line per rung: everything that differs from the trip you have, newest value only.
+const RUNG_KEYS = ['hotel', 'flight', 'nights', 'dates', 'area', 'meals', 'bags', 'experiences', 'transfer'];
+function rungNote(t, r) {
+  if (!r.changes) return r.noteRow ? `${r.noteRow.label}: ${fmtRow(r.noteRow, t, r.trip).b}` : `${money(-r.delta)} less`;
+  const rows = [...r.changes.tradeoffs, ...r.changes.neutral, ...r.changes.improvements].filter(x => RUNG_KEYS.includes(x.key)).sort((a, b) => RUNG_KEYS.indexOf(a.key) - RUNG_KEYS.indexOf(b.key)).map(x => fmtRow(x, t, r.trip));
+  if (!rows.length) return `${money(-r.delta)} less, same trip`;
+  const shown = rows.slice(0, 3).map(x => `${x.label}: ${x.b}`);
+  return shown.join(' · ') + (rows.length > 3 ? ` · +${rows.length - 3} more` : '');
 }
 
 function ladderView(t, ladder, cx, picks) {
@@ -48,9 +63,8 @@ function ladderView(t, ladder, cx, picks) {
     <h2 id="ladder-title">${icon('layers')} The value ladder</h2>
     <p class="tb-muted">Every version of this trip we priced, from what you have down to the cheapest we can build. Each one is a complete package, taxes and fees included. Strong means no step down from the trip you have on anything you said matters.</p>
     <ol class="tb-ladder">${ladder.map(r => {
-      const row = r.noteRow ? fmtRow(r.noteRow, t, r.trip) : null;
       const url = r.current ? `/trip/${encodeSpec(t.spec)}?${contextParams(cx)}` : `/trip/${encodeSpec(r.trip.spec)}?${contextParams(cx)}`;
-      return html`<li class="${r.cliff ? 'is-cliff' : ''}${r.current ? ' is-current' : ''}"><b><a href="${url}">${money(r.total)}</a></b><div><span class="tb-rung tb-rung-${r.label}">${r.labelText}</span>${r.current ? html`<span class="tb-rung tb-rung-now">Your trip now</span>` : ''}${picks.has(r.total) ? html`<span class="tb-rung tb-rung-pick">${picks.get(r.total)}</span>` : ''}<small>${r.current ? `${r.trip.hotel.name} · ${r.trip.flight.stops ? `${r.trip.flight.stops}-stop` : 'nonstop'} · ${plural(r.trip.spec.nights, 'night')}` : row ? `${row.label}: ${row.b}` : `${money(-r.delta)} less`}</small></div></li>`;
+      return html`<li class="${r.cliff ? 'is-cliff' : ''}${r.current ? ' is-current' : ''}"><b><a href="${url}">${money(r.total)}</a></b><div><span class="tb-rung tb-rung-${r.label}">${r.labelText}</span>${r.current ? html`<span class="tb-rung tb-rung-now">Your trip now</span>` : ''}${picks.has(r.total) ? html`<span class="tb-rung tb-rung-pick">${picks.get(r.total)}</span>` : ''}<small>${r.current ? `${r.trip.hotel.name} · ${r.trip.flight.stops ? `${r.trip.flight.stops}-stop` : 'nonstop'} · ${plural(r.trip.spec.nights, 'night')}` : rungNote(t, r)}</small></div></li>`;
     })}</ol>
   </section>`;
 }
@@ -89,7 +103,7 @@ function priceView(ctx, { data, cx, user }) {
   } else if (anyway) {
     const a = anyway;
     const cliffRung = ladder.find(r => r.cliff);
-    const cliffText = a.compromises.find(x => x.w >= 3)?.text || (a.changes.tradeoffs[0] ? `${a.changes.tradeoffs[0].label.toLowerCase()}: ${fmtRow(a.changes.tradeoffs[0], t, a.trip).b}` : null) || (cliffRung && cliffRung.noteRow ? `${cliffRung.noteRow.label.toLowerCase()}: ${fmtRow(cliffRung.noteRow, t, cliffRung.trip).b}` : null);
+    const cliffText = (a.compromises.find(x => x.w >= 3) || a.compromises.find(x => x.w >= 2) || a.compromises.find(x => x.w >= 1))?.text || (a.changes.tradeoffs[0] ? `${a.changes.tradeoffs[0].label.toLowerCase()}: ${fmtRow(a.changes.tradeoffs[0], t, a.trip).b}` : null) || (cliffRung && cliffRung.noteRow ? `${cliffRung.noteRow.label.toLowerCase()}: ${fmtRow(cliffRung.noteRow, t, cliffRung.trip).b}` : null);
     head = html`<h1>We can make it cheaper. We don’t think we should.</h1>
       <p class="tb-results-sub">${pricedLine} There is a ${money(a.total)} version at or under your ${dollars(target)}, but it gives up something you told us matters. ${demo}</p>`;
     main = html`<section class="tb-panel" aria-labelledby="floor-title">
@@ -103,7 +117,7 @@ function priceView(ctx, { data, cx, user }) {
         <div class="tb-price-actions"><a class="btn btn-navy" href="${keepUrl}">Keep my trip at ${money(t.total)} ${icon('arrow')}</a>${cx.searchParams ? html`<a class="btn btn-ghost" href="/trips?${cx.searchParams}">Back to my three trips</a>` : ''}</div>`}
       <div class="tb-price-anyway">
         <p><b>Your price, if you want it anyway.</b> The best version we can build at or under ${dollars(target)} is ${money(a.total)} (${a.labelText.toLowerCase()}). It means:</p>
-        ${meansList(a)}
+        ${meansList(a, t)}
         <a class="btn btn-ghost" href="${tripUrl(a.token)}">Show me the ${money(a.total)} version anyway</a>
       </div>
     </section>`;
@@ -111,7 +125,7 @@ function priceView(ctx, { data, cx, user }) {
     const c = cheapest;
     const q = { budgetInput: Math.round(target / 100), keep: 0, budgetType: 'total', origin: s.from, who: s.who, travelers: s.travelers, dateMode: 'anytime', nights: s.nights, style: cx.style, priority: cx.priority, allowOver: cx.allowOver };
     head = html`<h1>No version of this trip gets to ${dollars(target)}.</h1>
-      <p class="tb-results-sub">${pricedLine} ${c ? html`The cheapest we can build is <b>${money(c.total)}</b>${c.changes.tradeoffs.length ? ` (${c.changes.tradeoffs.map(r => fmtRow(r, t, c.trip).b.toLowerCase()).slice(0, 3).join(', ')})` : ''}, and that is ${money(c.total - target)} over your price.` : 'Nothing about this trip can be removed or swapped for less with the inventory we have.'} ${demo}</p>`;
+      <p class="tb-results-sub">${pricedLine} ${c ? html`The cheapest we can build is <b>${money(c.total)}</b>${c.changes.tradeoffs.length ? ` (${c.changes.tradeoffs.map(r => fmtRow(r, t, c.trip).b).slice(0, 3).join(', ')})` : ''}, and that is ${money(c.total - target)} over your price.` : 'Nothing about this trip can be removed or swapped for less with the inventory we have.'} ${demo}</p>`;
     main = html`<section class="tb-panel" aria-labelledby="next-title">
       <h2 id="next-title">${icon('compass')} What would get you to ${dollars(target)}</h2>
       <p class="tb-muted">None of these is a dead end. Every one is a real search or a real change you can make now.</p>
