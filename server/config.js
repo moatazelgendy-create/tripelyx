@@ -67,6 +67,10 @@ function loadConfig(env = process.env) {
   const databaseUrl = env.DATABASE_URL || databaseUrlFromParts(env);
   if (appEnv !== 'development' && !databaseUrl) throw new Error(`DATABASE_URL is required when APP_ENV=${appEnv}`);
   if (databaseUrl === 'memory' && isProduction) throw new Error('DATABASE_URL=memory is not allowed when APP_ENV=production');
+  // HTTPS_ONLY turns on HSTS, upgrade-insecure-requests and Secure cookies. It defaults on outside
+  // development; a staging site without a certificate (plain http:// address) sets it to false.
+  const httpsOnly = bool(env.HTTPS_ONLY, appEnv !== 'development');
+  if (isProduction && !httpsOnly) throw new Error('HTTPS_ONLY=false is not allowed when APP_ENV=production');
   if (databaseUrl && env.DATABASE_ENV && env.DATABASE_ENV !== appEnv) {
     throw new Error(`DATABASE_ENV (${env.DATABASE_ENV}) does not match APP_ENV (${appEnv}) — refusing to use another environment's database`);
   }
@@ -77,6 +81,7 @@ function loadConfig(env = process.env) {
     port: Number(env.PORT || 4100),
     publicBaseUrl: env.PUBLIC_BASE_URL || null,
     trustProxy: bool(env.TRUST_PROXY, false),
+    httpsOnly,
     databaseUrl,
     databaseSsl: bool(env.DATABASE_SSL, appEnv !== 'development'),
     // CA bundle for the database's TLS certificate (Amazon RDS uses its own CA; the Docker image ships it).

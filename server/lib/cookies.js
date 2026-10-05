@@ -1,5 +1,5 @@
 // Tiny cookie helpers (no dependency). Booking access cookies are HttpOnly, SameSite=Strict and Secure
-// outside development, one per booking reference.
+// whenever the site is HTTPS-only (see HTTPS_ONLY in config), one per booking reference.
 function readCookies(req) {
   const out = {};
   const header = req.headers.cookie;
@@ -23,7 +23,7 @@ function setBookingCookie(res, ref, token, config) {
     `${bookingCookieName(ref)}=${encodeURIComponent(token)}`,
     'Path=/', 'HttpOnly', 'SameSite=Strict', `Max-Age=${60 * 60 * 24 * 90}`,
   ];
-  if (config.appEnv !== 'development') attrs.push('Secure');
+  if (config.httpsOnly) attrs.push('Secure');
   res.append('Set-Cookie', attrs.join('; '));
 }
 

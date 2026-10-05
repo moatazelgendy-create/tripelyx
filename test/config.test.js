@@ -66,3 +66,11 @@ test('database URL can be assembled from separate parts (AWS Secrets Manager)', 
   assert.equal(c.databaseUrl, 'postgres://tx:p%40ss%2Fword@db.example.internal:5432/tripelyx');
   assert.throws(() => loadConfig({ APP_ENV: 'staging', DATABASE_HOST: 'h' }), /DATABASE_NAME/);
 });
+
+test('HTTPS_ONLY defaults on outside development and production refuses to turn it off', () => {
+  const db = { DATABASE_URL: 'postgres://u:p@h/db' };
+  assert.equal(loadConfig({}).httpsOnly, false);
+  assert.equal(loadConfig({ APP_ENV: 'staging', ...db }).httpsOnly, true);
+  assert.equal(loadConfig({ APP_ENV: 'staging', HTTPS_ONLY: 'false', ...db }).httpsOnly, false);
+  assert.throws(() => loadConfig({ APP_ENV: 'production', HTTPS_ONLY: 'false', ...db }), /HTTPS_ONLY=false/);
+});
