@@ -109,7 +109,7 @@ function changeList(items, { empty }) {
   return html`<ul class="tb-changes">${items.map(c => html`<li><a href="${c.url}"><span>${c.label}</span>${delta(c.delta)}<small>new total ${money(c.total)}</small></a></li>`)}</ul>`;
 }
 
-function knowBeforeYouBook(t, { weather, origin }) {
+function knowBeforeYouBook(t, { weather, origin, token, cx }) {
   const h = t.hotel, f = t.flight;
   const flexCount = [f.refundable, h.refundable, ...(t.activities.length ? [true] : []), ...(t.transfer ? [true] : [])].filter(Boolean).length;
   const parts = 2 + (t.activities.length ? 1 : 0) + (t.transfer ? 1 : 0);
@@ -128,6 +128,7 @@ function knowBeforeYouBook(t, { weather, origin }) {
       ${weather ? html`<div><h3>${icon('sun')} Weather</h3><p>${weather.label} in ${new Intl.DateTimeFormat('en-US', { month: 'long', timeZone: 'UTC' }).format(new Date(`${t.spec.depart}T00:00:00Z`))}, going by ${weather.source}. Not a forecast.</p></div>` : ''}
       <div><h3>${icon('users')} Who provides each part</h3><ul class="tb-list">${t.providers.map(p => html`<li><b>${p.component}:</b> ${p.provider}</li>`)}</ul></div>
     </div>
+    ${token ? html`<p class="tb-kbyb-foot"><a class="btn btn-ghost btn-sm" href="/trip/${token}/guide?${contextParams(cx)}">${icon('compass')} First trip? Walk me through it, step by step</a></p>` : ''}
   </section>`;
 }
 
@@ -231,7 +232,7 @@ function tripView(ctx, { data, cx, user, saved, dreamGap }) {
         <h3>${icon('sliders')} One change at a time</h3>
         <p class="tb-muted">Single changes, biggest saving first. We never remove anything without showing you.</p>${changeList(cheaper, { empty: 'This is already the cheapest version of this trip we can build.' })}</section>
 
-      ${knowBeforeYouBook(t, { weather, origin })}
+      ${knowBeforeYouBook(t, { weather, origin, token, cx })}
       ${confidenceQuestions(t)}
     </div>
 
@@ -313,6 +314,7 @@ function reviewView(ctx, { data, cx, verify, user, promoError, promoCode }) {
             <li>${icon('check')} Flights: ${t.flight.stops ? '1 stop' : 'nonstop'}, ${t.flight.name}</li>
             <li>${icon('check')} Taxes, mandatory fees and service fee included</li>
             <li>${icon('info')} Remaining: review the cancellation terms below</li>
+            <li>${icon('compass')} <a href="/trip/${token}/guide?${contextParams(cx)}">New to this? Walk through the trip step by step</a></li>
           </ul>
         </section>
         <section class="tb-panel" aria-labelledby="reality-title">

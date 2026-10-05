@@ -11,6 +11,7 @@ const { stepView, resultsView, STEPS } = require('../views/trips/plan');
 const { tripView, reviewView, unavailableView, singleChanges } = require('../views/trips/trip');
 const { dreamView } = require('../views/trips/dream');
 const { priceView } = require('../views/trips/price');
+const { guideView } = require('../views/trips/guide');
 const { compareView } = require('../views/trips/compare');
 const { authView, myTripsView } = require('../views/trips/account');
 const pages = require('../views/trips/pages');
@@ -158,6 +159,16 @@ function tripsRouter(ctx, { writeLimiter }) {
       const outcome = data.recommended ? 'reached' : data.anyway ? 'not-strong' : 'none';
       await tracked(req, 'price_named', { dest: data.current.trip.dest.id, current: data.currentTotal, target: target * 100, outcome });
       send(res, priceView(ctx, { data, cx, user: user(req) }));
+    } catch (e) { next(e); }
+  });
+
+  // Your trip, step by step: a walk through this trip from its facts, for first trips and nervous flyers.
+  r.get('/trip/:token/guide', async (req, res, next) => {
+    try {
+      const cx = optimizer.parseContext(req.query);
+      const data = await svc.trip(req.params.token, cx);
+      await tracked(req, 'guide_viewed', { dest: data.trip.dest.id });
+      send(res, guideView(ctx, { data, cx }));
     } catch (e) { next(e); }
   });
 

@@ -292,6 +292,89 @@ function ptoAlternatives(t, options) {
     .slice(0, 4);
 }
 
+// ---- your trip, step by step ------------------------------------------------------------------
+// A walk through the trip in order, for first-time travelers and nervous flyers. Each step is built
+// from this trip's facts. A line we cannot know from the booking is marked "check" (confirm it on
+// the itinerary, voucher or boarding pass); general advice is marked "info" and is never a promise.
+// No fear, no upsell: nothing here sells anything, and nothing guesses an entry requirement.
+function tripGuide(t, { origin } = {}) {
+  const f = t.flight, h = t.hotel, s = t.spec;
+  const time = usableTime(t);
+  const hasTimes = Number.isFinite(f.departMinutes) && Number.isFinite(f.arriveMinutes) && Number.isFinite(f.returnDepartMinutes);
+  const from = origin ? `${origin.name} (${origin.code})` : s.from;
+  const steps = [];
+  const step = (key, title, status, lines) => steps.push({ key, title, status, lines: lines.filter(Boolean) });
+
+  step('before', 'Before you leave', t.internationalTrip ? 'check' : 'ready', [
+    t.internationalTrip
+      ? { status: 'check', text: `${t.dest.country} is an international destination: every traveler needs a valid passport, and entry rules depend on nationality. Check the official requirements for your passport before you go. We can’t guarantee entry to any country.` }
+      : { status: 'ready', text: 'A domestic trip: a government-issued photo ID is enough for US travelers. Keep it with you from the airport to the hotel.' },
+    { status: 'info', text: `Most airlines open online check-in 24 hours before departure; ${f.airline} will say exactly when. Checking in early is general advice, not a rule of this fare.` },
+    { status: 'ready', text: `Your confirmation carries a Trip ID and a confirmation number for each part (flights, hotel${t.activities.length ? ', experiences' : ''}${t.transfer ? ', transfer' : ''}). Keep it on your phone and, if you like, on paper.` },
+  ]);
+
+  step('airport', 'At the airport', 'info', [
+    { status: 'info', text: `Arrive about ${t.internationalTrip ? '3 hours' : '2 hours'} before your flight. That is general guidance for ${t.internationalTrip ? 'international' : 'domestic'} flights, not a promise about ${origin ? origin.name : 'your airport'} on the day.` },
+    { status: 'check', text: 'Terminal and gate: on your boarding pass and the airport screens. They can change on the day, so check the screens once you are inside.' },
+    { status: 'ready', text: `You are flying ${f.airline}, ${f.name} fare, from ${from} to ${t.dest.airport}.` },
+  ]);
+
+  step('bags', 'Bags', f.checkedBagIncluded || s.bags || f.carryOn ? 'ready' : 'check', [
+    { status: 'ready', text: f.checkedBagIncluded || s.bags
+      ? 'One checked bag per traveler each way is in your price: drop it at the airline desk or bag drop after check-in.'
+      : `${f.carryOn ? 'One carry-on bag' : 'One personal item only (no carry-on)'} per traveler on this fare. Checked bags are not in your price; they cost ${fmt(f.bagFeePerTraveler)} per traveler both ways if you add them on the trip page.` },
+    { status: 'info', text: 'Liquids in a carry-on go through security in containers of 100 ml (3.4 oz) or less, together in one clear bag. That is the standard rule at US airports; the airport’s own page has the details.' },
+  ]);
+
+  step('boarding', 'Security and boarding', hasTimes ? 'ready' : 'check', [
+    { status: 'info', text: 'Security: ID and boarding pass ready, laptops and liquids out if asked. Lines vary by airport and hour; we have no reliable way to predict them.' },
+    hasTimes
+      ? { status: 'ready', text: `Your flight departs at ${clock(f.departMinutes)}. Boarding starts before that and the gate usually closes 10 to 15 minutes before departure. The boarding pass shows the boarding time, and boarding time is not departure time.` }
+      : { status: 'check', text: 'Departure and boarding times: on your itinerary and boarding pass. Boarding time is not departure time.' },
+    { status: 'ready', text: f.seatSelection ? 'Seat selection is available on this fare.' : 'Seats are assigned at check-in on this fare; ask at the desk if you want to sit together.' },
+  ]);
+
+  if (f.stops > 0) step('connection', 'Your connection', 'check', [
+    { status: 'ready', text: `Your flight has ${plural(f.stops, 'stop')}: about ${Math.round(f.durationMinutes / 60)} hours each way in total.` },
+    { status: 'check', text: 'The connecting airport and the time between flights are on your itinerary after booking. On a single ticket the airline normally moves you to a later flight if the first one runs late, and your bags normally transfer on their own; confirm both at check-in.' },
+    { status: 'info', text: 'At the connection: follow the signs for connecting flights, find your next gate on the screens, and only leave the secure area if your itinerary says you must.' },
+  ]);
+  else step('connection', 'No connection', 'ready', [{ status: 'ready', text: 'Nonstop: you board once and get off at your destination.' }]);
+
+  step('arrival', 'Arrival', t.transfer ? 'ready' : 'check', [
+    hasTimes && time
+      ? { status: 'ready', text: `You land at ${clock(f.arriveMinutes)}${f.arrivesNextDay ? ' the next day' : ''} and should be at the hotel around ${time.firstDay.settled}.` }
+      : { status: 'check', text: 'Arrival time: on your itinerary.' },
+    t.internationalTrip
+      ? { status: 'info', text: 'Passport control and customs come before the arrivals hall. Have your passport and the hotel’s name and address (below) ready.' }
+      : { status: 'info', text: 'Follow the signs to baggage claim, then to the exit.' },
+    t.transfer
+      ? { status: 'ready', text: `A private transfer is in your price (${t.transfer.vehicles} vehicle${t.transfer.vehicles > 1 ? 's' : ''}, ${t.transfer.supplier}): the driver meets you in arrivals and brings you back for the return flight. Meeting instructions come with your confirmation.` }
+      : { status: 'check', text: 'No transfer is in your price. Taxis, rideshares and shuttles run from the airport; the fare to the hotel is not something we can quote here (needs verification). A private transfer can be added on the trip page so it is in your total.' },
+  ]);
+
+  step('hotel', 'Your hotel', 'ready', [
+    { status: 'ready', text: `${h.name}, ${h.area}, ${t.dest.name}. ${plural(s.nights, 'night')}${h.features.allInclusive ? ', all-inclusive' : h.features.breakfast ? ', breakfast included' : ''}.` },
+    { status: 'check', text: 'Check-in is from 3:00 PM and check-out by 11:00 AM at most hotels; your voucher has this hotel’s exact times. Arriving early? Hotels usually hold bags until the room is ready.' },
+    h.resortFeePerNight
+      ? { status: 'ready', text: `The resort fee (${fmt(h.resortFeePerNight)} per room per night) is already in your total; you won’t pay it at the desk. Incidentals like the minibar are extra.` }
+      : { status: 'ready', text: 'No mandatory hotel fees. Incidentals like the minibar or parking are extra.' },
+  ]);
+
+  if (t.activities.length) step('during', 'Your experiences', 'check', t.activities.map(a => ({ status: 'check', text: `${a.name} (${a.hours}h, ${a.supplier}): the meeting point and start time are on the voucher that comes with your confirmation.` })));
+
+  step('home', 'Going home', hasTimes ? 'ready' : 'check', [
+    hasTimes && time
+      ? { status: 'ready', text: `Your flight home leaves at ${clock(f.returnDepartMinutes)}. Leave the hotel around ${time.lastDay.leaveHotel}${t.internationalTrip ? ' (three hours before, for an international flight)' : ''}.` }
+      : { status: 'check', text: 'Return flight time: on your itinerary. Plan to be at the airport two to three hours before it.' },
+    { status: 'info', text: 'Check out, settle any incidentals, and keep your ID or passport where you can reach it. Online check-in for the flight home opens the day before, just like the way out.' },
+  ]);
+
+  const counts = { ready: 0, check: 0, info: 0 };
+  for (const st of steps) for (const l of st.lines) counts[l.status]++;
+  return { steps, counts };
+}
+
 // ---- the reality check before paying ----------------------------------------------------------
 // Each row is a fact with a status: ok (nothing to do), heads-up (good to know, in the price or
 // the schedule) or verify (only the traveler can check it, e.g. passport validity).
@@ -319,4 +402,4 @@ function realityCheck(t, { weather } = {}) {
   return rows;
 }
 
-module.exports = { usableTime, timeAlternatives, compromises, biggestWin, verdict, budgetUnlocks, optimizeAround, nameYourPrice, weekdaysAway, ptoAlternatives, classifyChanges, tripDiff, realityCheck, clock, hoursLabel, GRADES, RUNG_LABELS };
+module.exports = { usableTime, timeAlternatives, compromises, biggestWin, verdict, budgetUnlocks, optimizeAround, nameYourPrice, weekdaysAway, ptoAlternatives, tripGuide, classifyChanges, tripDiff, realityCheck, clock, hoursLabel, GRADES, RUNG_LABELS };

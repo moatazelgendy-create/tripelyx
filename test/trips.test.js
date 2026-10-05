@@ -446,6 +446,43 @@ test('money and time: weekdays are a second budget, never a claim about anyoneâ€
   assert.match(home.text, /Your budget\. Your trip\. Your way\./);
 });
 
+test('your trip, step by step: built from the tripâ€™s facts, honest about what only the itinerary can tell', async t => {
+  const app = await startApp();
+  t.after(app.close);
+  const c = client(app.base);
+  const noInline = (p, body) => { assert.ok(!/\sstyle="/.test(body), `${p} inline style`); assert.ok(!/<script(?![^>]*\bsrc=)(?![^>]*application\/json)[^>]*>/.test(body), `${p} inline script`); };
+  const trip = await buildTrip(c);
+  const g = await c.req(`${trip.tripPath}/guide?${trip.cx}`);
+  assert.equal(g.status, 200);
+  assert.match(g.text, /what happens, in order/);
+  assert.match(g.text, /Check required/);
+  assert.match(g.text, /General guidance/);
+  assert.match(g.text, /Going home/);
+  assert.match(g.text, /boarding time is not departure time/);
+  assert.doesNotMatch(g.text, /only \d+ left|book now|last chance|hurry/i, 'no fear selling');
+  noInline('/guide', g.text);
+  // Nonstop vs a connection: the connection step appears only when the flight has a stop, and the
+  // connecting airport is "check required" because the demo data does not carry it.
+  const spec = decodeSpec(trip.tripPath.split('/').pop());
+  const priced = priceTrip(inv, spec, DEFAULT_SETTINGS);
+  const nonstop = priced.flightOptions.find(f => f.stops === 0), onestop = priced.flightOptions.find(f => f.stops > 0);
+  const ns = await c.req(`/trip/${encodeSpec({ ...spec, flight: nonstop.id })}/guide?${trip.cx}`);
+  assert.match(ns.text, /Nonstop: you board once/);
+  assert.doesNotMatch(ns.text, /Your connection/);
+  const st = await c.req(`/trip/${encodeSpec({ ...spec, flight: onestop.id })}/guide?${trip.cx}`);
+  assert.match(st.text, /Your connection/);
+  assert.match(st.text, /connecting airport and the time between flights are on your itinerary/);
+  // The engine never invents a schedule: without flight times the steps say where to look.
+  const guide = decision.tripGuide({ ...priced, flight: { ...priced.flight, departMinutes: undefined, arriveMinutes: undefined, returnDepartMinutes: undefined } }, { origin: inv.maps.airport(spec.from) });
+  assert.ok(guide.steps.find(s => s.key === 'boarding').lines.some(l => l.status === 'check' && /on your itinerary/.test(l.text)));
+  assert.ok(guide.steps.every(s => s.lines.every(l => ['ready', 'check', 'info'].includes(l.status))));
+  // Entry points, and bad tokens fail like the trip page.
+  assert.match((await c.req(`${trip.tripPath}?${trip.cx}`)).text, /Walk me through it, step by step/);
+  assert.match((await c.req(`${trip.tripPath}/review?${trip.cx}&seen=0`)).text, /Walk through the trip step by step/);
+  const bad = await c.req('/trip/nowhere~XXX~2020-01-01~5~2c~none~basic~00~-/guide');
+  assert.ok(bad.status >= 400 && bad.status < 500, String(bad.status));
+});
+
 test('Journey B: a dream destination gets the gap and real single-change closers', async t => {
   const app = await startApp();
   t.after(app.close);

@@ -723,3 +723,23 @@ a.tb-pill:hover { border-color: var(--blue-500); }
   .tb-price-actions .btn { width: 100%; }
   .tb-ladder li { grid-template-columns: 1fr; gap: 2px; }
 }
+
+/* ---------- Your trip, step by step ---------- */
+.tb-status-info { background: var(--sky-50); color: var(--navy-800); }
+.tb-guide-counts { list-style: none; padding: 0; margin: 14px 0 0; display: flex; flex-wrap: wrap; gap: 10px; }
+.tb-guide-counts li { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; font-size: 13.5px; font-weight: 600; background: var(--bg-soft); color: var(--text); }
+.tb-guide-counts .icon { width: 15px; height: 15px; }
+.tb-guide-counts .is-ready { background: #e6f6ef; color: #0c5e43; }
+.tb-guide-counts .is-check { background: #fff4d6; color: #6b4a00; }
+.tb-guide-counts .is-info { background: var(--sky-50); color: var(--navy-800); }
+.tb-guide { list-style: none; padding: 0; margin: 22px 0; display: grid; gap: 16px; }
+.tb-guide-step { background: #fff; border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 20px 22px; }
+.tb-guide-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.tb-guide-head h2 { margin: 0; font-size: 20px; }
+.tb-guide-num { width: 30px; height: 30px; border-radius: 50%; background: var(--navy-800); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; flex: none; }
+.tb-guide .tb-reality li > div { min-width: 0; }
+.tb-reality .is-heads-up .tb-reality-status { color: var(--blue-500); }
+.tb-kbyb-foot { margin: 18px 0 0; }
+@media (max-width: 640px) {
+  .tb-guide-step { padding: 16px; }
+}
