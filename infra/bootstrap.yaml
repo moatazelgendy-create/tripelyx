@@ -10,6 +10,14 @@ Parameters:
   GitHubRepo:
     Type: String
     Default: tripelyx
+  GitHubOwnerId:
+    Type: String
+    Default: '335752477'
+    Description: Numeric GitHub account ID (newer repos put it in the OIDC subject).
+  GitHubRepoId:
+    Type: String
+    Default: '1405020835'
+    Description: Numeric GitHub repository ID (newer repos put it in the OIDC subject).
   DeployBranch:
     Type: String
     Default: main
@@ -78,7 +86,10 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubOwner}/${GitHubRepo}:ref:refs/heads/${DeployBranch}
+                # GitHub sends one of these two subject formats; both name this repo's branch only.
+                token.actions.githubusercontent.com:sub:
+                  - !Sub repo:${GitHubOwner}/${GitHubRepo}:ref:refs/heads/${DeployBranch}
+                  - !Sub repo:${GitHubOwner}@${GitHubOwnerId}/${GitHubRepo}@${GitHubRepoId}:ref:refs/heads/${DeployBranch}
       Policies:
         - PolicyName: deploy-tripelyx
           PolicyDocument:
