@@ -1,0 +1,33 @@
+# Render Blueprint: a public demo of Tripelyx (demo inventory, test payments) with its own Postgres.
+# New > Blueprint in Render, pick this repository, and it creates both services.
+services:
+  - type: web
+    name: tripelyx-staging
+    runtime: node
+    plan: free
+    buildCommand: npm ci --omit=dev
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: APP_ENV
+        value: staging
+      - key: DATABASE_ENV
+        value: staging
+      - key: DATABASE_URL
+        fromDatabase:
+          name: tripelyx-staging-db
+          property: connectionString
+      # Render's internal network connection does not use TLS.
+      - key: DATABASE_SSL
+        value: "false"
+      - key: TRUST_PROXY
+        value: "true"
+      - key: PAYMENT_MODE
+        value: test
+databases:
+  - name: tripelyx-staging-db
+    plan: free
+    databaseName: tripelyx_staging
+    user: tripelyx_staging

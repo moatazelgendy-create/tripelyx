@@ -76,6 +76,24 @@ exactly the same mapping from vendor-like raw data, so swapping one in is a conf
    `PAYMENT_LIVE_WEBHOOK_SECRET`, and `ALLOW_DEMO_INVENTORY=false`. The app refuses to boot in live
    mode if any of these is missing, outside production, or combined with demo inventory.
 
+## Deploy
+
+**Render (recommended, server and Postgres together).** `render.yaml` is a Blueprint: in Render choose
+New > Blueprint, pick this repository, and it creates the `tripelyx-staging` web service and its own
+Postgres database. It runs as `APP_ENV=staging` with demo inventory and `PAYMENT_MODE=test`, so it is
+safe to share publicly. The free plan sleeps when idle, so the first request after a while is slow.
+
+**Any other host.** Use the `Dockerfile` (Railway, Fly.io, Cloud Run, a VPS) or plain
+`npm ci --omit=dev && npm start`. Set the variables from `.env.example` in the host's settings, never
+in the repo. Behind a proxy or load balancer set `TRUST_PROXY=true`. The health check is `GET /healthz`.
+
+**Quick demo without a database.** `APP_ENV=staging DATABASE_URL=memory` uses the in-memory store.
+Bookings disappear on every restart, and production refuses this setting.
+
+**Going to production** needs its own Postgres (`APP_ENV=production`, `DATABASE_ENV=production`), the
+verticals switched on with `ENABLE_*`, real supplier adapters, and a live payment processor as described
+above. Until then, keep public deployments on `staging`.
+
 ## Demo data isolation
 
 - Demo inventory lives only in `server/providers/mock/demo-data/` and is served only by mock providers.

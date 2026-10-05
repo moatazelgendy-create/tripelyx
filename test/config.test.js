@@ -41,6 +41,8 @@ test('staging and production need their own DATABASE_URL', () => {
   assert.throws(() => loadConfig({ APP_ENV: 'production' }), /DATABASE_URL is required/);
   assert.throws(() => loadConfig({ APP_ENV: 'staging', DATABASE_URL: 'postgres://x/y', DATABASE_ENV: 'production' }), /does not match/);
   assert.ok(loadConfig({ APP_ENV: 'staging', DATABASE_URL: 'postgres://x/y', DATABASE_ENV: 'staging' }));
+  assert.ok(loadConfig({ APP_ENV: 'staging', DATABASE_URL: 'memory' }));
+  assert.throws(() => loadConfig({ APP_ENV: 'production', DATABASE_URL: 'memory' }), /not allowed/);
 });
 
 test('live payments need production, a processor, credentials and no demo inventory', () => {

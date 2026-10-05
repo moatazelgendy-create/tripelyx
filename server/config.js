@@ -51,8 +51,11 @@ function loadConfig(env = process.env) {
   // Each environment has its own database. Development may run on the in-memory store; staging and
   // production must point at their own Postgres and the URL must say which environment it is for,
   // so a staging deploy can't be pointed at the production database by a copy-paste.
+  // DATABASE_URL=memory is an explicit opt-in to the in-memory store for a throwaway staging demo
+  // (bookings vanish on restart); production never accepts it.
   const databaseUrl = env.DATABASE_URL || null;
   if (appEnv !== 'development' && !databaseUrl) throw new Error(`DATABASE_URL is required when APP_ENV=${appEnv}`);
+  if (databaseUrl === 'memory' && isProduction) throw new Error('DATABASE_URL=memory is not allowed when APP_ENV=production');
   if (databaseUrl && env.DATABASE_ENV && env.DATABASE_ENV !== appEnv) {
     throw new Error(`DATABASE_ENV (${env.DATABASE_ENV}) does not match APP_ENV (${appEnv}) — refusing to use another environment's database`);
   }
