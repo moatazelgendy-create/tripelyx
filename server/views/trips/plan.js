@@ -8,7 +8,6 @@ const { searchParams, contextParams, tradeoffs, WHO_DEFAULT } = require('../../t
 const { verdict, tripDiff } = require('../../trips/decision');
 const { money, dollars, shortDate, longDate, plural, hm, demoBadge, budgetMeter, fitBadge } = require('./common');
 
-const cap = s => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 // Items joined with commas and a final "or", as an array the template renders in order.
 function joinOr(items) {
   return items.flatMap((it, i) => (i === 0 ? [it] : i === items.length - 1 ? [' or ', it] : [', ', it]));
@@ -160,25 +159,40 @@ function noDeadEnd(q, result, originCity) {
 
 // "If it were our $1,500, this is the trip we'd book": the call, what almost won and why, what would
 // change our mind, and the moment you don't need your whole budget.
+// Which difference makes the runner-up lose, said in a sentence that follows "but".
+function runnerReason(best, runner, rv, q) {
+  if (rv.diff !== null && rv.diff < 0) return `it’s ${money(-rv.diff)} over the ${dollars(q.budget)} you set`;
+  if (rv.compromise) return rv.compromise;
+  const d = tripDiff(best.trip, runner.trip).filter(r => r.changed && ['hotel', 'area', 'flight', 'nights', 'time', 'meals', 'experiences'].includes(r.key))[0];
+  if (!d) return 'it fits your answers a little less well';
+  return {
+    hotel: `its hotel is ${d.b}`, area: `it’s in ${d.b}`, flight: `its flights are ${d.b}`, nights: `it’s ${d.b}`,
+    time: `it leaves you ${d.b}`, meals: `meals are ${d.b.toLowerCase()}`, experiences: d.b === 'None' ? 'no experiences are included' : `it includes ${d.b}`,
+  }[d.key];
+}
+
+// "Our call": the trip we would book with this budget. Never a trip that is over the budget: when the
+// traveler allowed 10% more and Best Match uses it, the call goes to the best pick that fits, and the
+// over-budget one is named honestly as what almost won.
 function decisionBand(picks, q, cx) {
-  const best = picks[0];
-  const bv = verdict(best.trip, cx, best);
-  const runner = picks[1] || null;
+  const graded = picks.map(p => ({ ...p, v: verdict(p.trip, cx, p) }));
+  const fits = graded.filter(p => p.v.grade !== 'look');
+  const best = fits.length ? fits.reduce((a, b) => (b.match > a.match ? b : a)) : graded[0];
+  const bv = best.v;
+  const runner = graded.find(p => p !== best) || null;
   const bestUrl = `/trip/${encodeSpec(best.trip.spec)}?${contextParams(cx)}`;
-  let almost = '';
-  if (runner) {
-    const rv = verdict(runner.trip, cx, runner);
-    const d = tripDiff(best.trip, runner.trip).filter(r => r.changed && ['hotel', 'area', 'flight', 'nights', 'time', 'meals', 'experiences'].includes(r.key));
-    const reason = rv.compromise || (d[0] ? `${d[0].label.toLowerCase()} is ${d[0].b.toLowerCase()}` : 'it fits your answers a little less well');
-    almost = html`<p><b>What almost won:</b> ${runner.trip.dest.name} (${runner.label}) at ${money(runner.trip.total)}${runner.trip.total < best.trip.total ? `, ${money(best.trip.total - runner.trip.total)} less` : ''}, but ${reason}.</p>`;
-  }
+  const almost = runner ? html`<p><b>What almost won:</b> ${runner.trip.dest.name} (${runner.label}) at ${money(runner.trip.total)}${runner.trip.total < best.trip.total ? `, ${money(best.trip.total - runner.trip.total)} less` : ''}, but ${runnerReason(best, runner, runner.v, q)}.</p>` : '';
   const mind = PRIO_OPTIONS.filter(([v]) => v !== q.priority).map(([v, l]) => html`<a href="/trips?${searchParams({ ...q, priority: v })}">${l.toLowerCase()}</a>`);
   const spare = q.budget - best.trip.total;
   const compare = `/compare?${new URLSearchParams([...picks.map(p => ['t', encodeSpec(p.trip.spec)]), ...picks.map(p => ['l', p.label]), ...new URLSearchParams(contextParams(cx))]).toString()}`;
+  const name = `${best.trip.dest.name}${runner && runner.trip.dest.name === best.trip.dest.name ? ` (${best.label})` : ''}`;
+  const headline = bv.grade === 'look'
+    ? html`Nothing we built fits under ${dollars(q.budget)}. The closest is <a href="${bestUrl}">${name}</a>, ${money(-bv.diff)} over.`
+    : html`If it were our ${dollars(q.budget)}, we’d book <a href="${bestUrl}">${name}</a>.`;
   return html`<section class="tb-decide" aria-labelledby="decide-title">
     <p class="tb-kicker">Our call</p>
-    <h2 id="decide-title">If it were our ${dollars(q.budget)}, we’d book <a href="${bestUrl}">${best.trip.dest.name}</a>.</h2>
-    <p>${cap(bv.win)}${bv.compromise ? `; the one thing to know is ${bv.compromise}` : ''}. ${bv.action}</p>
+    <h2 id="decide-title">${headline}</h2>
+    <p>${bv.grade === 'look' ? bv.action : `The biggest win is ${bv.win}. ${bv.action}`}</p>
     ${almost}
     <p><b>What would change our mind:</b> if ${joinOr(mind)} mattered most to you instead.</p>
     ${spare >= q.budget * 0.15 ? html`<p class="tb-tip">${icon('check')} You don’t need your whole budget. ${best.trip.dest.name} needs ${money(best.trip.total)}, which leaves ${money(spare)}. Keep it, or <a href="${bestUrl}#unlock">see what it could improve</a>.</p>` : ''}

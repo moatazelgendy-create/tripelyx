@@ -52,7 +52,7 @@ function timePanel(t, time, alts, token, cx) {
     <h2 id="time-title">${icon('clock')} Your time there</h2>
     <p class="tb-muted">${plural(s.nights, 'night')} on paper. Here is what the flight times leave you, counting 8 AM to 10 PM as usable.${t.demo ? ' Times come from the demo schedule.' : ''}</p>
     <div class="tb-time">
-      <div><span>First day</span><b>${time.firstDay.label}</b><small>land ${time.firstDay.arrive}, at the hotel about ${time.firstDay.settled}</small></div>
+      <div><span>${time.firstDay.nextDay ? 'Arrival day' : 'First day'}</span><b>${time.firstDay.label}</b><small>land ${time.firstDay.arrive}${time.firstDay.nextDay ? ' the next day' : ''}, at the hotel about ${time.firstDay.settled}</small></div>
       <div><span>Full days</span><b>${time.fullDays}</b><small>wake up there, go to sleep there</small></div>
       <div><span>Last day</span><b>${time.lastDay.label}</b><small>leave the hotel about ${time.lastDay.leaveHotel} for the ${time.lastDay.depart} flight</small></div>
     </div>
@@ -68,7 +68,7 @@ function unlockPanel(t, unlock, { budget, diff, token, cx, reviewUrl }) {
   return html`<section class="tb-panel" id="unlock" aria-labelledby="unlock-title">
     <h2 id="unlock-title">${icon('sparkle')} ${title}</h2>
     ${unlock.steps.length ? html`<p class="tb-muted">Real re-priced changes, cheapest first.${unlock.within.length ? ' Or keep the savings: coming in under budget is a win.' : ''}</p>
-      <ul class="tb-unlock">${unlock.steps.map(u => html`<li class="${u.within ? 'is-within' : ''}"><a href="${u.url}"><b>+${money(u.delta)}</b><span>${u.label}</span><small>new total ${money(u.total)}${u.within ? ' · within your budget' : diff !== null && diff > 0 ? ` · ${money(u.delta - diff)} over your budget` : ''}</small></a></li>`)}</ul>` : html`<p class="tb-muted">There is nothing left to upgrade on this trip with the inventory we have.</p>`}
+      <ul class="tb-unlock">${unlock.steps.map(u => html`<li class="${u.within ? 'is-within' : ''}"><a href="${u.url}"><b>+${money(u.delta)}</b><span>${u.label}</span><small>new total ${money(u.total)}${u.within ? ' · within your budget' : diff !== null ? ` · ${money(u.delta - diff)} over your budget` : ''}</small></a></li>`)}</ul>` : html`<p class="tb-muted">There is nothing left to upgrade on this trip with the inventory we have.</p>`}
     ${unlock.keep ? html`<p class="tb-tip">${icon('check')} Nothing within your remaining ${money(diff)} is a real improvement. Keep it: that is ${money(diff)} for the trip itself.</p>` : ''}
     <div class="tb-better-row">
       <a class="btn btn-navy" href="/trip/${token}/optimize?${contextParams(cx, { cap: 'same', lk: 'd' })}">${icon('sparkle')} Make it better for the same money</a>

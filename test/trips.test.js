@@ -137,21 +137,40 @@ test('decision layer: verdicts, usable vacation time, unlocks and make-it-better
   assert.ok(tn.lastDay.minutes > 0 && tn.usableMinutes > tb.usableMinutes);
   assert.equal(tb.fullDays, 4);
   assert.equal(decision.usableTime({ ...basic, flight: { ...basic.flight, departMinutes: undefined } }), null, 'no schedule, no claims');
+  // An overnight flight loses the night, not the arrival day: landing at 12:21 AM still leaves a full day.
+  const bcn = f => priceTrip(inv, { ...spec, dest: 'barcelona', hotel: 'bcn-2', flight: f }, settings);
+  const bcnSaver = decision.usableTime(bcn('saver')), bcnBasic = decision.usableTime(bcn('basic'));
+  assert.ok(bcnSaver.firstDay.nextDay && bcnSaver.flags.some(f => f.kind === 'overnight'));
+  assert.ok(bcnSaver.firstDay.minutes > 0, 'the arrival day is credited');
+  assert.equal(bcnSaver.firstDay.minutes, 14 * 60, 'at the hotel at 1:51 AM: the arrival day is a full day');
+  assert.equal(bcnSaver.fullDays, 3, 'the night in the air costs one of the full days, not two');
+  assert.ok(bcnSaver.usableMinutes > bcnBasic.usableMinutes, 'a dawn-return Basic fare is not sold as more vacation than the overnight one');
+  assert.ok(!decision.timeAlternatives(bcn('saver'), optimizer.customizerOptions(inv, bcn('saver'), settings)).some(a => a.flight.id === 'basic'));
   const options = optimizer.customizerOptions(inv, basic, settings);
   const alts = decision.timeAlternatives(basic, options);
   assert.ok(alts.length > 0);
   for (const a of alts) { assert.ok(a.gain >= 60); assert.equal(a.total, basic.total + a.delta); }
 
-  // "Make it better" never costs more than the cap, never scores lower, never shortens the trip, and
-  // keeps every locked part; "nothing better" is a legitimate answer.
+  // "Make it better" never costs more than the cap, never shortens the trip, keeps every locked part,
+  // always improves something real, never earns a worse verdict, and never adds a compromise that
+  // contradicts an answer; "nothing better" is a legitimate answer.
+  const rank = { look: 0, budget: 1, good: 2, great: 3 };
+  const checkBetter = (o, p, ctx) => {
+    assert.ok(o.match > o.baseMatch);
+    assert.ok(o.improvements.length > 0, 'a proposal improves at least one thing');
+    assert.ok(o.improvements.every(g => g.direction > 0) && o.tradeoffs.every(g => g.direction < 0));
+    assert.ok(!o.improvements.some(g => ['Per traveler', 'Per night', 'Total, everything included'].includes(g.label)));
+    const noBudget = { ...ctx, budget: null, allowOver: 0 };
+    assert.ok(rank[decision.verdict(o.trip, noBudget).grade] >= rank[decision.verdict(p.trip, noBudget).grade], 'never a worse verdict');
+    assert.ok(decision.compromises(o.trip, ctx).filter(c => c.w >= 3).length <= decision.compromises(p.trip, ctx).filter(c => c.w >= 3).length);
+  };
   for (const p of r.picks) {
     const same = decision.optimizeAround(inv, p.trip, settings, r.ctx, { cap: p.trip.total, locks: { dates: true } });
     if (same) {
       assert.ok(same.trip.total <= p.trip.total);
-      assert.ok(same.match > same.baseMatch);
       assert.equal(same.trip.spec.depart, p.trip.spec.depart);
       assert.equal(same.trip.spec.nights, p.trip.spec.nights);
-      assert.ok(same.gains.length > 0);
+      checkBetter(same, p, r.ctx);
     }
     const locked = decision.optimizeAround(inv, p.trip, settings, r.ctx, { cap: query.budget, locks: { hotel: true, flight: true } });
     if (locked) {
@@ -159,9 +178,31 @@ test('decision layer: verdicts, usable vacation time, unlocks and make-it-better
       assert.equal(locked.trip.spec.flight, p.trip.spec.flight);
       assert.ok(locked.trip.total <= query.budget);
       assert.ok(locked.trip.spec.nights >= p.trip.spec.nights);
+      checkBetter(locked, p, r.ctx);
     }
   }
   assert.equal(decision.optimizeAround(inv, basic, settings, r.ctx, { cap: 1, locks: {} }), null, 'nothing fits under $0.01');
+  // A price-first traveler is never sold a strip-down as "better": cheaper with only downgrades is null.
+  for (const style of ['beach', 'city']) {
+    const pq = optimizer.parseSearch({ ...QUERY, b: '1200', style, prio: 'price' }, { maps: inv.maps }).query;
+    const pr = optimizer.search(inv, pq, { settings });
+    for (const p of pr.picks) {
+      const o = decision.optimizeAround(inv, p.trip, settings, pr.ctx, { cap: p.trip.total, locks: { dates: true } });
+      if (o) checkBetter(o, p, pr.ctx);
+    }
+  }
+  // Optimizing around an all-inclusive trip never proposes a hotel that isn't all-inclusive.
+  const aq = optimizer.parseSearch({ ...QUERY, b: '2000', style: 'all-inclusive', prio: 'price' }, { maps: inv.maps }).query;
+  const ar = optimizer.search(inv, aq, { settings });
+  for (const p of ar.picks) for (const opts of [{ cap: p.trip.total, locks: { dates: true } }, { cap: aq.budget, locks: {} }]) {
+    const o = decision.optimizeAround(inv, p.trip, settings, ar.ctx, opts);
+    if (o) assert.ok(o.trip.hotel.features.allInclusive, `${p.trip.dest.name}: ${o.trip.hotel.name} is not all-inclusive`);
+  }
+  // classifyChanges reads direction from the facts: a transfer removed is a trade-off, never an improvement.
+  const withTransfer = priceTrip(inv, { ...spec, transfer: true }, settings);
+  const cls = decision.classifyChanges(withTransfer, basic);
+  assert.ok(cls.tradeoffs.some(g => g.key === 'transfer') && !cls.improvements.some(g => g.key === 'transfer'));
+  assert.ok(cls.improvements.length === 0 && !cls.neutral.some(g => g.key === 'total'));
 
   // Budget unlocks are real re-priced improvements; "within" respects what is left of the budget.
   const changes = singleChanges(basic, options, encodeSpec(spec), r.ctx);
@@ -191,6 +232,13 @@ test('decide-for-me pages: our call, compare, before and after, the reality chec
 
   const results = await c.req(`/trips?${new URLSearchParams(QUERY)}`);
   assert.match(results.text, /If it were our \$1,500, we’d book/);
+  // With 10% more allowed, "we'd book" never names a trip that is over the budget.
+  for (const b of ['900', '1000', '1100', '1200']) {
+    const page = (await c.req(`/trips?${new URLSearchParams({ ...QUERY, b, ov: '10' })}`)).text;
+    const m = page.match(/we’d book <a href="\/trip\/([^"?]+)\?/);
+    if (m) assert.ok(priceTrip(inv, decodeSpec(m[1]), DEFAULT_SETTINGS).total <= Number(b) * 100, `our call for $${b} is over budget`);
+    else assert.match(page, /Nothing we built fits under \$|Let’s get closer/);
+  }
   assert.match(results.text, /What almost won/);
   assert.match(results.text, /What would change our mind/);
   assert.ok((results.text.match(/tb-fit-/g) || []).length >= 3, 'every card carries a verdict');

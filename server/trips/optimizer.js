@@ -346,4 +346,4 @@ function customizerOptions(inventory, t, settings, now = new Date()) {
   return { hotels, flights, nights, activities, transfer, bags, dates };
 }
 
-module.exports = { search, dreamSearch, parseSearch, searchParams, budgetContext, parseContext, contextParams, tradeoffs, scoreTrip, whyThisTrip, customizerOptions, memoInventory, activitySets, STYLES, PRIORITIES, WHO_DEFAULT };
+module.exports = { search, dreamSearch, parseSearch, searchParams, budgetContext, parseContext, contextParams, tradeoffs, scoreTrip, whyThisTrip, customizerOptions, memoInventory, activitySets, hotelAllowed, STYLES, PRIORITIES, WHO_DEFAULT };

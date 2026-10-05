@@ -111,7 +111,7 @@ class TripService {
     const best = decision.optimizeAround(this.inv, current.trip, settings, ctx, { locks, cap, now: this.now() });
     if (!best) return { current, proposal: null, cap, locks, capMode };
     const proposal = await this.trip(encodeSpec(best.trip.spec), ctx);
-    return { current, proposal: { ...proposal, gains: best.gains, delta: best.delta }, cap, locks, capMode };
+    return { current, proposal: { ...proposal, improvements: best.improvements, tradeoffs: best.tradeoffs, delta: best.delta }, cap, locks, capMode };
   }
 
   // Apply one customizer change and return the new trip token.

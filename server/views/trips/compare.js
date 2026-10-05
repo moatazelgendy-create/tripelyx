@@ -24,8 +24,8 @@ function compareView(ctx, { items, cx, mode = 'compare', all = false, locks = {}
   const tripUrl = (c, extra) => `/trip/${c.token}?${contextParams(cx, extra)}`;
   const head = optimize
     ? (proposal
-      ? html`<p class="eyebrow">Before and after</p><h1>${proposal.delta <= 0 ? `A better ${first.trip.dest.name} trip for ${proposal.delta === 0 ? 'the same money' : `${money(-proposal.delta)} less`}.` : `A better ${first.trip.dest.name} trip for ${money(proposal.delta)} more, still within your ${dollars(cap)}.`}</h1>
-          <p class="tb-results-sub">We re-planned everything${locked.length ? ` except ${locked.join(' and ')}` : ''} and priced every combination in full. The match score went from ${first.scores.match}% to ${proposal.scores.match}%. Nothing changes unless you choose it. ${demoBadge(ctx.tripService.demo, 'Demo inventory and prices')}</p>`
+      ? html`<p class="eyebrow">Before and after</p><h1>${proposal.tradeoffs.length ? 'A stronger' : 'A better'} ${first.trip.dest.name} trip for ${proposal.delta === 0 ? 'the same money' : proposal.delta < 0 ? `${money(-proposal.delta)} less` : `${money(proposal.delta)} more, still within ${cx.allowOver ? `the ${dollars(cap)} you allowed` : `your ${dollars(cap)}`}`}${proposal.tradeoffs.length ? ', with trade-offs' : ''}.</h1>
+          <p class="tb-results-sub">We re-planned everything${locked.length ? ` except ${locked.join(' and ')}` : ''} and priced every combination in full. ${proposal.tradeoffs.length ? 'It fits what you told us better overall, but not in every way: what you give up is listed too.' : 'Nothing about it is a step down.'} Nothing changes unless you choose it. ${demoBadge(ctx.tripService.demo, 'Demo inventory and prices')}</p>`
       : html`<p class="eyebrow">Honest answer</p><h1>This is already the best version of this trip ${capMode === 'budget' && cap ? `within your ${dollars(cap)}` : 'at this price'}.</h1>
           <p class="tb-results-sub">We priced every other combination${locked.length ? ` that keeps ${locked.join(' and ')}` : ''} and none scored higher for what you told us${capMode === 'same' ? ' without costing more' : ''}. ${capMode === 'same' && budget && budget > first.trip.total ? html`You still have ${money(budget - first.trip.total)} of budget: <a href="/trip/${first.token}/optimize?${contextParams(cx, { cap: 'budget', lk: Object.keys(locks).filter(k => locks[k]).map(k => k[0]).join('') })}">see what spending some of it would improve</a>, or keep it.` : locked.length ? html`<a href="/trip/${first.token}/optimize?${contextParams(cx, { cap: capMode })}">Unlock everything</a> to see more options.` : ''}</p>`)
     : html`<p class="eyebrow">Side by side</p><h1>Compare your ${plural(items.length, 'trip')}.</h1>
@@ -34,7 +34,10 @@ function compareView(ctx, { items, cx, mode = 'compare', all = false, locks = {}
 <div class="container tb-results tb-compare-page">
   <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a> / ${cx.searchParams ? html`<a href="/trips?${cx.searchParams}">Your trips</a> / ` : ''}<a href="${tripUrl(first)}">${first.trip.dest.name}</a> / <span aria-current="page">${optimize ? 'Before and after' : 'Compare'}</span></nav>
   <header class="tb-results-head"><div>${head}</div></header>
-  ${proposal && proposal.gains && proposal.gains.length ? html`<section class="tb-panel"><h2>${icon('sparkle')} What improves</h2><ul class="tb-list">${proposal.gains.map(g => html`<li><b>${g.label}:</b> ${g.b}</li>`)}</ul></section>` : ''}
+  ${proposal && proposal.improvements && proposal.improvements.length ? html`<div class="tb-changes-grid">
+    <section class="tb-panel"><h2>${icon('sparkle')} What improves</h2><ul class="tb-list">${proposal.improvements.map(g => html`<li><b>${g.label}:</b> ${g.b} <small class="tb-muted">(was ${g.a})</small></li>`)}</ul></section>
+    ${proposal.tradeoffs.length ? html`<section class="tb-panel tb-panel-warn"><h2>${icon('alert')} What you give up</h2><ul class="tb-list">${proposal.tradeoffs.map(g => html`<li><b>${g.label}:</b> ${g.b} <small class="tb-muted">(was ${g.a})</small></li>`)}</ul></section>` : ''}
+  </div>` : ''}
   <div class="tb-compare-wrap">
     <table class="tb-compare">
       <thead><tr><th scope="col"><span class="sr-only">Field</span></th>${cols.map((c, i) => html`<th scope="col"><small>${c.label || `Trip ${i + 1}`}</small><b>${c.trip.dest.name}</b><small>${plural(c.trip.spec.nights, 'night')} · ${plural(c.trip.spec.travelers, 'traveler')}</small>${fitBadge(c.v, { compact: true })}</th>`)}</tr></thead>

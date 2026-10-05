@@ -5,15 +5,17 @@
 // platform's margin is never an input (the internal economics aren't passed in anywhere here).
 const { addDays, today } = require('../lib/dates');
 const { priceTrip } = require('./pricing');
-const { scoreTrip, memoInventory, activitySets } = require('./optimizer');
+const { scoreTrip, memoInventory, activitySets, hotelAllowed } = require('./optimizer');
 
-const fmt = cents => `$${Math.round(cents / 100).toLocaleString('en-US')}`;
+const { format } = require('../lib/money');
+const fmt = cents => format(cents, 'USD');
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 
 // ---- usable vacation time ---------------------------------------------------------------------
 // A trip is sold as "5 nights", but what you get depends on when the flights land and leave.
 const DAY_START = 8 * 60;          // we count usable time from 8:00 AM...
 const DAY_END = 22 * 60;           // ...to 10:00 PM
+const FULL_DAY = DAY_END - DAY_START;
 const ARRIVAL_BUFFER = 90;         // bags, transfer, check-in
 const AIRPORT_BUFFER = 150;        // leave the hotel this long before the return flight (180 international)
 
@@ -34,22 +36,29 @@ function hoursLabel(minutes) {
 function usableTime(t) {
   const f = t.flight;
   if (!Number.isFinite(f.departMinutes) || !Number.isFinite(f.arriveMinutes) || !Number.isFinite(f.returnDepartMinutes)) return null;
-  const clamp = v => Math.max(0, Math.min(DAY_END - DAY_START, v));
+  const clamp = v => Math.max(0, Math.min(FULL_DAY, v));
   const settled = f.arriveMinutes + ARRIVAL_BUFFER;
-  const firstDay = f.arrivesNextDay ? 0 : clamp(DAY_END - settled);
+  // The arrival day is the day you reach the hotel: the departure day for a same-day arrival, the
+  // next day for an overnight flight (which then loses one full day in the middle, not the arrival day).
+  const firstDay = clamp(DAY_END - Math.max(settled, DAY_START));
   const leaveHotel = f.returnDepartMinutes - (t.internationalTrip ? 180 : AIRPORT_BUFFER);
   const lastDay = clamp(leaveHotel - DAY_START);
   const fullDays = Math.max(0, t.spec.nights - 1 - (f.arrivesNextDay ? 1 : 0));
-  const usableMinutes = fullDays * (DAY_END - DAY_START) + firstDay + lastDay;
+  const usableMinutes = fullDays * FULL_DAY + firstDay + lastDay;
+  const wholeFirst = firstDay >= FULL_DAY; // at the hotel before 8 AM: the arrival day is a full day
+  const travelMinutes = (wholeFirst ? 0 : firstDay) + lastDay;
+  const days = fullDays + (wholeFirst ? 1 : 0);
   const flags = [];
-  if (f.arrivesNextDay) flags.push({ kind: 'overnight', text: `You land the morning after you leave (${clock(f.arriveMinutes)}), so the first night is spent in the air.` });
+  if (f.arrivesNextDay) flags.push({ kind: 'overnight', text: f.arriveMinutes < 4 * 60
+    ? `You land at ${clock(f.arriveMinutes)} the night after you leave and reach the hotel around ${clock(settled)}, so the first night is a short one.`
+    : `You fly overnight and land at ${clock(f.arriveMinutes)} the next day${firstDay < 3 * 60 ? `, reaching the hotel around ${clock(settled)} with little of that day left` : ', so the first night is spent in the air, not at the hotel'}.` });
   else if (firstDay < 3 * 60) flags.push({ kind: 'late-arrival', text: `You land at ${clock(f.arriveMinutes)} and reach the hotel around ${clock(settled)}, so the first day is mostly gone.` });
   if (leaveHotel < 6 * 60) flags.push({ kind: 'early-return', text: `The flight home leaves at ${clock(f.returnDepartMinutes)}, so you leave the hotel around ${clock(leaveHotel)}: no last day, and a very early start.` });
   else if (lastDay < 3 * 60) flags.push({ kind: 'short-last-day', text: `The flight home leaves at ${clock(f.returnDepartMinutes)}, so your last day ends around ${clock(leaveHotel)}.` });
   return {
-    firstDay: { minutes: firstDay, arrive: clock(f.arriveMinutes), settled: clock(settled), label: hoursLabel(firstDay) },
+    firstDay: { minutes: firstDay, arrive: clock(f.arriveMinutes), nextDay: !!f.arrivesNextDay, settled: clock(settled), label: wholeFirst ? 'a full day' : hoursLabel(firstDay) },
     lastDay: { minutes: lastDay, leaveHotel: clock(leaveHotel), depart: clock(f.returnDepartMinutes), label: hoursLabel(lastDay) },
-    fullDays, usableMinutes, usableLabel: `${fullDays} full ${fullDays === 1 ? 'day' : 'days'}${firstDay || lastDay ? ` plus ${hoursLabel(firstDay + lastDay)} on travel days` : ''}`,
+    fullDays, usableMinutes, usableLabel: `${days} full ${days === 1 ? 'day' : 'days'}${travelMinutes ? ` plus ${hoursLabel(travelMinutes)} on travel days` : ''}`,
     outbound: `${clock(f.departMinutes)} → ${clock(f.arriveMinutes)}${f.arrivesNextDay ? ' next day' : ''}`,
     inbound: `${clock(f.returnDepartMinutes)} → ${clock(f.returnArriveMinutes)}`,
     flags,
@@ -74,7 +83,7 @@ function compromises(t, ctx = {}, time = usableTime(t)) {
   const out = [];
   if (ctx.nightsAsked && t.spec.nights < ctx.nightsAsked) out.push({ w: 3, text: `${plural(ctx.nightsAsked - t.spec.nights, 'night')} shorter than you asked for` });
   if (style === 'all-inclusive' && !t.hotel.features.allInclusive) out.push({ w: 3, text: 'not an all-inclusive resort' });
-  else if (style !== 'surprise' && style !== 'all-inclusive' && !t.dest.styles.includes(style)) out.push({ w: 3, text: `${t.dest.name} isn’t really a ${style === 'city' ? 'city-break' : style} destination` });
+  else if (style !== 'surprise' && style !== 'all-inclusive' && !t.dest.styles.includes(style)) out.push({ w: 3, text: `not really a ${style === 'city' ? 'city-break' : style} destination (${t.dest.name})` });
   if (prio === 'hotel' && t.hotel.stars <= 3) out.push({ w: 2, text: `a ${t.hotel.stars}-star hotel, when the hotel mattered most to you` });
   else if (t.hotel.stars <= 2) out.push({ w: 2, text: `a ${t.hotel.stars}-star hotel` });
   else if (t.hotel.stars === 3) out.push({ w: 1, text: 'a 3-star hotel' });
@@ -82,7 +91,7 @@ function compromises(t, ctx = {}, time = usableTime(t)) {
   else if (t.flight.stops > 0 && t.flight.durationMinutes >= 8 * 60) out.push({ w: 1, text: `long ${t.flight.stops}-stop flights (${Math.round(t.flight.durationMinutes / 60)}h each way)` });
   if (t.flight.id === 'basic') out.push({ w: 2, text: 'a Basic fare: personal item only, no changes' });
   if (!t.hotel.features.beachfront && t.dest.styles.includes('beach') && ['beach', 'romantic', 'all-inclusive'].includes(style)) out.push({ w: 2, text: `not on the beach (${t.hotel.area})` });
-  if (time) for (const fl of time.flags) out.push({ w: fl.kind === 'early-return' || fl.kind === 'overnight' ? 2 : 1, text: fl.kind === 'early-return' ? `a ${time.lastDay.leaveHotel} hotel departure on your last day` : fl.kind === 'overnight' ? 'an overnight flight that costs you the first night' : fl.kind === 'late-arrival' ? `a late arrival (${time.firstDay.arrive}) that uses up the first day` : `a short last day (you leave the hotel at ${time.lastDay.leaveHotel})` });
+  if (time) for (const fl of time.flags) out.push({ w: fl.kind === 'early-return' ? 2 : 1, text: fl.kind === 'early-return' ? `a ${time.lastDay.leaveHotel} hotel departure on your last day` : fl.kind === 'overnight' ? `an overnight flight (you land at ${time.firstDay.arrive} the next day)` : fl.kind === 'late-arrival' ? `a late arrival (${time.firstDay.arrive}) that uses up the first day` : `a short last day (you leave the hotel at ${time.lastDay.leaveHotel})` });
   if (!t.hotel.refundable) out.push({ w: 1, text: 'a non-refundable hotel rate' });
   if (!t.hotel.features.breakfast && !t.hotel.features.allInclusive) out.push({ w: 0.5, text: 'no breakfast included' });
   return out.sort((a, b) => b.w - a.w);
@@ -166,11 +175,19 @@ function budgetUnlocks(changes, diff) {
 // nearby dates and lengths unless the dates are locked), price each in full, and return the one
 // that scores highest for this traveler at or under `cap`. Returns null when nothing beats the
 // current trip, which the pages say honestly instead of showing a lateral change.
+// "Better" is judged on the trip itself, with the budget taken out of the score: a package that only
+// scores higher because it is cheaper is "make it cheaper", which the customizer already offers. A
+// proposal must improve at least one thing, must not earn a worse verdict than the trip it replaces,
+// and must not add a compromise that contradicts an answer the traveler gave.
+const GRADE_RANK = { look: 0, budget: 1, good: 2, great: 3 };
 function optimizeAround(inventory, t, settings, ctx = {}, { locks = {}, cap = t.total, now = new Date() } = {}) {
   const inv = memoInventory(inventory);
   const s = t.spec;
-  const base = scoreTrip(t, ctx);
-  const hotels = locks.hotel ? [s.hotel] : t.hotelOptions.filter(h => !(s.who === 'family' && h.features.adultsOnly)).map(h => h.id);
+  const qctx = { ...ctx, budget: null, allowOver: 0 };
+  const base = scoreTrip(t, qctx);
+  const baseGrade = GRADE_RANK[verdict(t, qctx, base).grade];
+  const baseHard = compromises(t, ctx).filter(c => c.w >= 3).length;
+  const hotels = locks.hotel ? [s.hotel] : t.hotelOptions.filter(h => hotelAllowed(h, { who: s.who, style: ctx.style })).map(h => h.id);
   const flights = locks.flight ? [s.flight] : t.flightOptions.map(f => f.id);
   const earliest = addDays(today(now), 3);
   const dates = locks.dates ? [s.depart] : [s.depart, ...[-2, -1, 1, 2].map(o => addDays(s.depart, o)).filter(d => d >= earliest)];
@@ -186,12 +203,42 @@ function optimizeAround(inventory, t, settings, ctx = {}, { locks = {}, cap = t.
     if (key === JSON.stringify({ ...s, activities: [...s.activities].sort() })) continue;
     const p = priceTrip(inv, spec, settings);
     if (!p || p.total > cap) continue;
-    const sc = scoreTrip(p, ctx);
+    const sc = scoreTrip(p, qctx);
     if (sc.match <= base.match) continue;
-    if (!best || sc.match > best.match || (sc.match === best.match && p.total < best.trip.total)) best = { trip: p, ...sc };
+    if (best && (sc.match < best.match || (sc.match === best.match && p.total >= best.trip.total))) continue;
+    const changes = classifyChanges(t, p);
+    if (!changes.improvements.length) continue;
+    if (GRADE_RANK[verdict(p, qctx, sc).grade] < baseGrade) continue;
+    if (compromises(p, ctx).filter(c => c.w >= 3).length > baseHard) continue;
+    best = { trip: p, ...sc, changes };
   }
   if (!best) return null;
-  return { trip: best.trip, match: best.match, baseMatch: base.match, delta: best.trip.total - t.total, gains: tripDiff(t, best.trip).filter(r => r.changed && r.key !== 'total' && r.key !== 'verdict') };
+  return { trip: best.trip, match: best.match, baseMatch: base.match, delta: best.trip.total - t.total, improvements: best.changes.improvements, tradeoffs: best.changes.tradeoffs, changes: best.changes.neutral };
+}
+
+// Which way each difference between two trips goes, from the facts rather than the wording.
+const MEAL_RANK = h => (h.features.allInclusive ? 2 : h.features.breakfast ? 1 : 0);
+const BAG_RANK = t => (t.flight.checkedBagIncluded || t.spec.bags ? 2 : t.flight.carryOn ? 1 : 0);
+const FLEX_RANK = t => (t.flight.refundable ? 1 : 0) + (t.hotel.refundable ? 1 : 0);
+function direction(key, a, b) {
+  const sign = (x, y, min = 0) => (y - x > min ? 1 : x - y > min ? -1 : 0);
+  switch (key) {
+    case 'hotel': return sign(a.hotel.stars, b.hotel.stars) || sign(a.hotel.rating, b.hotel.rating);
+    case 'area': return sign(a.hotel.features.beachfront ? 1 : 0, b.hotel.features.beachfront ? 1 : 0);
+    case 'meals': return sign(MEAL_RANK(a.hotel), MEAL_RANK(b.hotel));
+    case 'flight': return -sign(a.flight.stops, b.flight.stops) || -sign(a.flight.durationMinutes, b.flight.durationMinutes, 59);
+    case 'time': { const ta = usableTime(a), tb = usableTime(b); return ta && tb ? sign(ta.usableMinutes, tb.usableMinutes, 59) : 0; }
+    case 'bags': return sign(BAG_RANK(a), BAG_RANK(b));
+    case 'experiences': return sign(a.activities.length, b.activities.length);
+    case 'transfer': return sign(a.transfer ? 1 : 0, b.transfer ? 1 : 0);
+    case 'flex': return sign(FLEX_RANK(a), FLEX_RANK(b));
+    case 'nights': return sign(a.spec.nights, b.spec.nights);
+    default: return 0;
+  }
+}
+function classifyChanges(a, b, opts) {
+  const rows = tripDiff(a, b, opts).filter(r => r.changed && !['total', 'perTraveler', 'perNight'].includes(r.key)).map(r => ({ ...r, direction: direction(r.key, a, b) }));
+  return { improvements: rows.filter(r => r.direction > 0), tradeoffs: rows.filter(r => r.direction < 0), neutral: rows.filter(r => r.direction === 0) };
 }
 
 // ---- side by side -----------------------------------------------------------------------------
@@ -248,4 +295,4 @@ function realityCheck(t, { weather } = {}) {
   return rows;
 }
 
-module.exports = { usableTime, timeAlternatives, compromises, biggestWin, verdict, budgetUnlocks, optimizeAround, tripDiff, realityCheck, clock, hoursLabel, GRADES };
+module.exports = { usableTime, timeAlternatives, compromises, biggestWin, verdict, budgetUnlocks, optimizeAround, classifyChanges, tripDiff, realityCheck, clock, hoursLabel, GRADES };

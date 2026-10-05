@@ -149,7 +149,7 @@ function tripsRouter(ctx, { writeLimiter }) {
   r.get('/trip/:token/optimize', async (req, res, next) => {
     try {
       const cx = optimizer.parseContext(req.query);
-      const lk = [].concat(req.query.lk || []).filter(x => typeof x === 'string').join('');
+      const lk = [].concat(req.query.lk || []).filter(x => typeof x === 'string').join('').slice(0, 8);
       const locks = { hotel: lk.includes('h'), flight: lk.includes('f'), dates: lk.includes('d') };
       const capMode = req.query.cap === 'budget' && cx.budget ? 'budget' : 'same';
       const out = await svc.optimize(req.params.token, cx, { locks, capMode });
