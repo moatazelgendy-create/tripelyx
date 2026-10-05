@@ -154,7 +154,7 @@ function tripsRouter(ctx, { writeLimiter }) {
       const capMode = req.query.cap === 'budget' && cx.budget ? 'budget' : 'same';
       const out = await svc.optimize(req.params.token, cx, { locks, capMode });
       await tracked(req, 'trip_optimized', { dest: out.current.trip.dest.id, improved: !!out.proposal, locks: lk, capMode });
-      const items = [{ ...out.current, label: 'Your trip now' }, ...(out.proposal ? [{ ...out.proposal, label: 'Improved version' }] : [])];
+      const items = [{ ...out.current, label: 'Your trip now' }, ...(out.proposal ? [{ ...out.proposal, label: out.proposal.tradeoffs.length ? 'Stronger version' : 'Improved version' }] : [])];
       send(res, compareView(ctx, { items, cx, mode: 'optimize', locks, capMode, cap: out.cap, all: req.query.all === '1' }));
     } catch (e) { next(e); }
   });
