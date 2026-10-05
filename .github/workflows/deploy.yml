@@ -21,7 +21,7 @@ concurrency:
 
 env:
   APP_ENV: ${{ vars.APP_ENV || 'staging' }}
-  AWS_REGION: ${{ vars.AWS_REGION || 'eu-central-1' }}
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
   AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN || 'arn:aws:iam::957123506077:role/tripelyx-github-deploy' }}
 
 jobs:
