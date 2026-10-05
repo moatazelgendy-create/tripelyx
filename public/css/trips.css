@@ -242,6 +242,9 @@
 .tb-trip-blurb { color: var(--text); font-size: 16.5px; line-height: 1.55; margin: 0 0 20px; }
 .tb-trip-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .tb-trip-actions .btn { white-space: nowrap; }
+/* The main actions the rebuild command names, as a compact row that wraps on phones. */
+.tb-quick { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 2px; }
+.tb-quick .btn { white-space: nowrap; }
 .tb-checked { display: flex; gap: 8px; align-items: flex-start; color: #0c5e43; font-size: 14px; margin: 14px 0 0; }
 .tb-checked .icon { width: 16px; height: 16px; flex: none; margin-top: 2px; }
 .tb-trip-grid { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 32px; align-items: start; }
@@ -527,7 +530,7 @@ a.tb-pill:hover { border-color: var(--blue-500); }
 .tb-unlock .is-within a { border-color: #a7dcc3; background: #f3fbf7; }
 .tb-unlock .is-within a b { color: #0c5e43; }
 .tb-better-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
-.tb-time { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 12px 0 6px; }
+.tb-time { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 12px 0 6px; }
 .tb-time > div { background: var(--bg-soft); border-radius: var(--radius); padding: 14px 16px; }
 .tb-time span { display: block; font-size: 12.5px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); font-weight: 700; }
 .tb-time b { display: block; font-size: 24px; letter-spacing: -0.02em; margin: 2px 0; }
@@ -626,7 +629,8 @@ a.tb-pill:hover { border-color: var(--blue-500); }
   .tb-dest-grid { grid-template-columns: 1fr 1fr; gap: 12px; }
   .tb-confirm-actions .btn { width: 100%; }
   .tb-ready-compact { grid-template-columns: 1fr; }
-  .tb-verdict-facts, .tb-time, .tb-beat-form, .tb-changes-grid { grid-template-columns: 1fr; }
+  .tb-verdict-facts, .tb-beat-form, .tb-changes-grid { grid-template-columns: 1fr; }
+  .tb-time { grid-template-columns: repeat(2, 1fr); }
   .tb-verdict, .tb-decide { padding: 18px; border-radius: var(--radius); }
   .tb-decide h2 { font-size: 22px; }
   .tb-locks label, .tb-locks .btn { width: 100%; justify-content: center; }

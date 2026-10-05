@@ -143,17 +143,20 @@ function answerStrip(q, raw) {
 
 function noDeadEnd(q, result, originCity) {
   const base = searchParams(q);
+  const without = keys => `/plan?${new URLSearchParams(Object.entries(Object.fromEntries(new URLSearchParams(base))).filter(([k]) => !keys.includes(k))).toString()}`;
   const links = [
-    ['Change dates', `/plan?${new URLSearchParams(Object.entries(Object.fromEntries(new URLSearchParams(base))).filter(([k]) => !['when', 'depart', 'month'].includes(k))).toString()}`],
-    ['Shorter stay', `/trips?${searchParams({ ...q, nights: Math.max(2, q.nights - 2) })}`],
-    ['Increase budget', `/plan?${new URLSearchParams(Object.entries(Object.fromEntries(new URLSearchParams(base))).filter(([k]) => !['b', 'k'].includes(k))).toString()}`],
-    ['Allow up to 10% more', `/trips?${searchParams({ ...q, allowOver: 10 })}`],
-    ['Try another style', `/plan?${new URLSearchParams(Object.entries(Object.fromEntries(new URLSearchParams(base))).filter(([k]) => k !== 'style')).toString()}`],
-    ['Request a custom trip', `/custom-trip?budget=${q.budgetInput}&from=${encodeURIComponent(originCity)}&travelers=${q.travelers}`],
+    ['Change dates', without(['when', 'depart', 'month'])],
+    ['Shorten the trip', `/trips?${searchParams({ ...q, nights: Math.max(2, q.nights - 2) })}`],
+    ...(q.dest || q.region ? [['Different destination', `/trips?${searchParams({ ...q, dest: null, region: null })}`]] : []),
+    ...(q.style !== 'surprise' ? [['Relax one rule: any style', `/trips?${searchParams({ ...q, style: 'surprise' })}`]] : []),
+    ...(q.priority !== 'price' ? [['Relax one rule: lowest price first', `/trips?${searchParams({ ...q, priority: 'price' })}`]] : []),
+    ...(!q.allowOver ? [['Allow up to 10% more', `/trips?${searchParams({ ...q, allowOver: 10 })}`]] : []),
+    ['Increase budget', without(['b', 'k'])],
+    ['Ask a trip specialist', `/custom-trip?budget=${q.budgetInput}&from=${encodeURIComponent(originCity)}&travelers=${q.travelers}`],
   ];
   return html`<div class="tb-advisor">
-    <h2>${dollars(q.budget)} is a little tight for this trip${result.cheapest ? html`, but trips start at <b>${money(result.cheapest)}</b>` : ''}.</h2>
-    <p>We couldn’t make a trip work for ${dollars(q.budget)} with these answers, so here are the closest ones and the easiest ways to get there. We never hide an over-budget amount.</p>
+    <h2>We couldn’t build a trip that meets all your rules for ${dollars(q.budget)}${result.cheapest ? html`. Trips start at <b>${money(result.cheapest)}</b>` : ''}.</h2>
+    <p>Here are the closest ones and the smallest changes that get there. We never hide an over-budget amount, and we never call a trip within budget when it isn’t.</p>
     <ul class="tb-advisor-links">${links.map(([l, h]) => html`<li><a class="btn btn-ghost btn-sm" href="${h}">${l}</a></li>`)}</ul>
   </div>`;
 }

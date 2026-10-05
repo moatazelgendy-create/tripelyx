@@ -310,7 +310,11 @@ test('decide-for-me pages: our call, compare, before and after, the reality chec
   const page = await c.req(`${trip.tripPath}?${trip.cx}`);
   assert.match(page.text, /Biggest win/);
   assert.match(page.text, /Your time there/);
-  assert.match(page.text, /Lock what you love/);
+  assert.match(page.text, /Protect the magic/);
+  assert.match(page.text, /Weekdays/);
+  assert.match(page.text, /PTO days if you work Monday to Friday/);
+  assert.match(page.text, /Make it cheaper<\/a>/);
+  assert.match(page.text, /Change one thing/);
   assert.match(page.text, /Make it better for the same money/);
   const same = await c.req(`${trip.tripPath}/optimize?${trip.cx}&cap=same&lk=d`);
   assert.equal(same.status, 200);
@@ -405,6 +409,41 @@ test('name your price: searches downward, stops at the cheapest strong version, 
     assert.equal((await c.req(`${tripPath}/price?${qs}`)).status, 303);
   }
   assert.ok(answers.size >= 3, `all three answers appear across targets: ${[...answers].join(' | ')}`);
+});
+
+test('money and time: weekdays are a second budget, never a claim about anyone’s calendar; no search dead-ends', async t => {
+  const mondays = [];
+  for (let d = addDays(today(), 20); mondays.length < 1; d = addDays(d, 1)) if (new Date(`${d}T00:00:00Z`).getUTCDay() === 1) mondays.push(d);
+  const monday = mondays[0], friday = addDays(monday, 4), saturday = addDays(monday, 5);
+  assert.equal(decision.weekdaysAway(monday, 4), 5, 'Monday to Friday');
+  assert.equal(decision.weekdaysAway(friday, 2), 1, 'Friday to Sunday');
+  assert.equal(decision.weekdaysAway(saturday, 1), 0, 'Saturday to Sunday');
+  assert.equal(decision.weekdaysAway(friday, 3), 2, 'Friday to Monday');
+  const settings = DEFAULT_SETTINGS;
+  const { query } = optimizer.parseSearch(QUERY, { maps: inv.maps });
+  const trip = optimizer.search(inv, query, { settings }).picks[0].trip;
+  const options = optimizer.customizerOptions(inv, trip, settings);
+  const base = decision.weekdaysAway(trip.spec.depart, trip.spec.nights);
+  for (const a of decision.ptoAlternatives(trip, options)) {
+    assert.ok(a.weekdays < base && a.saves === base - a.weekdays, 'only ever fewer weekdays');
+    const d = options.dates.find(x => x.depart === a.depart);
+    assert.equal(a.delta, d.delta, 'the price difference is the re-priced date');
+    assert.equal(priceTrip(inv, { ...trip.spec, depart: a.depart }, settings).total, a.total);
+  }
+
+  const app = await startApp();
+  t.after(app.close);
+  const c = client(app.base);
+  const none = await c.req(`/trips?${new URLSearchParams({ ...QUERY, b: '300' })}`);
+  assert.equal(none.status, 200);
+  assert.match(none.text, /couldn’t build a trip that meets all your rules for \$300/);
+  for (const offer of ['Change dates', 'Shorten the trip', 'Relax one rule: any style', 'Relax one rule: lowest price first', 'Allow up to 10% more', 'Increase budget']) assert.match(none.text, new RegExp(offer));
+  assert.doesNotMatch(none.text, /No results found/i);
+  const home = await c.req('/');
+  assert.match(home.text, /Tell us how much\./);
+  assert.match(home.text, /We try to beat it\./);
+  assert.match(home.text, /Build my best trip/);
+  assert.match(home.text, /Your budget\. Your trip\. Your way\./);
 });
 
 test('Journey B: a dream destination gets the gap and real single-change closers', async t => {

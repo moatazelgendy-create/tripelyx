@@ -9,7 +9,7 @@ const { money, dollars, demoBadge, plural } = require('./common');
 const BUDGET_LEVELS = [500, 1000, 1500, 2000, 3000, 5000];
 const STYLE_CHIPS = [['beach', 'Beach'], ['city', 'City break'], ['adventure', 'Adventure'], ['romantic', 'Romantic'], ['family', 'Family'], ['all-inclusive', 'All-inclusive']];
 
-function budgetForm({ id = 'home', value = '', cta = 'Build My Trip', surprise = true, autofocus = false } = {}) {
+function budgetForm({ id = 'home', value = '', cta = 'Build my best trip', surprise = true, autofocus = false } = {}) {
   return html`<form class="tb-budget-form" action="/plan" method="get" data-budget-form>
     <label class="tb-budget-label" for="${id}-budget">How much do you want to spend?</label>
     <div class="tb-budget-input">
@@ -17,7 +17,7 @@ function budgetForm({ id = 'home', value = '', cta = 'Build My Trip', surprise =
       <input id="${id}-budget" name="b" type="text" inputmode="numeric" pattern="[0-9,]*" placeholder="1,500" value="${value}" required autocomplete="off" ${autofocus ? raw('autofocus') : ''} aria-describedby="${id}-budget-hint">
       <button class="btn btn-blue btn-lg" type="submit">${cta} ${icon('arrow')}</button>
     </div>
-    <p class="tb-budget-hint" id="${id}-budget-hint">Flights + hotel + experiences. One budget. One simple trip.</p>
+    <p class="tb-budget-hint" id="${id}-budget-hint">Flights, hotel and experiences in one price. We don’t try to spend your budget. We try to beat it.</p>
     ${surprise ? html`<p class="tb-surprise"><a href="/plan?style=surprise&prio=price" class="text-link">${icon('sparkle')} I don’t know where to go — surprise me</a></p>` : ''}
   </form>`;
 }
@@ -52,7 +52,7 @@ function homeView(ctx, { example, levels, dreamDestinations, origins, user, rece
 <section class="tb-hero" aria-labelledby="tb-hero-title">
   <div class="tb-hero-media" role="img" aria-label="A bright coastline with turquoise water and white sand"></div>
   <div class="container tb-hero-inner">
-    <p class="eyebrow eyebrow-light">Travel by budget</p>
+    <p class="eyebrow eyebrow-light">Don’t tell us where. Tell us how much.</p>
     <h1 id="tb-hero-title" class="tb-hero-title">How much do you<br>want to spend?</h1>
     <p class="tb-hero-lead">Tell us your budget. We’ll show you the best trips you can actually take, with every tax and fee already in the price.</p>
     ${budgetForm({ id: 'hero', autofocus: false })}
@@ -117,7 +117,7 @@ ${recent ? html`<section class="tb-section tb-section-tight" aria-label="Your un
 <section class="tb-section" aria-labelledby="tb-how-title">
   <div class="container">
     <p class="eyebrow eyebrow-center">How it works</p>
-    <h2 id="tb-how-title" class="section-title section-title-center">You choose the budget. We find the adventure.</h2>
+    <h2 id="tb-how-title" class="section-title section-title-center">Your budget. Your trip. Your way.</h2>
     <ol class="tb-how">
       <li><span class="tb-how-num">1</span><b>Set your budget</b><p>Tell us how much you want to spend on the whole trip, and how much to keep aside for food and spending.</p></li>
       <li><span class="tb-how-num">2</span><b>Tell us what you want</b><p>One question at a time: who’s going, where from, when, and the kind of trip you’re after.</p></li>

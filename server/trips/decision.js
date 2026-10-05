@@ -267,6 +267,31 @@ function nameYourPrice(inventory, t, settings, ctx = {}, target, { now = new Dat
   return { target, current: t.total, currentLabel, recommended, floor, anyway, ladder, cheapest, considered: candidates.length, labels: RUNG_LABELS };
 }
 
+// ---- money + time: weekdays as a second budget ------------------------------------------------
+// Days away counted Monday to Friday, from the departure date to the return date inclusive. We do
+// not know the traveler's holidays, employer or school calendar, so this is a plain weekday count
+// and the page says so.
+function weekdaysAway(depart, nights) {
+  let n = 0;
+  for (let i = 0; i <= nights; i++) {
+    const day = new Date(`${addDays(depart, i)}T00:00:00Z`).getUTCDay();
+    if (day >= 1 && day <= 5) n++;
+  }
+  return n;
+}
+
+// "Keep a PTO day": the same trip on a nearby date that uses fewer weekdays, with its real re-priced
+// difference (from the customizer's nearby dates). Only ever fewer weekdays, same length.
+function ptoAlternatives(t, options) {
+  const base = weekdaysAway(t.spec.depart, t.spec.nights);
+  return options.dates
+    .map(d => ({ depart: d.depart, weekdays: weekdaysAway(d.depart, t.spec.nights), delta: d.delta, total: d.total }))
+    .filter(a => a.weekdays < base)
+    .map(a => ({ ...a, saves: base - a.weekdays }))
+    .sort((a, b) => b.saves - a.saves || a.delta - b.delta)
+    .slice(0, 4);
+}
+
 // ---- the reality check before paying ----------------------------------------------------------
 // Each row is a fact with a status: ok (nothing to do), heads-up (good to know, in the price or
 // the schedule) or verify (only the traveler can check it, e.g. passport validity).
@@ -294,4 +319,4 @@ function realityCheck(t, { weather } = {}) {
   return rows;
 }
 
-module.exports = { usableTime, timeAlternatives, compromises, biggestWin, verdict, budgetUnlocks, optimizeAround, nameYourPrice, classifyChanges, tripDiff, realityCheck, clock, hoursLabel, GRADES, RUNG_LABELS };
+module.exports = { usableTime, timeAlternatives, compromises, biggestWin, verdict, budgetUnlocks, optimizeAround, nameYourPrice, weekdaysAway, ptoAlternatives, classifyChanges, tripDiff, realityCheck, clock, hoursLabel, GRADES, RUNG_LABELS };

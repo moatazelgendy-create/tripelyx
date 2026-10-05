@@ -4,7 +4,7 @@ const { html, raw, jsonScript } = require('../../lib/html');
 const { icon } = require('../icons');
 const { layout } = require('../layout');
 const { contextParams, tradeoffs } = require('../../trips/optimizer');
-const { verdict, usableTime, timeAlternatives, budgetUnlocks, realityCheck, hoursLabel } = require('../../trips/decision');
+const { verdict, usableTime, timeAlternatives, budgetUnlocks, realityCheck, hoursLabel, weekdaysAway, ptoAlternatives } = require('../../trips/decision');
 const { money, dollars, shortDate, longDate, plural, hm, clock, demoBadge, budgetMeter, recipe, scorecard, stepsBar, fitBadge, hiddenParams } = require('./common');
 
 const cap = s => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
@@ -46,7 +46,7 @@ function verdictPanel(v, scores, { compact = false } = {}) {
 
 // "Your time there": what the flight schedule leaves of the first and last day, and the flights
 // that would give a day back.
-function timePanel(t, time, alts, token, cx) {
+function timePanel(t, time, alts, token, cx, pto) {
   const s = t.spec;
   return html`<section class="tb-panel" id="time" aria-labelledby="time-title">
     <h2 id="time-title">${icon('clock')} Your time there</h2>
@@ -55,8 +55,11 @@ function timePanel(t, time, alts, token, cx) {
       <div><span>${time.firstDay.nextDay ? 'Arrival day' : 'First day'}</span><b>${time.firstDay.label}</b><small>land ${time.firstDay.arrive}${time.firstDay.nextDay ? ' the next day' : ''}, at the hotel about ${time.firstDay.settled}</small></div>
       <div><span>Full days</span><b>${time.fullDays}</b><small>wake up there, go to sleep there</small></div>
       <div><span>Last day</span><b>${time.lastDay.label}</b><small>leave the hotel about ${time.lastDay.leaveHotel} for the ${time.lastDay.depart} flight</small></div>
+      <div><span>Weekdays</span><b>${pto.weekdays}</b><small>PTO days if you work Monday to Friday; we don’t know your holidays</small></div>
     </div>
     ${time.flags.map(f => html`<p class="tb-tip tb-tip-warn">${icon('alert')} ${f.text}</p>`)}
+    ${pto.alts.length ? html`<h3>${icon('calendar')} Keep a PTO day</h3><p class="tb-muted tb-small">The same ${plural(s.nights, 'night')} moved a few days, re-priced in full. Only dates that use fewer weekdays.</p>
+      <ul class="tb-changes">${pto.alts.map(a => html`<li><a href="${changeUrl(token, cx, { depart: a.depart })}"><span>Leave ${longDate(a.depart)}: ${plural(a.weekdays, 'weekday')} instead of ${pto.weekdays}</span>${delta(a.delta)}<small>${a.delta > 0 ? `For ${money(a.delta)} more, this version keeps ${plural(a.saves, 'PTO day')}` : a.delta < 0 ? `Keeps ${plural(a.saves, 'PTO day')} and costs ${money(-a.delta)} less` : `Keeps ${plural(a.saves, 'PTO day')} for the same price`} · new total ${money(a.total)}</small></a></li>`)}</ul>` : ''}
     ${alts.length ? html`<h3>${icon('sun')} Get my day back</h3><ul class="tb-changes">${alts.map(a => html`<li><a href="${changeUrl(token, cx, { flight: a.flight.id })}"><span>${a.flight.name} fare: ${a.flight.stops ? `${a.flight.stops} stop` : 'nonstop'}, out ${a.time.outbound}, back ${a.time.inbound}</span>${delta(a.delta)}<small>${hoursLabel(a.gain)} more vacation · new total ${money(a.total)}</small></a></li>`)}</ul>` : ''}
   </section>`;
 }
@@ -74,8 +77,8 @@ function unlockPanel(t, unlock, { budget, diff, token, cx, reviewUrl }) {
       <a class="btn btn-navy" href="/trip/${token}/optimize?${contextParams(cx, { cap: 'same', lk: 'd' })}">${icon('sparkle')} Make it better for the same money</a>
       ${diff !== null && diff > 0 ? html`<a class="btn btn-ghost" href="${reviewUrl}">Keep my ${money(diff)} and book</a>` : ''}
     </div>
-    <h3>${icon('lock')} Lock what you love, improve the rest</h3>
-    <p class="tb-muted tb-small">Tick what must not change. We re-plan everything else${budget ? ` within your ${dollars(budget)}` : ' for the same money'} and show you before and after. Locked parts never change without you.</p>
+    <h3 id="protect">${icon('lock')} Protect the magic</h3>
+    <p class="tb-muted tb-small">Lock what must not change: the hotel, the flights, the dates. We re-plan everything else${budget ? ` within your ${dollars(budget)}` : ' for the same money'} and show you before and after. A lock is never silently broken.</p>
     <form class="tb-locks" method="get" action="/trip/${token}/optimize">
       ${hiddenParams(contextParams(cx))}
       <input type="hidden" name="cap" value="${budget ? 'budget' : 'same'}">
@@ -152,6 +155,7 @@ function tripView(ctx, { data, cx, user, saved, dreamGap }) {
   const v = verdict(t, cx, scores);
   const time = usableTime(t);
   const timeAlts = time ? timeAlternatives(t, options) : [];
+  const pto = { weekdays: weekdaysAway(s.depart, s.nights), alts: ptoAlternatives(t, options) };
   const unlock = budgetUnlocks(changes, diff);
   const reviewUrl = `/trip/${token}/review?${contextParams(cx, { seen: t.total })}`;
   const tos = tradeoffs(t, cx);
@@ -172,6 +176,13 @@ function tripView(ctx, { data, cx, user, saved, dreamGap }) {
         ${user ? html`<form method="post" action="/trip/${token}/save?${contextParams(cx)}" class="tb-inline"><button class="btn btn-ghost" type="submit" name="kind" value="saved"${saved && saved.saved ? raw(' disabled') : ''}>${icon(saved && saved.saved ? 'heart-fill' : 'heart')} ${saved && saved.saved ? 'Saved' : 'Save trip'}</button><button class="btn btn-ghost" type="submit" name="kind" value="watch"${saved && saved.watch ? raw(' disabled') : ''}>${icon('eye')} ${saved && saved.watch ? 'Watching price' : 'Watch price'}</button></form>`
           : html`<a class="btn btn-ghost" href="/signin?next=${encodeURIComponent(`/trip/${token}?${contextParams(cx)}`)}">${icon('heart')} Save or watch</a>`}
       </div>
+      <nav class="tb-quick" aria-label="What you can do with this trip">
+        <a class="btn btn-ghost btn-sm" href="#cheaper">${icon('trend')} Make it cheaper</a>
+        <a class="btn btn-ghost btn-sm" href="/trip/${token}/optimize?${contextParams(cx, { cap: 'same', lk: 'd' })}">${icon('sparkle')} Make it better</a>
+        <a class="btn btn-ghost btn-sm" href="#protect">${icon('lock')} Protect the magic</a>
+        <a class="btn btn-ghost btn-sm" href="#customize">${icon('sliders')} Change one thing</a>
+        ${cx.searchParams ? html`<a class="btn btn-ghost btn-sm" href="/trips?${cx.searchParams}">${icon('layers')} Compare my three</a>` : ''}
+      </nav>
       <p class="tb-checked">${icon('check')} Price checked moments ago. We check it again before you pay, and nothing is charged until you confirm.</p>
     </div>
   </header>
@@ -182,7 +193,7 @@ function tripView(ctx, { data, cx, user, saved, dreamGap }) {
       ${budget ? budgetMeter(t.total, budget) : ''}
       ${rescue.length ? html`<section class="tb-panel tb-panel-warn" aria-labelledby="rescue-title"><h2 id="rescue-title">${icon('alert')} Get me back to my price</h2><p>This trip is ${money(-diff)} over your ${dollars(budget)}. Any one of these gets it back under:</p>${changeList(rescue, { empty: '' })}</section>` : ''}
       ${unlockPanel(t, unlock, { budget, diff, token, cx, reviewUrl })}
-      ${time ? timePanel(t, time, timeAlts, token, cx) : ''}
+      ${time ? timePanel(t, time, timeAlts, token, cx, pto) : ''}
 
       <section class="tb-panel" aria-labelledby="rec-title"><h2 id="rec-title">Your trip recipe</h2>${recipe(t, budget)}</section>
 
