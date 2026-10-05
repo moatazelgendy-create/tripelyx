@@ -165,6 +165,108 @@ function optimizeAround(inventory, t, settings, ctx = {}, { locks = {}, cap = t.
   return { trip: best.trip, match: best.match, baseMatch: base.match, delta: best.trip.total - t.total, improvements: best.changes.improvements, tradeoffs: best.changes.tradeoffs, changes: best.changes.neutral };
 }
 
+// ---- name your price -------------------------------------------------------------------------
+// "I'd love to pay $1,200 for this trip." We enumerate every cheaper version of the same trip (hotels,
+// flights, nearby dates, fewer nights, fewer experiences, no transfer, no bags), price each in full,
+// and search downward: the answer is the cheapest version that is still a strong trip for what the
+// traveler told us. Every number here is a priced package; nothing is widened above the current
+// total and no saving is ever estimated. A version that reaches the price with real compromises is
+// still shown (the "show me anyway" option) with those compromises listed: valid inventory is never
+// hidden, it is just not what we would book.
+const RUNG_LABELS = { strong: 'Strong', compromise: 'Some compromise', major: 'Major compromise' };
+const RUNG_RANK = { strong: 0, compromise: 1, major: 2 };
+// A rung is "strong" when it is a great or good trip on its own, or when it is no step down from the
+// trip the traveler already has (same verdict, nothing new they said matters). "Major" means a new
+// compromise that contradicts an answer they gave, or three or more things given up at once.
+function rungLabel(v, changes, base) {
+  const fresh = w => v.compromises.filter(c => c.w >= w && !base.texts.has(c.text));
+  if (fresh(3).length || changes.tradeoffs.length >= 3) return 'major';
+  if (v.grade === 'great' || v.grade === 'good') return 'strong';
+  return GRADE_RANK[v.grade] >= GRADE_RANK[base.grade] && !fresh(2).length ? 'strong' : 'compromise';
+}
+const changeText = r => `${r.label}: ${r.b}`;
+
+function nameYourPrice(inventory, t, settings, ctx = {}, target, { now = new Date() } = {}) {
+  const inv = memoInventory(inventory);
+  const s = t.spec;
+  const qctx = { ...ctx, budget: null, allowOver: 0 };
+  const hotels = t.hotelOptions.filter(h => hotelAllowed(h, { who: s.who, style: ctx.style })).map(h => h.id);
+  if (!hotels.includes(s.hotel)) hotels.push(s.hotel);
+  const flights = t.flightOptions.map(f => f.id);
+  const earliest = addDays(today(now), 3);
+  const dates = [s.depart, ...[-3, -2, -1, 1, 2, 3].map(o => addDays(s.depart, o)).filter(d => d >= earliest)];
+  const nightsList = [];
+  for (let n = s.nights; n >= Math.max(2, s.nights - 2); n--) nightsList.push(n);
+  const sets = [s.activities, [], ...activitySets(t.activityOptions, ctx.style || 'surprise')];
+  const transfers = s.transfer ? [true, false] : [false];
+  const bagsList = s.bags ? [true, false] : [s.bags];
+  const currentV = verdict(t, qctx);
+  const base = { grade: currentV.grade, texts: new Set(currentV.compromises.map(c => c.text)) };
+  const currentKey = JSON.stringify({ ...s, activities: [...s.activities].sort() });
+  const seen = new Set([currentKey]);
+  const candidates = [];
+  for (const depart of dates) for (const nights of nightsList) for (const hotel of hotels) for (const flight of flights) for (const activities of sets) for (const transfer of transfers) for (const bags of bagsList) {
+    const spec = { ...s, depart, nights, hotel, flight, activities: [...activities].sort(), transfer, bags };
+    const key = JSON.stringify(spec);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const p = priceTrip(inv, spec, settings);
+    if (!p || p.total > t.total) continue;
+    const v = verdict(p, qctx);
+    const changes = classifyChanges(t, p);
+    const label = rungLabel(v, changes, base);
+    candidates.push({ trip: p, total: p.total, match: v.match, grade: v.grade, label, labelText: RUNG_LABELS[label], compromises: v.compromises, changes, delta: p.total - t.total });
+  }
+  // Quality order: label first, then match. A version is "better" than another when it has a better
+  // label, or the same label with a higher match.
+  const better = (a, b) => (RUNG_RANK[a.label] !== RUNG_RANK[b.label] ? RUNG_RANK[a.label] < RUNG_RANK[b.label] : a.match > b.match);
+  const byPriceThenQuality = (a, b) => a.total - b.total || RUNG_RANK[a.label] - RUNG_RANK[b.label] || b.match - a.match;
+  candidates.sort(byPriceThenQuality);
+  // The value ladder is the set of versions where paying less costs you something: walking up in
+  // price, a candidate earns a rung only when it is better than every cheaper candidate. A version
+  // that costs more than a cheaper one of the same or better quality is simply a worse deal and is
+  // never shown, so the ladder reads Strong, Strong, Some compromise, Major compromise as it goes down.
+  const frontier = [];
+  for (const c of candidates) if (!frontier.length || better(c, frontier[frontier.length - 1])) frontier.push(c);
+  const strong = candidates.filter(c => c.label === 'strong');
+  const cheapestStrongUnder = strong.find(c => c.total <= target) || null;
+  // Within $20 of the cheapest strong version under the price, the one that changes the least.
+  const recommended = cheapestStrongUnder
+    ? strong.filter(c => c.total <= cheapestStrongUnder.total + 2000).sort((a, b) => a.changes.tradeoffs.length - b.changes.tradeoffs.length || a.total - b.total)[0]
+    : null;
+  const floor = strong[0] || null;
+  // The best version at or under the price when none is strong: shown with its compromises, never hidden.
+  const underTarget = frontier.filter(c => c.total <= target);
+  const anyway = recommended ? null : underTarget[underTarget.length - 1] || null;
+  const cheapest = candidates[0] || null;
+  const currentLabel = rungLabel(currentV, { tradeoffs: [] }, base);
+
+  const rungs = [...frontier].reverse(); // dearest first
+  if (recommended && !rungs.includes(recommended)) { rungs.push(recommended); rungs.sort((a, b) => b.total - a.total); }
+  const cliffRung = rungs.find(c => c.label !== 'strong' && (!floor || c.total < floor.total)) || null;
+  // At most six rungs under the current trip: the ones that matter always stay, the rest are sampled evenly.
+  let picked = rungs;
+  if (rungs.length > 6) {
+    const keep = new Set([recommended, floor, anyway, cheapest, cliffRung, rungs[0]].filter(Boolean));
+    const room = 6 - keep.size;
+    const rest = rungs.filter(c => !keep.has(c));
+    const step = rest.length / (room + 1);
+    for (let i = 1; i <= room && rest.length; i++) keep.add(rest[Math.min(rest.length - 1, Math.round(i * step) - 1)]);
+    picked = rungs.filter(c => keep.has(c));
+  }
+  // Each rung's note is the biggest new compromise (first trade-off), or else the first plain difference.
+  const rung = c => {
+    const row = c.changes.tradeoffs[0] || c.changes.neutral[0] || c.changes.improvements[0] || null;
+    const noteKind = c.changes.tradeoffs[0] ? 'tradeoff' : c.changes.neutral[0] ? 'neutral' : c.changes.improvements[0] ? 'improvement' : null;
+    return { total: c.total, label: c.label, labelText: RUNG_LABELS[c.label], trip: c.trip, match: c.match, delta: c.delta, cliff: c === cliffRung, current: false, note: row ? changeText(row) : null, noteRow: row, noteKind };
+  };
+  const ladder = [
+    { total: t.total, label: currentLabel, labelText: RUNG_LABELS[currentLabel], trip: t, match: currentV.match, delta: 0, cliff: false, current: true, note: null, noteRow: null, noteKind: null },
+    ...picked.map(rung),
+  ];
+  return { target, current: t.total, currentLabel, recommended, floor, anyway, ladder, cheapest, considered: candidates.length, labels: RUNG_LABELS };
+}
+
 // ---- the reality check before paying ----------------------------------------------------------
 // Each row is a fact with a status: ok (nothing to do), heads-up (good to know, in the price or
 // the schedule) or verify (only the traveler can check it, e.g. passport validity).
@@ -192,4 +294,4 @@ function realityCheck(t, { weather } = {}) {
   return rows;
 }
 
-module.exports = { usableTime, timeAlternatives, compromises, biggestWin, verdict, budgetUnlocks, optimizeAround, classifyChanges, tripDiff, realityCheck, clock, hoursLabel, GRADES };
+module.exports = { usableTime, timeAlternatives, compromises, biggestWin, verdict, budgetUnlocks, optimizeAround, nameYourPrice, classifyChanges, tripDiff, realityCheck, clock, hoursLabel, GRADES, RUNG_LABELS };

@@ -194,10 +194,10 @@ function tripView(ctx, { data, cx, user, saved, dreamGap }) {
         <h3>${icon('plane')} Flights</h3>
         <ul class="tb-options">${options.flights.map(f => html`<li class="${f.flight.id === s.flight ? 'is-on' : ''}">${f.flight.id === s.flight ? html`<span class="tb-opt">${flightLine(f.flight)}<span class="tb-delta tb-delta-same">selected</span></span>` : html`<a class="tb-opt" href="${changeUrl(token, cx, { flight: f.flight.id })}">${flightLine(f.flight)}${delta(f.delta)}</a>`}</li>`)}</ul>
         <div class="tb-two">
-          <div><h3>${icon('calendar')} Nights</h3><ul class="tb-pills">${options.nights.map(n => html`<li>${n.nights === s.nights ? html`<span class="tb-pill is-on">${n.nights} nights<small>${money(n.total)}</small></span>` : html`<a class="tb-pill" href="${changeUrl(token, cx, { nights: n.nights })}">${n.nights} nights<small>${money(n.total)}</small></a>`}</li>`)}</ul>
+          <div id="nights"><h3>${icon('calendar')} Nights</h3><ul class="tb-pills">${options.nights.map(n => html`<li>${n.nights === s.nights ? html`<span class="tb-pill is-on">${n.nights} nights<small>${money(n.total)}</small></span>` : html`<a class="tb-pill" href="${changeUrl(token, cx, { nights: n.nights })}">${n.nights} nights<small>${money(n.total)}</small></a>`}</li>`)}</ul>
             ${(() => { const cheapestExtra = options.nights.filter(n => n.nights > s.nights).sort((a, b) => a.delta - b.delta)[0]; return cheapestExtra && cheapestExtra.delta < t.perNight * 0.6 * (cheapestExtra.nights - s.nights) ? html`<p class="tb-tip">${icon('sparkle')} ${cheapestExtra.nights - s.nights === 1 ? 'One more night' : `${cheapestExtra.nights - s.nights} more nights`} is only ${money(cheapestExtra.delta)} more${cheapestExtra.delta < 0 ? ' (cheaper flights on those dates)' : ''}.</p>` : ''; })()}
           </div>
-          <div><h3>${icon('calendar')} Nearby dates</h3>${options.dates.length ? html`<ul class="tb-pills">${options.dates.map(d => html`<li><a class="tb-pill" href="${changeUrl(token, cx, { depart: d.depart })}">${shortDate(d.depart)}<small>${d.delta === 0 ? 'same' : (d.delta < 0 ? '−' : '+') + money(Math.abs(d.delta))}</small></a></li>`)}</ul>` : html`<p class="tb-muted">No other dates nearby.</p>`}
+          <div id="dates"><h3>${icon('calendar')} Nearby dates</h3>${options.dates.length ? html`<ul class="tb-pills">${options.dates.map(d => html`<li><a class="tb-pill" href="${changeUrl(token, cx, { depart: d.depart })}">${shortDate(d.depart)}<small>${d.delta === 0 ? 'same' : (d.delta < 0 ? '−' : '+') + money(Math.abs(d.delta))}</small></a></li>`)}</ul>` : html`<p class="tb-muted">No other dates nearby.</p>`}
             ${(() => { const best = options.dates.filter(d => d.delta < -2000).sort((a, b) => a.delta - b.delta)[0]; return best ? html`<p class="tb-tip">${icon('trend')} Leave ${new Intl.DateTimeFormat('en-US', { weekday: 'long', timeZone: 'UTC' }).format(new Date(`${best.depart}T00:00:00Z`))} instead of ${new Intl.DateTimeFormat('en-US', { weekday: 'long', timeZone: 'UTC' }).format(new Date(`${s.depart}T00:00:00Z`))} and save ${money(-best.delta)}.</p>` : ''; })()}
           </div>
         </div>
@@ -210,7 +210,15 @@ function tripView(ctx, { data, cx, user, saved, dreamGap }) {
         </ul>
       </section>
 
-      <section class="tb-panel" aria-labelledby="cheaper-title"><h2 id="cheaper-title">${icon('trend')} Make it cheaper</h2><p class="tb-muted">Single changes, biggest saving first. We never remove anything without showing you.</p>${changeList(cheaper, { empty: 'This is already the cheapest version of this trip we can build.' })}</section>
+      <section class="tb-panel" id="cheaper" aria-labelledby="cheaper-title"><h2 id="cheaper-title">${icon('trend')} Make it cheaper</h2>
+        <form class="tb-price-form" id="price" method="get" action="/trip/${token}/price" aria-labelledby="price-label">
+          ${hiddenParams(contextParams(cx))}
+          <label id="price-label" for="price-target">How much would you love to pay?</label>
+          <div class="tb-price-row"><span class="tb-price-currency" aria-hidden="true">$</span><input id="price-target" name="target" type="text" inputmode="numeric" pattern="[0-9,.]*" placeholder="${Math.round(t.total * 0.85 / 100)}" autocomplete="off" required><button class="btn btn-navy" type="submit">Make it work ${icon('arrow')}</button></div>
+          <p class="tb-muted tb-small">We search downward and stop at the cheapest version that’s still strong. You decide.</p>
+        </form>
+        <h3>${icon('sliders')} One change at a time</h3>
+        <p class="tb-muted">Single changes, biggest saving first. We never remove anything without showing you.</p>${changeList(cheaper, { empty: 'This is already the cheapest version of this trip we can build.' })}</section>
 
       ${knowBeforeYouBook(t, { weather, origin })}
       ${confidenceQuestions(t)}

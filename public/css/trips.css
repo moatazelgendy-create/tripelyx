@@ -663,3 +663,59 @@ a.tb-pill:hover { border-color: var(--blue-500); }
 @media (max-width: 480px) {
   .tb-keep { grid-template-columns: 1fr; }
 }
+
+/* ---------- Name your price: the form on the trip page, the three answers and the value ladder ---------- */
+.tb-price-form { margin: 4px 0 6px; }
+.tb-price-form > label { display: block; font-weight: 600; margin-bottom: 8px; }
+.tb-price-row { display: flex; align-items: stretch; gap: 10px; }
+.tb-price-row .tb-price-currency { display: flex; align-items: center; font-size: 22px; font-weight: 700; color: var(--muted); padding-left: 2px; }
+.tb-price-row input { flex: 1 1 120px; min-width: 0; font-size: 22px; font-weight: 700; padding: 10px 14px; border: 1.5px solid var(--line); border-radius: var(--radius-sm); }
+.tb-price-row input:focus { outline: 2px solid var(--blue-500); outline-offset: 1px; }
+.tb-price-form .tb-small { margin-top: 8px; }
+.tb-price-page .tb-results-head h1 { max-width: 760px; }
+.tb-price-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+.tb-price-page .tb-keep { margin-top: 4px; }
+.tb-price-page .tb-keep > div { background: var(--bg-soft); }
+.tb-price-page .tb-keep.is-neutral > div:last-child dd { color: var(--ink); }
+.tb-price-changes { list-style: none; padding: 0; margin: 10px 0 0; display: grid; gap: 8px; }
+.tb-price-changes li { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: start; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--bg-soft); font-size: 15px; line-height: 1.45; }
+.tb-price-changes li .icon { width: 17px; height: 17px; margin-top: 3px; color: var(--muted); }
+.tb-price-changes li.is-tradeoff { background: #fff4d6; }
+.tb-price-changes li.is-tradeoff .icon { color: var(--warning); }
+.tb-price-changes li.is-improvement { background: #e6f6ef; }
+.tb-price-changes li.is-improvement .icon { color: var(--success); }
+.tb-price-changes b { font-weight: 600; }
+.tb-price-changes small { display: block; color: var(--muted); }
+.tb-chips { list-style: none; padding: 0; margin: 10px 0 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.tb-chips li { display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px; border-radius: 999px; background: #e6f6ef; color: #0c5e43; font-size: 13.5px; font-weight: 600; }
+.tb-chips .icon { width: 14px; height: 14px; }
+.tb-price-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; align-items: center; }
+.tb-price-anyway { margin-top: 16px; padding: 14px 16px; border: 1.5px dashed var(--line); border-radius: var(--radius); }
+.tb-price-anyway p { margin: 0 0 8px; }
+.tb-price-anyway ul { margin: 0 0 12px; }
+.tb-price-cliff { display: flex; gap: 8px; align-items: flex-start; margin: 14px 0 0; padding: 12px 14px; border-radius: var(--radius-sm); background: #fff4d6; color: #6b4a00; font-size: 15px; line-height: 1.45; }
+.tb-price-cliff .icon { width: 18px; height: 18px; flex: none; margin-top: 2px; color: var(--warning); }
+.tb-ladder { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 0; position: relative; }
+.tb-ladder li { display: grid; grid-template-columns: 110px 1fr; gap: 4px 14px; align-items: start; padding: 12px 0; border-top: 1px solid var(--line); }
+.tb-ladder li:first-child { border-top: 0; }
+.tb-ladder li > b { font-size: 19px; letter-spacing: -0.01em; color: var(--ink); }
+.tb-ladder li > b a { color: inherit; text-decoration: none; }
+.tb-ladder li > b a:hover { text-decoration: underline; }
+.tb-ladder li > div { min-width: 0; }
+.tb-ladder li small { display: block; color: var(--muted); font-size: 13.5px; margin-top: 3px; line-height: 1.4; }
+.tb-ladder .tb-rung { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12.5px; font-weight: 700; }
+.tb-ladder .tb-rung-strong { background: #e6f6ef; color: #0c5e43; }
+.tb-ladder .tb-rung-compromise { background: #fff4d6; color: #6b4a00; }
+.tb-ladder .tb-rung-major { background: #fdecea; color: #8a1f14; }
+.tb-ladder .tb-rung-now { background: var(--sky-50); color: var(--navy-800); margin-left: 6px; }
+.tb-ladder .tb-rung-pick { background: var(--navy-800); color: #fff; margin-left: 6px; }
+.tb-ladder li.is-cliff { border-top: 2px solid var(--warning); position: relative; margin-top: 22px; }
+.tb-ladder li.is-cliff::before { content: 'Value cliff'; position: absolute; top: -12px; left: 0; padding: 2px 9px; border-radius: 999px; background: var(--warning); color: #fff; font-size: 11.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.tb-ladder li.is-current > b { color: var(--navy-800); }
+@media (max-width: 640px) {
+  .tb-price-grid { grid-template-columns: 1fr; }
+  .tb-price-row { flex-wrap: wrap; }
+  .tb-price-row .btn { width: 100%; }
+  .tb-price-actions .btn { width: 100%; }
+  .tb-ladder li { grid-template-columns: 1fr; gap: 2px; }
+}

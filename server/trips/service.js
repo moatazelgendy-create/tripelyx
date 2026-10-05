@@ -114,6 +114,19 @@ class TripService {
     return { current, proposal: { ...proposal, improvements: best.improvements, tradeoffs: best.tradeoffs, delta: best.delta }, cap, locks, capMode };
   }
 
+  // "Name your price": the cheapest version of this trip that is still strong at or under the price
+  // the traveler named, the cheapest version we would recommend at all, the best version that
+  // reaches the price when none is strong (with its compromises), and the value ladder in between.
+  // Candidates come back as trip-page data so every one carries a token.
+  async namePrice(token, ctx = {}, target) {
+    const current = await this.trip(token, ctx);
+    if (target >= current.trip.total) return { current, currentTotal: current.trip.total, target, tooHigh: true };
+    const settings = await this.settings();
+    const out = decision.nameYourPrice(this.inv, current.trip, settings, ctx, target, { now: this.now() });
+    const page = async c => (c ? { ...c, ...(await this.trip(encodeSpec(c.trip.spec), ctx)) } : null);
+    return { ...out, current, currentTotal: out.current, recommended: await page(out.recommended), floor: await page(out.floor), anyway: await page(out.anyway), tooHigh: false };
+  }
+
   // Apply one customizer change and return the new trip token.
   customize(token, change) {
     const s = decodeSpec(token);

@@ -344,6 +344,69 @@ test('decide-for-me pages: our call, compare, before and after, the reality chec
   assert.equal((await c.req('/compare?t=bad~x&t=worse~y')).status, 410);
 });
 
+test('name your price: searches downward, stops at the cheapest strong version, never hides a cheaper one', async t => {
+  const settings = DEFAULT_SETTINGS;
+  const rank = { strong: 0, compromise: 1, major: 2 };
+  // Engine invariants over a few travelers: the ladder descends, paying less never buys a better
+  // version, every number is a priced package, and every answer is at or under the named price.
+  for (const [extra, frac] of [[{ prio: 'price' }, 0.9], [{ prio: 'flights', from: 'NYC', b: '2500', nights: '6', style: 'city' }, 0.97], [{ prio: 'activities', who: 'family', n: '4', b: '3000', style: 'family' }, 0.85]]) {
+    const { query } = optimizer.parseSearch({ ...QUERY, ...extra }, { maps: inv.maps });
+    const r = optimizer.search(inv, query, { settings });
+    const trip = r.picks[0].trip;
+    const target = Math.round(trip.total * frac);
+    const out = decision.nameYourPrice(inv, trip, settings, r.ctx, target);
+    assert.ok(out.considered > 0);
+    assert.equal(out.ladder[0].total, trip.total);
+    for (let i = 1; i < out.ladder.length; i++) {
+      assert.ok(out.ladder[i].total < out.ladder[i - 1].total, 'ladder descends with distinct totals');
+      if (i >= 2) assert.ok(rank[out.ladder[i].label] >= rank[out.ladder[i - 1].label], 'paying less never buys a better version');
+      assert.equal(priceTrip(inv, out.ladder[i].trip.spec, settings).total, out.ladder[i].total, 'every rung is a priced package');
+    }
+    for (const c of [out.recommended, out.floor, out.anyway, out.cheapest].filter(Boolean)) {
+      assert.equal(priceTrip(inv, c.trip.spec, settings).total, c.total);
+      assert.ok(c.total < trip.total, 'never widened above the current total');
+    }
+    if (out.recommended) { assert.ok(out.recommended.total <= target); assert.equal(out.recommended.label, 'strong'); assert.equal(out.anyway, null); }
+    else if (out.anyway) { assert.ok(out.anyway.total <= target); assert.notEqual(out.anyway.label, 'strong'); }
+    assert.ok(out.floor === null || out.floor.label === 'strong');
+    assert.ok(!out.recommended || !out.floor || out.floor.total <= out.recommended.total, 'the floor is the cheapest version we recommend');
+    const none = decision.nameYourPrice(inv, trip, settings, r.ctx, 30000);
+    assert.equal(none.recommended, null); assert.equal(none.anyway, null);
+    assert.ok(none.cheapest && none.cheapest.total > 30000, 'an impossible price gets the real cheapest version, not a dead end');
+  }
+
+  // Pages: the form on the trip page, the three honest answers, the ladder, and the redirects.
+  const app = await startApp();
+  t.after(app.close);
+  const c = client(app.base);
+  const noInline = (p, body) => { assert.ok(!/\sstyle="/.test(body), `${p} inline style`); assert.ok(!/<script(?![^>]*\bsrc=)(?![^>]*application\/json)[^>]*>/.test(body), `${p} inline script`); };
+  const answers = new Set();
+  for (const extra of [{ prio: 'price' }, { prio: 'activities', who: 'family', n: '4', b: '3000', style: 'family' }]) {
+    const results = await c.req(`/trips?${new URLSearchParams({ ...QUERY, ...extra })}`);
+    const m = results.text.match(/href="(\/trip\/[^"?]+)\?([^"]*)"/);
+    const tripPath = m[1], qs = m[2].replace(/&amp;/g, '&');
+    const page = await c.req(`${tripPath}?${qs}`);
+    assert.match(page.text, /How much would you love to pay\?/);
+    const total = Number(page.text.match(/"total":(\d+)/)[1]);
+    for (const frac of [0.97, 0.8, 0.5]) {
+      const res = await c.req(`${tripPath}/price?${qs}&target=${Math.round(total * frac / 100)}`);
+      assert.equal(res.status, 200, res.text.slice(0, 200));
+      const h1 = res.text.match(/<h1>([^<]*)<\/h1>/)[1];
+      assert.match(h1, /We got there|We don’t think we should|No version of this trip gets to/);
+      answers.add(h1.replace(/\$[\d,.]+/g, '$'));
+      assert.match(res.text, /The value ladder/);
+      assert.match(res.text, /Your trip now/);
+      noInline('/price', res.text);
+      if (/don’t think we should/.test(h1)) { assert.match(res.text, /version anyway/); assert.match(res.text, /It means:/); }
+      if (/We got there/.test(h1)) { assert.match(res.text, /Use this version/); assert.match(res.text, /Keep my original/); }
+      if (/No version/.test(h1)) assert.match(res.text, /Try another destination for/);
+    }
+    assert.equal((await c.req(`${tripPath}/price?${qs}&target=${Math.round(total / 100) + 100}`)).status, 303, 'a price above the total goes back to the trip');
+    assert.equal((await c.req(`${tripPath}/price?${qs}`)).status, 303);
+  }
+  assert.ok(answers.size >= 3, `all three answers appear across targets: ${[...answers].join(' | ')}`);
+});
+
 test('Journey B: a dream destination gets the gap and real single-change closers', async t => {
   const app = await startApp();
   t.after(app.close);

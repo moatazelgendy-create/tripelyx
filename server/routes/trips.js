@@ -10,6 +10,7 @@ const { homeView } = require('../views/trips/home');
 const { stepView, resultsView, STEPS } = require('../views/trips/plan');
 const { tripView, reviewView, unavailableView, singleChanges } = require('../views/trips/trip');
 const { dreamView } = require('../views/trips/dream');
+const { priceView } = require('../views/trips/price');
 const { compareView } = require('../views/trips/compare');
 const { authView, myTripsView } = require('../views/trips/account');
 const pages = require('../views/trips/pages');
@@ -142,6 +143,21 @@ function tripsRouter(ctx, { writeLimiter }) {
       const cx = optimizer.parseContext(req.query);
       const token = svc.customize(req.params.token, { hotel: req.query.hotel, flight: req.query.flight, nights: req.query.nights, depart: req.query.depart, bags: req.query.bags, transfer: req.query.transfer, activities: req.query.activities !== undefined ? [].concat(req.query.activities) : undefined });
       res.redirect(303, `/trip/${token}?${optimizer.contextParams(cx)}#customize`);
+    } catch (e) { next(e); }
+  });
+
+  // Name your price: search this trip downward to the price the traveler named, and say where we'd stop.
+  r.get('/trip/:token/price', async (req, res, next) => {
+    try {
+      const cx = optimizer.parseContext(req.query);
+      const target = optimizer.int(req.query.target, null, 100, 1000000);
+      const back = `/trip/${req.params.token}?${optimizer.contextParams(cx)}#price`;
+      if (!target) return res.redirect(303, back);
+      const data = await svc.namePrice(req.params.token, cx, target * 100);
+      if (data.tooHigh) return res.redirect(303, back);
+      const outcome = data.recommended ? 'reached' : data.anyway ? 'not-strong' : 'none';
+      await tracked(req, 'price_named', { dest: data.current.trip.dest.id, current: data.currentTotal, target: target * 100, outcome });
+      send(res, priceView(ctx, { data, cx, user: user(req) }));
     } catch (e) { next(e); }
   });
 
