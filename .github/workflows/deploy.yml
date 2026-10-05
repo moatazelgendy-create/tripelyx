@@ -73,7 +73,9 @@ jobs:
             --parameter-overrides \
               AppEnv="${APP_ENV}" \
               ImageUri="${{ steps.image.outputs.uri }}" \
-              CertificateArn="${CERTIFICATE_ARN}"
+              CertificateArn="${CERTIFICATE_ARN}" \
+              AdminEmails="${{ vars.ADMIN_EMAILS }}" \
+              PublicBaseUrl="${{ vars.PUBLIC_BASE_URL || 'https://www.tripelyx.com' }}"
 
       - name: Show the site address
         run: |

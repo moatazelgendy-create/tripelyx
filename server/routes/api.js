@@ -51,7 +51,7 @@ function apiRouter(ctx, { writeLimiter }) {
   r.post('/bookings', writeLimiter, requireJson, async (req, res, next) => {
     try {
       const { quoteId, traveler } = req.body || {};
-      const out = await engine.createBooking({ quoteId, traveler });
+      const out = await engine.createBooking({ quoteId, traveler, userId: req.user ? req.user.id : null });
       setBookingCookie(res, out.booking.ref, out.accessToken, config);
       res.status(201).json({ booking: out.booking, payment: out.payment });
     } catch (e) { next(e); }

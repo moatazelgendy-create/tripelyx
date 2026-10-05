@@ -36,6 +36,18 @@ CREATE TABLE IF NOT EXISTS tx_payment_intents (
   data JSONB NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS tx_records (
+  kind TEXT NOT NULL,
+  id TEXT NOT NULL,
+  user_id TEXT,
+  data JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (kind, id)
+);
+CREATE INDEX IF NOT EXISTS tx_records_kind_user_idx ON tx_records (kind, user_id);
+CREATE INDEX IF NOT EXISTS tx_records_kind_created_idx ON tx_records (kind, created_at DESC);
+CREATE INDEX IF NOT EXISTS tx_bookings_user_idx ON tx_bookings ((data->>'userId'));
 CREATE TABLE IF NOT EXISTS tx_partner_leads (
   id TEXT PRIMARY KEY,
   data JSONB NOT NULL,
@@ -117,6 +129,41 @@ class PostgresStore {
   async getPaymentIntent(id) {
     const { rows } = await this.pool.query('SELECT data FROM tx_payment_intents WHERE id = $1', [id]);
     return rows[0] ? rows[0].data : null;
+  }
+
+  async listBookings({ userId, limit = 500 } = {}) {
+    const { rows } = userId
+      ? await this.pool.query("SELECT data FROM tx_bookings WHERE data->>'userId' = $1 ORDER BY created_at DESC LIMIT $2", [userId, limit])
+      : await this.pool.query('SELECT data FROM tx_bookings ORDER BY created_at DESC LIMIT $1', [limit]);
+    return rows.map(r => r.data);
+  }
+
+  async putRecord(kind, id, data, { userId = null } = {}) {
+    await this.pool.query(
+      `INSERT INTO tx_records (kind, id, user_id, data) VALUES ($1, $2, $3, $4)
+       ON CONFLICT (kind, id) DO UPDATE SET data = EXCLUDED.data, user_id = COALESCE(EXCLUDED.user_id, tx_records.user_id), updated_at = now()`,
+      [kind, id, userId, data],
+    );
+    return data;
+  }
+
+  async getRecord(kind, id) {
+    const { rows } = await this.pool.query('SELECT data FROM tx_records WHERE kind = $1 AND id = $2', [kind, id]);
+    return rows[0] ? rows[0].data : null;
+  }
+
+  async deleteRecord(kind, id) {
+    const { rowCount } = await this.pool.query('DELETE FROM tx_records WHERE kind = $1 AND id = $2', [kind, id]);
+    return rowCount > 0;
+  }
+
+  async listRecords(kind, { userId, limit = 1000, since } = {}) {
+    const where = ['kind = $1'], args = [kind];
+    if (userId) { args.push(userId); where.push(`user_id = $${args.length}`); }
+    if (since) { args.push(since); where.push(`created_at >= $${args.length}`); }
+    args.push(limit);
+    const { rows } = await this.pool.query(`SELECT data FROM tx_records WHERE ${where.join(' AND ')} ORDER BY created_at DESC, id DESC LIMIT $${args.length}`, args);
+    return rows.map(r => r.data);
   }
 
   async savePartnerLead(lead) {

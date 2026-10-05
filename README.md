@@ -1,9 +1,11 @@
 # Tripelyx
 
-The Tripelyx corporate site plus a provider-agnostic booking platform for hotels, flights, cars,
+**Travel by Budget**: a budget-first trip planner ("How much do you want to spend?") that builds
+complete trips (flights, hotel, experiences, transfers) priced in full and shows the three best fits,
+plus the Tripelyx corporate site and a provider-agnostic booking platform for hotels, flights, cars,
 cruises, yachts, transfers, activities and experiences. Everything runs today on **isolated demo
 inventory** and a **test-mode payment processor**; real suppliers and a real payment processor plug in
-later by adding adapters, without touching the booking engine, routes or UI.
+later by adding adapters, without touching the trip engine, booking engine, routes or UI.
 
 ## Run it
 
@@ -21,11 +23,61 @@ Test cards at checkout: `4242 4242 4242 4242` (success), `5555 5555 5555 4444` (
 `4000 0000 0000 0002` (declined), `4000 0000 0000 9995` (insufficient funds),
 `4000 0000 0000 0069` (expired). Any future expiry and any CVC.
 
+## Travel by Budget
+
+The planner is on by default outside production (`ENABLE_TRIPS`) and becomes the homepage; the
+corporate homepage moves to `/company`. Admin access is given by email (`ADMIN_EMAILS`).
+
+| Route | What it is |
+| --- | --- |
+| `/` | "How much do you want to spend?", a live example, where each budget can take you, Journey B entry ("Make it work"), Surprise Me |
+| `/plan` | One question at a time: budget, money to keep aside, departure city, travelers, dates, style, what matters most |
+| `/trips` | Three trips, never hundreds: Best Match, Best Value, Save More; flexibility toggle; why we didn't pick the cheapest; no dead ends |
+| `/trip/:token` | The trip: budget meter, recipe (where every dollar goes), customizer (every change re-priced), Make it cheaper, Know Before You Book, scorecard, trade-offs |
+| `/trip/:token/review` | Live price check with explicit approval of any increase, final trip review, readiness checklist, promo code, then the quote |
+| `/dream` | Journey B / Budget Negotiator: a dream destination and a maximum; the gap and the single changes that close it |
+| `/checkout/:quoteId`, `/booking/:ref` | Traveler details and test-mode payment; the trip page after booking (Trip ID, per-component confirmations, support thread, cancellation) |
+| `/signin`, `/signup`, `/my-trips` | Accounts: upcoming and past trips, saved trips, price watches, last search |
+| `/admin` | Control center (admins only): KPIs and funnel, bookings with internal economics and alerts, trip requests, business rules, promo codes, outbox |
+| `/how-it-works`, `/faq`, `/legal/*`, `/custom-trip`, `/destinations`, `/trips-under-:n`, `/trips-to-:slug`, `/beach-vacations` | Help, legal placeholders (marked for professional review), custom trip request, SEO landing pages |
+
+```
+server/trips/
+  demo-data/            invented origins, destinations, hotels, activities (labeled demo everywhere)
+  integrations/         maps, weather, flights, hotels, activities, transfers, notifications
+                        (types.d.ts = the interfaces; mock.js = demo; index.js = where real adapters register)
+  spec.js               the shareable trip token (destination, dates, travelers, hotel, flight, extras)
+  pricing.js            full price (taxes, mandatory fees, service fee) + internal economics (never sent to browsers)
+  optimizer.js          every sensible combination per destination, scored on customer value only; picks 3
+  service.js            search, trip pages, customizer, live price check, quotes, the booking provider,
+                        saved trips and watches, support, requests, funnel events, admin numbers
+server/accounts/        email + password (scrypt), server-side sessions, admin by email
+```
+
+Rules the engine keeps: the total shown is the total charged (taxes and mandatory fees inside it);
+a trip is "within budget" only when that complete total is at or under the budget; a changed price is
+never charged without the traveler's approval (checked at the review page and again at payment);
+platform margin is never an input to ranking; no fake scarcity, reviews or discounts. Pricing and
+margin rules (service fee, markup, minimum profit and margin) are editable under `/admin/settings`;
+bookings under the minimums are flagged for review, never silently repriced.
+
+### Roadmap (phased, behind feature flags)
+
+The MVP above is the production-ready first pass. Everything else from the product spec is a later
+phase, to be added behind its own flag once real suppliers are connected:
+
+- Trip Companion after booking (today's view, itinerary, remaining vacation budget, daily spending, plan B, offline essentials, packing, airport/arrival/check-out modes, spend review).
+- Trip Simulator and budget intelligence (what should my budget be, price drivers, destination cost index, hidden-cost detector, stress test, trade-off lab, diminishing-returns curve, "my perfect number").
+- Full Budget Negotiator (lock components, no-compromise mode, dream tracker, "it's possible" alerts, flexibility currency, travel goals) on top of today's `/dream`.
+- Social and decision tools: compare side by side, group budget splitter and decision room, couples mode, share-before-booking votes, second-thoughts mode.
+- Growth: referrals, loyalty, deal radar, deal of the day, price history, budget calendar, My Travel Year, Trip Remix, Beat My Trip, gift a trip, trip fund, pay over time, travel wallet.
+- AI assistant and negotiator through a provider interface (rule-based today), real review ingestion (verified bookings only), email/SMS delivery for the outbox, abandoned-trip emails.
+
 ## Pages
 
 | Route | What it is |
 | --- | --- |
-| `/` | Homepage, recreated from the reference desktop screenshot |
+| `/company` | Corporate homepage (served at `/` when `ENABLE_TRIPS=false`) |
 | `/brands`, `/technology`, `/partners`, `/about`, `/contact` | Site pages (partner form stores leads) |
 | `/book`, `/book/:vertical` | Search per vertical, server-rendered with JS-enhanced loading states |
 | `/book/:vertical/:offerId` | Offer details and options; "Reserve" creates a time-limited quote |
@@ -132,6 +184,8 @@ deployments on `staging`.
   environment banner; demo images are generated SVGs under `/media/demo/`, mounted only when demo
   inventory is allowed.
 - Production refuses mock providers unless `ALLOW_DEMO_INVENTORY=true`, and never with live payments.
+- Trip inventory follows the same rule: `TRIP_*_PROVIDER=mock` is refused where demo inventory is not
+  allowed, so the planner simply switches off instead of serving invented trips.
 
 ## Environments and secrets
 
@@ -143,6 +197,10 @@ deployments on `staging`.
 - Card data: in test mode only the brand and last four digits are stored.
 - Security headers via helmet with a strict Content-Security-Policy (no inline scripts or styles),
   rate limiting on the API, HttpOnly SameSite=Strict booking cookies with hashed access tokens.
+- Accounts: scrypt password hashes, server-side sessions (only a hash of the session token is stored),
+  HttpOnly SameSite=Lax session cookie, cross-site form posts refused. `ADMIN_EMAILS` grants `/admin`.
+- Notifications default to an outbox (`NOTIFY_PROVIDER=outbox`): recorded and visible to admins, never
+  sent, until a real provider is registered.
 
 ## Assets
 

@@ -75,8 +75,28 @@ function loadConfig(env = process.env) {
     throw new Error(`DATABASE_ENV (${env.DATABASE_ENV}) does not match APP_ENV (${appEnv}) — refusing to use another environment's database`);
   }
 
+  // Travel by Budget (the budget trip planner). On by default outside production, like the verticals.
+  // Each integration has its own provider switch; 'mock' is the demo inventory and is refused wherever
+  // demo inventory is not allowed.
+  const tripProvider = name => (env[name] || 'mock').trim().toLowerCase();
+  const trips = {
+    enabled: bool(env.ENABLE_TRIPS, !isProduction),
+    providers: {
+      maps: tripProvider('TRIP_MAPS_PROVIDER'),
+      weather: tripProvider('TRIP_WEATHER_PROVIDER'),
+      flights: tripProvider('TRIP_FLIGHTS_PROVIDER'),
+      hotels: tripProvider('TRIP_HOTELS_PROVIDER'),
+      activities: tripProvider('TRIP_ACTIVITIES_PROVIDER'),
+      transfers: tripProvider('TRIP_TRANSFERS_PROVIDER'),
+      notifications: (env.NOTIFY_PROVIDER || 'outbox').trim().toLowerCase(),
+    },
+    // Signed-in accounts with these emails can open the admin control center (/admin).
+    adminEmails: String(env.ADMIN_EMAILS || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean),
+  };
+
   return {
     appEnv,
+    trips,
     isProduction,
     port: Number(env.PORT || 4100),
     publicBaseUrl: env.PUBLIC_BASE_URL || null,

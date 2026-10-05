@@ -25,6 +25,10 @@ function partySize(query) {
 
 class BookingEngine {
   constructor({ registry, store, payments, config, now = () => new Date(), log = console }) {
+    // Providers that aren't one of the eight verticals (the trip package provider) register here.
+    this.extraProviders = {};
+    // Optional observers: { bookingEvent(type, booking) } for analytics and admin alerts.
+    this.hooks = {};
     this.registry = registry;
     this.store = store;
     this.payments = payments;
@@ -34,6 +38,7 @@ class BookingEngine {
   }
 
   provider(vertical) {
+    if (this.extraProviders[vertical]) return this.extraProviders[vertical];
     const meta = getVertical(vertical);
     const p = meta && this.registry.get(vertical);
     if (!p) throw new AppError('vertical_unavailable', 'This service is not available right now.', 404);
@@ -159,7 +164,7 @@ class BookingEngine {
     return { ...q, expired: new Date(q.expiresAt) < this.now() };
   }
 
-  async createBooking({ quoteId, traveler: rawTraveler }) {
+  async createBooking({ quoteId, traveler: rawTraveler, userId = null }) {
     const quote = await this.getQuote(quoteId);
     if (quote.expired) throw new AppError('quote_expired', 'This price has expired. Please go back and choose again.', 410);
     const traveler = validateTraveler(rawTraveler);
@@ -169,7 +174,8 @@ class BookingEngine {
     // confused with real ones in support conversations or reporting.
     const booking = {
       id: id('bk'),
-      ref: bookingRef(quote.demo ? 'DEMO' : 'TX'),
+      ref: quote.refPrefix ? bookingRef(quote.demo ? `DEMO-${quote.refPrefix}` : quote.refPrefix) : bookingRef(quote.demo ? 'DEMO' : 'TX'),
+      userId,
       vertical: quote.vertical,
       status: 'pending_payment',
       demo: quote.demo,
@@ -244,6 +250,17 @@ class BookingEngine {
     if (b.status === 'expired') throw new AppError('payment_window_expired', 'The time to pay for this booking ran out. Please book again.', 410);
     if (b.status !== 'pending_payment') throw new AppError('not_awaiting_payment', 'This booking has already been paid or closed.', 409);
 
+    // Re-check availability and the supplier price immediately before charging. A changed price is
+    // never charged: the traveler goes back to approve it.
+    const provider = this.provider(b.vertical);
+    if (typeof provider.recheck === 'function') {
+      const check = await provider.recheck(b.quote);
+      if (check && check.changed) {
+        throw new AppError('price_changed', check.message, 409, { newTotal: check.newTotal, url: check.url });
+      }
+    }
+    this.emit('payment_attempted', b);
+
     const intent = await this.store.getPaymentIntent(b.paymentIntentId);
     const paid = await this.payments.confirm(intent, method);
     if (paid.status !== 'succeeded') {
@@ -263,11 +280,14 @@ class BookingEngine {
     try {
       const res = await this.provider(b.vertical).book({ quote: b.quote, traveler: b.traveler, bookingRef: b.ref });
       const at = this.now().toISOString();
+      const status = res.status === 'pending' ? 'pending_supplier' : res.status === 'partial' ? 'partially_confirmed' : 'confirmed';
       b = await this.store.updateBooking(b.id, 'confirming', {
-        status: res.status === 'pending' ? 'pending_supplier' : 'confirmed',
+        status,
         supplierRef: res.supplierRef,
-        history: [...b.history, { at, status: res.status === 'pending' ? 'pending_supplier' : 'confirmed' }],
+        components: res.components || null,
+        history: [...b.history, { at, status, note: res.note }],
       });
+      this.emit(status === 'confirmed' ? 'booking_confirmed' : status, b);
       return { booking: this.publicBooking(b) };
     } catch (err) {
       // The supplier couldn't confirm: give the money back in full and tell the traveler plainly.
@@ -278,12 +298,19 @@ class BookingEngine {
         status: 'failed', refundAmount: paid.amount,
         history: [...b.history, { at, status: 'failed', note: 'supplier_rejected_refunded' }],
       });
+      this.emit('booking_failed', b);
       throw new AppError('supplier_failed', 'Our travel partner couldn\'t confirm this booking, so your payment has been refunded in full. Please try another option.', 502);
     }
   }
 
+  emit(type, booking) {
+    try { if (this.hooks.bookingEvent) Promise.resolve(this.hooks.bookingEvent(type, booking)).catch(e => this.log.error('[hooks]', e)); } catch (e) { this.log.error('[hooks]', e); }
+  }
+
   cancellationPreview(b) {
-    if (b.status !== 'confirmed' && b.status !== 'pending_supplier') return null;
+    if (b.status !== 'confirmed' && b.status !== 'pending_supplier' && b.status !== 'partially_confirmed') return null;
+    const provider = this.extraProviders[b.vertical];
+    if (provider && typeof provider.cancellationPreview === 'function') return provider.cancellationPreview(b, this.now());
     const c = b.cancellation;
     const hours = hoursUntil(b.startDate, this.now());
     if (hours <= 0) return { allowed: false, reason: 'This booking has already started.' };
@@ -307,7 +334,7 @@ class BookingEngine {
     const claimed = await this.store.updateBooking(b.id, b.status, { status: 'cancelling' });
     if (!claimed) throw new AppError('conflict', 'This booking changed. Refresh and try again.', 409);
     try {
-      await this.provider(b.vertical).cancel({ supplierRef: b.supplierRef, reason: 'traveler_request' });
+      await this.provider(b.vertical).cancel({ supplierRef: b.supplierRef, reason: 'traveler_request', booking: b });
     } catch (err) {
       await this.store.updateBooking(b.id, 'cancelling', { status: b.status });
       this.log.error(`[booking] supplier cancel failed for ${b.ref}:`, err && err.message);
@@ -321,6 +348,7 @@ class BookingEngine {
     const done = await this.store.updateBooking(b.id, 'cancelling', {
       status: 'cancelled', refundAmount: preview.refundAmount, history: [...b.history, { at, status: 'cancelled' }],
     });
+    this.emit('booking_cancelled', done);
     return { booking: this.publicBooking(done) };
   }
 
@@ -349,6 +377,9 @@ class BookingEngine {
       payment: b.payment ? { brand: b.payment.brand, last4: b.payment.last4, mode: b.payment.mode } : null,
       lastPaymentError: b.status === 'pending_payment' ? b.lastPaymentError || null : null,
       supplierRef: b.supplierRef,
+      components: b.components || null,
+      trip: b.quote.trip || null,
+      budget: b.quote.budget || null,
       refundAmount: b.refundAmount ?? null,
       createdAt: b.createdAt,
     };
