@@ -1,9 +1,10 @@
 const express = require('express');
 const { homeView } = require('../views/home');
+const { refine, parseRefine } = require('../booking/refine');
 const { brandsView, technologyView, partnersView, aboutView, contactView } = require('../views/pages');
 const { bookView, bookIndexView, offerView, checkoutView, bookingView, manageView, defaultsFor } = require('../views/book');
 const { notFoundView } = require('../views/errors');
-const { getVertical } = require('../verticals');
+const { VERTICALS, getVertical } = require('../verticals');
 const { AppError } = require('../lib/errors');
 const { readCookies, bookingCookieName, setBookingCookie } = require('../lib/cookies');
 
@@ -18,7 +19,10 @@ function pagesRouter(ctx, { writeLimiter }) {
 
   r.use((req, res, next) => { res.setHeader('Cache-Control', 'no-cache'); next(); });
 
-  r.get('/', (req, res) => send(res, homeView(ctx)));
+  r.get('/', (req, res) => {
+    const verticals = VERTICALS.filter(v => enabled(v.key)).map(v => ({ meta: v, values: defaultsFor(v), lookups: lookupsFor(v.key) }));
+    send(res, homeView(ctx, { verticals }));
+  });
   r.get('/brands', (req, res) => send(res, brandsView(ctx)));
   r.get('/technology', (req, res) => send(res, technologyView(ctx)));
   r.get('/partners', (req, res) => send(res, partnersView(ctx)));
@@ -44,6 +48,8 @@ function pagesRouter(ctx, { writeLimiter }) {
     let state;
     try {
       state = await engine.search(vertical, raw);
+      state.refineQuery = parseRefine(req.query);
+      state.refined = refine(state.offers, state.refineQuery);
     } catch (err) {
       if (!(err instanceof AppError)) return next(err);
       state = { error: { status: err.status, message: err.message, details: err.details } };

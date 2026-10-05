@@ -1,6 +1,7 @@
 const { html, raw } = require('../lib/html');
 const { icon } = require('./icons');
 const { layout } = require('./layout');
+const { searchForm } = require('./book');
 
 // "ALAMEIN GO" wordmark: typeset, with an original wave mark under GO.
 function alameinGoWordmark() {
@@ -65,7 +66,25 @@ function devices() {
 </div>`;
 }
 
-function homeView(ctx) {
+// Tabbed search box under the hero, one tab per bookable vertical. Without JS the tabs are plain links
+// to each vertical's search page and only the first form shows; site.js turns them into tabs.
+function homeSearch(verticals) {
+  if (!verticals.length) return '';
+  return html`<section class="home-search" aria-label="Search travel">
+  <div class="container">
+    <div class="home-search-card" data-tabs>
+      <div class="home-search-tabs" role="tablist" aria-label="What are you booking?">
+        ${verticals.map((v, i) => html`<a role="tab" id="hs-tab-${v.meta.key}" href="/book/${v.meta.key}" aria-controls="hs-panel-${v.meta.key}" aria-selected="${i === 0 ? 'true' : 'false'}"${i ? raw(' tabindex="-1"') : ''} data-tab>${icon(v.meta.icon)}<span>${v.meta.label}</span></a>`)}
+      </div>
+      ${verticals.map((v, i) => html`<div class="home-search-panel" role="tabpanel" id="hs-panel-${v.meta.key}" aria-labelledby="hs-tab-${v.meta.key}"${i ? raw(' hidden') : ''}>
+        ${searchForm(v.meta, v.values, v.lookups, {}, { idPrefix: `hs-${v.meta.key}`, bind: false })}
+      </div>`)}
+    </div>
+  </div>
+</section>`;
+}
+
+function homeView(ctx, { verticals = [] } = {}) {
   const body = html`
 <section class="hero" aria-labelledby="hero-title">
   <div class="hero-media" role="img" aria-label="The Mediterranean coast at New Alamein: white sand, turquoise water and a clear sky"></div>
@@ -80,7 +99,7 @@ function homeView(ctx) {
     <div class="location-chip">${icon('pin')}<span><b>New Alamein</b><small>Egypt</small></span></div>
   </div>
 </section>
-
+${homeSearch(verticals)}
 <section class="brands-section" aria-labelledby="brands-title">
   <div class="container">
     <div class="section-head">

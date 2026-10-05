@@ -4,6 +4,7 @@ const { raw } = require('../lib/html');
 const PATHS = {
   arrow: '<path d="M4 12h15M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
   'arrow-left': '<path d="M20 12H5M11 6l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+  sliders: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="15" cy="7" r="2.2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="9" cy="17" r="2.2" fill="none" stroke="currentColor" stroke-width="2"/>',
   pin: '<path d="M12 2.5c-4 0-7 3-7 7 0 5.2 7 12 7 12s7-6.8 7-12c0-4-3-7-7-7z" fill="currentColor"/><circle cx="12" cy="9.5" r="2.6" fill="#fff"/>',
   bed: '<path d="M2.5 18.5V6.5M2.5 14h19v4.5M21.5 14v-2.5a3 3 0 0 0-3-3H11V14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><rect x="4.5" y="9" width="5" height="3.6" rx="1.2" fill="currentColor"/><path d="M3 14h18v3H3z" fill="currentColor" opacity=".25"/>',
   car: '<path d="M4 16.5v-4.2l1.9-5A2 2 0 0 1 7.8 6h8.4a2 2 0 0 1 1.9 1.3l1.9 5v4.2z" fill="currentColor"/><path d="M6.6 11.2 7.8 8h8.4l1.2 3.2z" fill="#fff"/><rect x="4.5" y="16" width="3" height="3" rx="1" fill="currentColor"/><rect x="16.5" y="16" width="3" height="3" rx="1" fill="currentColor"/><circle cx="7.5" cy="13.7" r="1.2" fill="#fff"/><circle cx="16.5" cy="13.7" r="1.2" fill="#fff"/>',

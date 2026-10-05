@@ -34,6 +34,11 @@
       .then(function (res) { return res.text(); })
       .then(function (htmlText) {
         inner.innerHTML = htmlText;
+        collapseFilters();
+  // On wide screens the panel is a sidebar that always stays open.
+  document.addEventListener('click', function (e) {
+    if (!narrow.matches && e.target.closest('.filters-head')) e.preventDefault();
+  });
         if (push) history.pushState({ url: url }, '', url);
         syncErrors();
       })
@@ -61,6 +66,37 @@
     });
     window.addEventListener('popstate', function () { load(location.pathname + location.search, false); });
   }
+
+  // Filters and sort: re-run on every change, keeping the same search (the form is re-rendered with
+  // the results, so listen on the container).
+  if (inner) {
+    inner.addEventListener('change', function (e) {
+      var f = e.target.form;
+      if (!f || !f.hasAttribute('data-refine-form')) return;
+      load(refineUrl(f), true);
+    });
+    inner.addEventListener('submit', function (e) {
+      var f = e.target;
+      if (!f.hasAttribute('data-refine-form')) return;
+      e.preventDefault();
+      load(refineUrl(f), true);
+    });
+  }
+
+  // Drop empty choices ("Any") and the default sort so shared links stay short.
+  function refineUrl(f) {
+    var params = new URLSearchParams();
+    new FormData(f).forEach(function (v, k) { if (v !== '' && !(k === 'sort' && v === 'recommended')) params.append(k, v); });
+    return f.getAttribute('action') + '?' + params.toString();
+  }
+
+  // On narrow screens the filter panel starts collapsed so results come first.
+  var narrow = window.matchMedia('(max-width: 1024px)');
+  function collapseFilters() {
+    if (!narrow.matches) return;
+    document.querySelectorAll('[data-filters]').forEach(function (d) { if (!d.querySelector('.filters-active')) d.open = false; });
+  }
+  collapseFilters();
 
   var quoteForm = document.querySelector('[data-quote-form]');
   if (quoteForm) {

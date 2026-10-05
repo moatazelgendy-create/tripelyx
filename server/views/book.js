@@ -7,6 +7,7 @@ const { layout } = require('./layout');
 const { VERTICALS, getVertical } = require('../verticals');
 const { addDays, today } = require('../lib/dates');
 const { money, date, month, minutes, querySummary, UNIT_LABEL, STATUS_LABEL } = require('./format');
+const { refine, parseRefine, ratingWord, SORTS } = require('../booking/refine');
 
 function qs(query) {
   const p = new URLSearchParams();
@@ -39,14 +40,14 @@ function lookupLabel(item) {
   return typeof item === 'string' ? item : `${item.code} — ${item.name} (${item.city})`;
 }
 
-function searchForm(meta, values, lookups, errors = {}) {
-  return html`<form class="search-form" method="get" action="/book/${meta.key}" data-search-form novalidate>
+function searchForm(meta, values, lookups, errors = {}, { idPrefix = 'f', bind = true } = {}) {
+  return html`<form class="search-form" method="get" action="/book/${meta.key}"${bind ? raw(' data-search-form') : ''} novalidate>
     ${meta.search.map(f => {
-      const id = `f-${f.name}`;
+      const id = `${idPrefix}-${f.name}`;
       const v = values[f.name] ?? '';
       const err = errors[f.name];
       const list = lookups && lookups[f.name];
-      const listId = list ? `dl-${meta.key}-${f.name}` : null;
+      const listId = list ? `dl-${idPrefix}-${meta.key}-${f.name}` : null;
       const wide = f.type === 'text' || f.type === 'airport';
       const display = f.type === 'airport' && v && list ? (list.find(a => a.code === v) ? lookupLabel(list.find(a => a.code === v)) : v) : v;
       let input;
@@ -66,6 +67,11 @@ function searchForm(meta, values, lookups, errors = {}) {
   </form>`;
 }
 
+function ratingBadge(offer) {
+  if (!offer.rating) return '';
+  return html`<div class="rating-badge"><span class="score">${offer.rating.score.toFixed(1)}</span><span><b>${ratingWord(offer.rating.score)}</b> <span class="reviews">${offer.rating.count.toLocaleString('en-US')} reviews</span></span></div>`;
+}
+
 function chipsFor(offer) {
   return html`<div class="chips">
     ${offer.rating ? html`<span class="rating">${icon('star')}${offer.rating.score.toFixed(1)} <span>(${offer.rating.count})</span></span>` : ''}
@@ -79,25 +85,68 @@ function resultCard(vertical, offer, query) {
   const url = offerUrl(vertical, offer, query);
   const avail = offer.options.filter(o => o.available);
   const best = (avail.length ? avail : offer.options).reduce((a, b) => (a.price.amount <= b.price.amount ? a : b));
+  const free = offer.cancellation.type !== 'non_refundable';
+  const few = avail.length && best.remaining !== undefined && best.remaining !== null && best.remaining <= 3;
   return html`<article class="result">
-    <a class="result-media" href="${url}" tabindex="-1" aria-hidden="true"><img src="${offer.media[0] ? offer.media[0].url : ''}" alt="" loading="lazy" width="400" height="250"></a>
+    <a class="result-media" href="${url}" tabindex="-1" aria-hidden="true"><img src="${offer.media[0] ? offer.media[0].url : ''}" alt="" loading="lazy" width="400" height="250">${(offer.badges || [])[0] ? html`<span class="media-badge">${offer.badges[0]}</span>` : ''}</a>
     <div class="result-body">
       <h3><a href="${url}">${offer.title}</a></h3>
-      <p class="result-sub">${offer.subtitle || offer.location.name}</p>
-      ${offer.description ? html`<p class="result-desc">${offer.description}</p>` : ''}
-      ${offer.attributes && offer.attributes.length ? html`<div class="chips result-attrs">${offer.attributes.slice(0, 4).map(a => html`<span class="chip"><b>${a.label}:</b>&nbsp;${a.value}</span>`)}</div>` : ''}
-      ${chipsFor(offer)}
+      <p class="result-sub">${icon('pin')}${offer.subtitle || offer.location.name}</p>
+      ${offer.attributes && offer.attributes.length ? html`<p class="result-attrs">${offer.attributes.slice(0, 4).map((a, i) => html`${i ? ' · ' : ''}<span>${a.label}: <b>${a.value}</b></span>`)}</p>` : ''}
+      <ul class="result-perks">
+        ${free ? html`<li class="perk-good">${icon('check')}<span><b>Fully refundable</b> ${offer.cancellation.freeUntilHours ? html`<span class="muted">until ${offer.cancellation.freeUntilHours}h before</span>` : ''}</span></li>` : html`<li>${icon('info')}<span>Non-refundable</span></li>`}
+        ${few ? html`<li class="perk-urgent">${icon('clock')}<span>Only ${best.remaining} left at this price</span></li>` : ''}
+      </ul>
+      <div class="result-foot">
+        ${ratingBadge(offer)}
+        ${offer.demo ? html`<span class="chip chip-demo">Demo inventory</span>` : ''}
+      </div>
     </div>
     <div class="result-price">
       <div>
-        <span class="price-from">${avail.length ? 'from' : 'Sold out'}</span>
+        ${avail.length ? '' : html`<span class="price-from sold-out">Sold out</span>`}
         <div class="price-amount">${money(offer.fromPrice.amount, offer.fromPrice.currency)}</div>
         <span class="price-unit">${UNIT_LABEL[offer.fromPrice.unit] || offer.fromPrice.unit}</span>
-        ${best.total && best.total.amount !== best.price.amount ? html`<div class="price-total">${money(best.total.amount, best.total.currency)} before taxes</div>` : ''}
+        ${best.total && best.total.amount !== best.price.amount ? html`<div class="price-total"><b>${money(best.total.amount, best.total.currency)}</b> total</div>` : ''}
+        <div class="price-note">before taxes &amp; fees</div>
       </div>
-      <a class="btn btn-navy btn-sm" href="${url}" aria-label="View ${offer.title}">View ${icon('arrow')}</a>
+      <a class="btn btn-navy btn-sm" href="${url}" aria-label="View ${offer.title}">View deal ${icon('arrow')}</a>
     </div>
   </article>`;
+}
+
+function filterPanel(vertical, query, refined, r) {
+  const meta = getVertical(vertical);
+  const f = refined.facets;
+  const unit = UNIT_LABEL[f.unit] || '';
+  const radio = (name, value, label, count, checked) => html`<label class="filter-opt"><input type="radio" name="${name}" value="${value}"${checked ? raw(' checked') : ''}><span>${label}</span>${count !== null ? html`<span class="filter-count">${count}</span>` : ''}</label>`;
+  const activeCount = [r.freeCancel, r.minRating !== null, r.maxPrice !== null].filter(Boolean).length;
+  return html`<aside class="filters" aria-labelledby="filters-title">
+   <details class="filters-box" open data-filters>
+    <summary class="filters-head"><h2 id="filters-title">${icon('sliders')}Filter by${activeCount ? html` <span class="filters-active">${activeCount}</span>` : ''}</h2><span class="filters-toggle" aria-hidden="true"></span></summary>
+    <form id="refine-form" method="get" action="/book/${vertical}" data-refine-form>
+      ${meta.search.map(fl => query[fl.name] !== undefined && query[fl.name] !== null && query[fl.name] !== '' ? html`<input type="hidden" name="${fl.name}" value="${query[fl.name]}">` : '')}
+      <fieldset class="filter-group">
+        <legend>Popular filters</legend>
+        <label class="filter-opt"><input type="checkbox" name="freeCancel" value="1"${r.freeCancel ? raw(' checked') : ''}><span>Free cancellation</span><span class="filter-count">${f.freeCancel}</span></label>
+      </fieldset>
+      ${f.ratings.length ? html`<fieldset class="filter-group">
+        <legend>Guest rating</legend>
+        ${radio('minRating', '', 'Any', null, r.minRating === null)}
+        ${f.ratings.map(s => radio('minRating', String(s.min), `${s.label} ${s.min}+`, s.count, r.minRating === s.min))}
+      </fieldset>` : ''}
+      ${f.prices.length ? html`<fieldset class="filter-group">
+        <legend>Price ${unit}</legend>
+        ${radio('maxPrice', '', 'Any price', null, r.maxPrice === null)}
+        ${f.prices.map(b => radio('maxPrice', String(b.max), `Up to ${money(b.max * 100, f.currency)}`, b.count, r.maxPrice === b.max))}
+      </fieldset>` : ''}
+      <div class="filters-actions">
+        <button class="btn btn-navy btn-sm filters-apply" type="submit">Apply filters</button>
+        ${refined.active ? html`<a class="filters-clear" href="/book/${vertical}?${qs(query)}${r.sort !== 'recommended' ? `&sort=${r.sort}` : ''}">Clear filters</a>` : ''}
+      </div>
+    </form>
+   </details>
+  </aside>`;
 }
 
 function resultsBlock(vertical, state) {
@@ -110,17 +159,35 @@ function resultsBlock(vertical, state) {
       ${isInput ? '' : html`<a class="btn btn-navy btn-sm" href="">Try again</a>`}
     </div>`;
   }
-  const { query, offers } = state;
-  if (!offers.length) {
+  const { query } = state;
+  const r = state.refineQuery || parseRefine({});
+  const refined = state.refined || refine(state.offers, r);
+  if (!refined.total) {
     return html`<div class="empty-state">${icon('search')}<h3>No ${meta.label.toLowerCase()} match your search</h3>
       <p>Try different dates, fewer travelers or another destination.</p></div>`;
   }
-  return html`<div class="results-head"><h2>${offers.length} ${offers.length === 1 ? meta.noun : `${meta.label.toLowerCase()}`} found</h2><span class="count">${querySummary(vertical, query)}</span></div>
-    <div class="results">${offers.map(o => resultCard(vertical, o, query))}</div>`;
+  const offers = refined.offers;
+  return html`<div class="results-layout">
+    ${filterPanel(vertical, query, refined, r)}
+    <div class="results-main">
+      <div class="results-head">
+        <div><h2>${offers.length === refined.total ? '' : `${offers.length} of `}${refined.total} ${refined.total === 1 ? meta.noun : meta.label.toLowerCase()}</h2><span class="count">${querySummary(vertical, query)}</span></div>
+        <div class="sort-field"><label for="sort">Sort by</label><select id="sort" name="sort" form="refine-form">${Object.entries(SORTS).map(([k, v]) => html`<option value="${k}"${k === r.sort ? raw(' selected') : ''}>${v.label}</option>`)}</select></div>
+      </div>
+      <ul class="trust-strip" aria-label="Booking with Tripelyx">
+        <li>${icon('shield')}Secure checkout</li>
+        <li>${icon('check')}Total price shown before you pay</li>
+        <li>${icon('calendar')}Manage or cancel online</li>
+      </ul>
+      ${offers.length
+        ? html`<div class="results">${offers.map(o => resultCard(vertical, o, query))}</div>`
+        : html`<div class="empty-state">${icon('sliders')}<h3>No results match these filters</h3><p>Remove a filter to see more options.</p><a class="btn btn-navy btn-sm" href="/book/${vertical}?${qs(query)}">Clear filters</a></div>`}
+    </div>
+  </div>`;
 }
 
 function skeletons() {
-  return html`<div class="results" aria-hidden="true">${[0, 1, 2].map(() => html`<div class="result-skeleton"><div class="skeleton"></div><div class="sk-body"><div class="skeleton sk-line"></div></div><div></div></div>`)}</div>`;
+  return html`<div class="results-layout" aria-hidden="true"><div class="filters filters-skeleton"><div class="skeleton sk-line"></div><div class="skeleton sk-line"></div><div class="skeleton sk-line"></div></div><div class="results">${[0, 1, 2].map(() => html`<div class="result-skeleton"><div class="skeleton"></div><div class="sk-body"><div class="skeleton sk-line"></div></div><div></div></div>`)}</div></div>`;
 }
 
 function bookTabs(ctx, active) {
@@ -228,7 +295,8 @@ function offerView(ctx, { vertical, offer, query, error, selected = {} }) {
       </div>
       <div class="offer-head">
         <h1>${offer.title}</h1>
-        <p class="result-sub">${offer.subtitle}</p>
+        <p class="result-sub">${icon('pin')}${offer.subtitle}</p>
+        ${offer.rating ? html`<div class="mb-12">${ratingBadge(offer)}</div>` : ''}
         ${chipsFor(offer)}
       </div>
       ${offer.description ? html`<div class="offer-section"><p>${offer.description}</p></div>` : ''}
@@ -288,6 +356,7 @@ function checkoutView(ctx, { quote, paymentConfig }) {
   const body = html`
 <div class="container">
   <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/book">Book</a> / <a href="/book/${quote.vertical}/${encodeURIComponent(quote.offer.id)}?${qs(quote.query)}">${quote.offer.title}</a> / <span aria-current="page">Checkout</span></nav>
+  <ol class="progress-steps" aria-label="Booking steps"><li class="is-done"><span class="step-dot">1</span>Choose your option</li><li class="is-current" aria-current="step"><span class="step-dot">2</span>Traveler details &amp; payment</li><li><span class="step-dot">3</span>Confirmation</li></ol>
   ${expired
     ? html`<div class="empty-state">${icon('clock')}<h3>This price has expired</h3><p>Prices are held for ${ctx.config.quoteTtlMinutes} minutes. Go back to get a fresh price.</p><a class="btn btn-navy btn-sm" href="/book/${quote.vertical}/${encodeURIComponent(quote.offer.id)}?${qs(quote.query)}">Get a new price</a></div>`
     : html`<div class="checkout-layout">
@@ -339,6 +408,7 @@ function bookingView(ctx, { booking: b, cancellationPreview: preview, payment, n
   }[b.status] || STATUS_LABEL[b.status];
   const body = html`
 <div class="container">
+  ${good ? raw('<ol class="progress-steps" aria-label="Booking steps"><li class="is-done"><span class="step-dot">1</span>Choose your option</li><li class="is-done"><span class="step-dot">2</span>Traveler details &amp; payment</li><li class="is-done"><span class="step-dot">3</span>Confirmation</li></ol>') : ''}
   <div class="confirm-hero">
     <div class="confirm-badge${good ? '' : warn ? ' is-warn' : ' is-bad'}">${icon(good ? 'check' : warn ? 'clock' : 'info')}</div>
     <h1>${headline}</h1>
@@ -387,4 +457,4 @@ function manageView(ctx, { error, ref = '', email = '' } = {}) {
   return layout({ title: 'Manage booking', body, ctx });
 }
 
-module.exports = { bookView, bookIndexView, offerView, checkoutView, bookingView, manageView, resultsBlock, defaultsFor, qs };
+module.exports = { bookView, bookIndexView, offerView, checkoutView, bookingView, manageView, resultsBlock, searchForm, defaultsFor, qs };
