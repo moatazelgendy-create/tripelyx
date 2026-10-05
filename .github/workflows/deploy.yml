@@ -23,6 +23,8 @@ env:
   APP_ENV: ${{ vars.APP_ENV || 'staging' }}
   AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
   AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN || 'arn:aws:iam::957123506077:role/tripelyx-github-deploy' }}
+  # HTTPS certificate for tripelyx.com and www.tripelyx.com (AWS Certificate Manager, us-east-1).
+  CERTIFICATE_ARN: ${{ vars.CERTIFICATE_ARN || 'arn:aws:acm:us-east-1:957123506077:certificate/5fd7567d-ec9a-4277-a9b6-5afbc852e701' }}
 
 jobs:
   test:
@@ -71,7 +73,7 @@ jobs:
             --parameter-overrides \
               AppEnv="${APP_ENV}" \
               ImageUri="${{ steps.image.outputs.uri }}" \
-              CertificateArn="${{ vars.CERTIFICATE_ARN }}"
+              CertificateArn="${CERTIFICATE_ARN}"
 
       - name: Show the site address
         run: |
