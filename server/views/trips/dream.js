@@ -40,7 +40,7 @@ function dreamView(ctx, { dest, q, originCity, best, under, gap, closers, cx, us
       <div class="${gap > 0 ? 'is-over' : ''}"><span>${gap > 0 ? 'You’re only' : 'You keep'}</span><b>${money(Math.abs(gap > 0 ? gap : budget - underT.total))}${gap > 0 ? ' away' : ''}</b></div>
     </div>
     ${budgetMeter((gap > 0 ? dreamT : underT).total, budget, { compact: true })}
-    ${gap > 0 ? html`<h2 id="gap-title">We need to save ${money(gap)}. Here’s what would do it.</h2>
+    ${gap > 0 ? html`<h2 id="gap-title">${beat ? `A stronger version costs ${money(dreamT.total)}, ${money(gap)} over your quote. Here’s what would close that gap.` : `We need to save ${money(gap)}. Here’s what would do it.`}</h2>
       <p class="tb-muted">Each line is a real re-priced version of the trip. Pick the compromises you’re willing to make; we never change anything without you.</p>
       ${changeList(closers, { empty: 'No single change closes the gap; try the trip under budget below, or combine changes on the trip page.' })}
       <p class="tb-muted">Or <a href="/trip/${dreamToken}?${contextParams(cx)}#customize">open the customizer</a> to combine several changes, or <a href="/trip/${dreamToken}?${contextParams({ ...cx, allowOver: 10 })}&review=1">keep the dream version at ${money(dreamT.total)}</a>.</p>` : html`<h2 id="gap-title">${dest.name} fits your budget.</h2>`}

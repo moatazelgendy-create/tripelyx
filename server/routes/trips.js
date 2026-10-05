@@ -163,12 +163,14 @@ function tripsRouter(ctx, { writeLimiter }) {
   r.get('/compare', async (req, res, next) => {
     try {
       const cx = optimizer.parseContext(req.query);
-      const tokens = [...new Set([].concat(req.query.t || []).filter(x => typeof x === 'string' && x.length <= 300))].slice(0, 3);
-      const labels = [].concat(req.query.l || []).map(l => (typeof l === 'string' ? l.slice(0, 30) : ''));
+      const rawTokens = [].concat(req.query.t || []), rawLabels = [].concat(req.query.l || []);
+      const wanted = new Map();
+      rawTokens.forEach((tok, i) => { if (typeof tok === 'string' && tok.length <= 300 && !wanted.has(tok) && wanted.size < 3) wanted.set(tok, typeof rawLabels[i] === 'string' ? rawLabels[i].slice(0, 30) : ''); });
+      const tokens = [...wanted.keys()];
       if (tokens.length < 2) return res.redirect(303, cx.searchParams ? `/trips?${cx.searchParams}` : '/plan');
       const items = [];
-      for (const [i, tok] of tokens.entries()) {
-        try { items.push({ ...(await svc.trip(tok, cx)), label: labels[i] || null }); } catch (e) { if (!(e instanceof AppError)) throw e; }
+      for (const tok of tokens) {
+        try { items.push({ ...(await svc.trip(tok, cx)), label: wanted.get(tok) || null }); } catch (e) { if (!(e instanceof AppError)) throw e; }
       }
       if (items.length < 2) return send(res.status(410), unavailableView(ctx, { token: tokens[0], cx }));
       send(res, compareView(ctx, { items, cx, mode: 'compare', all: req.query.all === '1' }));
