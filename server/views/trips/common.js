@@ -4,6 +4,7 @@ const { html, raw } = require('../../lib/html');
 const { icon } = require('../icons');
 const { format } = require('../../lib/money');
 const { date } = require('../format');
+const { clock } = require('../../trips/decision');
 
 const money = c => format(c, 'USD');
 const dollars = c => `$${Math.round(c / 100).toLocaleString('en-US')}`;
@@ -84,9 +85,19 @@ function scorecard(scores, demo) {
   </div>`;
 }
 
+// The verdict badge: Great fit / Good fit / Budget fit / We'd keep looking.
+function fitBadge(v, { compact = false } = {}) {
+  return html`<span class="tb-fit tb-fit-${v.tone}${compact ? ' tb-fit-compact' : ''}" title="${v.action}">${v.label}</span>`;
+}
+
+// Hidden inputs carrying a query string into a GET form.
+function hiddenParams(qs) {
+  return [...new URLSearchParams(qs)].map(([k, v]) => html`<input type="hidden" name="${k}" value="${v}">`);
+}
+
 function stepsBar(current) {
   const steps = ['Your trip', 'Price check', 'Traveler & payment', 'Confirmation'];
   return html`<ol class="progress-steps tb-steps" aria-label="Booking steps">${steps.map((s, i) => html`<li class="${i < current ? 'is-done' : i === current ? 'is-current' : ''}"${i === current ? raw(' aria-current="step"') : ''}><span class="step-dot">${i + 1}</span>${s}</li>`)}</ol>`;
 }
 
-module.exports = { money, dollars, shortDate, longDate, plural, hm, statusPill, demoBadge, budgetMeter, recipe, scorecard, stepsBar, TRIP_STATUS };
+module.exports = { money, dollars, shortDate, longDate, plural, hm, clock, statusPill, demoBadge, budgetMeter, recipe, scorecard, stepsBar, fitBadge, hiddenParams, TRIP_STATUS };

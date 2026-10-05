@@ -4,7 +4,10 @@ const { html, raw, jsonScript } = require('../../lib/html');
 const { icon } = require('../icons');
 const { layout } = require('../layout');
 const { contextParams, tradeoffs } = require('../../trips/optimizer');
-const { money, dollars, shortDate, longDate, plural, hm, demoBadge, budgetMeter, recipe, scorecard, stepsBar } = require('./common');
+const { verdict, usableTime, timeAlternatives, budgetUnlocks, realityCheck, hoursLabel } = require('../../trips/decision');
+const { money, dollars, shortDate, longDate, plural, hm, clock, demoBadge, budgetMeter, recipe, scorecard, stepsBar, fitBadge, hiddenParams } = require('./common');
+
+const cap = s => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 
 const FEATURE_LABEL = { breakfast: 'Breakfast included', pool: 'Pool', beachfront: 'Beachfront', adultsOnly: 'Adults only', allInclusive: 'All-inclusive', freeCancellation: 'Free cancellation', familyFriendly: 'Family friendly', spa: 'Spa' };
 
@@ -23,7 +26,65 @@ function hotelLine(h) {
 }
 
 function flightLine(f) {
-  return html`<b>${f.name}</b> · ${f.stops ? `${f.stops} stop` : 'nonstop'} · ${hm(f.durationMinutes)} each way<br><small>${f.airline} · ${f.carryOn ? 'carry-on included' : 'personal item only'}${f.checkedBagIncluded ? ' · checked bag included' : ''} · ${f.refundable ? 'refundable' : f.changeable ? 'changeable, non-refundable' : 'no changes or refunds'}</small>`;
+  const times = Number.isFinite(f.departMinutes) ? ` · out ${clock(f.departMinutes)}–${clock(f.arriveMinutes)}${f.arrivesNextDay ? ' next day' : ''}, back ${clock(f.returnDepartMinutes)}–${clock(f.returnArriveMinutes)}` : '';
+  return html`<b>${f.name}</b> · ${f.stops ? `${f.stops} stop` : 'nonstop'} · ${hm(f.durationMinutes)} each way<br><small>${f.airline}${times} · ${f.carryOn ? 'carry-on included' : 'personal item only'}${f.checkedBagIncluded ? ' · checked bag included' : ''} · ${f.refundable ? 'refundable' : f.changeable ? 'changeable, non-refundable' : 'no changes or refunds'}</small>`;
+}
+
+// The verdict panel: what we'd actually do with this trip, and why, in plain words.
+function verdictPanel(v, scores, { compact = false } = {}) {
+  if (compact) return html`<div class="tb-verdict tb-verdict-${v.tone} tb-verdict-compact" role="note">${fitBadge(v)}<p><b>Our honest take:</b> ${v.action}</p></div>`;
+  return html`<section class="tb-verdict tb-verdict-${v.tone}" aria-labelledby="verdict-title">
+    <div class="tb-verdict-head">${fitBadge(v)}<span class="tb-verdict-match">${scores.match}% match with your answers</span></div>
+    <h2 id="verdict-title">${v.action}</h2>
+    <dl class="tb-verdict-facts">
+      <div><dt>Biggest win</dt><dd>${cap(v.win)}</dd></div>
+      <div><dt>Biggest compromise</dt><dd>${v.compromise ? cap(v.compromise) : 'None we can see'}</dd></div>
+    </dl>
+    <p class="tb-muted tb-small">The verdict uses only your answers and the facts of this trip. What Tripelyx earns is never part of it.</p>
+  </section>`;
+}
+
+// "Your time there": what the flight schedule leaves of the first and last day, and the flights
+// that would give a day back.
+function timePanel(t, time, alts, token, cx) {
+  const s = t.spec;
+  return html`<section class="tb-panel" id="time" aria-labelledby="time-title">
+    <h2 id="time-title">${icon('clock')} Your time there</h2>
+    <p class="tb-muted">${plural(s.nights, 'night')} on paper. Here is what the flight times leave you, counting 8 AM to 10 PM as usable.${t.demo ? ' Times come from the demo schedule.' : ''}</p>
+    <div class="tb-time">
+      <div><span>First day</span><b>${time.firstDay.label}</b><small>land ${time.firstDay.arrive}, at the hotel about ${time.firstDay.settled}</small></div>
+      <div><span>Full days</span><b>${time.fullDays}</b><small>wake up there, go to sleep there</small></div>
+      <div><span>Last day</span><b>${time.lastDay.label}</b><small>leave the hotel about ${time.lastDay.leaveHotel} for the ${time.lastDay.depart} flight</small></div>
+    </div>
+    ${time.flags.map(f => html`<p class="tb-tip tb-tip-warn">${icon('alert')} ${f.text}</p>`)}
+    ${alts.length ? html`<h3>${icon('sun')} Get my day back</h3><ul class="tb-changes">${alts.map(a => html`<li><a href="${changeUrl(token, cx, { flight: a.flight.id })}"><span>${a.flight.name} fare: ${a.flight.stops ? `${a.flight.stops} stop` : 'nonstop'}, out ${a.time.outbound}, back ${a.time.inbound}</span>${delta(a.delta)}<small>${hoursLabel(a.gain)} more vacation · new total ${money(a.total)}</small></a></li>`)}</ul>` : ''}
+  </section>`;
+}
+
+// Budget unlocks: what a little more buys, from real re-priced changes; "make it better for the same
+// money"; and the locks that let the engine re-plan everything else.
+function unlockPanel(t, unlock, { budget, diff, token, cx, reviewUrl }) {
+  const title = unlock.within.length ? `You still have ${money(diff)} available` : budget ? 'What a little more would get you' : 'Make it better';
+  return html`<section class="tb-panel" id="unlock" aria-labelledby="unlock-title">
+    <h2 id="unlock-title">${icon('sparkle')} ${title}</h2>
+    ${unlock.steps.length ? html`<p class="tb-muted">Real re-priced changes, cheapest first.${unlock.within.length ? ' Or keep the savings: coming in under budget is a win.' : ''}</p>
+      <ul class="tb-unlock">${unlock.steps.map(u => html`<li class="${u.within ? 'is-within' : ''}"><a href="${u.url}"><b>+${money(u.delta)}</b><span>${u.label}</span><small>new total ${money(u.total)}${u.within ? ' · within your budget' : diff !== null && diff > 0 ? ` · ${money(u.delta - diff)} over your budget` : ''}</small></a></li>`)}</ul>` : html`<p class="tb-muted">There is nothing left to upgrade on this trip with the inventory we have.</p>`}
+    ${unlock.keep ? html`<p class="tb-tip">${icon('check')} Nothing within your remaining ${money(diff)} is a real improvement. Keep it: that is ${money(diff)} for the trip itself.</p>` : ''}
+    <div class="tb-better-row">
+      <a class="btn btn-navy" href="/trip/${token}/optimize?${contextParams(cx, { cap: 'same', lk: 'd' })}">${icon('sparkle')} Make it better for the same money</a>
+      ${diff !== null && diff > 0 ? html`<a class="btn btn-ghost" href="${reviewUrl}">Keep my ${money(diff)} and book</a>` : ''}
+    </div>
+    <h3>${icon('lock')} Lock what you love, improve the rest</h3>
+    <p class="tb-muted tb-small">Tick what must not change. We re-plan everything else${budget ? ` within your ${dollars(budget)}` : ' for the same money'} and show you before and after. Locked parts never change without you.</p>
+    <form class="tb-locks" method="get" action="/trip/${token}/optimize">
+      ${hiddenParams(contextParams(cx))}
+      <input type="hidden" name="cap" value="${budget ? 'budget' : 'same'}">
+      <label><input type="checkbox" name="lk" value="h"> ${icon('bed')} Keep ${t.hotel.name}</label>
+      <label><input type="checkbox" name="lk" value="f"> ${icon('plane')} Keep these flights</label>
+      <label><input type="checkbox" name="lk" value="d" checked> ${icon('calendar')} Keep these dates</label>
+      <button class="btn btn-ghost" type="submit">Optimize everything else ${icon('arrow')}</button>
+    </form>
+  </section>`;
 }
 
 // Smart alternatives / Make it cheaper / Make it better, all from real re-priced single changes.
@@ -87,11 +148,11 @@ function tripView(ctx, { data, cx, user, saved, dreamGap }) {
   const diff = budget ? budget - t.total : null;
   const changes = singleChanges(t, options, token, cx);
   const cheaper = changes.filter(c => c.delta < 0).sort((a, b) => a.delta - b.delta).slice(0, 6);
-  const better = diff !== null && diff > 0 ? changes.filter(c => c.delta > 0 && c.delta <= diff && c.better).sort((a, b) => b.delta - a.delta).slice(0, 5) : [];
   const rescue = diff !== null && diff < 0 ? changes.filter(c => c.total <= budget).sort((a, b) => b.total - a.total).slice(0, 5) : [];
-  const nextHotel = options.hotels.filter(h => h.hotel.stars > t.hotel.stars).sort((a, b) => a.delta - b.delta)[0];
-  const nonstop = options.flights.find(f => f.flight.stops === 0 && t.flight.stops > 0);
-  const sweet = diff !== null && (nextHotel || nonstop) ? [nextHotel && { ...nextHotel, label: `a ${nextHotel.hotel.stars}-star${nextHotel.hotel.features.beachfront ? ' beachfront' : ''} hotel` }, nonstop && { ...nonstop, label: 'a nonstop flight' }].filter(Boolean).filter(x => x.delta > 0 && x.delta <= Math.max(budget * 0.12, 15000)) : [];
+  const v = verdict(t, cx, scores);
+  const time = usableTime(t);
+  const timeAlts = time ? timeAlternatives(t, options) : [];
+  const unlock = budgetUnlocks(changes, diff);
   const reviewUrl = `/trip/${token}/review?${contextParams(cx, { seen: t.total })}`;
   const tos = tradeoffs(t, cx);
   const body = html`
@@ -117,10 +178,11 @@ function tripView(ctx, { data, cx, user, saved, dreamGap }) {
 
   <div class="tb-trip-grid">
     <div class="tb-trip-main">
+      ${verdictPanel(v, scores)}
       ${budget ? budgetMeter(t.total, budget) : ''}
-      ${rescue.length ? html`<section class="tb-panel tb-panel-warn" aria-labelledby="rescue-title"><h2 id="rescue-title">${icon('alert')} Keep it under my budget</h2><p>This trip is ${money(-diff)} over your ${dollars(budget)}. Any one of these gets it back under:</p>${changeList(rescue, { empty: '' })}</section>` : ''}
-      ${better.length ? html`<section class="tb-panel" aria-labelledby="better-title"><h2 id="better-title">${icon('sparkle')} You still have ${money(diff)} available</h2><p>Make your trip better without going over. Or keep the savings: coming in under budget is a win.</p>${changeList(better, { empty: '' })}<p class="tb-muted">Or <a href="${reviewUrl}">keep my savings and book</a>.</p></section>` : ''}
-      ${sweet.length ? html`<aside class="tb-note"><b>Budget sweet spot.</b> ${sweet.map(x => `${money(x.delta)} more gets you ${x.label}`).join('; ')}. <a href="${sweet[0].url}">Show me the upgrade</a> · <a href="${reviewUrl}">Keep my original trip</a></aside>` : ''}
+      ${rescue.length ? html`<section class="tb-panel tb-panel-warn" aria-labelledby="rescue-title"><h2 id="rescue-title">${icon('alert')} Get me back to my price</h2><p>This trip is ${money(-diff)} over your ${dollars(budget)}. Any one of these gets it back under:</p>${changeList(rescue, { empty: '' })}</section>` : ''}
+      ${unlockPanel(t, unlock, { budget, diff, token, cx, reviewUrl })}
+      ${time ? timePanel(t, time, timeAlts, token, cx) : ''}
 
       <section class="tb-panel" aria-labelledby="rec-title"><h2 id="rec-title">Your trip recipe</h2>${recipe(t, budget)}</section>
 
@@ -178,10 +240,13 @@ function tripView(ctx, { data, cx, user, saved, dreamGap }) {
 // ---- review: live price check, final trip review, readiness, then the quote ----------------------
 
 function reviewView(ctx, { data, cx, verify, user, promoError, promoCode }) {
-  const { trip: t, token, origin } = data;
+  const { trip: t, token, origin, weather } = data;
   const s = t.spec;
   const budget = cx.budget;
   const diff = budget ? budget - t.total : null;
+  const v = verdict(t, cx, data.scores);
+  const reality = realityCheck(t, { weather });
+  const REALITY_STATUS = { ok: 'Fine', 'heads-up': 'Heads-up', verify: 'Check before paying' };
   const changes = verify.status !== 'same' && diff !== null && diff < 0 ? singleChanges(t, data.options, token, cx).filter(c => c.total <= budget).sort((a, b) => b.total - a.total).slice(0, 4) : [];
   const said = [];
   if (budget) said.push([`Under ${dollars(budget)}`, t.total <= budget]);
@@ -201,7 +266,8 @@ function reviewView(ctx, { data, cx, verify, user, promoError, promoCode }) {
   <div class="tb-checking" data-checking aria-live="polite"><span class="spinner" aria-hidden="true"></span> Checking your final price…</div>
   <div data-checked>
     ${statusBlock}
-    ${changes.length ? html`<section class="tb-panel tb-panel-warn"><h2>${icon('alert')} Keep it under my original budget</h2><p>The new price is ${money(-diff)} over your ${dollars(budget)}. Any of these brings it back under:</p>${changeList(changes, { empty: '' })}</section>` : ''}
+    ${verdictPanel(v, data.scores, { compact: true })}
+    ${changes.length ? html`<section class="tb-panel tb-panel-warn"><h2>${icon('alert')} Get me back to my price</h2><p>The new price is ${money(-diff)} over your ${dollars(budget)}. Any of these brings it back under:</p>${changeList(changes, { empty: '' })}</section>` : ''}
     <div class="tb-review-grid">
       <section class="tb-panel" aria-labelledby="this-title">
         <h2 id="this-title">This is your trip</h2>
@@ -229,6 +295,12 @@ function reviewView(ctx, { data, cx, verify, user, promoError, promoCode }) {
             <li>${icon('check')} Taxes, mandatory fees and service fee included</li>
             <li>${icon('info')} Remaining: review the cancellation terms below</li>
           </ul>
+        </section>
+        <section class="tb-panel" aria-labelledby="reality-title">
+          <h2 id="reality-title">${icon('eye')} Travel reality check</h2>
+          <ul class="tb-reality">${reality.map(r => html`<li class="is-${r.status}">${icon(r.status === 'ok' ? 'check' : r.status === 'verify' ? 'alert' : 'info')}<div><b>${r.label}</b><span class="tb-reality-status">${REALITY_STATUS[r.status]}</span><p>${r.text}</p></div></li>`)}</ul>
+          <h3>${icon('minus')} What’s not in this price</h3>
+          <ul class="tb-list tb-small">${t.notIncluded.map(i => html`<li>${i}</li>`)}</ul>
         </section>
         ${said.length ? html`<section class="tb-panel" aria-labelledby="said-title"><h2 id="said-title">You said you wanted</h2><ul class="tb-ready">${said.map(([l, ok]) => html`<li class="${ok ? '' : 'is-miss'}">${icon(ok ? 'check' : 'minus')} ${l}${ok ? '' : ' · not quite'}</li>`)}</ul></section>` : ''}
         <section class="tb-panel" aria-labelledby="terms-title">

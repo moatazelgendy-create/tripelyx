@@ -1,7 +1,7 @@
 // Travel by Budget pages: planner, results, trip page, review, accounts, My Trips, info and SEO pages.
 const express = require('express');
 const { AppError } = require('../lib/errors');
-const { addDays, today } = require('../lib/dates');
+const { addDays, today, isIsoDate, daysBetween } = require('../lib/dates');
 const { str } = require('../lib/validate');
 const optimizer = require('../trips/optimizer');
 const { encodeSpec, decodeSpec } = require('../trips/spec');
@@ -10,6 +10,7 @@ const { homeView } = require('../views/trips/home');
 const { stepView, resultsView, STEPS } = require('../views/trips/plan');
 const { tripView, reviewView, unavailableView, singleChanges } = require('../views/trips/trip');
 const { dreamView } = require('../views/trips/dream');
+const { compareView } = require('../views/trips/compare');
 const { authView, myTripsView } = require('../views/trips/account');
 const pages = require('../views/trips/pages');
 const { notFoundView } = require('../views/errors');
@@ -95,7 +96,13 @@ function tripsRouter(ctx, { writeLimiter }) {
     try {
       const dest = svc.inv.maps.getDestination(String(req.query.dest || '').slice(0, 40));
       if (!dest) return res.redirect(303, '/#tb-dream-title');
-      const raw = { who: 'couple', when: 'anytime', style: 'surprise', prio: 'hotel', k: '0', ...req.query };
+      const raw = { who: 'couple', style: 'surprise', prio: 'hotel', k: '0', ...req.query };
+      // "I have to be there": an optional fixed departure date from the homepage form.
+      const t0 = today();
+      const fixed = isIsoDate(raw.depart) && raw.depart >= addDays(t0, 3) && daysBetween(t0, raw.depart) <= 330;
+      if (!raw.when || (raw.when === 'exact' && !fixed)) raw.when = fixed ? 'exact' : 'anytime';
+      if (!fixed) delete raw.depart;
+      const beat = raw.beat === '1';
       const { query, missing } = svc.parse(raw);
       const ask = missing.find(m => ['budget', 'from', 'n'].includes(m));
       if (ask) return send(res, stepView(ctx, { step: ask, raw: req.query, query, origins: svc.inv.maps.listOrigins(), dream: dest }));
@@ -109,7 +116,7 @@ function tripsRouter(ctx, { writeLimiter }) {
         closers = singleChanges(out.best.trip, options, token, cx).filter(c => c.delta < 0).sort((a, b) => (b.total <= query.budget) - (a.total <= query.budget) || a.delta - b.delta).slice(0, 8)
           .map(c => ({ ...c, label: c.total <= query.budget ? `${c.label} — fits your budget` : c.label }));
       }
-      send(res, dreamView(ctx, { dest, q: query, originCity: originCity(query.origin), best: out.best, under: out.under, gap: out.gap, closers, cx, user: user(req) }));
+      send(res, dreamView(ctx, { dest, q: query, originCity: originCity(query.origin), best: out.best, under: out.under, gap: out.gap, closers, cx, user: user(req), beat }));
     } catch (e) { next(e); }
   });
 
@@ -135,6 +142,36 @@ function tripsRouter(ctx, { writeLimiter }) {
       const cx = optimizer.parseContext(req.query);
       const token = svc.customize(req.params.token, { hotel: req.query.hotel, flight: req.query.flight, nights: req.query.nights, depart: req.query.depart, bags: req.query.bags, transfer: req.query.transfer, activities: req.query.activities !== undefined ? [].concat(req.query.activities) : undefined });
       res.redirect(303, `/trip/${token}?${optimizer.contextParams(cx)}#customize`);
+    } catch (e) { next(e); }
+  });
+
+  // Lock what you love and improve the rest / make it better for the same money: before and after.
+  r.get('/trip/:token/optimize', async (req, res, next) => {
+    try {
+      const cx = optimizer.parseContext(req.query);
+      const lk = [].concat(req.query.lk || []).filter(x => typeof x === 'string').join('');
+      const locks = { hotel: lk.includes('h'), flight: lk.includes('f'), dates: lk.includes('d') };
+      const capMode = req.query.cap === 'budget' && cx.budget ? 'budget' : 'same';
+      const out = await svc.optimize(req.params.token, cx, { locks, capMode });
+      await tracked(req, 'trip_optimized', { dest: out.current.trip.dest.id, improved: !!out.proposal, locks: lk, capMode });
+      const items = [{ ...out.current, label: 'Your trip now' }, ...(out.proposal ? [{ ...out.proposal, label: 'Improved version' }] : [])];
+      send(res, compareView(ctx, { items, cx, mode: 'optimize', locks, capMode, cap: out.cap, all: req.query.all === '1' }));
+    } catch (e) { next(e); }
+  });
+
+  // Side by side: two or three trips by token (the results page links all three).
+  r.get('/compare', async (req, res, next) => {
+    try {
+      const cx = optimizer.parseContext(req.query);
+      const tokens = [...new Set([].concat(req.query.t || []).filter(x => typeof x === 'string' && x.length <= 300))].slice(0, 3);
+      const labels = [].concat(req.query.l || []).map(l => (typeof l === 'string' ? l.slice(0, 30) : ''));
+      if (tokens.length < 2) return res.redirect(303, cx.searchParams ? `/trips?${cx.searchParams}` : '/plan');
+      const items = [];
+      for (const [i, tok] of tokens.entries()) {
+        try { items.push({ ...(await svc.trip(tok, cx)), label: labels[i] || null }); } catch (e) { if (!(e instanceof AppError)) throw e; }
+      }
+      if (items.length < 2) return send(res.status(410), unavailableView(ctx, { token: tokens[0], cx }));
+      send(res, compareView(ctx, { items, cx, mode: 'compare', all: req.query.all === '1' }));
     } catch (e) { next(e); }
   });
 
@@ -291,7 +328,7 @@ function tripsRouter(ctx, { writeLimiter }) {
     landing(req, res, next, { title: `Trips under $${n.toLocaleString('en-US')}`, eyebrow: 'Budget inspiration', lead: `Complete trips (flights, hotel and more) for under $${n.toLocaleString('en-US')}, taxes and fees included. Change the budget to see what else is possible.`, intro: `What $${n.toLocaleString('en-US')} really buys${raw.style ? ` for a ${raw.style} trip` : ''}.`, canonical: `/trips-under-${n}`, budget: n, raw, moreLinks: [500, 1000, 1500, 2000, 3000, 5000].filter(x => x !== n).slice(0, 3).map(x => [`/trips-under-${x}`, `Trips under $${x.toLocaleString('en-US')}`, '']) });
   });
 
-  r.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nDisallow: /trip/\nDisallow: /trips\nDisallow: /plan\nDisallow: /checkout/\nDisallow: /booking/\nDisallow: /admin\nDisallow: /my-trips\n${config.publicBaseUrl ? `Sitemap: ${config.publicBaseUrl}/sitemap.xml\n` : ''}`));
+  r.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nDisallow: /trip/\nDisallow: /trips\nDisallow: /compare\nDisallow: /plan\nDisallow: /checkout/\nDisallow: /booking/\nDisallow: /admin\nDisallow: /my-trips\n${config.publicBaseUrl ? `Sitemap: ${config.publicBaseUrl}/sitemap.xml\n` : ''}`));
   r.get('/sitemap.xml', (req, res) => {
     const base = config.publicBaseUrl || '';
     const urls = ['/', '/how-it-works', '/faq', '/destinations', '/beach-vacations', '/about', '/contact', ...[500, 1000, 1500, 2000, 3000, 5000].map(n => `/trips-under-${n}`), ...svc.inv.maps.listDestinations().map(d => `/trips-to-${slug(d.name)}`)];

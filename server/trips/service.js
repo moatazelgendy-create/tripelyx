@@ -9,6 +9,7 @@ const { format: fmtMoney } = require('../lib/money');
 const { encodeSpec, decodeSpec } = require('./spec');
 const { priceTrip, publicTrip, requireTrip, DEFAULT_SETTINGS } = require('./pricing');
 const optimizer = require('./optimizer');
+const decision = require('./decision');
 
 const FUNNEL = ['home_visit', 'budget_entered', 'search_started', 'results_viewed', 'trip_selected', 'checkout_started', 'payment_attempted', 'booking_confirmed'];
 const FUNNEL_LABELS = {
@@ -97,6 +98,20 @@ class TripService {
       options: optimizer.customizerOptions(this.inv, t, await this.settings(), this.now()),
       origin: this.inv.maps.airport(spec.from), weather: this.inv.weather.outlook(spec.dest, Number(spec.depart.slice(5, 7))),
     };
+  }
+
+  // "Make it better for the same money" / "lock what you love, improve the rest": the strongest
+  // alternative package at or under the cap (the current total, or the budget) with the locked parts
+  // held fixed. Returns no proposal when nothing beats the current trip.
+  async optimize(token, ctx = {}, { locks = {}, capMode = 'same' } = {}) {
+    const current = await this.trip(token, ctx);
+    const settings = await this.settings();
+    const budgetCap = ctx.budget ? Math.round(ctx.budget * (1 + (ctx.allowOver || 0) / 100)) : null;
+    const cap = capMode === 'budget' && budgetCap ? Math.max(current.trip.total, budgetCap) : current.trip.total;
+    const best = decision.optimizeAround(this.inv, current.trip, settings, ctx, { locks, cap, now: this.now() });
+    if (!best) return { current, proposal: null, cap, locks, capMode };
+    const proposal = await this.trip(encodeSpec(best.trip.spec), ctx);
+    return { current, proposal: { ...proposal, gains: best.gains, delta: best.delta }, cap, locks, capMode };
   }
 
   // Apply one customizer change and return the new trip token.

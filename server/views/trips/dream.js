@@ -14,7 +14,7 @@ function diffLine(label, a, b) {
   return html`<li><span>${label}</span><b>${a}</b><span class="tb-arrow" aria-hidden="true">→</span><b class="${a === b ? 'tb-muted' : ''}">${a === b ? 'unchanged' : b}</b></li>`;
 }
 
-function dreamView(ctx, { dest, q, originCity, best, under, gap, closers, cx, user }) {
+function dreamView(ctx, { dest, q, originCity, best, under, gap, closers, cx, user, beat = false }) {
   const budget = q.budget;
   const dreamT = best && best.trip;
   const underT = under && under.trip;
@@ -24,9 +24,10 @@ function dreamView(ctx, { dest, q, originCity, best, under, gap, closers, cx, us
   <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a> / <span aria-current="page">Make it work</span></nav>
   <header class="tb-results-head">
     <div>
-      <p class="eyebrow">Budget Negotiator</p>
-      <h1>${dest.name} for ${dollars(budget)}${gap > 0 ? ': let’s close the gap.' : ': it works.'}</h1>
-      <p class="tb-results-sub">From ${originCity} · ${plural(q.travelers, 'traveler')} · ${plural(q.nights, 'night')} · ${q.dateMode === 'exact' ? longDate(q.depart) : q.dateMode === 'flexible' ? 'flexible dates' : 'any dates'}. ${demoBadge(ctx.tripService.demo, 'Demo inventory and prices')}</p>
+      <p class="eyebrow">${beat ? 'Beat my quote' : q.dateMode === 'exact' ? 'I have to be there' : 'Budget Negotiator'}</p>
+      <h1>${beat ? `You found ${dest.name} for ${dollars(budget)}. ${underT ? (budget - underT.total >= 2500 ? 'We can beat it.' : 'We can match it.') : 'Honestly, we can’t beat it.'}` : `${dest.name} for ${dollars(budget)}${gap > 0 ? ': let’s close the gap.' : ': it works.'}`}</h1>
+      <p class="tb-results-sub">From ${originCity} · ${plural(q.travelers, 'traveler')} · ${plural(q.nights, 'night')} · ${q.dateMode === 'exact' ? `fixed dates, ${longDate(q.depart)}` : q.dateMode === 'flexible' ? 'flexible dates' : 'any dates'}. ${demoBadge(ctx.tripService.demo, 'Demo inventory and prices')}</p>
+      ${beat ? html`<p class="tb-results-sub">${underT ? html`Our best complete ${dest.name} trip under your price is <b>${money(underT.total)}</b>, ${money(budget - underT.total)} less, with flights, hotel, taxes, mandatory fees and our service fee all in.` : dreamT ? html`Our closest complete trip is <b>${money(dreamT.total)}</b>, ${money(dreamT.total - budget)} more than your quote. If your quote really includes taxes, fees and bags for ${plural(q.travelers, 'traveler')}, it is a good deal: keep it.` : ''} Compare like with like: our price always includes taxes, mandatory fees, bags as listed and our service fee.</p>` : ''}
     </div>
     <ul class="tb-answers"><li><span>Dream trip</span><b>${dest.name}</b><a href="/dream?${new URLSearchParams({ b: q.budgetInput, from: q.origin, who: q.who, n: q.travelers, nights: q.nights }).toString()}" aria-label="Change destination">change</a></li><li><span>Maximum</span><b>${dollars(budget)}</b><a href="/dream?${new URLSearchParams({ dest: dest.id, from: q.origin, who: q.who, n: q.travelers, nights: q.nights }).toString()}" aria-label="Change budget">change</a></li><li><span>Travelers</span><b>${q.travelers}</b><a href="/dream?${new URLSearchParams({ dest: dest.id, b: q.budgetInput, from: q.origin, nights: q.nights }).toString()}">change</a></li><li><span>Nights</span><b>${q.nights}</b><a href="/dream?${new URLSearchParams({ dest: dest.id, b: q.budgetInput, from: q.origin, who: q.who, n: q.travelers }).toString()}">change</a></li></ul>
   </header>

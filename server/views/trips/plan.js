@@ -5,7 +5,14 @@ const { layout } = require('../layout');
 const { addDays, today } = require('../../lib/dates');
 const { encodeSpec } = require('../../trips/spec');
 const { searchParams, contextParams, tradeoffs, WHO_DEFAULT } = require('../../trips/optimizer');
-const { money, dollars, shortDate, longDate, plural, hm, demoBadge, budgetMeter } = require('./common');
+const { verdict, tripDiff } = require('../../trips/decision');
+const { money, dollars, shortDate, longDate, plural, hm, demoBadge, budgetMeter, fitBadge } = require('./common');
+
+const cap = s => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+// Items joined with commas and a final "or", as an array the template renders in order.
+function joinOr(items) {
+  return items.flatMap((it, i) => (i === 0 ? [it] : i === items.length - 1 ? [' or ', it] : [', ', it]));
+}
 
 const STEPS = ['budget', 'keep', 'from', 'who', 'n', 'when', 'style', 'prio'];
 const STYLE_OPTIONS = [
@@ -88,11 +95,13 @@ function tripCard(p, q, cx, { over = false, rank } = {}) {
   const link = extra => `/trip/${token}?${contextParams(cx, extra)}`;
   const diff = q.budget - t.total;
   const tos = tradeoffs(t, cx);
+  const v = verdict(t, cx, p);
   return html`<article class="tb-card${over ? ' tb-card-over' : ''}" aria-labelledby="card-${p.kind || rank}">
     <div class="tb-card-media"><img src="${t.dest.image.url}" alt="${t.dest.image.alt}" width="800" height="500" loading="${rank === 0 ? 'eager' : 'lazy'}">
       <span class="tb-kicker tb-kicker-on-media">${p.label}</span>
       <span class="tb-match" title="Overall match with your answers">${p.match}% match</span></div>
     <div class="tb-card-body">
+      <p class="tb-card-fit">${fitBadge(v, { compact: true })} <span>${v.action}</span></p>
       <h2 id="card-${p.kind || rank}">${t.dest.name}, ${t.dest.country}</h2>
       <p class="tb-card-meta">${longDate(t.spec.depart)} – ${shortDate(t.flight.return)} · ${plural(t.spec.nights, 'night')} · ${plural(t.spec.travelers, 'traveler')}</p>
       <ul class="tb-card-facts">
@@ -149,6 +158,34 @@ function noDeadEnd(q, result, originCity) {
   </div>`;
 }
 
+// "If it were our $1,500, this is the trip we'd book": the call, what almost won and why, what would
+// change our mind, and the moment you don't need your whole budget.
+function decisionBand(picks, q, cx) {
+  const best = picks[0];
+  const bv = verdict(best.trip, cx, best);
+  const runner = picks[1] || null;
+  const bestUrl = `/trip/${encodeSpec(best.trip.spec)}?${contextParams(cx)}`;
+  let almost = '';
+  if (runner) {
+    const rv = verdict(runner.trip, cx, runner);
+    const d = tripDiff(best.trip, runner.trip).filter(r => r.changed && ['hotel', 'area', 'flight', 'nights', 'time', 'meals', 'experiences'].includes(r.key));
+    const reason = rv.compromise || (d[0] ? `${d[0].label.toLowerCase()} is ${d[0].b.toLowerCase()}` : 'it fits your answers a little less well');
+    almost = html`<p><b>What almost won:</b> ${runner.trip.dest.name} (${runner.label}) at ${money(runner.trip.total)}${runner.trip.total < best.trip.total ? `, ${money(best.trip.total - runner.trip.total)} less` : ''}, but ${reason}.</p>`;
+  }
+  const mind = PRIO_OPTIONS.filter(([v]) => v !== q.priority).map(([v, l]) => html`<a href="/trips?${searchParams({ ...q, priority: v })}">${l.toLowerCase()}</a>`);
+  const spare = q.budget - best.trip.total;
+  const compare = `/compare?${new URLSearchParams([...picks.map(p => ['t', encodeSpec(p.trip.spec)]), ...picks.map(p => ['l', p.label]), ...new URLSearchParams(contextParams(cx))]).toString()}`;
+  return html`<section class="tb-decide" aria-labelledby="decide-title">
+    <p class="tb-kicker">Our call</p>
+    <h2 id="decide-title">If it were our ${dollars(q.budget)}, we’d book <a href="${bestUrl}">${best.trip.dest.name}</a>.</h2>
+    <p>${cap(bv.win)}${bv.compromise ? `; the one thing to know is ${bv.compromise}` : ''}. ${bv.action}</p>
+    ${almost}
+    <p><b>What would change our mind:</b> if ${joinOr(mind)} mattered most to you instead.</p>
+    ${spare >= q.budget * 0.15 ? html`<p class="tb-tip">${icon('check')} You don’t need your whole budget. ${best.trip.dest.name} needs ${money(best.trip.total)}, which leaves ${money(spare)}. Keep it, or <a href="${bestUrl}#unlock">see what it could improve</a>.</p>` : ''}
+    ${picks.length > 1 ? html`<p><a class="btn btn-ghost btn-sm" href="${compare}">${icon('layers')} Compare all ${picks.length} side by side</a></p>` : ''}
+  </section>`;
+}
+
 function resultsView(ctx, { result, originCity, user }) {
   const q = result.query, cx = { ...result.ctx, searchParams: searchParams(q) };
   const picks = result.picks;
@@ -176,6 +213,7 @@ function resultsView(ctx, { result, originCity, user }) {
       <li>Finding destinations within your budget…</li><li>Checking flight options…</li><li>Finding the best hotels…</li><li>Optimizing your ${dollars(q.budget)}…</li><li>Building your best matches…</li>
     </ol>
     <div data-results-body>
+      ${picks.length ? decisionBand(picks, q, cx) : ''}
       ${picks.length ? html`<div class="tb-cards">${picks.map((p, i) => tripCard(p, q, cx, { over: p.trip.total > q.budget, rank: i }))}</div>` : ''}
       ${over.length ? html`<p class="tb-over-note">${icon('info')} Trips marked “over your budget” use the extra 10% you allowed. Switch to “Stay under my budget” to hide them.</p>` : ''}
       ${cheapestNote}

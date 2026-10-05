@@ -7,6 +7,9 @@ const { loadConfig } = require('../server/config');
 const { encodeSpec, decodeSpec } = require('../server/trips/spec');
 const { priceTrip, publicTrip, DEFAULT_SETTINGS } = require('../server/trips/pricing');
 const optimizer = require('../server/trips/optimizer');
+const decision = require('../server/trips/decision');
+const { singleChanges } = require('../server/views/trips/trip');
+const { addDays, today } = require('../server/lib/dates');
 const { createTripIntegrations } = require('../server/trips/integrations');
 
 const inv = createTripIntegrations(loadConfig({ APP_ENV: 'development' }));
@@ -103,6 +106,141 @@ test('optimizer: never over budget unless allowed, three distinct picks, margin 
   assert.equal(optimizer.parseSearch({ b: '1500', k: '300' }, { maps: inv.maps }).query.budget, 120000, 'money kept aside comes off the trip budget');
 });
 
+test('decision layer: verdicts, usable vacation time, unlocks and make-it-better only ever tell the truth', () => {
+  const settings = DEFAULT_SETTINGS;
+  const { query } = optimizer.parseSearch(QUERY, { maps: inv.maps });
+  const r = optimizer.search(inv, query, { settings });
+  const best = r.picks[0];
+
+  // A verdict within budget says what we'd do; over budget it is never called a fit, whatever the match.
+  const v = decision.verdict(best.trip, r.ctx, best);
+  assert.ok(['great', 'good', 'budget'].includes(v.grade), v.grade);
+  assert.ok(v.win && v.action && v.label);
+  const over = decision.verdict(best.trip, { ...r.ctx, budget: best.trip.total - 100 }, best);
+  assert.equal(over.grade, 'look');
+  assert.match(over.action, /over the/);
+  assert.equal(decision.verdict(best.trip, { ...r.ctx, budget: best.trip.total - 100, allowOver: 10 }, best).grade, 'look');
+  // Margin is never an input.
+  assert.deepEqual(decision.verdict({ ...best.trip, internal: { ...best.trip.internal, grossProfit: 10 ** 9 } }, r.ctx, best), v);
+  // Contradicting an answer is always flagged as the compromise.
+  const short = decision.verdict(best.trip, { ...r.ctx, nightsAsked: best.trip.spec.nights + 2 }, best);
+  assert.equal(short.grade, 'budget');
+  assert.match(short.compromise, /shorter than you asked/);
+
+  // Usable time comes from the flight schedule: the dawn Basic fare costs the whole last day.
+  const spec = { dest: 'cancun', from: 'SFO', depart: addDays(today(), 60), nights: 5, travelers: 2, who: 'couple', hotel: 'cun-2', flight: 'basic', activities: [], bags: false, transfer: false };
+  const basic = priceTrip(inv, spec, settings);
+  const nonstop = priceTrip(inv, { ...spec, flight: 'nonstop' }, settings);
+  const tb = decision.usableTime(basic), tn = decision.usableTime(nonstop);
+  assert.equal(tb.lastDay.minutes, 0);
+  assert.ok(tb.flags.some(f => f.kind === 'early-return'));
+  assert.ok(tn.lastDay.minutes > 0 && tn.usableMinutes > tb.usableMinutes);
+  assert.equal(tb.fullDays, 4);
+  assert.equal(decision.usableTime({ ...basic, flight: { ...basic.flight, departMinutes: undefined } }), null, 'no schedule, no claims');
+  const options = optimizer.customizerOptions(inv, basic, settings);
+  const alts = decision.timeAlternatives(basic, options);
+  assert.ok(alts.length > 0);
+  for (const a of alts) { assert.ok(a.gain >= 60); assert.equal(a.total, basic.total + a.delta); }
+
+  // "Make it better" never costs more than the cap, never scores lower, never shortens the trip, and
+  // keeps every locked part; "nothing better" is a legitimate answer.
+  for (const p of r.picks) {
+    const same = decision.optimizeAround(inv, p.trip, settings, r.ctx, { cap: p.trip.total, locks: { dates: true } });
+    if (same) {
+      assert.ok(same.trip.total <= p.trip.total);
+      assert.ok(same.match > same.baseMatch);
+      assert.equal(same.trip.spec.depart, p.trip.spec.depart);
+      assert.equal(same.trip.spec.nights, p.trip.spec.nights);
+      assert.ok(same.gains.length > 0);
+    }
+    const locked = decision.optimizeAround(inv, p.trip, settings, r.ctx, { cap: query.budget, locks: { hotel: true, flight: true } });
+    if (locked) {
+      assert.equal(locked.trip.spec.hotel, p.trip.spec.hotel);
+      assert.equal(locked.trip.spec.flight, p.trip.spec.flight);
+      assert.ok(locked.trip.total <= query.budget);
+      assert.ok(locked.trip.spec.nights >= p.trip.spec.nights);
+    }
+  }
+  assert.equal(decision.optimizeAround(inv, basic, settings, r.ctx, { cap: 1, locks: {} }), null, 'nothing fits under $0.01');
+
+  // Budget unlocks are real re-priced improvements; "within" respects what is left of the budget.
+  const changes = singleChanges(basic, options, encodeSpec(spec), r.ctx);
+  const u = decision.budgetUnlocks(changes, 10000);
+  assert.ok(u.steps.length > 0 && u.steps.every(c => c.delta > 0 && c.better));
+  assert.ok(u.steps.every(c => c.within === (c.delta <= 10000)));
+  assert.equal(new Set(u.steps.map(c => c.kind)).size, u.steps.length, 'one step per kind of change');
+  assert.equal(decision.budgetUnlocks(changes, 1).keep, true);
+  assert.equal(decision.budgetUnlocks(changes, null).keep, false);
+
+  // Side by side lists what differs; the reality check asks for documents only on international trips.
+  const diff = decision.tripDiff(basic, nonstop);
+  assert.ok(diff.find(d => d.key === 'flight').changed && diff.find(d => d.key === 'total').changed);
+  assert.ok(!diff.find(d => d.key === 'hotel').changed);
+  assert.equal(decision.realityCheck(basic).find(x => x.label === 'Travel documents').status, 'verify');
+  const domestic = priceTrip(inv, { ...spec, dest: 'san-diego', hotel: 'san-1', flight: 'saver' }, settings);
+  assert.ok(domestic, 'domestic trip priced');
+  assert.equal(decision.realityCheck(domestic).find(x => x.label === 'Travel documents').status, 'ok');
+  assert.equal(decision.realityCheck(basic).find(x => x.label === 'Last day').status, 'heads-up');
+});
+
+test('decide-for-me pages: our call, compare, before and after, the reality check and beat my quote', async t => {
+  const app = await startApp();
+  t.after(app.close);
+  const c = client(app.base);
+  const noInline = (p, body) => { assert.ok(!/\sstyle="/.test(body), `${p} inline style`); assert.ok(!/<script(?![^>]*\bsrc=)(?![^>]*application\/json)[^>]*>/.test(body), `${p} inline script`); };
+
+  const results = await c.req(`/trips?${new URLSearchParams(QUERY)}`);
+  assert.match(results.text, /If it were our \$1,500, we’d book/);
+  assert.match(results.text, /What almost won/);
+  assert.match(results.text, /What would change our mind/);
+  assert.ok((results.text.match(/tb-fit-/g) || []).length >= 3, 'every card carries a verdict');
+  const compare = results.text.match(/href="(\/compare\?[^"]*)"/)[1].replace(/&amp;/g, '&');
+  const cmp = await c.req(compare);
+  assert.equal(cmp.status, 200);
+  assert.match(cmp.text, /Compare your 3 trips/);
+  assert.match(cmp.text, /Our verdict/);
+  assert.match(cmp.text, /Best Match/);
+  noInline('/compare', cmp.text);
+  assert.ok((await c.req(compare + '&all=1')).text.match(/<tr/g).length >= cmp.text.match(/<tr/g).length);
+
+  const trip = await buildTrip(c);
+  const page = await c.req(`${trip.tripPath}?${trip.cx}`);
+  assert.match(page.text, /Biggest win/);
+  assert.match(page.text, /Your time there/);
+  assert.match(page.text, /Lock what you love/);
+  assert.match(page.text, /Make it better for the same money/);
+  const same = await c.req(`${trip.tripPath}/optimize?${trip.cx}&cap=same&lk=d`);
+  assert.equal(same.status, 200);
+  assert.match(same.text, /Before and after|already the best version/);
+  noInline('/optimize', same.text);
+  const locked = await c.req(`${trip.tripPath}/optimize?${trip.cx}&cap=budget&lk=h&lk=f`);
+  assert.equal(locked.status, 200);
+  if (/Use this version/.test(locked.text)) {
+    const proposed = locked.text.match(/href="(\/trip\/[^"#?]+)\?[^"]*#customize"/)[1];
+    const a = decodeSpec(trip.tripPath.split('/').pop()), b = decodeSpec(proposed.split('/').pop());
+    assert.equal(a.hotel, b.hotel); assert.equal(a.flight, b.flight);
+  }
+  const review = await c.req(`${trip.tripPath}/review?${trip.cx}&seen=0`);
+  assert.match(review.text, /Travel reality check/);
+  assert.match(review.text, /Our honest take/);
+  assert.match(review.text, /What’s not in this price/);
+  noInline('/review', review.text);
+
+  // Beat my quote: an honest yes, or "keep it". I have to be there: a fixed date.
+  const beat = await c.req('/dream?beat=1&dest=cancun&b=2400&from=SFO&nights=5');
+  assert.match(beat.text, /You found Cancun for \$2,400/);
+  assert.match(beat.text, /We can (beat|match) it/);
+  const cannot = await c.req('/dream?beat=1&dest=paris&b=900&from=NYC&nights=5');
+  assert.match(cannot.text, /Honestly, we can’t beat it/);
+  assert.match(cannot.text, /keep it/);
+  const fixed = await c.req(`/dream?dest=cancun&b=2400&from=SFO&depart=${addDays(today(), 40)}`);
+  assert.equal(fixed.status, 200);
+  assert.match(fixed.text, /fixed dates/);
+  assert.match((await c.req('/dream?dest=cancun&b=2400&from=SFO&depart=2020-01-01')).text, /any dates/);
+  assert.equal((await c.req('/compare?t=one')).status, 303);
+  assert.equal((await c.req('/compare?t=bad~x&t=worse~y')).status, 410);
+});
+
 test('Journey B: a dream destination gets the gap and real single-change closers', async t => {
   const app = await startApp();
   t.after(app.close);
@@ -130,6 +268,8 @@ test('pages render without inline scripts or styles; corporate site moves to /co
   assert.match(home, /How much do you<br>want to spend\?/);
   assert.match(home, /Surprise me/i);
   assert.match(home, /Demo inventory/);
+  assert.match(home, /Beat my quote/);
+  assert.match(home, /I have to be there on/);
   assert.equal((await fetch(app.base + '/trips-under-7')).status, 404);
   assert.equal((await fetch(app.base + '/legal/nope')).status, 404);
   assert.equal((await fetch(app.base + '/plan?b=1500&k=0&from=SFO&who=couple&when=anytime&style=beach&prio=hotel', { redirect: 'manual' })).status, 303, 'a complete plan goes straight to results');

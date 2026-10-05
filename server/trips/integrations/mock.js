@@ -123,21 +123,30 @@ class MockFlights {
     const hoursNonstop = km / 800 + 0.6;
     const hoursOneStop = km / 780 + 2.4;
     const nonstop = this.nonstopAvailable(from, destId);
+    // Demo schedules, in minutes from midnight local time: the cheapest fare leaves at dawn and comes
+    // home at dawn, the nonstop keeps civilised hours. Real adapters return the airline's timetable.
+    const times = (departMinutes, returnDepartMinutes, durationMinutes) => ({
+      departMinutes, arriveMinutes: (departMinutes + durationMinutes) % 1440, arrivesNextDay: departMinutes + durationMinutes >= 1440,
+      returnDepartMinutes, returnArriveMinutes: (returnDepartMinutes + durationMinutes) % 1440,
+    });
     const mk = (key, mult, o) => ({
       id: key, airline, supplier: `${airline} (demo)`, demo: true,
       from, to: DESTINATIONS.find(x => x.id === destId).airport, depart, return: ret,
       farePerTraveler: Math.round(base * mult), typicalFarePerTraveler: Math.round(typical * mult),
       taxesPerTraveler: Math.round(base * mult * taxRate),
       ...o,
+      ...times(o.departMinutes, o.returnDepartMinutes, o.durationMinutes),
     });
     const out = [
       mk('basic', 0.86, {
         name: 'Basic', stops: nonstop && km < 2000 ? 0 : 1, durationMinutes: Math.round((nonstop && km < 2000 ? hoursNonstop : hoursOneStop) * 60),
+        departMinutes: 6 * 60 + 5, returnDepartMinutes: 5 * 60 + 50,
         carryOn: false, checkedBagIncluded: false, bagFeePerTraveler: usd(70), seatSelection: false,
         refundable: false, changeable: false, policy: 'Personal item only. No changes or refunds after 24 hours from booking.',
       }),
       mk('saver', 1, {
         name: 'Main', stops: 1, durationMinutes: Math.round(hoursOneStop * 60),
+        departMinutes: 9 * 60 + 40, returnDepartMinutes: 12 * 60 + 15,
         carryOn: true, checkedBagIncluded: longHaul, bagFeePerTraveler: longHaul ? 0 : usd(70), seatSelection: true,
         refundable: false, changeable: true, policy: 'Carry-on included. Changes allowed for the fare difference; not refundable after 24 hours from booking.',
       }),
@@ -145,6 +154,7 @@ class MockFlights {
     if (nonstop) {
       out.push(mk('nonstop', 1.2, {
         name: 'Nonstop Flex', stops: 0, durationMinutes: Math.round(hoursNonstop * 60),
+        departMinutes: 10 * 60 + 30, returnDepartMinutes: 16 * 60 + 40,
         carryOn: true, checkedBagIncluded: longHaul, bagFeePerTraveler: longHaul ? 0 : usd(70), seatSelection: true,
         refundable: true, changeable: true, freeCancelHours: 168, policy: 'Nonstop. Carry-on included. Refundable up to 7 days before departure.',
       }));

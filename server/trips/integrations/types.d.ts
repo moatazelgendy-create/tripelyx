@@ -25,6 +25,8 @@ export interface FlightOffer {
   farePerTraveler: number; typicalFarePerTraveler: number; taxesPerTraveler: number;
   carryOn: boolean; checkedBagIncluded: boolean; bagFeePerTraveler: number; seatSelection: boolean;
   refundable: boolean; changeable: boolean; freeCancelHours?: number; policy: string;
+  // Schedule, in minutes from midnight local time. Optional: without it the pages skip usable-time facts.
+  departMinutes?: number; arriveMinutes?: number; arrivesNextDay?: boolean; returnDepartMinutes?: number; returnArriveMinutes?: number;
 }
 export interface FlightsProvider {
   search(q: { from: string; destId: string; depart: string; nights: number; travelers: number }): FlightOffer[];

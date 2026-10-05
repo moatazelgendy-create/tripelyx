@@ -3,6 +3,7 @@
 const { html, raw, jsonScript } = require('../../lib/html');
 const { icon } = require('../icons');
 const { layout } = require('../layout');
+const { addDays, today } = require('../../lib/dates');
 const { money, dollars, demoBadge, plural } = require('./common');
 
 const BUDGET_LEVELS = [500, 1000, 1500, 2000, 3000, 5000];
@@ -128,8 +129,24 @@ ${recent ? html`<section class="tb-section tb-section-tight" aria-label="Your un
         <select id="dream-dest" name="dest" required>${dreamDestinations.map(d => html`<option value="${d.id}">${d.name}, ${d.country}</option>`)}</select></div>
       <div class="field"><label for="dream-b">My maximum</label><div class="tb-budget-input tb-budget-input-sm"><span class="tb-currency" aria-hidden="true">$</span><input id="dream-b" name="b" type="text" inputmode="numeric" placeholder="3,000" required></div></div>
       <div class="field"><label for="dream-from">Leaving from</label><select id="dream-from" name="from">${origins.map(o => html`<option value="${o.id}">${o.city}</option>`)}</select></div>
+      <div class="field"><label for="dream-depart">I have to be there on <span class="optional">(optional)</span></label><input id="dream-depart" type="date" name="depart" min="${addDays(today(), 3)}" max="${addDays(today(), 330)}"></div>
       <button class="btn btn-white btn-lg" type="submit">Make it work ${icon('arrow')}</button>
     </form>
+  </div>
+</section>
+
+<section class="tb-section tb-beat" aria-labelledby="tb-beat-title">
+  <div class="container">
+    <div class="section-head"><div><p class="eyebrow">Already found a trip?</p><h2 id="tb-beat-title" class="section-title">Tell us the price. We’ll say honestly whether we can beat it.</h2></div></div>
+    <form class="tb-beat-form form" action="/dream" method="get">
+      <input type="hidden" name="beat" value="1">
+      <div class="field"><label for="beat-dest">The trip you found</label><select id="beat-dest" name="dest" required>${dreamDestinations.map(d => html`<option value="${d.id}">${d.name}, ${d.country}</option>`)}</select></div>
+      <div class="field"><label for="beat-b">Their total price</label><div class="tb-budget-input tb-budget-input-sm"><span class="tb-currency" aria-hidden="true">$</span><input id="beat-b" name="b" type="text" inputmode="numeric" placeholder="2,400" required></div></div>
+      <div class="field"><label for="beat-from">Leaving from</label><select id="beat-from" name="from">${origins.map(o => html`<option value="${o.id}">${o.city}</option>`)}</select></div>
+      <div class="field"><label for="beat-nights">Nights</label><select id="beat-nights" name="nights">${[3, 4, 5, 6, 7, 10].map(n => html`<option value="${n}"${n === 5 ? raw(' selected') : ''}>${n}</option>`)}</select></div>
+      <button class="btn btn-navy" type="submit">Beat my quote ${icon('arrow')}</button>
+    </form>
+    <p class="tb-muted tb-small">We compare complete prices only: flights, hotel, taxes, mandatory fees and our service fee. If we can’t beat your quote, we’ll tell you to keep it.</p>
   </div>
 </section>
 

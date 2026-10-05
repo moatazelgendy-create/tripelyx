@@ -32,10 +32,12 @@ corporate homepage moves to `/company`. Admin access is given by email (`ADMIN_E
 | --- | --- |
 | `/` | "How much do you want to spend?", a live example, where each budget can take you, Journey B entry ("Make it work"), Surprise Me |
 | `/plan` | One question at a time: budget, money to keep aside, departure city, travelers, dates, style, what matters most |
-| `/trips` | Three trips, never hundreds: Best Match, Best Value, Save More; flexibility toggle; why we didn't pick the cheapest; no dead ends |
-| `/trip/:token` | The trip: budget meter, recipe (where every dollar goes), customizer (every change re-priced), Make it cheaper, Know Before You Book, scorecard, trade-offs |
-| `/trip/:token/review` | Live price check with explicit approval of any increase, final trip review, readiness checklist, promo code, then the quote |
-| `/dream` | Journey B / Budget Negotiator: a dream destination and a maximum; the gap and the single changes that close it |
+| `/trips` | Three trips, never hundreds: Best Match, Best Value, Save More, each with its verdict; "Our call" (the one we'd book, what almost won and why, what would change our mind, "you don't need your whole budget"); flexibility toggle; why we didn't pick the cheapest; no dead ends |
+| `/trip/:token` | The trip: verdict (Great fit / Good fit / Budget fit / We'd keep looking, biggest win and compromise, what we'd actually do), budget meter, Get me back to my price, budget unlocks (what a little more buys), Make it better for the same money, lock hotel/flights/dates and optimize the rest, Your time there (usable vacation time from the flight schedule, Get my day back), recipe, customizer (every change re-priced), Make it cheaper, Know Before You Book, scorecard, trade-offs |
+| `/trip/:token/optimize` | Before and after: the strongest alternative package at or under the current total (or the budget) with the locked parts held fixed, or an honest "this is already the best version" |
+| `/compare` | Two or three trips side by side, only the rows that differ, each with its verdict |
+| `/trip/:token/review` | Live price check with explicit approval of any increase, our honest take, Travel reality check (documents, arrival and last day, bags, fees, changing your mind, getting to the hotel, weather) and what's not in the price, final trip review, readiness checklist, promo code, then the quote |
+| `/dream` | Journey B / Budget Negotiator: a dream destination and a maximum; the gap and the single changes that close it. Also "I have to be there" (a fixed date) and "Beat my quote" (`beat=1`: the price someone else offered, and an honest yes or "keep it") |
 | `/checkout/:quoteId`, `/booking/:ref` | Traveler details and test-mode payment; the trip page after booking (Trip ID, per-component confirmations, support thread, cancellation) |
 | `/signin`, `/signup`, `/my-trips` | Accounts: upcoming and past trips, saved trips, price watches, last search |
 | `/admin` | Control center (admins only): KPIs and funnel, bookings with internal economics and alerts, trip requests, business rules, promo codes, outbox |
@@ -49,6 +51,8 @@ server/trips/
   spec.js               the shareable trip token (destination, dates, travelers, hotel, flight, extras)
   pricing.js            full price (taxes, mandatory fees, service fee) + internal economics (never sent to browsers)
   optimizer.js          every sensible combination per destination, scored on customer value only; picks 3
+  decision.js           the decision layer: verdicts, usable vacation time, budget unlocks, make it better /
+                        optimize around locks, side-by-side differences, the reality check (facts only)
   service.js            search, trip pages, customizer, live price check, quotes, the booking provider,
                         saved trips and watches, support, requests, funnel events, admin numbers
 server/accounts/        email + password (scrypt), server-side sessions, admin by email
@@ -59,7 +63,11 @@ a trip is "within budget" only when that complete total is at or under the budge
 never charged without the traveler's approval (checked at the review page and again at payment);
 platform margin is never an input to ranking; no fake scarcity, reviews or discounts. Pricing and
 margin rules (service fee, markup, minimum profit and margin) are editable under `/admin/settings`;
-bookings under the minimums are flagged for review, never silently repriced.
+bookings under the minimums are flagged for review, never silently repriced. The decision layer
+follows the same rules: a verdict uses only the traveler's answers and the facts of the trip; "make it
+better" reports "nothing better" when that is true instead of a lateral change; usable vacation time is
+computed from the flight schedule (demo flights carry departure and arrival times; a real adapter that
+returns none simply hides those facts); "beat my quote" says "keep it" when we can't beat a price.
 
 ### Roadmap (phased, behind feature flags)
 
@@ -72,6 +80,7 @@ phase, to be added behind its own flag once real suppliers are connected:
 - Social and decision tools: compare side by side, group budget splitter and decision room, couples mode, share-before-booking votes, second-thoughts mode.
 - Growth: referrals, loyalty, deal radar, deal of the day, price history, budget calendar, My Travel Year, Trip Remix, Beat My Trip, gift a trip, trip fund, pay over time, travel wallet.
 - AI assistant and negotiator through a provider interface (rule-based today), real review ingestion (verified bookings only), email/SMS delivery for the outbox, abandoned-trip emails.
+- From the decision-engine spec, deferred until the data exists or a real supplier is connected: deal-breaker filters and a priority stack as planner steps; trip verdict history and "second opinion" sharing; visa and passport-validity facts, insurance comparison and health advisories (need an authoritative source); multi-city and stopover trips, "stretch my trip", Trip Ladder tiers and budget bidding; Trip Rescue after booking (schedule changes, re-plans); door-to-door true cost (home-to-airport transport, parking, pet care); family, group and multi-room engines, room types and group splits; "what if" flexibility pricing beyond nearby dates; neighborhood intelligence and venue-distance hotel search (need geodata); event, cruise-connection, wedding-guest, bleisure and visiting-family modes; component removal (already have flights or a hotel); experience-first and natural-language entry; Trip Request Marketplace and reverse auctions; Dreamboard and visual discovery; named trip versions, undo history and the drag-and-drop budget allocator.
 
 ## Pages
 
