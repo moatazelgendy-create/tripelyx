@@ -128,7 +128,7 @@ function knowBeforeYouBook(t, { weather, origin, token, cx }) {
       ${weather ? html`<div><h3>${icon('sun')} Weather</h3><p>${weather.label} in ${new Intl.DateTimeFormat('en-US', { month: 'long', timeZone: 'UTC' }).format(new Date(`${t.spec.depart}T00:00:00Z`))}, going by ${weather.source}. Not a forecast.</p></div>` : ''}
       <div><h3>${icon('users')} Who provides each part</h3><ul class="tb-list">${t.providers.map(p => html`<li><b>${p.component}:</b> ${p.provider}</li>`)}</ul></div>
     </div>
-    ${token ? html`<p class="tb-kbyb-foot"><a class="btn btn-ghost btn-sm" href="/trip/${token}/guide?${contextParams(cx)}">${icon('compass')} First trip? Walk me through it, step by step</a></p>` : ''}
+    ${token ? html`<p class="tb-kbyb-foot"><a class="btn btn-ghost btn-sm" href="/trip/${token}/guide?${contextParams(cx)}">${icon('compass')} First trip? Walk me through it</a></p>` : ''}
   </section>`;
 }
 
@@ -202,9 +202,9 @@ function tripView(ctx, { data, cx, user, saved, dreamGap }) {
         <h2 id="cust-title">Customize your trip</h2>
         <p class="tb-muted">Change anything. Every option shows the new total, with taxes and fees included.</p>
         <h3>${icon('bed')} Hotel</h3>
-        <ul class="tb-options">${options.hotels.map(h => html`<li class="${h.hotel.id === s.hotel ? 'is-on' : ''}">${h.hotel.id === s.hotel ? html`<span class="tb-opt">${hotelLine(h.hotel)}<span class="tb-delta tb-delta-same">selected</span></span>` : html`<a class="tb-opt" href="${changeUrl(token, cx, { hotel: h.hotel.id })}">${hotelLine(h.hotel)}${delta(h.delta)}</a>`}</li>`)}</ul>
+        <ul class="tb-options">${options.hotels.map(h => html`<li class="${h.hotel.id === s.hotel ? 'is-on' : ''}">${h.hotel.id === s.hotel ? html`<span class="tb-opt"><span class="tb-opt-text">${hotelLine(h.hotel)}</span><span class="tb-delta tb-delta-same">selected</span></span>` : html`<a class="tb-opt" href="${changeUrl(token, cx, { hotel: h.hotel.id })}"><span class="tb-opt-text">${hotelLine(h.hotel)}</span>${delta(h.delta)}</a>`}</li>`)}</ul>
         <h3>${icon('plane')} Flights</h3>
-        <ul class="tb-options">${options.flights.map(f => html`<li class="${f.flight.id === s.flight ? 'is-on' : ''}">${f.flight.id === s.flight ? html`<span class="tb-opt">${flightLine(f.flight)}<span class="tb-delta tb-delta-same">selected</span></span>` : html`<a class="tb-opt" href="${changeUrl(token, cx, { flight: f.flight.id })}">${flightLine(f.flight)}${delta(f.delta)}</a>`}</li>`)}</ul>
+        <ul class="tb-options">${options.flights.map(f => html`<li class="${f.flight.id === s.flight ? 'is-on' : ''}">${f.flight.id === s.flight ? html`<span class="tb-opt"><span class="tb-opt-text">${flightLine(f.flight)}</span><span class="tb-delta tb-delta-same">selected</span></span>` : html`<a class="tb-opt" href="${changeUrl(token, cx, { flight: f.flight.id })}"><span class="tb-opt-text">${flightLine(f.flight)}</span>${delta(f.delta)}</a>`}</li>`)}</ul>
         <div class="tb-two">
           <div id="nights"><h3>${icon('calendar')} Nights</h3><ul class="tb-pills">${options.nights.map(n => html`<li>${n.nights === s.nights ? html`<span class="tb-pill is-on">${n.nights} nights<small>${money(n.total)}</small></span>` : html`<a class="tb-pill" href="${changeUrl(token, cx, { nights: n.nights })}">${n.nights} nights<small>${money(n.total)}</small></a>`}</li>`)}</ul>
             ${(() => { const cheapestExtra = options.nights.filter(n => n.nights > s.nights).sort((a, b) => a.delta - b.delta)[0]; return cheapestExtra && cheapestExtra.delta < t.perNight * 0.6 * (cheapestExtra.nights - s.nights) ? html`<p class="tb-tip">${icon('sparkle')} ${cheapestExtra.nights - s.nights === 1 ? 'One more night' : `${cheapestExtra.nights - s.nights} more nights`} is only ${money(cheapestExtra.delta)} more${cheapestExtra.delta < 0 ? ' (cheaper flights on those dates)' : ''}.</p>` : ''; })()}

@@ -477,7 +477,7 @@ test('your trip, step by step: built from the trip’s facts, honest about what 
   assert.ok(guide.steps.find(s => s.key === 'boarding').lines.some(l => l.status === 'check' && /on your itinerary/.test(l.text)));
   assert.ok(guide.steps.every(s => s.lines.every(l => ['ready', 'check', 'info'].includes(l.status))));
   // Entry points, and bad tokens fail like the trip page.
-  assert.match((await c.req(`${trip.tripPath}?${trip.cx}`)).text, /Walk me through it, step by step/);
+  assert.match((await c.req(`${trip.tripPath}?${trip.cx}`)).text, /Walk me through it/);
   assert.match((await c.req(`${trip.tripPath}/review?${trip.cx}&seen=0`)).text, /Walk through the trip step by step/);
   const bad = await c.req('/trip/nowhere~XXX~2020-01-01~5~2c~none~basic~00~-/guide');
   assert.ok(bad.status >= 400 && bad.status < 500, String(bad.status));
