@@ -181,9 +181,14 @@ function runnerReason(best, runner, rv, q) {
 // that is not a priced package.
 function keepSentence(keep, q) {
   const where = q.allowOver ? 'within the extra you allowed' : 'within your budget';
-  const priced = keep.considered
-    ? `We priced ${plural(keep.considered, 'more expensive trip')} ${where} and none improved on this one without giving something up${keep.dear ? ', or asked more than a third more for it' : ''}.`
-    : `Nothing we built ${where} costs more than this one.`;
+  let priced;
+  if (!keep.considered) priced = `Nothing we built ${where} costs more than this one.`;
+  else {
+    const apart = [];
+    if (keep.extras) apart.push(`${plural(keep.extras, 'version')} that only added an experience, a transfer or bags, which you can add yourself on the trip page`);
+    if (keep.tooDear) apart.push(`${plural(keep.tooDear, 'trip')} that asked more than a third more for what ${keep.tooDear === 1 ? 'it' : 'they'} added`);
+    priced = `We priced ${plural(keep.considered, 'more expensive trip')} ${where}. None improved on this one without giving something up${apart.length ? `, apart from ${apart.join(', and ')}` : ''}.`;
+  }
   return `We couldn’t find a good reason to spend the other ${money(keep.spare)}. ${priced}`;
 }
 
@@ -205,7 +210,7 @@ function keepMoneyCard(keep, best, q, cx) {
 // "Our call": the trip we would book with this budget. Our pick is at or under the budget whenever
 // anything is; only when the traveler allowed 10% more and nothing fits the budget itself is the
 // call over, and then the headline says so instead of calling it a fit.
-function decisionBand(picks, q, cx, keepMoney) {
+function decisionBand(picks, q, cx, keepMoney, result) {
   const graded = picks.map(p => ({ ...p, v: verdict(p.trip, cx, p) }));
   const best = graded.find(p => p.kind === 'our-pick') || graded[0];
   const bv = best.v;
@@ -217,8 +222,9 @@ function decisionBand(picks, q, cx, keepMoney) {
   const mind = PRIO_OPTIONS.filter(([v]) => v !== q.priority).map(([v, l]) => html`<a href="/trips?${searchParams({ ...q, priority: v })}">${l.toLowerCase()}</a>`);
   const compare = `/compare?${new URLSearchParams([...picks.map(p => ['t', encodeSpec(p.trip.spec)]), ...picks.map(p => ['l', p.label]), ...new URLSearchParams(contextParams(cx))]).toString()}`;
   const name = `${best.trip.dest.name}${runner && runner.trip.dest.name === best.trip.dest.name ? ` (${best.label})` : ''}`;
+  const ce = result && result.cheapestEligible && result.cheapestEligible.trip.total < best.trip.total ? result.cheapestEligible.trip : null;
   const headline = bv.grade === 'look'
-    ? html`Nothing we built fits under ${dollars(q.budget)}. The closest is <a href="${bestUrl}">${name}</a>, ${money(-bv.diff)} over.`
+    ? html`Nothing we built fits under ${dollars(q.budget)}. The ${ce ? 'strongest fit' : 'closest'} is <a href="${bestUrl}">${name}</a>, ${money(-bv.diff)} over${ce ? html`; the closest to your budget is <a href="/trip/${encodeSpec(ce.spec)}?${contextParams(cx)}">${ce.dest.name}</a>, ${money(ce.total - q.budget)} over` : ''}.`
     : html`If it were our ${dollars(q.budget)}, we’d book <a href="${bestUrl}">${name}</a>.`;
   const figures = html`<dl class="tb-keep${spare < 0 ? ' is-over' : ''}">
     <div><dt>You gave us</dt><dd>${money(q.budget)}</dd></div>
@@ -226,7 +232,7 @@ function decisionBand(picks, q, cx, keepMoney) {
     <div><dt>${spare < 0 ? 'Over by' : 'You keep'}</dt><dd>${money(Math.abs(spare))}</dd></div>
   </dl>`;
   const money_ = upgrade
-    ? html`<p class="tb-keep-note">${icon('trend')}<span>Spending ${money(upgrade.upgrade.delta)} more would get you ${upgrade.upgrade.gets}. Your call: <a href="#card-upgrade">see the upgrade below</a>, or ${spare > 0 ? `keep the ${money(spare)}` : 'keep it as it is'}.</span></p>`
+    ? html`<p class="tb-keep-note">${icon('trend')}<span>Spending ${money(upgrade.upgrade.delta)} more would get you ${upgrade.upgrade.gets}${upgrade.upgrade.over ? ` (that is ${money(upgrade.trip.total - q.budget)} over your budget, using the extra you allowed)` : ''}. Your call: <a href="#card-upgrade">see the upgrade below</a>, or ${spare > 0 ? `keep the ${money(spare)}` : 'keep it as it is'}.</span></p>`
     : keepMoney && keepMoney.spare > 0 ? html`<p class="tb-keep-note">${icon('check')}<span>${keepSentence(keepMoney, q)}</span></p>` : '';
   return html`<section class="tb-decide" aria-labelledby="decide-title">
     <p class="tb-kicker">Our call</p>
@@ -250,7 +256,7 @@ function resultsView(ctx, { result, originCity, user }) {
   const WORDS = ['No', 'One', 'Two', 'Three'];
   const heading = !picks.length ? 'Let’s get closer to a trip that works.'
     : keepCard ? `${WORDS[picks.length]} ${picks.length === 1 ? 'trip' : 'trips'}, and a reason to keep your money.`
-    : best.trip.total > q.budget ? `The closest we could get to your ${dollars(q.budget)} budget.`
+    : best.trip.total > q.budget ? `Nothing fits under ${dollars(q.budget)}. Here is the best we could build.`
     : picks.length === 1 ? `Here is the best trip for your ${dollars(q.budget)} budget.` : `Here are the ${picks.length} best trips for your ${dollars(q.budget)} budget.`;
   const cheapestNote = cheapest && best && cheapest.trip.total < best.trip.total - 2000 && !picks.some(p => p.trip === cheapest.trip)
     ? html`<aside class="tb-note"><b>Why we didn’t pick the cheapest.</b> The cheapest trip we built is ${money(cheapest.trip.total)} (${cheapest.trip.dest.name}, ${plural(cheapest.trip.spec.nights, 'night')}), ${money(best.trip.total - cheapest.trip.total)} less than our pick, but ${tradeoffs(cheapest.trip, cx).slice(0, 3).map(s => s.toLowerCase()).join(', ') || 'it fits your answers less well'}. <a href="/trip/${encodeSpec(cheapest.trip.spec)}?${contextParams(cx)}">See it anyway</a> — you decide whether the saving is worth it.</aside>` : '';
@@ -273,7 +279,7 @@ function resultsView(ctx, { result, originCity, user }) {
       <li>Finding destinations within your budget…</li><li>Checking flight options…</li><li>Finding the best hotels…</li><li>Optimizing your ${dollars(q.budget)}…</li><li>Deciding what’s worth your money…</li>
     </ol>
     <div data-results-body>
-      ${picks.length ? decisionBand(picks, q, cx, result.keepMoney) : ''}
+      ${picks.length ? decisionBand(picks, q, cx, result.keepMoney, result) : ''}
       ${picks.length ? html`<div class="tb-cards">${picks.map((p, i) => tripCard(p, q, cx, { over: p.trip.total > q.budget, rank: i }))}${keepCard ? keepMoneyCard(result.keepMoney, best, q, cx) : ''}</div>` : ''}
       ${over.length ? html`<p class="tb-over-note">${icon('info')} Trips marked “over your budget” use the extra 10% you allowed. Switch to “Stay under my budget” to hide them.</p>` : ''}
       ${cheapestNote}

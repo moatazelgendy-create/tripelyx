@@ -175,12 +175,16 @@ function optimizeAround(inventory, t, settings, ctx = {}, { locks = {}, cap = t.
 // hidden, it is just not what we would book.
 const RUNG_LABELS = { strong: 'Strong', compromise: 'Some compromise', major: 'Major compromise' };
 const RUNG_RANK = { strong: 0, compromise: 1, major: 2 };
+const MAX_PRICED = 2500;
 // A rung is "strong" when it is a great or good trip on its own, or when it is no step down from the
 // trip the traveler already has (same verdict, nothing new they said matters). "Major" means a new
 // compromise that contradicts an answer they gave, or three or more things given up at once.
+// The keys a trade-off touches when it steps down on what the traveler said matters most.
+const PRIORITY_KEYS = { hotel: ['hotel', 'area', 'meals'], flights: ['flight'], activities: ['experiences'], longer: ['nights'], price: [] };
 function rungLabel(v, changes, base) {
   const fresh = w => v.compromises.filter(c => c.w >= w && !base.texts.has(c.text));
   if (fresh(3).length || changes.tradeoffs.length >= 3) return 'major';
+  if (changes.tradeoffs.some(r => base.priorityKeys.includes(r.key))) return 'compromise';
   if (v.grade === 'great' || v.grade === 'good') return 'strong';
   return GRADE_RANK[v.grade] >= GRADE_RANK[base.grade] && !fresh(2).length ? 'strong' : 'compromise';
 }
@@ -201,15 +205,19 @@ function nameYourPrice(inventory, t, settings, ctx = {}, target, { now = new Dat
   const transfers = s.transfer ? [true, false] : [false];
   const bagsList = s.bags ? [true, false] : [s.bags];
   const currentV = verdict(t, qctx);
-  const base = { grade: currentV.grade, texts: new Set(currentV.compromises.map(c => c.text)) };
+  const base = { grade: currentV.grade, texts: new Set(currentV.compromises.map(c => c.text)), priorityKeys: PRIORITY_KEYS[ctx.priority] || [] };
   const currentKey = JSON.stringify({ ...s, activities: [...s.activities].sort() });
   const seen = new Set([currentKey]);
   const candidates = [];
-  for (const depart of dates) for (const nights of nightsList) for (const hotel of hotels) for (const flight of flights) for (const activities of sets) for (const transfer of transfers) for (const bags of bagsList) {
+  // A real supplier can return far more hotels and fares than the demo: the search prices at most
+  // MAX_PRICED versions and says so, instead of blocking the server on one request.
+  let priced = 0, truncated = false;
+  outer: for (const depart of dates) for (const nights of nightsList) for (const hotel of hotels) for (const flight of flights) for (const activities of sets) for (const transfer of transfers) for (const bags of bagsList) {
     const spec = { ...s, depart, nights, hotel, flight, activities: [...activities].sort(), transfer, bags };
     const key = JSON.stringify(spec);
     if (seen.has(key)) continue;
     seen.add(key);
+    if (priced++ >= MAX_PRICED) { truncated = true; break outer; }
     const p = priceTrip(inv, spec, settings);
     if (!p || p.total > t.total) continue;
     const v = verdict(p, qctx);
@@ -232,14 +240,15 @@ function nameYourPrice(inventory, t, settings, ctx = {}, target, { now = new Dat
   const cheapestStrongUnder = strong.find(c => c.total <= target) || null;
   // Within $20 of the cheapest strong version under the price, the one that changes the least.
   const recommended = cheapestStrongUnder
-    ? strong.filter(c => c.total <= cheapestStrongUnder.total + 2000).sort((a, b) => a.changes.tradeoffs.length - b.changes.tradeoffs.length || a.total - b.total)[0]
+    ? strong.filter(c => c.total <= Math.min(target, cheapestStrongUnder.total + 2000)).sort((a, b) => a.changes.tradeoffs.length - b.changes.tradeoffs.length || a.total - b.total)[0]
     : null;
   const floor = strong[0] || null;
   // The best version at or under the price when none is strong: shown with its compromises, never hidden.
   const underTarget = frontier.filter(c => c.total <= target);
   const anyway = recommended ? null : underTarget[underTarget.length - 1] || null;
   const cheapest = candidates[0] || null;
-  const currentLabel = rungLabel(currentV, { tradeoffs: [] }, base);
+  // The trip you have is judged on its own verdict, the same one its page shows, not against itself.
+  const currentLabel = currentV.grade === 'great' || currentV.grade === 'good' ? 'strong' : currentV.compromises.some(c => c.w >= 3) ? 'major' : 'compromise';
 
   const rungs = [...frontier].reverse(); // dearest first
   if (recommended && !rungs.includes(recommended)) { rungs.push(recommended); rungs.sort((a, b) => b.total - a.total); }
@@ -264,7 +273,7 @@ function nameYourPrice(inventory, t, settings, ctx = {}, target, { now = new Dat
     { total: t.total, label: currentLabel, labelText: RUNG_LABELS[currentLabel], trip: t, match: currentV.match, delta: 0, cliff: false, current: true, note: null, noteRow: null, noteKind: null },
     ...picked.map(rung),
   ];
-  return { target, current: t.total, currentLabel, recommended, floor, anyway, ladder, cheapest, considered: candidates.length, labels: RUNG_LABELS };
+  return { target, current: t.total, currentLabel, currentVerdict: currentV, recommended, floor, anyway, ladder, cheapest, considered: candidates.length, truncated, labels: RUNG_LABELS };
 }
 
 // ---- money + time: weekdays as a second budget ------------------------------------------------
@@ -303,30 +312,36 @@ function tripGuide(t, { origin } = {}) {
   const hasTimes = Number.isFinite(f.departMinutes) && Number.isFinite(f.arriveMinutes) && Number.isFinite(f.returnDepartMinutes);
   const from = origin ? `${origin.name} (${origin.code})` : s.from;
   const steps = [];
-  const step = (key, title, status, lines) => steps.push({ key, title, status, lines: lines.filter(Boolean) });
+  // A step's pill follows its lines: "Check required" if any line needs the itinerary or a document,
+  // else "General guidance" if any line is advice, else "We know this".
+  const step = (key, title, lines) => {
+    const ls = lines.filter(Boolean);
+    const status = ls.some(l => l.status === 'check') ? 'check' : ls.some(l => l.status === 'info') ? 'info' : 'ready';
+    steps.push({ key, title, status, lines: ls });
+  };
 
-  step('before', 'Before you leave', t.internationalTrip ? 'check' : 'ready', [
+  step('before', 'Before you leave', [
     t.internationalTrip
       ? { status: 'check', text: `${t.dest.country} is an international destination: every traveler needs a valid passport, and entry rules depend on nationality. Check the official requirements for your passport before you go. We can’t guarantee entry to any country.` }
-      : { status: 'ready', text: 'A domestic trip: a government-issued photo ID is enough for US travelers. Keep it with you from the airport to the hotel.' },
+      : { status: 'info', text: 'A domestic flight: US travelers usually need a REAL ID-compliant licence or a passport at security. Check the TSA list for your document; we don’t know every traveler’s nationality. Keep it with you from the airport to the hotel.' },
     { status: 'info', text: `Most airlines open online check-in 24 hours before departure; ${f.airline} will say exactly when. Checking in early is general advice, not a rule of this fare.` },
     { status: 'ready', text: `Your confirmation carries a Trip ID and a confirmation number for each part (flights, hotel${t.activities.length ? ', experiences' : ''}${t.transfer ? ', transfer' : ''}). Keep it on your phone and, if you like, on paper.` },
   ]);
 
-  step('airport', 'At the airport', 'info', [
+  step('airport', 'At the airport', [
     { status: 'info', text: `Arrive about ${t.internationalTrip ? '3 hours' : '2 hours'} before your flight. That is general guidance for ${t.internationalTrip ? 'international' : 'domestic'} flights, not a promise about ${origin ? origin.name : 'your airport'} on the day.` },
     { status: 'check', text: 'Terminal and gate: on your boarding pass and the airport screens. They can change on the day, so check the screens once you are inside.' },
     { status: 'ready', text: `You are flying ${f.airline}, ${f.name} fare, from ${from} to ${t.dest.airport}.` },
   ]);
 
-  step('bags', 'Bags', f.checkedBagIncluded || s.bags || f.carryOn ? 'ready' : 'check', [
+  step('bags', 'Bags', [
     { status: 'ready', text: f.checkedBagIncluded || s.bags
       ? 'One checked bag per traveler each way is in your price: drop it at the airline desk or bag drop after check-in.'
       : `${f.carryOn ? 'One carry-on bag' : 'One personal item only (no carry-on)'} per traveler on this fare. Checked bags are not in your price; they cost ${fmt(f.bagFeePerTraveler)} per traveler both ways if you add them on the trip page.` },
     { status: 'info', text: 'Liquids in a carry-on go through security in containers of 100 ml (3.4 oz) or less, together in one clear bag. That is the standard rule at US airports; the airport’s own page has the details.' },
   ]);
 
-  step('boarding', 'Security and boarding', hasTimes ? 'ready' : 'check', [
+  step('boarding', 'Security and boarding', [
     { status: 'info', text: 'Security: ID and boarding pass ready, laptops and liquids out if asked. Lines vary by airport and hour; we have no reliable way to predict them.' },
     hasTimes
       ? { status: 'ready', text: `Your flight departs at ${clock(f.departMinutes)}. Boarding starts before that and the gate usually closes 10 to 15 minutes before departure. The boarding pass shows the boarding time, and boarding time is not departure time.` }
@@ -334,14 +349,14 @@ function tripGuide(t, { origin } = {}) {
     { status: 'ready', text: f.seatSelection ? 'Seat selection is available on this fare.' : 'Seats are assigned at check-in on this fare; ask at the desk if you want to sit together.' },
   ]);
 
-  if (f.stops > 0) step('connection', 'Your connection', 'check', [
+  if (f.stops > 0) step('connection', 'Your connection', [
     { status: 'ready', text: `Your flight has ${plural(f.stops, 'stop')}: about ${Math.round(f.durationMinutes / 60)} hours each way in total.` },
     { status: 'check', text: 'The connecting airport and the time between flights are on your itinerary after booking. On a single ticket the airline normally moves you to a later flight if the first one runs late, and your bags normally transfer on their own; confirm both at check-in.' },
     { status: 'info', text: 'At the connection: follow the signs for connecting flights, find your next gate on the screens, and only leave the secure area if your itinerary says you must.' },
   ]);
-  else step('connection', 'No connection', 'ready', [{ status: 'ready', text: 'Nonstop: you board once and get off at your destination.' }]);
+  else step('connection', 'No connection', [{ status: 'ready', text: 'Nonstop: you board once and get off at your destination.' }]);
 
-  step('arrival', 'Arrival', t.transfer ? 'ready' : 'check', [
+  step('arrival', 'Arrival', [
     hasTimes && time
       ? { status: 'ready', text: `You land at ${clock(f.arriveMinutes)}${f.arrivesNextDay ? ' the next day' : ''} and should be at the hotel around ${time.firstDay.settled}.` }
       : { status: 'check', text: 'Arrival time: on your itinerary.' },
@@ -353,7 +368,7 @@ function tripGuide(t, { origin } = {}) {
       : { status: 'check', text: 'No transfer is in your price. Taxis, rideshares and shuttles run from the airport; the fare to the hotel is not something we can quote here (needs verification). A private transfer can be added on the trip page so it is in your total.' },
   ]);
 
-  step('hotel', 'Your hotel', 'ready', [
+  step('hotel', 'Your hotel', [
     { status: 'ready', text: `${h.name}, ${h.area}, ${t.dest.name}. ${plural(s.nights, 'night')}${h.features.allInclusive ? ', all-inclusive' : h.features.breakfast ? ', breakfast included' : ''}.` },
     { status: 'check', text: 'Check-in is from 3:00 PM and check-out by 11:00 AM at most hotels; your voucher has this hotel’s exact times. Arriving early? Hotels usually hold bags until the room is ready.' },
     h.resortFeePerNight
@@ -361,9 +376,9 @@ function tripGuide(t, { origin } = {}) {
       : { status: 'ready', text: 'No mandatory hotel fees. Incidentals like the minibar or parking are extra.' },
   ]);
 
-  if (t.activities.length) step('during', 'Your experiences', 'check', t.activities.map(a => ({ status: 'check', text: `${a.name} (${a.hours}h, ${a.supplier}): the meeting point and start time are on the voucher that comes with your confirmation.` })));
+  if (t.activities.length) step('during', 'Your experiences', t.activities.map(a => ({ status: 'check', text: `${a.name} (${a.hours}h, ${a.supplier}): the meeting point and start time are on the voucher that comes with your confirmation.` })));
 
-  step('home', 'Going home', hasTimes ? 'ready' : 'check', [
+  step('home', 'Going home', [
     hasTimes && time
       ? { status: 'ready', text: `Your flight home leaves at ${clock(f.returnDepartMinutes)}. Leave the hotel around ${time.lastDay.leaveHotel}${t.internationalTrip ? ' (three hours before, for an international flight)' : ''}.` }
       : { status: 'check', text: 'Return flight time: on your itinerary. Plan to be at the airport two to three hours before it.' },
@@ -383,7 +398,7 @@ function realityCheck(t, { weather } = {}) {
   const rows = [];
   rows.push(t.internationalTrip
     ? { status: 'verify', label: 'Travel documents', text: `${t.dest.country} needs a valid passport for every traveler, and entry rules depend on nationality. Check the official requirements before paying; we can’t guarantee entry.` }
-    : { status: 'ok', label: 'Travel documents', text: 'Domestic trip: a government-issued photo ID is enough for US travelers.' });
+    : { status: 'verify', label: 'Travel documents', text: 'Domestic flight: US travelers usually need a REAL ID-compliant licence or a passport at security. Check the TSA list for your document.' });
   if (time) {
     rows.push({ status: time.flags.some(f => f.kind === 'overnight' || f.kind === 'late-arrival') ? 'heads-up' : 'ok', label: 'Arrival day', text: time.flags.find(f => f.kind === 'overnight' || f.kind === 'late-arrival')?.text || `You land at ${time.firstDay.arrive} and should be at the hotel around ${time.firstDay.settled}: about ${time.firstDay.label} of your first day to enjoy.` });
     rows.push({ status: time.flags.some(f => f.kind === 'early-return' || f.kind === 'short-last-day') ? 'heads-up' : 'ok', label: 'Last day', text: time.flags.find(f => f.kind === 'early-return' || f.kind === 'short-last-day')?.text || `Your flight home leaves at ${time.lastDay.depart}; leave the hotel around ${time.lastDay.leaveHotel}, so you still have about ${time.lastDay.label} that day.` });

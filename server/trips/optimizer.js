@@ -195,7 +195,7 @@ function upgradeGets(improvements, a, b) {
     time: 'more usable vacation time',
     experiences: b.activities.length > a.activities.length ? `${b.activities.length - a.activities.length} more experience${b.activities.length - a.activities.length === 1 ? '' : 's'}` : 'more experiences',
     transfer: 'an airport transfer',
-    bags: 'checked bags',
+    bags: b.flight.checkedBagIncluded || b.spec.bags ? 'checked bags' : b.flight.carryOn && !a.flight.carryOn ? 'a carry-on bag' : 'more baggage allowance',
     flex: 'more flexible cancellation',
   };
   const order = ['hotel', 'flight', 'nights', 'area', 'meals', 'time', 'experiences', 'transfer', 'bags', 'flex'];
@@ -326,7 +326,10 @@ function search(inventory, rawQuery, { settings, now = new Date() }) {
       const gets = upgradeGets(cand.changes.improvements, ours, cand.trip);
       upgrade = { ...cand, upgrade: { delta, improvements: cand.changes.improvements, gets, over: cand.trip.total > q.budget }, blurb: `+${fmt(delta)} gets ${gets}.` };
     } else {
-      keepMoney = { considered: dearer.length, spare: q.budget - ours.total, dear: improved.length };
+      // Why each dearer trip that improved something was still not worth it: it asked more than a
+      // third more, or it only added an extra the traveler can add themselves.
+      const tooDear = improved.filter(x => x.trip.total - ours.total > ours.total * 0.35).length;
+      keepMoney = { considered: dearer.length, spare: q.budget - ours.total, dear: improved.length, tooDear, extras: improved.length - tooDear };
     }
 
     picks = [

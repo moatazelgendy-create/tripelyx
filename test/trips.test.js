@@ -111,11 +111,14 @@ test('optimizer: our pick, save more, an upgrade only if worth it (or keep your 
       assert.ok(up.upgrade.improvements.some(i => ['hotel', 'flight', 'nights', 'area', 'meals', 'time'].includes(i.key)), `${name}: a real improvement`);
       assert.equal(up.upgrade.over, up.trip.total > budget, name);
       assert.ok(up.upgrade.gets && up.blurb.startsWith('+$'), name);
+      if (/checked bags/.test(up.upgrade.gets)) assert.ok(up.trip.flight.checkedBagIncluded || up.trip.spec.bags, `${name}: "checked bags" only when they are in the price`);
+      if (/carry-on bag/.test(up.upgrade.gets)) assert.ok(up.trip.flight.carryOn && !ours.trip.flight.carryOn, `${name}: "a carry-on bag" only when the pick had none`);
       assert.equal(res.keepMoney, null, name);
     } else {
       assert.ok(res.keepMoney, `${name}: keepMoney when no upgrade`);
       assert.equal(res.keepMoney.spare, budget - ours.trip.total, name);
       assert.ok(res.keepMoney.considered >= 0 && res.keepMoney.dear <= res.keepMoney.considered, name);
+      assert.equal(res.keepMoney.tooDear + res.keepMoney.extras, res.keepMoney.dear, `${name}: every rejected improvement has a reason`);
     }
   };
   check(r, query.budget, query.budget, '$1500 hotel');
@@ -261,7 +264,7 @@ test('decision layer: verdicts, usable vacation time, unlocks and make-it-better
   assert.equal(decision.realityCheck(basic).find(x => x.label === 'Travel documents').status, 'verify');
   const domestic = priceTrip(inv, { ...spec, dest: 'san-diego', hotel: 'san-1', flight: 'saver' }, settings);
   assert.ok(domestic, 'domestic trip priced');
-  assert.equal(decision.realityCheck(domestic).find(x => x.label === 'Travel documents').status, 'ok');
+  assert.equal(decision.realityCheck(domestic).find(x => x.label === 'Travel documents').status, 'verify', 'no document is ever guaranteed');
   assert.equal(decision.realityCheck(basic).find(x => x.label === 'Last day').status, 'heads-up');
 });
 
@@ -370,10 +373,18 @@ test('name your price: searches downward, stops at the cheapest strong version, 
       assert.equal(priceTrip(inv, c.trip.spec, settings).total, c.total);
       assert.ok(c.total < trip.total, 'never widened above the current total');
     }
+    const PRIO_KEYS = { hotel: ['hotel', 'area', 'meals'], flights: ['flight'], activities: ['experiences'], longer: ['nights'], price: [] };
+    for (const c of out.ladder.slice(1)) if (c.label === 'strong') assert.ok(!c.changes.tradeoffs.some(x => PRIO_KEYS[r.ctx.priority].includes(x.key)), `strong never steps down on ${r.ctx.priority}`);
+    assert.ok(['great', 'good', 'budget', 'look'].includes(out.currentVerdict.grade), 'the trip you have is judged on its own verdict');
+    assert.equal(out.truncated, false);
     if (out.recommended) { assert.ok(out.recommended.total <= target); assert.equal(out.recommended.label, 'strong'); assert.equal(out.anyway, null); }
     else if (out.anyway) { assert.ok(out.anyway.total <= target); assert.notEqual(out.anyway.label, 'strong'); }
     assert.ok(out.floor === null || out.floor.label === 'strong');
     assert.ok(!out.recommended || !out.floor || out.floor.total <= out.recommended.total, 'the floor is the cheapest version we recommend');
+    if (out.floor) for (const tgt of [out.floor.total, out.floor.total + 1000, out.floor.total + 1999]) {
+      const o = decision.nameYourPrice(inv, trip, settings, r.ctx, tgt);
+      assert.ok(!o.recommended || o.recommended.total <= tgt, `"we got there" is never above the ${tgt} named`);
+    }
     const none = decision.nameYourPrice(inv, trip, settings, r.ctx, 30000);
     assert.equal(none.recommended, null); assert.equal(none.anyway, null);
     assert.ok(none.cheapest && none.cheapest.total > 30000, 'an impossible price gets the real cheapest version, not a dead end');
@@ -385,7 +396,7 @@ test('name your price: searches downward, stops at the cheapest strong version, 
   const c = client(app.base);
   const noInline = (p, body) => { assert.ok(!/\sstyle="/.test(body), `${p} inline style`); assert.ok(!/<script(?![^>]*\bsrc=)(?![^>]*application\/json)[^>]*>/.test(body), `${p} inline script`); };
   const answers = new Set();
-  for (const extra of [{ prio: 'price' }, { prio: 'activities', who: 'family', n: '4', b: '3000', style: 'family' }]) {
+  for (const extra of [{ prio: 'price' }, { prio: 'flights' }, { prio: 'activities', who: 'family', n: '4', b: '3000', style: 'family' }]) {
     const results = await c.req(`/trips?${new URLSearchParams({ ...QUERY, ...extra })}`);
     const m = results.text.match(/href="(\/trip\/[^"?]+)\?([^"]*)"/);
     const tripPath = m[1], qs = m[2].replace(/&amp;/g, '&');
@@ -404,9 +415,19 @@ test('name your price: searches downward, stops at the cheapest strong version, 
       if (/don’t think we should/.test(h1)) { assert.match(res.text, /version anyway/); assert.match(res.text, /It means:/); }
       if (/We got there/.test(h1)) { assert.match(res.text, /Use this version/); assert.match(res.text, /Keep my original/); }
       if (/No version/.test(h1)) assert.match(res.text, /Try another destination for/);
+      if (/is-cliff/.test(res.text)) assert.match(res.text, /Value cliff/, 'the cliff is named in the markup, not only in CSS');
+      if (/We got there: \$([\d,.]+)/.test(h1)) assert.ok(Number(h1.match(/We got there: \$([\d,.]+)/)[1].replace(/,/g, '')) * 100 <= Math.round(total * frac), 'never "got there" above the price named');
     }
-    assert.equal((await c.req(`${tripPath}/price?${qs}&target=${Math.round(total / 100) + 100}`)).status, 303, 'a price above the total goes back to the trip');
-    assert.equal((await c.req(`${tripPath}/price?${qs}`)).status, 303);
+    const high = await c.req(`${tripPath}/price?${qs}&target=${Math.round(total / 100) + 100}`);
+    assert.equal(high.status, 303, 'a price above the total goes back to the trip');
+    assert.match(high.location, /named=high/);
+    assert.match((await c.req(high.location)).text, /at or above this trip’s total/, 'the trip page says why');
+    for (const bad of ['', '0', '-5', '50', 'abc', '1e308', '%20']) {
+      const res = await c.req(`${tripPath}/price?${qs}&target=${bad}`);
+      assert.equal(res.status, 303, `target=${bad} never shows a number the traveler did not type`);
+      assert.match(res.location, /named=low/);
+    }
+    assert.match((await c.req(`${tripPath}?${qs}&named=low`)).text, /at least \$100/);
   }
   assert.ok(answers.size >= 3, `all three answers appear across targets: ${[...answers].join(' | ')}`);
 });
@@ -460,7 +481,13 @@ test('your trip, step by step: built from the trip’s facts, honest about what 
   assert.match(g.text, /Going home/);
   assert.match(g.text, /boarding time is not departure time/);
   assert.doesNotMatch(g.text, /only \d+ left|book now|last chance|hurry/i, 'no fear selling');
+  assert.doesNotMatch(g.text, /is enough for US travelers/, 'no document is ever guaranteed');
   noInline('/guide', g.text);
+  const built = decision.tripGuide(priceTrip(inv, decodeSpec(trip.tripPath.split('/').pop()), DEFAULT_SETTINGS));
+  for (const st of built.steps) {
+    const want = st.lines.some(l => l.status === 'check') ? 'check' : st.lines.some(l => l.status === 'info') ? 'info' : 'ready';
+    assert.equal(st.status, want, `${st.key}: the pill follows the lines`);
+  }
   // Nonstop vs a connection: the connection step appears only when the flight has a stop, and the
   // connecting airport is "check required" because the demo data does not carry it.
   const spec = decodeSpec(trip.tripPath.split('/').pop());

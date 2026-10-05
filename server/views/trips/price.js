@@ -59,12 +59,13 @@ function rungNote(t, r) {
 }
 
 function ladderView(t, ladder, cx, picks) {
+  const rungs = ladder.rungs;
   return html`<section class="tb-panel" aria-labelledby="ladder-title">
     <h2 id="ladder-title">${icon('layers')} The value ladder</h2>
-    <p class="tb-muted">Every version of this trip we priced, from what you have down to the cheapest we can build. Each one is a complete package, taxes and fees included. Strong means no step down from the trip you have on anything you said matters.</p>
-    <ol class="tb-ladder">${ladder.map(r => {
+    <p class="tb-muted">Every version of this trip we priced, from what you have down to the cheapest we can build. Each one is a complete package, taxes and fees included. Strong means a version that is still a good fit for your answers, with no step down on what you said matters most. The value cliff marks the first rung where paying less costs you something you said matters.${ladder.truncated ? ` We stopped after pricing ${ladder.considered.toLocaleString('en-US')} versions, so a few rungs may be missing.` : ''}</p>
+    <ol class="tb-ladder">${rungs.map(r => {
       const url = r.current ? `/trip/${encodeSpec(t.spec)}?${contextParams(cx)}` : `/trip/${encodeSpec(r.trip.spec)}?${contextParams(cx)}`;
-      return html`<li class="${r.cliff ? 'is-cliff' : ''}${r.current ? ' is-current' : ''}"><b><a href="${url}">${money(r.total)}</a></b><div><span class="tb-rung tb-rung-${r.label}">${r.labelText}</span>${r.current ? html`<span class="tb-rung tb-rung-now">Your trip now</span>` : ''}${picks.has(r.total) ? html`<span class="tb-rung tb-rung-pick">${picks.get(r.total)}</span>` : ''}<small>${r.current ? `${r.trip.hotel.name} · ${r.trip.flight.stops ? `${r.trip.flight.stops}-stop` : 'nonstop'} · ${plural(r.trip.spec.nights, 'night')}` : rungNote(t, r)}</small></div></li>`;
+      return html`<li class="${r.cliff ? 'is-cliff' : ''}${r.current ? ' is-current' : ''}"><b><a href="${url}">${money(r.total)}</a></b><div>${r.cliff ? html`<span class="tb-rung tb-rung-cliff">Value cliff</span>` : ''}${r.current ? html`${fitBadge(ladder.currentVerdict, { compact: true })}<span class="tb-rung tb-rung-now">Your trip now</span>` : html`<span class="tb-rung tb-rung-${r.label}">${r.labelText}</span>`}${picks.has(r.total) ? html`<span class="tb-rung tb-rung-pick">${picks.get(r.total)}</span>` : ''}<small>${r.current ? `${r.trip.hotel.name} · ${r.trip.flight.stops ? `${r.trip.flight.stops}-stop` : 'nonstop'} · ${plural(r.trip.spec.nights, 'night')}` : rungNote(t, r)}</small></div></li>`;
     })}</ol>
   </section>`;
 }
@@ -87,7 +88,7 @@ function priceView(ctx, { data, cx, user }) {
     const left = target - r.total;
     const v = verdict(r.trip, { ...cx, budget: null }, r.scores);
     head = html`<h1>You named ${dollars(target)}. We got there: ${money(r.total)}, and it’s still a strong trip.</h1>
-      <p class="tb-results-sub">${pricedLine} This is the cheapest version that is no step down on anything you told us matters. ${left > 0 ? `That leaves ${money(left)} of your ${dollars(target)}.` : ''} ${demo}</p>`;
+      <p class="tb-results-sub">${pricedLine} ${floor && r.total === floor.total ? 'This is the cheapest version that is still a good fit for your answers, with no step down on what you said matters most.' : `Within ${money(r.total - floor.total)} of the cheapest strong version, this one changes the least.`} ${left > 0 ? `That leaves ${money(left)} of your ${dollars(target)}.` : ''} ${demo}</p>`;
     main = html`<section class="tb-panel" aria-labelledby="after-title">
       <h2 id="after-title">${icon('check')} Before and after</h2>
       <dl class="tb-keep"><div><dt>Before</dt><dd>${money(t.total)}</dd></div><div><dt>After</dt><dd>${money(r.total)}</dd></div><div><dt>You save</dt><dd>${money(t.total - r.total)}</dd></div></dl>
@@ -144,7 +145,7 @@ function priceView(ctx, { data, cx, user }) {
   <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a> / ${cx.searchParams ? html`<a href="/trips?${cx.searchParams}">Your trips</a> / ` : ''}<a href="${keepUrl}">${t.dest.name}</a> / <span aria-current="page">Name your price</span></nav>
   <header class="tb-results-head"><div><p class="eyebrow">Name your price</p>${head}</div></header>
   ${main}
-  ${ladderView(t, ladder, cx, picks)}
+  ${ladderView(t, { rungs: ladder, truncated: data.truncated, considered, currentVerdict: data.currentVerdict }, cx, picks)}
   <p class="tb-muted tb-small">Every total on this page is a complete trip we priced just now, taxes and fees included. Nothing changes unless you choose it, and nothing is charged until you confirm.</p>
 </div>`;
   return layout({ title: `Name your price · ${t.dest.name}`, active: 'plan', body, ctx, scripts: ['/js/trips.js'], noindex: true });

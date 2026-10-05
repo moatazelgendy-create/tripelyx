@@ -124,7 +124,7 @@ function knowBeforeYouBook(t, { weather, origin, token, cx }) {
       <div><h3>${icon('shield')} Cancellation and changes · ${flex[0]}</h3><p>${flex[1]}</p><ul class="tb-list">${t.policies.map(p => html`<li><b>${p.component}:</b> ${p.text}</li>`)}</ul></div>
       <div><h3>${icon('bed')} Hotel terms</h3><p>Check-in from 3:00 PM, check-out by 11:00 AM (confirm on your voucher). ${h.resortFeePerNight ? `This hotel charges a mandatory resort fee of ${money(h.resortFeePerNight)} per room per night. It is already in your total, so you won’t pay it at the desk.` : 'No resort fee at this hotel.'} ${h.features.adultsOnly ? 'Adults only (18+).' : ''}</p></div>
       <div><h3>${icon('bus')} Getting there</h3><p>Fly from ${origin ? `${origin.name} (${origin.code})` : t.spec.from} to ${t.dest.airport}. ${t.transfer ? `A private transfer meets you at the airport and takes you back for your return flight (${t.transfer.vehicles} vehicle${t.transfer.vehicles > 1 ? 's' : ''}).` : 'No transfer is included; taxis and shuttles are available at the airport, or add our private transfer above.'}</p></div>
-      ${t.internationalTrip ? html`<div><h3>${icon('globe')} Travel documents</h3><p>${t.dest.country} is an international destination. Each traveler needs a valid passport, and entry rules depend on nationality. Check the official requirements for your passport before booking; we can’t guarantee entry to any country.</p></div>` : html`<div><h3>${icon('globe')} Travel documents</h3><p>A domestic trip: a government-issued photo ID is enough for US travelers.</p></div>`}
+      ${t.internationalTrip ? html`<div><h3>${icon('globe')} Travel documents</h3><p>${t.dest.country} is an international destination. Each traveler needs a valid passport, and entry rules depend on nationality. Check the official requirements for your passport before booking; we can’t guarantee entry to any country.</p></div>` : html`<div><h3>${icon('globe')} Travel documents</h3><p>A domestic flight: US travelers usually need a REAL ID-compliant licence or a passport at security. Check the TSA list for your document.</p></div>`}
       ${weather ? html`<div><h3>${icon('sun')} Weather</h3><p>${weather.label} in ${new Intl.DateTimeFormat('en-US', { month: 'long', timeZone: 'UTC' }).format(new Date(`${t.spec.depart}T00:00:00Z`))}, going by ${weather.source}. Not a forecast.</p></div>` : ''}
       <div><h3>${icon('users')} Who provides each part</h3><ul class="tb-list">${t.providers.map(p => html`<li><b>${p.component}:</b> ${p.provider}</li>`)}</ul></div>
     </div>
@@ -145,7 +145,7 @@ function confidenceQuestions(t) {
   return html`<section class="tb-faq-inline" aria-labelledby="cq-title"><h2 id="cq-title">Simple answers before you book</h2>${qa.map(([q, a]) => html`<details><summary>${q}</summary><p>${a}</p></details>`)}</section>`;
 }
 
-function tripView(ctx, { data, cx, user, saved, dreamGap }) {
+function tripView(ctx, { data, cx, user, saved, dreamGap, named = null }) {
   const { trip: t, token, scores, why, options, origin, weather } = data;
   const s = t.spec;
   const budget = cx.budget;
@@ -182,7 +182,7 @@ function tripView(ctx, { data, cx, user, saved, dreamGap }) {
         <a class="btn btn-ghost btn-sm" href="/trip/${token}/optimize?${contextParams(cx, { cap: 'same', lk: 'd' })}">${icon('sparkle')} Make it better</a>
         <a class="btn btn-ghost btn-sm" href="#protect">${icon('lock')} Protect the magic</a>
         <a class="btn btn-ghost btn-sm" href="#customize">${icon('sliders')} Change one thing</a>
-        ${cx.searchParams ? html`<a class="btn btn-ghost btn-sm" href="/trips?${cx.searchParams}">${icon('layers')} Compare my three</a>` : ''}
+        ${cx.searchParams ? html`<a class="btn btn-ghost btn-sm" href="/trips?${cx.searchParams}">${icon('layers')} Compare my trips</a>` : ''}
       </nav>
       <p class="tb-checked">${icon('check')} Price checked moments ago. We check it again before you pay, and nothing is charged until you confirm.</p>
     </div>
@@ -226,8 +226,9 @@ function tripView(ctx, { data, cx, user, saved, dreamGap }) {
         <form class="tb-price-form" id="price" method="get" action="/trip/${token}/price" aria-labelledby="price-label">
           ${hiddenParams(contextParams(cx))}
           <label id="price-label" for="price-target">How much would you love to pay?</label>
-          <div class="tb-price-row"><span class="tb-price-currency" aria-hidden="true">$</span><input id="price-target" name="target" type="text" inputmode="numeric" pattern="[0-9,.]*" placeholder="${Math.round(t.total * 0.85 / 100)}" autocomplete="off" required><button class="btn btn-navy" type="submit">Make it work ${icon('arrow')}</button></div>
-          <p class="tb-muted tb-small">We search downward and stop at the cheapest version that’s still strong. You decide.</p>
+          <div class="tb-price-row"><span class="tb-price-currency" aria-hidden="true">$</span><input id="price-target" name="target" type="text" inputmode="numeric" pattern="[0-9,.]*" placeholder="${Math.round(t.total * 0.85 / 100)}" autocomplete="off" aria-describedby="price-hint" required><button class="btn btn-navy" type="submit">Make it work ${icon('arrow')}</button></div>
+          ${named === 'high' ? html`<p class="tb-tip" role="status">${icon('alert')} That is at or above this trip’s total of ${money(t.total)}. Name a lower price and we search downward from here.</p>` : named === 'low' ? html`<p class="tb-tip" role="status">${icon('alert')} Name a whole-dollar amount of at least $100 for the whole trip.</p>` : ''}
+          <p class="tb-muted tb-small" id="price-hint">In dollars, for the whole trip (it is ${money(t.total)} now). We search downward and stop at the cheapest version that’s still strong. You decide.</p>
         </form>
         <h3>${icon('sliders')} One change at a time</h3>
         <p class="tb-muted">Single changes, biggest saving first. We never remove anything without showing you.</p>${changeList(cheaper, { empty: 'This is already the cheapest version of this trip we can build.' })}</section>

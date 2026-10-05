@@ -120,10 +120,12 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
 
   const apiLimiter = rateLimit({ windowMs: 60 * 1000, limit: 120, standardHeaders: 'draft-7', legacyHeaders: false });
   const writeLimiter = rateLimit({ windowMs: 10 * 60 * 1000, limit: 40, standardHeaders: 'draft-7', legacyHeaders: false });
+  // Searches and the downward price search price hundreds of packages per request.
+  const computeLimiter = rateLimit({ windowMs: 60 * 1000, limit: 120, standardHeaders: 'draft-7', legacyHeaders: false });
   app.use('/api', apiLimiter, apiRouter(ctx, { writeLimiter }));
   if (tripService) {
     app.use('/admin', adminRouter(ctx, { writeLimiter }));
-    app.use('/', tripsRouter(ctx, { writeLimiter }));
+    app.use('/', tripsRouter(ctx, { writeLimiter, computeLimiter }));
   }
   app.use('/', pagesRouter(ctx, { writeLimiter }));
 

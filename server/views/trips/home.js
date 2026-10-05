@@ -41,7 +41,7 @@ function keepTile(keep) {
     <div>
       <span class="tb-kicker">Keep your money</span>
       <h3>${dollars(keep.spare)} <small>stays with you</small></h3>
-      <p>We couldn’t find a good reason to spend the other ${dollars(keep.spare)}: nothing we priced improved on our pick without giving something up.</p>
+      <p>We couldn’t find a good reason to spend the other ${dollars(keep.spare)}: nothing we priced improved on our pick in a way worth its price.</p>
     </div>
   </li>`;
 }

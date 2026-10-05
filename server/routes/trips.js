@@ -33,7 +33,8 @@ function requireUser(req, res, next) {
   res.redirect(303, `/signin?next=${encodeURIComponent(req.originalUrl)}`);
 }
 
-function tripsRouter(ctx, { writeLimiter }) {
+function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
+  const compute = computeLimiter || ((req, res, next) => next());
   const { tripService: svc, accounts, config } = ctx;
   const r = express.Router();
   const form = express.urlencoded({ extended: false, limit: '32kb' });
@@ -84,7 +85,7 @@ function tripsRouter(ctx, { writeLimiter }) {
     } catch (e) { next(e); }
   });
 
-  r.get('/trips', async (req, res, next) => {
+  r.get('/trips', compute, async (req, res, next) => {
     try {
       const { query, missing } = svc.parse(req.query);
       if (missing.length) return res.redirect(303, `/plan?${new URLSearchParams(Object.entries(req.query).filter(([, v]) => typeof v === 'string' && v)).toString()}`);
@@ -135,7 +136,7 @@ function tripsRouter(ctx, { writeLimiter }) {
         const [s, w] = await Promise.all([ctx.store.listRecords('saved', { userId: req.user.id, limit: 100 }), ctx.store.listRecords('watch', { userId: req.user.id, limit: 100 })]);
         saved = { saved: s.some(x => x.token === data.token), watch: w.some(x => x.token === data.token) };
       }
-      send(res, tripView(ctx, { data, cx, user: user(req), saved }));
+      send(res, tripView(ctx, { data, cx, user: user(req), saved, named: ['high', 'low'].includes(req.query.named) ? req.query.named : null }));
     } catch (e) { next(e); }
   });
 
@@ -148,14 +149,17 @@ function tripsRouter(ctx, { writeLimiter }) {
   });
 
   // Name your price: search this trip downward to the price the traveler named, and say where we'd stop.
-  r.get('/trip/:token/price', async (req, res, next) => {
+  // The price is taken as typed, never clamped: a number under $100 or at or above the trip's total
+  // sends the traveler back to the form with a note saying why.
+  r.get('/trip/:token/price', compute, async (req, res, next) => {
     try {
       const cx = optimizer.parseContext(req.query);
-      const target = optimizer.int(req.query.target, null, 100, 1000000);
-      const back = `/trip/${req.params.token}?${optimizer.contextParams(cx)}#price`;
-      if (!target) return res.redirect(303, back);
+      const typed = String(req.query.target ?? '').replace(/[,$\s]/g, '');
+      const target = /^\d+(\.\d+)?$/.test(typed) ? Math.round(Number(typed)) : null;
+      const back = named => `/trip/${req.params.token}?${optimizer.contextParams(cx, { named })}#price`;
+      if (target === null || target < 100 || target > 1000000) return res.redirect(303, back('low'));
       const data = await svc.namePrice(req.params.token, cx, target * 100);
-      if (data.tooHigh) return res.redirect(303, back);
+      if (data.tooHigh) return res.redirect(303, back('high'));
       const outcome = data.recommended ? 'reached' : data.anyway ? 'not-strong' : 'none';
       await tracked(req, 'price_named', { dest: data.current.trip.dest.id, current: data.currentTotal, target: target * 100, outcome });
       send(res, priceView(ctx, { data, cx, user: user(req) }));
@@ -173,7 +177,7 @@ function tripsRouter(ctx, { writeLimiter }) {
   });
 
   // Lock what you love and improve the rest / make it better for the same money: before and after.
-  r.get('/trip/:token/optimize', async (req, res, next) => {
+  r.get('/trip/:token/optimize', compute, async (req, res, next) => {
     try {
       const cx = optimizer.parseContext(req.query);
       const lk = [].concat(req.query.lk || []).filter(x => typeof x === 'string').join('').slice(0, 8);
