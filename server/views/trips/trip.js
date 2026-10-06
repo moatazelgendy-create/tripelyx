@@ -294,7 +294,7 @@ function tripView(ctx, { data, cx, user, saved, dreamGap, named = null }) {
     <aside class="tb-trip-side">
       <div class="tb-sticky">
         <div class="tb-side-price"><span>Total for ${plural(s.travelers, 'traveler')}</span><b>${money(t.total)}</b><small>${money(t.perTraveler)} per traveler · ${money(t.perNight)} per night · taxes and fees included</small>
-          ${budget ? html`<p class="${diff < 0 ? 'tb-side-over' : 'tb-side-under'}">${diff < 0 ? `${money(-diff)} over your ${cx.keep ? 'booking budget' : 'budget'}` : `${money(diff)} under your ${dollars(budget)} ${cx.keep ? 'booking budget' : 'budget'}`}</p>${cx.keep ? html`<p class="tb-side-keep">${icon('lock')} ${money(cx.keep)} protected for the destination · <a href="#vacation">the whole picture</a></p>` : ''}` : ''}
+          ${budget ? html`<p class="${diff < 0 ? 'tb-side-over' : 'tb-side-under'}">${diff < 0 ? `${money(-diff)} over your ${cx.keep ? 'booking budget' : 'budget'}` : `${money(diff)} under your ${dollars(budget)} ${cx.keep ? 'booking budget' : 'budget'}`}</p>${cx.keep ? html`<p class="tb-side-keep">${icon('lock')}<span>${money(cx.keep)} protected for the destination · <a href="#vacation">the whole picture</a></span></p>` : ''}` : ''}
           <a class="btn btn-navy btn-block" href="${reviewUrl}">Review and book ${icon('arrow')}</a>
           <p class="tb-muted tb-small">Nothing is charged until you confirm on the payment page.</p></div>
         ${scorecard(scores, t.demo)}
@@ -374,9 +374,9 @@ function reviewView(ctx, { data, cx, verify, user, promoError, promoCode }) {
         </dl>
         ${plan && plan.keep ? html`<div class="tb-vac-final" id="vacation"><p class="tb-recipe-title">Your vacation plan</p>
           <div class="tb-final-nums"><div><span>Pay today</span><b>${money(plan.booking)}</b></div><div class="${plan.raid ? 'is-over' : ''}"><span>${plan.raid ? 'Left of your reserve' : 'Protected for the destination'}</span><b>${money(plan.reserveLeft)}</b></div><div class="${plan.raid ? 'is-over' : ''}"><span>${plan.raid ? 'Taken from your reserve' : 'Unassigned'}</span><b>${money(plan.raid || plan.unassigned)}</b></div></div>
-          <p class="tb-vac-fit ${plan.fits ? 'is-ok' : 'is-over'}">${icon(plan.fits ? 'check' : 'alert')} <b>Does the whole trip fit?</b> ${plan.fits
+          <p class="tb-vac-fit ${plan.fits ? 'is-ok' : 'is-over'}">${icon(plan.fits ? 'check' : 'alert')}<span><b>Does the whole trip fit?</b> ${plan.fits
             ? `Yes. ${money(plan.booking)} booking plus your ${money(plan.keep)} reserve is ${money(plan.planned)} of your ${money(plan.vacation)}, and you arrive with ${money(plan.arrive)}: about ${money(plan.perDay)} a day over ${plural(plan.days, 'day')}. Whether that is enough is your call.`
-            : `Not as planned. The booking is ${money(t.total - budget)} over your ${dollars(budget)} booking budget, so it takes ${money(plan.raid)} of the ${money(plan.keep)} you protected${plan.over ? ` and ${money(plan.over)} beyond your whole ${money(plan.vacation)}` : ''}. You would arrive with ${money(plan.arrive)}. Only you can decide that; nothing happens without the button below.`}</p></div>`
+            : `Not as planned. The booking is ${money(t.total - budget)} over your ${dollars(budget)} booking budget, so it takes ${money(plan.raid)} of the ${money(plan.keep)} you protected${plan.over ? ` and ${money(plan.over)} beyond your whole ${money(plan.vacation)}` : ''}. You would arrive with ${money(plan.arrive)}. Only you can decide that; nothing happens without the button below.`}</span></p></div>`
           : budget ? html`<div class="tb-final-nums"><div><span>Your original budget</span><b>${money(budget)}</b></div><div><span>Final price</span><b>${money(t.total)}</b></div><div class="${diff < 0 ? 'is-over' : ''}"><span>${diff < 0 ? 'Over budget' : 'You keep'}</span><b>${money(Math.abs(diff))}</b></div></div>` : html`<div class="tb-final-nums"><div><span>Final price</span><b>${money(t.total)}</b></div></div>`}
         ${recipe(t, budget)}
       </section>

@@ -246,7 +246,7 @@ function tripBookingView(ctx, { booking: b, cancellationPreview: preview, paymen
         ${b.payment ? html`<p class="secure-note">${icon('card')}Paid ${money(b.total)} with ${b.payment.brand} •••• ${b.payment.last4}${b.payment.mode === 'test' ? ' (test mode)' : ''}. Remaining balance: ${money(0)}.</p>` : ''}
         ${b.refundAmount ? html`<p class="secure-note">${icon('info')}Refund: ${money(b.refundAmount)}</p>` : ''}
         ${budget && b.total <= budget ? html`<p class="tb-celebrate">${icon('sparkle')} Great choice. You came in <b>${money(budget - b.total)}</b> under your ${dollars(budget)}${plan && plan.keep ? ' booking' : ''} budget.</p>` : ''}
-        ${plan && plan.keep ? html`<p class="tb-vac-after">${icon('lock')} You protected <b>${money(plan.reserveLeft)}</b> for the destination${plan.unassigned ? `, plus ${money(plan.unassigned)} unassigned` : ''}: about ${money(plan.perDay)} a day over ${plural(plan.days, 'day')}, arrival to departure. Nothing on this page spends it.</p>` : ''}
+        ${plan && plan.keep ? html`<p class="tb-vac-after">${icon('lock')}<span>You protected <b>${money(plan.reserveLeft)}</b> for the destination${plan.unassigned ? `, plus ${money(plan.unassigned)} unassigned` : ''}: about ${money(plan.perDay)} a day over ${plural(plan.days, 'day')}, arrival to departure. Nothing on this page spends it.</span></p>` : ''}
       </section>
       <section class="tb-panel" aria-labelledby="info-title">
         <h2 id="info-title">Important travel information</h2>
