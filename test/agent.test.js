@@ -67,9 +67,10 @@ test('the trip object: a ceiling, a protected reserve, standing rules and locks 
   const s = state.newState({ id: 'agt_test' });
   assert.equal(state.nextQuestion(s).key, 'budget');
   state.applyUpdates(s, understand('I have $3,000 from JFK, 5 nights, beach, only nonstop, 4-star', {}, { maps }).updates);
-  assert.equal(state.nextQuestion(s).key, 'budgetType', 'booking only or whole vacation is the one question left');
+  assert.equal(state.nextQuestion(s), null, 'budget, origin and rules are enough: whether the amount is the whole vacation is never asked');
+  assert.ok(state.toQuery(s, { maps }).assumed.some(a => /whole amount/.test(a)), 'the assumption is said instead');
   state.applyUpdates(s, { budgetType: 'vacation' });
-  assert.equal(state.nextQuestion(s).key, 'reserve');
+  assert.equal(state.nextQuestion(s).key, 'reserve', 'only a whole-vacation budget asks what to protect');
   state.applyUpdates(s, { protectedMoney: 50000 });
   assert.equal(state.nextQuestion(s), null);
   assert.equal(state.bookingBudget(s), 250000, 'the booking budget is the total minus the protected money');
@@ -118,7 +119,8 @@ test('a build answers fast, keeps searching, shows real progress, and never clai
     const said = agentSays(s);
     assert.match(said, /First strong match/);
     assert.match(said, /Still checking whether I can beat this/);
-    assert.ok(/my first option holds|I beat my first option/.test(said), 'the deep result is reported either way');
+    assert.ok(/I'd stop here\. I checked all \d+ destinations|I beat my first option/.test(said), 'the deep result is reported either way: the signature stop with real counts, or the better option');
+    if (!s.job.improved) { assert.match(said, /complete packages, every hotel and flight combination suppliers returned/); assert.match(said, /strongest option I found for your current rules/); assert.doesNotMatch(said, /objectively the best/); }
     assert.doesNotMatch(said, /only \d+ left|selling fast|\d+ people (are )?looking/i, 'no fake scarcity');
     // A proposal to switch is never applied by itself.
     if (s.job.improved) { assert.equal(s.proposal.kind, 'switch'); assert.equal(s.current.token, s.job.first.token); }
@@ -250,7 +252,9 @@ test('pages: the homepage leads with the agent, a conversation has a page, a liv
     const c = client(app.base);
     const home = await c.req('/');
     assert.equal(home.status, 200);
-    assert.match(home.text, /What do you want.*your trip to do\?/s);
+    assert.match(home.text, /How much do you.*want to spend\?/s);
+    assert.match(home.text, /Show me what my money can do/); assert.match(home.text, /No destination required/); assert.match(home.text, /I already know where I want to go/);
+    assert.match(home.text, /name="budget"/);
     assert.match(home.text, /action="\/agent"/);
     assert.match(home.text, /action="\/challenge"/);
     assert.match(home.text, /Challenge us/);
@@ -283,7 +287,7 @@ test('pages: the homepage leads with the agent, a conversation has a page, a liv
     assert.equal(live.status, 200);
     assert.match(live.text, /data-running="0"/);
     assert.match(live.text, /id="live-canvas"/);
-    assert.match(text(live.text), /Checked all \d+ destinations/);
+    assert.match(text(live.text), /checked all \d+ destinations/i);
     assert.match(text(live.text), /Searched \d+ complete packages across \d+ destinations in \d+\.\d s\. First match at \d+\.\d s\./);
     const done = await c.req(page);
     assert.doesNotMatch(done.text, /http-equiv="refresh"/);

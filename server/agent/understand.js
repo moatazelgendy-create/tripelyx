@@ -100,13 +100,13 @@ function extractUpdates(text, { maps, now = new Date() }) {
   // Money: a reserve, an amount to cut or add, a competitor's price, and only then the budget.
   const reserve = money(lower, /(?:keep|save|leave|hold|protect|set aside|reserve)\s+(?:at least\s+)?\$?([\d,]+k?)\s*(?:dollars\s+)?(?:for|to|after|aside|spending|in my pocket|on hand|available|back|untouched)\b/) || money(lower, /\$?([\d,]+k?)\s*(?:for spending|to spend|spending money|pocket money|after (?:i|we) (?:arrive|land|get there)|available after|for (?:food|meals|shopping|fun|activities|extras|emergencies|expenses|the trip itself))\b/);
   if (reserve) { u.protectedMoney = reserve * 100; u.budgetType = 'vacation'; ack.push(`keep $${reserve.toLocaleString('en-US')} for after you arrive`); }
-  const cheaperBy = money(lower, /(?:cheaper|less|lower|down|cut|save me|reduce(?: it)?)\s+(?:it\s+)?(?:by\s+)?\$?([\d,]+k?)\b/) || money(lower, /\$?([\d,]+k?)\s*(?:cheaper|less|lower|off)\b/) || money(lower, /(?:take|give me|want)\s+\$?([\d,]+k?)\s+back/) || money(lower, /\bfind\s+(?:me\s+)?\$?([\d,]+k?)\b/);
+  const cheaperBy = money(lower, /(?:cheaper|less|lower|down|cut|save me|reduce(?: it)?)\s+(?:it\s+)?(?:by\s+)?\$?([\d,]+k?)\b/) || money(lower, /\$?([\d,]+k?)\s*(?:cheaper|less|lower|off)\b/) || money(lower, /(?:take|give me|want)\s+\$?([\d,]+k?)\s+back/) || money(lower, /\bfind\s+(?:me\s+)?\$?([\d,]+k?)\b/) || money(lower, /\bsave\s+(?:me\s+)?(?:another|an extra|a further)\s+\$?([\d,]+k?)\b/);
   if (cheaperBy) u.cheaperBy = cheaperBy * 100;
   const moreBy = money(lower, /(?:spend|add|use|put in|invest)\s+(?:another|an extra|an additional|up to)?\s*\$?([\d,]+k?)\s*(?:more|extra|if|only|on)?/) || money(lower, /\$?([\d,]+k?)\s+more\b/) || money(lower, /(?:gave|give) you\s+\$?([\d,]+k?)/);
   if (moreBy && !cheaperBy) u.moreBy = moreBy * 100;
   const competitor = money(lower, /(?:found|have|got|seen|saw|quoted|offered|booked|looking at|considering)\b[^$\d]{0,60}?(?:for|at|is|costs?|priced at)\s+\$?([\d,]+k?)\b/) || (has(lower, /\b(beat|quote|deal|competitor|other site|expedia|booking\.com|their)\b/) ? money(lower, /\$?([\d,]{3,}k?)\b/) : null);
   if (competitor && has(lower, /\b(beat|found|quote|quoted|deal|their|other|competitor|offered)\b/)) { u.competitorTotal = competitor * 100; }
-  const budget = money(lower, /(?:budget|have|spend|max(?:imum)?|limit|under|up to|around|about|total|got|cap|ceiling|no more than|at most)\s+(?:of\s+|is\s+|about\s+|around\s+)?\$?([\d,]+k?)\b/) || money(lower, /\$\s?([\d,]+k?)\b(?!\s*(?:cheaper|less|lower|off|more|back|for spending))/);
+  const budget = money(lower, /(?:budget|have|spend|max(?:imum)?|limit|under|up to|around|about|total|got|cap|ceiling|no more than|at most|more than)\s+(?:of\s+|is\s+|about\s+|around\s+)?\$?([\d,]+k?)\b/) || money(lower, /\$\s?([\d,]+k?)\b(?!\s*(?:cheaper|less|lower|off|more|back|for spending))/);
   if (budget && budget !== cheaperBy && budget !== moreBy && budget !== reserve && budget !== competitor && budget >= 100) {
     u.budget = budget * 100;
     u.budgetPer = has(lower, /\b(per person|pp|each|a head|per head)\b/) ? 'pp' : 'total';
@@ -158,7 +158,7 @@ function extractUpdates(text, { maps, now = new Date() }) {
   else if (has(lower, /\b(adventure|hiking|hike|outdoors|surf(?:ing)?|climbing|diving)\b/)) { u.style = 'adventure'; ack.push('adventure'); }
   else if (has(lower, /\b(city break|city trip|cities|museums?|culture|food scene|nightlife|urban|big city)\b/)) { u.style = 'city'; ack.push('a city break'); }
   else if (has(lower, /\bfamily\b|\bkids?\b/) && !u.style) { u.style = 'family'; }
-  if (has(lower, /\b(warm|sunny|sun|hot|heat|tropical|somewhere warm)\b/)) { u.warm = true; if (!u.style) u.style = 'beach'; if (!ack.includes('beach')) ack.push('somewhere warm'); }
+  if (has(lower, /\b(warm|warmer|sunny|sunnier|sun|hot|hotter|heat|tropical|somewhere warm)\b/)) { u.warm = true; if (!u.style) u.style = 'beach'; if (!ack.includes('beach')) ack.push('somewhere warm'); }
   if (has(lower, /\b(hotel (?:matters|is (?:the )?most important|first|quality)|nice hotel|great hotel|best hotel|good hotel|hotel is everything)\b/)) { u.priority = 'hotel'; ack.push('the hotel matters most'); }
   else if (has(lower, /\b(cheapest|as cheap as possible|price matters(?: most)?|lowest price|save (?:as much )?money|price first|budget first)\b/)) { u.priority = 'price'; ack.push('lowest price first'); }
   else if (has(lower, /\b(as long as possible|more nights matter|longer (?:is better|trip)|max(?:imum)? nights)\b/)) { u.priority = 'longer'; ack.push('a longer trip first'); }
@@ -175,6 +175,11 @@ function extractUpdates(text, { maps, now = new Date() }) {
   if (has(lower, /\bbreakfast\b/) && !has(lower, /\bno breakfast\b/)) { u.breakfast = true; ack.push('breakfast included'); }
   if (has(lower, /\b(transfer|pick[- ]?up from the airport|airport (?:shuttle|ride))\b/) && !has(lower, /\bno transfer\b/)) { u.transfer = true; ack.push('airport transfers'); }
   if (has(lower, /\b(refundable|free cancellation|can cancel|cancellable)\b/) && !has(lower, /\bnon-?refundable\b/)) { u.refundable = true; ack.push('refundable'); }
+  if (has(lower, /\b(carry[- ]?on only|only (?:a )?carry[- ]?on|no checked bags?|carry[- ]?on bag only|i (?:travel|pack|fly) (?:with )?(?:a )?carry[- ]?on)\b/)) { u.bags = 'carry-on'; ack.push('carry-on only'); }
+  else if (has(lower, /\b(personal item only|only (?:a )?personal item|no bags?( at all)?|travel light, no bags?)\b/)) { u.bags = 'personal'; ack.push('personal item only'); }
+  else if (has(lower, /\b(check(?:ed)? (?:a |one |two |\d )?bags?|checked bags? (?:each|included)|i check a bag|with (?:a )?checked bags?|need (?:a )?checked bags?)\b/)) { u.bags = 'checked'; ack.push('a checked bag'); }
+  if (has(lower, /\baggressive\b/)) { u.savingsLevel = 'aggressive'; ack.push('aggressive savings: every trade-off said'); }
+  else if (has(lower, /\bbalanced\b/)) { u.savingsLevel = 'balanced'; ack.push('balanced savings'); }
 
   // Relaxations offered when nothing fits, and the words that accept them.
   if (has(lower, /\bany style\b|\bdon'?t care about (?:the )?style\b|\bstyle doesn'?t matter\b/)) { u.style = 'surprise'; ack.push('any style'); }
@@ -211,10 +216,20 @@ function extractUpdates(text, { maps, now = new Date() }) {
 // What the traveler wants done. Several can apply; the router handles them in a sensible order.
 const INTENTS = [
   ['restart', /\b(start over|start again|reset|from scratch|new trip|clear everything)\b/],
-  ['stop', /\b(stop (?:the )?search(?:ing)?|that'?s enough|enough searching|stop looking)\b/],
+  ['stop', /\b(stop (?:the )?search(?:ing)?|that'?s enough|enough searching|stop looking|i'?m happy|i like this one|this is the one|i like this\b)/],
+  ['keepLooking', /\b(keep (?:looking|searching|building|going)|challenge it again|look again|try harder|another round|search more|can you do better)\b/],
+  ['whyPick', /\bwhy (?:[a-z' ]+\?|(?:did you )?(?:pick|choose) (?:that|this|it))/],
+  ['remember', /\b(remember (?:these|this|my|those)|save (?:these|my) (?:defaults|preferences|settings)|use (?:these|this) next time)\b/],
+  ['forget', /\b(forget (?:my|these|those|the) (?:defaults|preferences|settings)|not this time|don'?t use (?:my|the) (?:saved )?defaults|ignore (?:my|the) defaults)\b/],
   ['challenge', /\b(can you beat|beat (?:it|this|that|their|the price|my (?:quote|deal))|found (?:this|a|the) trip|i was quoted|i have a quote|other site|competitor|their price|better than (?:this|what i found))\b/],
-  ['book', /\b(book (?:it|this|that|the trip|now)?|buy|purchase|reserve it|check ?out|pay(?: now)?|let'?s go with (?:it|this)|i'?ll take (?:it|this|the trip))\b/],
-  ['approve', /^(?:yes|yep|yeah|yup|ok(?:ay)?|sure|fine|do it|do it anyway|anyway|go ahead|go over|take it|take it anyway|accept|agreed|please do|sounds good|switch|switch to (?:the )?better(?: option)?|take (?:the )?(?:upgrade|cheaper|challenger|better|new|proposal|one stop|one-stop|our pick|save more|first)(?: \w+)*|use (?:it|that)|a|b|c|option a|option b|option c)[.!]?$/i],
+  ['howLow', /\b(how low can (?:you|we|it) (?:go|get(?: it)?)|how cheap can (?:you|it|this) (?:get|go|be)|lowest (?:you|we) (?:can|could)(?: get| go)?|what'?s the lowest|how low can you get it)\b/],
+  ['cutMore', /\b(can (?:you|it|this) (?:go|be|get) (?:any )?(?:lower|cheaper)|anything cheaper|is there (?:anything|something) cheaper|any cheaper|can i (?:responsibly )?(?:make|get) (?:it|this) cheaper|go lower)\b/],
+  ['sameTripLess', /\b(same trip for less|same trip,? (?:but )?cheaper|this trip for less|keep (?:the|this) trip,? (?:but )?(?:cheaper|for less)|same trip,? less money)\b/],
+  ['breakpoints', /\b(upgrades? worth (?:considering|it|the money)|where does (?:the )?money (?:start|begin)|what (?:does|would) (?:more|extra) money (?:buy|get)|price breakpoints?|breakpoints?|what (?:can|could) i get for (?:a bit|a little) more)\b/],
+  ['whenLess', /\b(when can i go for less|when (?:is|would) it (?:be )?cheaper|cheaper (?:time|month|week|date) to go|when should i (?:go|book) (?:to pay less|for less|to save))\b/],
+  ['receipt', /\b(how (?:did|have) you (?:keep|kept) (?:my|the) (?:cost|price) down|savings receipt|show (?:me )?(?:the |my )?savings|what did (?:you|we) save|how much (?:did|have) (?:i|we) save[d]?|where did the savings come from)\b/],
+  ['book', /\b(book (?:it|this|that|the trip|now)?|buy|purchase|reserve it|check ?out|pay(?: now)?|let'?s go with (?:it|this)|i'?ll take (?:it|this|the trip)|take (?:this|that|your) (?:trip|pick)|verify (?:&|and) book)\b/],
+  ['approve', /^(?:yes|yep|yeah|yup|ok(?:ay)?|sure|fine|do it|do it anyway|anyway|go ahead|go over|take it|take it anyway|accept|agreed|please do|sounds good|switch|switch to (?:the )?better(?: option)?|take (?:the )?(?:upgrade|cheaper|cheapest|challenger|better|new|proposal|one stop|one-stop|our pick|save more|first|lowest|recommended)(?: \w+)*|use (?:it|that)|a|b|c|option a|option b|option c)[.!]?$/i],
   ['decline', /^(?:no|nope|nah|keep (?:current|it|mine|everything|what i have|my (?:trip|deal|hotel|money)|the (?:current|old|first)(?: one)?)|don'?t|leave it|stay|never mind|no thanks|keep the \$?[\d,]+)[.!]?$/i],
   ['stopSaves', /\b(what (?:does|would) (?:one|a) (?:stop|connection|layover) save|show me what (?:one|a) (?:stop|connection) saves|how much (?:does|would|do) (?:a|one) (?:stop|connection|layover) save|one stop saves?)\b/],
   ['catch', /\b(what'?s the catch|what is the catch|downside|trade-?offs?|what am i giving up|anything wrong|what'?s wrong with)\b/],
@@ -231,8 +246,8 @@ const INTENTS = [
   ['watch', /\b(watch for|set (?:up )?a watch|alert me|notify me|tell me when|let me know when)\b/],
   ['elsewhere', /\b(another country|somewhere else|different (?:place|destination|country|city)|try (?:another|a different|somewhere)|change the destination|not (?:cancun|there|that place)|anywhere else)\b/],
   ['easier', /\b(easier|simpler|less hassle|less travel|shorter travel|more convenient|easy trip|make this easier)\b/],
-  ['cheaper', /\b(cheaper|too expensive|too much|less money|lower(?: the)? price|bring (?:it|the price) down|save me|cut the price|reduce the price|take \$?[\d,]+ back|find \$?[\d,]+|under budget|spend less|more affordable)\b/],
-  ['better', /\b(make it better|better|upgrade|improve|nicer|spend (?:the )?(?:rest|full|remaining|whole|entire)|spend (?:another|an extra|up to)?\s*\$?[\d,]+|if it (?:actually |really )?helps|what (?:can|would|does) \$?[\d,]+ (?:more )?(?:get|buy|do)|use the rest|what'?s the best i can get)\b/],
+  ['cheaper', /\b(cheaper|too expensive|too much|less money|lower(?: the)? price|bring (?:it|the price) down|save me|save (?:another|an extra|a further) \$?[\d,]+|cut the price|reduce the price|take \$?[\d,]+ back|find \$?[\d,]+|under budget|spend less|more affordable)\b/],
+  ['better', /\b(make it better|better|upgrade|improve|nicer|spend (?:the )?(?:rest|full|remaining|whole|entire)|spend (?:another|an extra|up to)?\s*\$?[\d,]+|if it (?:actually |really )?helps|what (?:can|would|does) \$?[\d,]+ (?:more )?(?:get|buy|do)|use the rest|what'?s the best i can get|get me more for (?:this|the|my|the same) money|more (?:vacation )?for (?:this|the same) money)\b/],
   ['lock', /\b(don'?t (?:change|touch|move)|do not (?:change|touch|move)|never change|lock|keep everything except|keep the hotel|keep the flights?|keep the dates|keep my hotel)\b/],
   ['nonstopRule', /\b(only nonstop|nonstop only|never (?:show|give) me a (?:connection|stop|layover)|no connections?|no layovers?|hate connections|must be nonstop)\b/],
   ['build', /\b(build|rebuild|plan|find (?:me|us)|get (?:me|us)|best trip|show me trips|show me (?:some|a few) (?:options|trips)|i want (?:to go|a trip)|i'?d like (?:to go|a trip)|take (?:me|us)|let'?s go|trip for|vacation|holiday|getaway|escape|somewhere|search again|try again)\b/],
@@ -290,6 +305,29 @@ function understand(text, state, { maps, now = new Date() } = {}) {
   if (pending === 'budget' && !updates.budget) { const m = lower.match(/([\d,]+k?)/); if (m && num(m[1]) >= 100) { updates.budget = num(m[1]) * (/k$/i.test(m[1]) ? 1000 : 1) * 100; updates.budgetPer = 'total'; } }
   if (pending === 'options' && /^\s*(?:option\s*)?([abc])\b/i.test(lower)) updates.option = lower.match(/^\s*(?:option\s*)?([abc])\b/i)[1].toUpperCase();
   if (pending === 'challenge' && !updates.competitorTotal) { const m = lower.match(/\$?\s*([\d,]{3,}k?)\b/); if (m && num(m[1]) >= 100) { updates.competitorTotal = num(m[1]) * (/k$/i.test(m[1]) ? 1000 : 1) * 100; delete updates.budget; } if (!intents.includes('challenge')) intents.push('challenge'); }
+  // The three ways: which one feels like the traveler, or none; one-tap feedback under a way; a way
+  // referred to by number with a change ("number 2 but somewhere warmer"); the pushed variants.
+  const REF = '(?:number |option |#|like |want |take |pick |choose |go with |give me |prefer )';
+  const WAY_WORDS = [['more', new RegExp(`\\b(more vacation|the first(?: one)?)\\b|\\b${REF}1\\b|^\\s*1\\b`)], ['keep', new RegExp(`\\b(keep more|the second(?: one)?)\\b|\\b${REF}2\\b|^\\s*2\\b`)], ['special', new RegExp(`\\b(make it special|special|the third(?: one)?)\\b|\\b${REF}3\\b|^\\s*3\\b`)]];
+  const fb = lower.match(/^\s*([123])\s*:\s*(love this|too expensive|too short|too far|wrong vibe)\s*$/);
+  if (fb) {
+    updates.way = ['more', 'keep', 'special'][Number(fb[1]) - 1];
+    if (fb[2] !== 'love this') { updates.wrong = { 'too expensive': 'expensive', 'too short': 'short', 'too far': 'travel', 'wrong vibe': 'exciting' }[fb[2]]; delete updates.way; }
+    intents.length = 0; intents.push('ways'); ack.length = 0;
+  } else if (state && state.mission && (pending === 'ways' || new RegExp(`\\b${REF}[123]\\b|\\b(more vacation|keep more|make it special)\\b`).test(lower))) {
+    if (/\b(none|none of (?:these|those|them)|try again|something else|not these|neither)\b/.test(lower) && pending === 'ways') { updates.way = 'none'; intents.length = 0; intents.push('ways'); ack.length = 0; }
+    else { const w = WAY_WORDS.find(([, re]) => re.test(lower)); if (w) { updates.way = w[0]; if (!intents.includes('ways')) intents.push('ways'); } }
+  }
+  if (pending === 'wrong') {
+    const wrong = /\bdestination/.test(lower) ? 'destinations' : /\b(expensive|price|cost|money)\b/.test(lower) ? 'expensive' : /\b(short|longer|nights)\b/.test(lower) ? 'short' : /\b(travel|far|flight|connection|long)\b/.test(lower) ? 'travel' : /\bhotel/.test(lower) ? 'hotels' : /\b(exciting|boring|vibe|dull|fun)\b/.test(lower) ? 'exciting' : null;
+    if (wrong) { updates.wrong = wrong; intents.length = 0; intents.push('ways'); ack.length = 0; }
+  }
+  if (pending === 'variants' && /^\s*(?:pick\s*|option\s*)?([abc])\b/i.test(lower)) { updates.variant = lower.match(/^\s*(?:pick\s*|option\s*)?([abc])\b/i)[1].toUpperCase(); intents.length = 0; intents.push('ways'); }
+  const mixH = lower.match(/\bhotel from (?:option |variant )?([abc])\b/), mixF = lower.match(/\bflights? from (?:option |variant )?([abc])\b/);
+  if (mixH || mixF) { updates.mix = { hotelFrom: mixH ? mixH[1].toUpperCase() : null, flightFrom: mixF ? mixF[1].toUpperCase() : null }; intents.length = 0; intents.push('ways'); ack.length = 0; }
+  else if (/\bmix (?:them|those|these)\b/.test(lower)) { updates.mix = { hotelFrom: null, flightFrom: null }; intents.length = 0; intents.push('ways'); }
+  if (pending === 'origin' && !updates.origin) { const o = originIn(clean, maps); if (o) updates.origin = o.origin; }
+
   // Facts about the trip they found: the answer to the agent's question about it, or a sentence
   // about "their" trip while a challenge is on the table. These never touch the traveler's own rules.
   if (pending === 'theirs' || (state && state.challenger && /\b(their|theirs|they|the other (?:trip|deal|site))\b/.test(lower) && !/\bbeat\b/.test(lower))) {
@@ -307,6 +345,8 @@ function understand(text, state, { maps, now = new Date() } = {}) {
   // A bare number answers whatever was asked.
   if (/^\s*\$?\s*[\d,]+k?\s*$/.test(lower) && !pending && !updates.budget) { const v = num(lower.match(/([\d,]+)/)[1]) * (/k/i.test(lower) ? 1000 : 1); if (v >= 100) { updates.budget = v * 100; updates.budgetPer = 'total'; } }
 
+  // "Why Cancun?" asks about a choice; it never sends the trip there.
+  if (intents.includes('whyPick')) { if (updates.destination) { updates.destinationAsked = updates.destination; delete updates.destination; } delete updates.anywhere; }
   const unknown = !intents.length && !Object.keys(updates).length;
   return { text: clean, updates, intents, ack, unknown };
 }

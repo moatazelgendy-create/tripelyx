@@ -61,4 +61,23 @@
     var btn = composer.querySelector('button[type=submit]:not([name])');
     if (btn) btn.disabled = true;
   });
+
+  // The budget slider: the label follows the thumb, and letting go rebuilds at the new ceiling.
+  function fmt(n) { return '$' + String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+  document.addEventListener('input', function (e) {
+    var range = e.target;
+    if (!range.matches || !range.matches('[data-slider] input[type=range]')) return;
+    var form = range.closest('[data-slider]');
+    var out = form.querySelector('[data-slider-out]');
+    var btn = form.querySelector('[data-slider-btn]');
+    if (out) out.textContent = fmt(range.value);
+    if (btn) btn.textContent = range.value === range.getAttribute('data-current') ? 'Rebuild at this ceiling' : 'Rebuild at ' + fmt(range.value);
+  });
+  document.addEventListener('change', function (e) {
+    var range = e.target;
+    if (!range.matches || !range.matches('[data-slider] input[type=range]')) return;
+    if (range.value === range.getAttribute('data-current')) return;
+    var form = range.closest('[data-slider]');
+    if (form) form.requestSubmit ? form.requestSubmit() : form.submit();
+  });
 })();

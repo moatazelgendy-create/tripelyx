@@ -5,6 +5,7 @@ const { AppError } = require('../lib/errors');
 const { readCookies, bookingCookieName } = require('../lib/cookies');
 const optimizer = require('../trips/optimizer');
 const decision = require('../trips/decision');
+const savemax = require('../trips/savemax');
 const state = require('../agent/state');
 const { agentView, agentStartView, agentLive } = require('../views/trips/agent');
 const { bookingHome } = require('../agent/home');
@@ -44,7 +45,16 @@ function agentRouter(ctx, { writeLimiter, computeLimiter, sameOrigin }) {
       const cx = state.budgetContext(s, q);
       const data = await svc.trip(s.current.token, cx);
       const o = svc.inv.maps.getOrigin(s.origin);
-      return { ...data, ctx: cx, verdict: decision.verdict(data.trip, cx, data.scores), originCity: o ? o.city : s.origin };
+      // The saver's facts on the canvas: the fare compared with the bag the traveler packs (only when
+      // they said how they pack), and the receipt of every version applied in this conversation.
+      const trap = s.bags ? savemax.cheapTrap(data.trip, data.trip.flightOptions || [], { bags: s.bags }) : null;
+      let receipt = null;
+      if (s.history && s.history.length > 1) {
+        const versions = [];
+        for (const h of s.history) { try { versions.push({ label: h.label, trip: (await svc.trip(h.token, cx)).trip }); } catch (e) { if (!(e instanceof AppError)) throw e; } }
+        receipt = savemax.savingsReceipt(versions, state.bookingBudget(s));
+      }
+      return { ...data, ctx: cx, verdict: decision.verdict(data.trip, cx, data.scores), originCity: o ? o.city : s.origin, trap, receipt };
     } catch (e) { if (e instanceof AppError) return null; throw e; }
   };
 
@@ -68,8 +78,10 @@ function agentRouter(ctx, { writeLimiter, computeLimiter, sameOrigin }) {
     try {
       const b = await bookingFor(req, req.body.ref);
       const booking = b && b.vertical === 'trips' ? { ref: b.ref, token: b.trip.token, dest: b.trip.dest.name, depart: b.trip.spec.depart, nights: b.trip.spec.nights, total: b.total, status: b.status } : null;
-      const s = await agent.create({ visitor: req.visitor, userId: req.user ? req.user.id : null, booking });
-      const text = said(req.body) || (req.body.mode === 'surprise' ? 'Surprise me: pick the best trip my money can buy.' : req.body.mode === 'challenge' ? 'I already found a trip. Can you beat it?' : '');
+      const amount = String(req.body.budget || '').replace(/[^\d]/g, '').slice(0, 7);
+      const mission = !!amount;
+      const s = await agent.create({ visitor: req.visitor, userId: req.user ? req.user.id : null, booking, mission, mode: mission && req.body.mode === 'save' ? 'save' : null });
+      const text = said(req.body) || (amount ? `$${Number(amount).toLocaleString('en-US')}` : req.body.mode === 'surprise' ? 'Surprise me: pick the best trip my money can buy.' : req.body.mode === 'challenge' ? 'I already found a trip. Can you beat it?' : '');
       if (booking && !text) await agent.say(s.id, `What do I need to do next for trip ${booking.ref}?`);
       else if (text) {
         await svc.track('agent_started', { visitor: req.visitor, userId: req.user && req.user.id, data: { length: text.length, booking: !!booking } });
@@ -99,7 +111,8 @@ function agentRouter(ctx, { writeLimiter, computeLimiter, sameOrigin }) {
     try {
       const s = await owned(req, res);
       if (!s) return;
-      const text = said(req.body);
+      const amount = String(req.body.budget || '').replace(/[^\d]/g, '').slice(0, 7);
+      const text = said(req.body) || (amount ? `Don't spend more than $${Number(amount).toLocaleString('en-US')}` : '');
       if (text) {
         await svc.track('agent_said', { visitor: req.visitor, userId: req.user && req.user.id, data: { length: text.length } });
         await agent.say(s.id, text);

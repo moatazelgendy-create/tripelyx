@@ -14,17 +14,28 @@ function newState({ id, visitor = null, userId = null, now = new Date() }) {
     // Who, where from, where to.
     travelers: null, who: null, origin: null, destination: null, anywhere: false, region: null, notCountry: null,
     // When and how long.
-    dateMode: null, depart: null, month: null, nights: null,
+    dateMode: null, depart: null, month: null, nights: null, nightsStated: false,
     // Money: the amount named, whether it covers the booking only or the whole vacation, and the
     // part protected for the destination. The booking budget is derived, never typed over.
     budget: null, budgetPer: 'total', budgetType: null, protectedMoney: null, overApproved: false,
     // Rules. A hard flight rule is never relaxed silently; a soft one steers the ranking.
     flightStops: null, flightRule: null, hotelRules: { minStars: null, allInclusive: false, breakfast: false, beachfront: false }, transfer: false, refundable: false,
     style: null, priority: null,
+    // How the traveler packs (for fare comparisons that include the bag) and how hard to cut: both facts
+    // they stated, never inferred from money or anything else.
+    bags: null, savingsLevel: null,
     locks: { hotel: false, flight: false, dates: false, nights: false, dest: false, budget: false },
     // What has been built: the current trip, the three options from the last build, a pending proposal
     // the traveler has not approved, and the running or finished search job.
     current: null, options: [], proposal: null, job: null, challenged: {}, challenger: null, compromises: [],
+    // The mission, when the conversation started from one number: the three ways built for it, what
+    // the traveler reacted to, the direction they chose (a signal for this trip only, never saved
+    // without permission) and the variants pushed in that direction.
+    mission: null,
+    // Saved defaults the traveler approved earlier (origin, travelers, rules), shown when used.
+    defaults: null,
+    // The versions the trip went through, for the receipt: every applied change with its total.
+    history: [],
     // A booking the conversation is about (post-booking questions).
     booking: null,
     pending: null, messages: [], turns: 0, assumed: [],
@@ -67,7 +78,7 @@ function applyUpdates(s, u, { now = new Date() } = {}) {
   if (u.destination !== undefined) { set('destination', u.destination); if (u.destination) { set('anywhere', false); set('notCountry', null); } }
   if (u.anywhere) { set('anywhere', true); set('destination', null); }
   if (u.region) set('region', u.region);
-  if (u.nights) set('nights', u.nights);
+  if (u.nights) { set('nights', u.nights); s.nightsStated = true; }
   if (u.dateMode) set('dateMode', u.dateMode);
   if (u.depart !== undefined) set('depart', u.depart);
   if (u.month !== undefined) set('month', u.month);
@@ -85,6 +96,8 @@ function applyUpdates(s, u, { now = new Date() } = {}) {
   if (u.useReserve && s.protectedMoney) set('protectedMoney', Math.max(0, s.protectedMoney - u.useReserve));
   if (u.transfer) set('transfer', true);
   if (u.refundable) set('refundable', true);
+  if (u.bags) set('bags', u.bags);
+  if (u.savingsLevel) set('savingsLevel', u.savingsLevel);
   if (u.locks) { const l = { ...s.locks }; for (const k of LOCK_KEYS) if (u.locks[k] !== undefined) l[k] = !!u.locks[k]; set('locks', l); }
   if (u.unlocks) { const l = { ...s.locks }; for (const k of LOCK_KEYS) if (u.unlocks[k]) l[k] = false; set('locks', l); }
   // A departure that has slipped into the past is dropped rather than searched.
@@ -97,8 +110,9 @@ function applyUpdates(s, u, { now = new Date() } = {}) {
 // The one question that still blocks a build, if any. Everything else gets a stated default.
 function nextQuestion(s) {
   if (!s.budget) return { key: 'budget', text: 'How much do you want to spend, all in?' };
-  if (!s.origin) return { key: 'origin', text: 'Where are you flying from?' };
-  if (!s.budgetType) return { key: 'budgetType', text: `Is ${money(vacationBudget(s))} for the booking only, or your whole vacation including spending money?`, options: [['Booking only', 'just the booking'], ['Whole vacation', 'the whole vacation']] };
+  if (!s.origin) return { key: 'origin', text: 'Where are you flying from?', origins: true };
+  // Whether the amount covers the booking only or the whole vacation is not asked: the amount is the
+  // ceiling for the booking unless the traveler protects part of it ("keep $300"), and that is said.
   if (s.budgetType === 'vacation' && !s.protectedMoney) return { key: 'reserve', text: 'How much of it do you want to keep for spending after you arrive?' };
   if (bookingBudget(s) < 10000) return { key: 'budget', text: `After the money you protect, ${money(bookingBudget(s))} is left for the trip itself. What total should I work with?` };
   return null;
@@ -115,6 +129,7 @@ function toQuery(s, { maps }) {
   if (!s.nights) assumed.push('5 nights');
   const dateMode = s.dateMode || 'anytime';
   if (!s.dateMode) assumed.push('flexible dates');
+  if (!s.budgetType && !s.protectedMoney) assumed.push('the whole amount is for the trip itself (say “keep $300” to protect spending money)');
   let style = s.style || 'surprise';
   if (s.destination && style !== 'surprise' && style !== 'all-inclusive') { const d = maps.getDestination(s.destination); if (d && !d.styles.includes(style)) style = 'surprise'; }
   const priority = s.priority || (s.flightStops === 'nonstop' && s.flightRule === 'soft' ? 'flights' : 'price');
@@ -130,7 +145,36 @@ function toQuery(s, { maps }) {
 }
 
 function budgetContext(s, q) {
-  return { budget: q.budget, keep: q.keep || 0, allowOver: q.allowOver, style: q.style, priority: q.priority, nightsAsked: q.nights, rules: q.rules };
+  // A length the traveler stated or chose is one they asked for; an assumed length is not.
+  return { budget: q.budget, keep: q.keep || 0, allowOver: q.allowOver, style: q.style, priority: q.priority, nightsAsked: s.nightsStated || s.nights ? q.nights : null, rules: q.rules };
+}
+
+// The mission's rules in the three categories the traveler can read: what is locked (the agent never
+// crosses it), what is preferred (steers the ranking), and what the agent is free to change.
+function missionRules(s, { maps }) {
+  const locked = [], preferred = [], open = [];
+  const booking = bookingBudget(s);
+  if (booking) locked.push(`Budget at or under ${money(booking)}${s.budgetType === 'vacation' && s.protectedMoney ? ` (${money(s.protectedMoney)} protected on top)` : ''}`);
+  if (s.travelers || s.who) locked.push(`${s.travelers || WHO_DEFAULT[s.who]} travelers`);
+  if (s.origin) { const o = maps.getOrigin(s.origin); locked.push(`Leaving from ${o ? o.city : s.origin}`); }
+  if (s.flightStops === 'nonstop' && s.flightRule === 'hard') locked.push('Nonstop only'); else if (s.flightStops === 'nonstop') preferred.push('Nonstop if possible'); else if (!s.locks.flight) open.push('Flights (stops, fare, airline)');
+  if (s.hotelRules.minStars) locked.push(`Hotel ${s.hotelRules.minStars}-star or better`);
+  if (s.hotelRules.allInclusive) locked.push('All-inclusive');
+  if (s.hotelRules.beachfront) locked.push('Beachfront');
+  if (s.hotelRules.breakfast) locked.push('Breakfast included');
+  if (s.transfer) locked.push('Airport transfers included');
+  if (s.refundable) locked.push('Refundable');
+  if (s.dateMode === 'exact' && s.depart) locked.push(`Leaving ${s.depart}`); else if (s.dateMode === 'flexible' && s.month) preferred.push(`In ${s.month}`); else open.push('Exact dates (flexible)');
+  if (s.destination) { const d = maps.getDestination(s.destination); (s.locks.dest ? locked : preferred).push(`Destination: ${d ? d.name : s.destination}`); } else if (s.notCountry) preferred.push(`Outside ${s.notCountry}`); else if (s.region === 'international') preferred.push('International'); else open.push('Destination');
+  if (s.nights) (s.locks.nights ? locked : preferred).push(`${s.nights} nights`); else open.push('Trip length');
+  if (s.style && s.style !== 'surprise') preferred.push({ beach: 'Beach', city: 'City break', adventure: 'Adventure', romantic: 'Romantic', family: 'Family', 'all-inclusive': 'All-inclusive' }[s.style] || s.style);
+  if (s.priority) preferred.push({ hotel: 'The hotel matters most', flights: 'The flights matter most', longer: 'More nights matter most', activities: 'Experiences matter most', price: 'Lowest price matters most' }[s.priority]);
+  if (s.bags) preferred.push({ personal: 'Personal item only', 'carry-on': 'Carry-on only', checked: 'A checked bag' }[s.bags]);
+  if (s.savingsLevel === 'aggressive') preferred.push('Aggressive savings: every trade-off said, hard rules kept');
+  for (const k of ['hotel', 'flight', 'dates', 'nights', 'dest']) if (s.locks[k]) { const w = { hotel: 'The hotel', flight: 'The flights', dates: 'The dates', nights: 'The length', dest: 'The destination' }[k]; if (!locked.some(x => x.startsWith(w))) locked.push(`${w} (locked)`); }
+  if (!s.locks.hotel && !s.hotelRules.minStars && !s.hotelRules.allInclusive) open.push('Hotel and room');
+  else if (!s.locks.hotel) open.push('Which hotel, inside the rules');
+  return { locked, preferred, open };
 }
 
 function lockedWords(s) {
@@ -173,4 +217,4 @@ function askedFor(s, { maps }) {
   return rows;
 }
 
-module.exports = { newState, applyUpdates, nextQuestion, toQuery, budgetContext, bookingBudget, vacationBudget, rulesOf, lockedWords, pushMessage, askedFor, LOCK_KEYS, LOCK_LABEL };
+module.exports = { newState, applyUpdates, nextQuestion, toQuery, budgetContext, bookingBudget, vacationBudget, rulesOf, lockedWords, missionRules, pushMessage, askedFor, LOCK_KEYS, LOCK_LABEL };

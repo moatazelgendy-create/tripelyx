@@ -393,7 +393,8 @@ function search(inventory, rawQuery, { settings, now = new Date() }) {
   const cheapestByDest = {};
   for (const x of all) if (!(x.trip.dest.id in cheapestByDest) || x.trip.total < cheapestByDest[x.trip.dest.id]) cheapestByDest[x.trip.dest.id] = x.trip.total;
   const eligibleDestinations = new Set(eligible.map(x => x.trip.dest.id)).size;
-  return { query: q, ctx, picks, keepMoney, closest, cheapest, cheapestEligible, cheapestByDest, considered: all.length, destinations: destsConsidered, eligibleDestinations, airport };
+  const cheaperThanPick = picks[0] ? eligible.filter(x => x.trip.total < picks[0].trip.total).length : 0;
+  return { query: q, ctx, picks, keepMoney, closest, cheapest, cheapestEligible, cheapestByDest, considered: all.length, eligible: eligible.length, cheaperThanPick, destinations: destsConsidered, eligibleDestinations, airport };
 }
 
 // Journey B: a dream destination and a maximum budget. Returns the strongest trip to that destination

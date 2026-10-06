@@ -477,8 +477,8 @@ test('money and time: weekdays are a second budget, never a claim about anyoneâ€
   assert.ok(!/Shorten the trip|Relax one rule|Allow up to 10% more/.test(none.text), 'no single-rule link is offered twice');
   assert.doesNotMatch(none.text, /No results found/i);
   const home = await c.req('/');
-  assert.match(home.text, /Say it in your own words\./);
-  assert.match(home.text, /Every price includes taxes and fees\./);
+  assert.match(home.text, /Or say it in your own words/);
+  assert.match(home.text, /every total includes taxes and fees/);
   assert.match(home.text, /Build my best trip/);
   assert.match(home.text, /Your maximum is a ceiling, not a target\./);
 });
@@ -550,7 +550,7 @@ test('pages render without inline scripts or styles; corporate site moves to /co
     assert.ok(!/<script(?![^>]*\bsrc=)(?![^>]*application\/json)[^>]*>/.test(body), `${p} has an inline script`);
   }
   const home = await (await fetch(app.base + '/')).text();
-  assert.match(home, /What do you want<br>your trip to do\?/);
+  assert.match(home, /How much do you<br>want to spend\?/);
   assert.match(home, /Surprise me/i);
   assert.match(home, /Demo inventory/);
   assert.match(home, /Three answers\. One budget\. You choose, or keep talking\./);
