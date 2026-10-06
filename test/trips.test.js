@@ -403,7 +403,14 @@ test('name your price: searches downward, stops at the cheapest strong version, 
     const page = await c.req(`${tripPath}?${qs}`);
     assert.match(page.text, /How much would you love to pay\?/);
     const total = Number(page.text.match(/"total":(\d+)/)[1]);
-    for (const frac of [0.97, 0.8, 0.5]) {
+    // Targets the engine itself says exist for this trip today (its floor, its cheapest version
+    // and a price below it), plus a few fractions, so every one of the three answers is exercised
+    // whatever the demo calendar holds on the day the tests run.
+    const probeCtx = optimizer.parseContext(Object.fromEntries(new URLSearchParams(qs)));
+    const probeTrip = priceTrip(inv, decodeSpec(tripPath.split('/').pop()), settings);
+    const probe = decision.nameYourPrice(inv, probeTrip, settings, probeCtx, total - 1);
+    const fracs = [0.97, 0.8, 0.5, ...(probe.floor ? [probe.floor.total / total] : []), ...(probe.cheapest ? [probe.cheapest.total / total, (probe.cheapest.total - 10000) / total] : [])].filter(f => f > 0.01 && f < 1);
+    for (const frac of fracs) {
       const res = await c.req(`${tripPath}/price?${qs}&target=${Math.round(total * frac / 100)}`);
       assert.equal(res.status, 200, res.text.slice(0, 200));
       const h1 = res.text.match(/<h1>([^<]*)<\/h1>/)[1];
@@ -611,7 +618,7 @@ test('the full journey: account, search, customize, price check, quote, pay, My 
   assert.equal(paid.status, 200, paid.text);
   const b = paid.json().booking;
   assert.equal(b.status, 'confirmed');
-  assert.equal(b.components.length, 2);
+  assert.equal(b.components.length, 2 + b.trip.activities.length + (b.trip.transfer ? 1 : 0), 'flights, hotel, and one component per experience and transfer');
   assert.ok(b.components.every(x => x.status === 'confirmed' && x.confirmation));
   const bookingPage = await c.req(`/booking/${booking.ref}`);
   assert.match(bookingPage.text, /Your trip is booked/);
