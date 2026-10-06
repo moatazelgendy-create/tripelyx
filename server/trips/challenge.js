@@ -16,7 +16,8 @@ const BAGS = ['personal', 'carry-on', 'checked', UNKNOWN];
 const TRANSFER = ['yes', 'no', UNKNOWN];
 const CANCEL = ['nonrefundable', 'refundable', UNKNOWN];
 const TAXES = ['included', 'excluded', UNKNOWN];
-const LOCKS = ['nonstop', 'stars', 'nights', 'dates', 'meals', 'dest'];
+// Locks beyond what the trip is known to include: everything stated is protected already.
+const LOCKS = ['nonstop', 'nights', 'dest'];
 const MODES = {
   less: { label: 'Same trip for less', blurb: 'Keep everything you said; find a lower complete price.' },
   better: { label: 'Better trip, same money', blurb: 'Spend what you were going to spend; improve something real.' },
@@ -96,7 +97,6 @@ function floorOf(ch) {
     flex: FLEX_RANK[ch.cancel] || 0,
     hotel: ch.hotel,
     nightsLocked: lock('nights'),
-    datesLocked: lock('dates'),
     destLocked: lock('dest'),
   };
 }

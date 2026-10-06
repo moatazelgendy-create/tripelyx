@@ -838,6 +838,7 @@ a.tb-pill:hover { border-color: var(--blue-500); }
 .tb-chal-radios legend { font-weight: 600; font-size: 15px; padding: 0; margin-bottom: 2px; }
 .tb-chal-radios .tb-radio-row { margin-top: 8px; }
 .tb-radio-wrap { flex-wrap: wrap; row-gap: 10px; column-gap: 18px; }
+.tb-chal-radios + .field { margin-top: 18px; }
 .tb-chal-actions { display: flex; flex-wrap: wrap; gap: 12px; }
 .tb-chal-grid { display: grid; gap: 18px; grid-template-columns: 1fr 1fr; align-items: start; margin-bottom: 18px; }
 .tb-challenger-rows { display: grid; gap: 6px 14px; grid-template-columns: max-content 1fr; margin: 0; font-size: 15px; }
@@ -863,6 +864,7 @@ a.tb-pill:hover { border-color: var(--blue-500); }
 .tb-verdict.is-tradeoff { background: #eff6ff; border-color: #bfdbfe; }
 .tb-verdict.is-keep { background: var(--bg-soft); }
 .tb-verdict.is-info { background: #fffbeb; border-color: #fde68a; }
+.tb-compare-wrap { position: relative; } /* absolutely positioned sr-only cells stay inside the scrolling wrap */
 .tb-score th[scope="row"] { font-weight: 600; white-space: nowrap; }
 .tb-score-mark > span { display: inline-flex; align-items: center; gap: 6px; font-size: 13.5px; white-space: nowrap; }
 .tb-score-mark .icon { width: 16px; height: 16px; }
@@ -879,6 +881,20 @@ a.tb-pill:hover { border-color: var(--blue-500); }
 .tb-receipt-grid > div.is-over b { color: #b91c1c; }
 .tb-other-modes li { font-size: 15px; }
 @media (max-width: 760px) {
+  /* The scoreboard stacks: one block per row, theirs then ours, no sideways scrolling. */
+  .tb-score-wrap { overflow: visible; }
+  .tb-score { min-width: 0; display: block; }
+  .tb-score thead { display: none; }
+  .tb-score tbody { display: block; }
+  .tb-score tr { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 12px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  .tb-score tr:last-child { border-bottom: 0; }
+  .tb-score th[scope="row"], .tb-score td { display: block; padding: 0; border: 0; font-size: 14.5px; }
+  .tb-score th[scope="row"] { grid-column: 1 / -1; white-space: normal; }
+  .tb-score td::before { display: block; font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  .tb-score td:nth-child(2)::before { content: "Their trip"; }
+  .tb-score td:nth-child(3)::before { content: "Our challenger"; }
+  .tb-score td.tb-score-mark { grid-column: 1 / -1; margin-top: 2px; }
+  .tb-score td.tb-score-mark::before { content: none; }
   .tb-chal-grid { grid-template-columns: 1fr; }
   .tb-challenger-rows { grid-template-columns: 1fr; gap: 2px; }
   .tb-challenger-rows dt { margin-top: 8px; }

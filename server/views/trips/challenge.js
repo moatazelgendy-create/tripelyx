@@ -26,7 +26,7 @@ const WORD = {
   taxes: { included: 'Included', excluded: 'Not in the price', [UNKNOWN]: 'Unknown' },
 };
 const ROW_WORD = { nights: 'the length', dates: 'the dates', dest: 'the destination', flight: 'the flights', hotel: 'the hotel', meals: 'meals', bags: 'bags', transfer: 'the airport transfer', cancel: 'the cancellation terms', taxes: 'taxes and fees' };
-const LOCK_WORD = { nonstop: 'Nonstop flights', stars: 'The hotel class', nights: 'The number of nights', dates: 'The dates', meals: 'The meal plan', dest: 'The destination' };
+const LOCK_WORD = { nonstop: 'Nonstop flights only', nights: 'The number of nights', dest: 'The destination' };
 const MEAL_WORD = ['Not included', 'Breakfast included', 'All-inclusive'];
 const BAG_WORD = ['Personal item only', 'Carry-on', 'Checked bag included'];
 
@@ -119,7 +119,7 @@ function challengeReviewView(ctx, { ch, unknowns, theirDest, originCity, hotelNa
   const rows = challengerRows(ch, { theirDest, originCity, hotelName });
   const floor = fairFight(ch);
   const hidden = [...new URLSearchParams(challengerParams({ ...ch, locks: [] }))].map(([k, v]) => html`<input type="hidden" name="${k}" value="${v}">`);
-  const lockable = LOCKS.filter(l => (l === 'stars' ? !!ch.stars : l === 'dates' ? !!ch.depart : l === 'meals' ? ch.meals !== UNKNOWN : true));
+  const lockable = LOCKS.filter(l => (l === 'nonstop' ? ch.flight !== 'nonstop' : true));
   const body = html`
 <div class="container tb-chal-page">
   <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a> / <a href="/challenge?${challengerParams(ch)}">Challenge us</a> / <span aria-current="page">The trip to beat</span></nav>
@@ -215,13 +215,25 @@ function otherModesList(out, ch, { theirDest }) {
   return html`<ul class="tb-list tb-other-modes">${Object.entries(MODES).filter(([k]) => k !== out.mode).map(([k, m]) => html`<li><a href="/challenge/result?${challengerParams(ch, { mode: k })}">${m.label}</a>: ${line(k, out.modes[k])}.</li>`)}</ul>`;
 }
 
-const PLUS_KEYS = ['nights', 'hotel', 'area', 'meals', 'flight', 'bags', 'experiences', 'transfer', 'flex', 'dest'];
-function plusWords(plus) {
+// What the "$100 more" trip adds, in words from the trip itself, one phrase per row that classifyChanges found better.
+function plusWords(plus, ours) {
   const t = plus.trip;
-  const rows = plus.changes ? plus.changes.improvements.filter(i => PLUS_KEYS.includes(i.key)) : [];
-  if (rows.length) return joinAnd(rows.map(i => `${i.label.toLowerCase()}: ${i.b}`));
-  return `${t.hotel.stars}-star ${t.hotel.name}, ${t.flight.stops ? `${t.flight.stops} stop` : 'nonstop'}${t.transfer ? ', transfer included' : ''}`;
+  const keys = new Set(plus.changes ? plus.changes.improvements.map(i => i.key) : []);
+  const words = [];
+  if (keys.has('dest')) words.push(`${t.dest.name} instead of ${ours.dest.name}`);
+  if (keys.has('nights')) words.push(`${plural(t.spec.nights, 'night')} instead of ${ours.spec.nights}`);
+  if (keys.has('hotel') || keys.has('area')) words.push(`the ${t.hotel.stars}-star ${t.hotel.name}${keys.has('area') ? ` in ${t.hotel.area}` : ''}`);
+  if (keys.has('flight') || keys.has('time')) words.push(`${t.flight.stops ? `${t.flight.stops}-stop` : 'nonstop'} flights on the ${t.flight.name} fare, ${hm(t.flight.durationMinutes)} each way`);
+  if (keys.has('meals')) words.push(MEAL_WORD[ourMeals(t.hotel)].toLowerCase());
+  if (keys.has('bags')) words.push(BAG_WORD[ourBags(t)].toLowerCase());
+  if (keys.has('transfer')) words.push('airport transfers both ways');
+  if (keys.has('flex')) words.push([t.flight.refundable && !(ours && ours.flight.refundable) ? 'refundable flights' : null, t.hotel.refundable && !(ours && ours.hotel.refundable) ? 'a free-to-cancel hotel' : null].filter(Boolean).join(' and ') || 'better cancellation terms');
+  if (keys.has('experiences')) words.push('experiences included');
+  if (words.length) return joinAnd(words);
+  return `the ${t.hotel.stars}-star ${t.hotel.name}, ${t.flight.stops ? `${t.flight.stops}-stop` : 'nonstop'} flights${t.transfer ? ', airport transfers' : ''}`;
 }
+const ourMeals = h => (h.features.allInclusive ? 2 : h.features.breakfast ? 1 : 0);
+const ourBags = t => (t.flight.checkedBagIncluded || t.spec.bags ? 2 : t.flight.carryOn ? 1 : 0);
 
 function challengeResultView(ctx, { out, theirDest, originCity, user }) {
   const { challenger: ch, ours, rows, verdict: v, receipt, mode, plus } = out;
@@ -252,7 +264,7 @@ function challengeResultView(ctx, { out, theirDest, originCity, user }) {
   ${ours ? html`
   <section class="tb-panel" aria-labelledby="score-title">
     <h2 id="score-title">${icon('chart')} The scoreboard</h2>
-    <div class="tb-compare-wrap"><table class="tb-compare tb-score">
+    <div class="tb-compare-wrap tb-score-wrap"><table class="tb-compare tb-score">
       <thead><tr><th scope="col"><span class="sr-only">Row</span></th><th scope="col">Their trip</th><th scope="col">Our challenger</th><th scope="col"><span class="sr-only">Who is ahead</span></th></tr></thead>
       <tbody>${rows.map(r => { const [a, b] = rowText(r, { theirDest, ours }); const [ic, label] = MARK[r.who]; return html`<tr class="is-${r.who}"><th scope="row">${r.label}</th><td>${a}</td><td>${b}</td><td class="tb-score-mark"><span>${icon(ic)}<span>${label}</span></span></td></tr>`; })}</tbody>
     </table></div>
@@ -281,11 +293,11 @@ function challengeResultView(ctx, { out, theirDest, originCity, user }) {
     <h2 id="other-title">${icon('compass')} Other ways to beat it</h2>
     ${otherModesList(out, ch, { theirDest })}
     <h3>${icon('plus')} What $100 more can do</h3>
-    ${plus ? html`<p>${plus.trip.total <= ch.total ? `You don’t need the $100: ${money(plus.trip.total)}, still ${money(ch.total - plus.trip.total)} under your price,` : `${money(plus.trip.total - ch.total)} more than your price (${money(plus.trip.total)} in all)`} buys ${plusWords(plus)}, with nothing given up${ours ? ' against our version' : ''}. <a href="/trip/${encodeSpec(plus.trip.spec)}?${contextParams({ ...cx, budget: ch.total + 10000 })}">See it</a>.</p>` : html`<p>Keep the $100. Nothing within $100 more improves this trip without giving something up.</p>`}
+    ${plus ? html`<p>${plus.trip.total <= ch.total ? `You don’t need the $100. For ${money(plus.trip.total)}, still ${money(ch.total - plus.trip.total)} under your price, you get` : `For ${money(plus.trip.total - ch.total)} more than your price (${money(plus.trip.total)} in all) you get`} ${plusWords(plus, ours)}, with nothing given up${ours ? ' against our version' : ''}. <a href="/trip/${encodeSpec(plus.trip.spec)}?${contextParams({ ...cx, budget: ch.total + 10000 })}">See it</a>.</p>` : html`<p>Keep the $100. Nothing within $100 more improves this trip without giving something up.</p>`}
     ${ours && v.state !== 'keep' ? html`<h3>${icon('minus')} Save me $100 without ruining it</h3><p><a href="/trip/${token}/price?${contextParams(cx)}&target=${Math.max(1, Math.round(ours.total / 100) - 100)}">Name your price at ${dollars(ours.total - 10000)}</a>: every cheaper version of our challenger, with what each one gives up.</p>` : ''}
     <h3>${icon('lock')} Don’t touch these</h3>
     <p class="tb-small tb-muted">${ch.locks.length ? `Locked: ${joinAnd(ch.locks.map(l => LOCK_WORD[l].toLowerCase()))}.` : 'Nothing locked beyond what your trip is known to include.'} <a href="${reviewUrl}">Change the locks or the mode</a>.</p>
-    <p class="tb-small tb-muted">${icon('share')} This page’s address holds only what you typed above, nothing private: share it, and a friend can run the same challenge from their own city or budget.</p>
+    <p class="tb-small tb-muted">This page’s address holds only what you typed above, nothing private: share it, and a friend can run the same challenge from their own city or budget.</p>
   </section>
 </div>`;
   return layout({ title: `${vb.title} ${theirDest.name} for ${dollars(ch.total)}`, description: 'Their trip against our challenger, row by row, with an honest verdict.', active: 'challenge', body, ctx, noindex: true });
