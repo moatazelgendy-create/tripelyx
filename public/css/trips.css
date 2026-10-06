@@ -369,6 +369,7 @@ a.tb-pill:hover { border-color: var(--blue-500); }
 .tb-confirm { background: #fff; border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 28px; margin-top: 8px; box-shadow: var(--shadow-sm); }
 .tb-confirm h2 { font-size: 26px; margin-bottom: 6px; }
 .tb-confirm-actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 18px 0 14px; }
+.tb-confirm-actions .btn { white-space: normal; text-align: center; line-height: 1.25; padding-top: 12px; padding-bottom: 12px; }
 .tb-promo { max-width: 320px; margin-bottom: 20px; }
 .tb-promo input { text-transform: uppercase; }
 
@@ -645,10 +646,12 @@ a.tb-pill:hover { border-color: var(--blue-500); }
 .tb-keep > div { background: var(--bg-soft); border-radius: var(--radius); padding: 12px 14px; min-width: 0; }
 .tb-keep dt { font-size: 12.5px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); font-weight: 700; margin-bottom: 4px; }
 .tb-keep dd { margin: 0; font-size: 24px; font-weight: 700; letter-spacing: -0.02em; color: var(--ink); line-height: 1.15; }
+.tb-keep dd small { display: block; font-size: 13px; font-weight: 500; letter-spacing: 0; color: var(--muted); margin-top: 3px; }
 .tb-keep > div:last-child dd { color: #0c5e43; }
 .tb-keep.is-over > div:last-child dd { color: var(--danger); }
 .tb-decide .tb-keep > div { background: rgba(255, 255, 255, .09); }
 .tb-decide .tb-keep dt { color: var(--blue-300); }
+.tb-decide .tb-keep dd small { color: var(--blue-300); }
 .tb-decide .tb-keep dd { color: #fff; }
 .tb-decide .tb-keep > div:last-child dd { color: #a7e3c6; }
 .tb-decide .tb-keep.is-over > div:last-child dd { color: #ffb4a8; }

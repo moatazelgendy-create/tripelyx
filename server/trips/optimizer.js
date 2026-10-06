@@ -416,9 +416,10 @@ function customizerOptions(inventory, t, settings, now = new Date()) {
 // that does not get there on its own is named as such; nothing is suggested that was not priced.
 const STYLE_WORD = { beach: 'a beach trip', city: 'a city break', adventure: 'an adventure trip', romantic: 'a romantic trip', family: 'a family trip', 'all-inclusive': 'an all-inclusive trip' };
 const PRIO_WORD = { hotel: 'the hotel', flights: 'nonstop flights', activities: 'experiences', longer: 'a longer trip' };
+const monthName = m => new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${m}-01T00:00:00Z`));
 function oneRuleAway(inventory, q, { settings, now = new Date() }) {
   const candidates = [
-    q.dateMode !== 'anytime' && { key: 'dates', rule: q.dateMode === 'exact' ? 'your exact dates' : `travel in ${q.month}`, label: 'Any dates in the next few months', q: { ...q, dateMode: 'anytime', depart: null, month: null } },
+    q.dateMode !== 'anytime' && { key: 'dates', rule: q.dateMode === 'exact' ? 'your exact dates' : `travel in ${monthName(q.month)}`, label: 'Any dates in the next few months', q: { ...q, dateMode: 'anytime', depart: null, month: null } },
     q.nights > 2 && { key: 'nights', rule: `${q.nights} nights`, label: `${q.nights - 1} nights instead of ${q.nights}`, q: { ...q, nights: q.nights - 1 } },
     q.nights > 3 && { key: 'nights2', rule: `${q.nights} nights`, label: `${q.nights - 2} nights instead of ${q.nights}`, q: { ...q, nights: q.nights - 2 } },
     q.style !== 'surprise' && { key: 'style', rule: STYLE_WORD[q.style] || q.style, label: `Any style, not only ${STYLE_WORD[q.style] || q.style}`, q: { ...q, style: 'surprise' } },
@@ -435,12 +436,23 @@ function oneRuleAway(inventory, q, { settings, now = new Date() }) {
     const total = pick.trip.total;
     let out = { key: c.key, rule: c.rule, label: c.label, total, dest: pick.trip.dest.name, nights: pick.trip.spec.nights, over: Math.max(0, total - q.budget), params: searchParams(c.q) };
     if (c.key === 'keep') {
-      const used = Math.ceil((total - q.budget) / 100) * 100; // whole dollars, rounded up, so the pick fits the budget it is read against
-      if (used <= 0 || used > q.keep) { notAlone.push({ key: c.key, label: c.label }); continue; }
       // Offer exactly the part of the reserve the pick needs, so the booking budget it is read
-      // against is the one the traveler agreed to, and the rest stays protected.
-      const rq = { ...q, budget: q.budget + used, keep: q.keep - used };
-      out = { ...out, label: `Use ${fmt(used)} of the ${fmt(q.keep)} you protected`, used, over: 0, params: searchParams(rq) };
+      // against is the one the traveler agreed to, and the rest stays protected. The page the
+      // offer links to is searched again at that budget and the offer names that page's pick:
+      // a smaller budget can change the pick, so repeat until the pick and the amount agree.
+      const need = total => Math.ceil((total - q.budget) / 100) * 100; // whole dollars, rounded up, so the pick fits the budget it is read against
+      let used = need(total);
+      let landed = null;
+      for (let i = 0; i < 8 && used > 0 && used <= q.keep; i++) {
+        const rq = { ...q, budget: q.budget + used, keep: q.keep - used };
+        const p = search(inventory, rq, { settings, now }).picks[0];
+        if (!p) break;
+        const again = need(p.trip.total);
+        if (again === used) { landed = { rq, trip: p.trip }; break; }
+        used = again;
+      }
+      if (!landed) { notAlone.push({ key: c.key, label: c.label }); continue; }
+      out = { ...out, label: `Use ${fmt(used)} of the ${fmt(q.keep)} you protected`, used, total: landed.trip.total, dest: landed.trip.dest.name, nights: landed.trip.spec.nights, over: 0, params: searchParams(landed.rq) };
     }
     works.push(out);
   }

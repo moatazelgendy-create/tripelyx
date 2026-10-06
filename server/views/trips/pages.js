@@ -132,7 +132,16 @@ function vacationSummary(plan) {
       ${plan.raid ? html`<div class="tb-vac-row is-over"><dt>Taken from your reserve</dt><dd>−${money(plan.raid)}</dd></div>` : html`<div class="tb-vac-row"><dt>Unassigned</dt><dd>${money(plan.unassigned)}</dd></div>`}
       <div class="tb-vac-row tb-vac-total"><dt>Total planned</dt><dd>${money(plan.planned)} <small>of ${money(plan.vacation)}</small></dd></div>
     </dl>
-    <p class="tb-small tb-muted">You arrive with ${money(plan.arrive)}: about ${money(plan.perDay)} a day over ${plural(plan.days, 'day')}. Only the booking is charged; the rest stays yours.</p></div>`;
+    <p class="tb-small tb-muted">${plan.arrive ? `You arrive with ${money(plan.arrive)}: about ${money(plan.perDay)} a day over ${plural(plan.days, 'day')}. Only the booking is charged; the rest stays yours.` : `This booking uses all of your ${money(plan.vacation)}${plan.over ? ` and ${money(plan.over)} more` : ''}, as you approved; nothing of it is left for after you land.`}</p></div>`;
+}
+
+// After booking: what was protected, what this booking took of it (only ever by the traveler's
+// approval), and what that leaves.
+function afterWords(plan) {
+  const protectedPart = html`You protected <b>${money(plan.keep)}</b> for the destination`;
+  if (!plan.raid) return html`${protectedPart}${plan.unassigned ? `, plus ${money(plan.unassigned)} unassigned` : ''}: about ${money(plan.perDay)} a day over ${plural(plan.days, 'day')}, arrival to departure. Nothing on this page spends it.`;
+  const used = plan.raid >= plan.keep ? `all of it${plan.over ? ` and ${money(plan.over)} beyond your whole ${money(plan.vacation)}` : ''}` : `${money(plan.raid)} of it`;
+  return html`${protectedPart}. This booking used ${used}, as you approved${plan.reserveLeft ? `; ${money(plan.reserveLeft)} is left: about ${money(plan.perDay)} a day over ${plural(plan.days, 'day')}, arrival to departure` : ''}.`;
 }
 
 function tripCheckoutView(ctx, { quote: q, paymentConfig }) {
@@ -246,7 +255,7 @@ function tripBookingView(ctx, { booking: b, cancellationPreview: preview, paymen
         ${b.payment ? html`<p class="secure-note">${icon('card')}Paid ${money(b.total)} with ${b.payment.brand} •••• ${b.payment.last4}${b.payment.mode === 'test' ? ' (test mode)' : ''}. Remaining balance: ${money(0)}.</p>` : ''}
         ${b.refundAmount ? html`<p class="secure-note">${icon('info')}Refund: ${money(b.refundAmount)}</p>` : ''}
         ${budget && b.total <= budget ? html`<p class="tb-celebrate">${icon('sparkle')} Great choice. You came in <b>${money(budget - b.total)}</b> under your ${dollars(budget)}${plan && plan.keep ? ' booking' : ''} budget.</p>` : ''}
-        ${plan && plan.keep ? html`<p class="tb-vac-after">${icon('lock')}<span>You protected <b>${money(plan.reserveLeft)}</b> for the destination${plan.unassigned ? `, plus ${money(plan.unassigned)} unassigned` : ''}: about ${money(plan.perDay)} a day over ${plural(plan.days, 'day')}, arrival to departure. Nothing on this page spends it.</span></p>` : ''}
+        ${plan && plan.keep ? html`<p class="tb-vac-after">${icon('lock')}<span>${afterWords(plan)}</span></p>` : ''}
       </section>
       <section class="tb-panel" aria-labelledby="info-title">
         <h2 id="info-title">Important travel information</h2>

@@ -314,6 +314,22 @@ function tripView(ctx, { data, cx, user, saved, dreamGap, named = null }) {
 
 // ---- review: live price check, final trip review, readiness, then the quote ----------------------
 
+// Where a price rise comes from, in the traveler's own categories: what fit in the money that was
+// unassigned before the rise, what the rise takes from the reserve, and what is beyond the whole
+// vacation. `seen` is the price before the rise.
+function riseParts(plan, total, amount, budget) {
+  const seen = total - amount;
+  const prevRaid = Math.max(0, Math.min(plan.keep, seen - budget));
+  const fromUnassigned = Math.max(0, Math.min(amount, budget - seen));
+  const fromReserve = plan.raid - prevRaid;
+  const beyond = amount - fromUnassigned - fromReserve;
+  return { amount, fromUnassigned, fromReserve, beyond, prevArrive: Math.max(0, plan.vacation - seen), simple: fromReserve === 0 && beyond === 0 && plan.raid === 0 };
+}
+// Everything a booking takes past the booking budget, said in full: the reserve it uses and any
+// amount beyond the whole vacation.
+const reserveUse = (plan, whose) => `${plan.raid >= plan.keep ? `all ${money(plan.keep)}` : money(plan.raid)} of ${whose} reserve${plan.over ? ` and ${money(plan.over)} beyond ${whose} whole ${money(plan.vacation)}` : ''}`;
+const joinAnd = items => items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+
 function reviewView(ctx, { data, cx, verify, user, promoError, promoCode }) {
   const { trip: t, token, origin, weather } = data;
   const s = t.spec;
@@ -325,8 +341,8 @@ function reviewView(ctx, { data, cx, verify, user, promoError, promoCode }) {
   const changes = verify.status !== 'same' && diff !== null && diff < 0 ? singleChanges(t, data.options, token, cx).filter(c => c.total <= budget).sort((a, b) => b.total - a.total).slice(0, 4) : [];
   const plan = vacationPlan(t, cx, data.options);
   // A price rise with money protected for the destination: say where the increase comes from,
-  // and never take it from the reserve without the traveler choosing that by name.
-  const rise = verify.status === 'higher' && plan && plan.keep ? { amount: verify.diff, fromReserve: Math.max(0, plan.raid - Math.max(0, Math.min(plan.keep, (t.total - verify.diff) - budget))) } : null;
+  // part by part, and never take it from the reserve without the traveler choosing that by name.
+  const rise = verify.status === 'higher' && plan && plan.keep ? riseParts(plan, t.total, verify.diff, budget) : null;
   const said = [];
   if (budget) said.push([cx.keep ? `A booking under ${dollars(budget)}, keeping ${dollars(cx.keep)} for the destination` : `Under ${dollars(budget)}`, t.total <= budget]);
   if (cx.style && cx.style !== 'surprise') said.push([cx.style === 'city' ? 'A city break' : cx.style === 'all-inclusive' ? 'All-inclusive' : `A ${cx.style} trip`, cx.style === 'all-inclusive' ? t.hotel.features.allInclusive : t.dest.styles.includes(cx.style)]);
@@ -341,12 +357,12 @@ function reviewView(ctx, { data, cx, verify, user, promoError, promoCode }) {
   }[verify.status];
   const riseBlock = rise ? html`<section class="tb-panel tb-panel-warn tb-rise" aria-labelledby="rise-title">
       <h2 id="rise-title">${icon('alert')} The booking went up by ${money(rise.amount)}. Where should it come from?</h2>
-      <p>${rise.fromReserve
-        ? `Your unassigned money covers ${money(rise.amount - rise.fromReserve)} of it; the other ${money(rise.fromReserve)} would come out of the ${money(plan.keep)} you protected for the destination. We don’t take that quietly.`
-        : `It fits inside your unassigned money, so your ${money(plan.keep)} reserve stays untouched; ${money(plan.unassigned)} stays unassigned after it.`}</p>
+      <p>${rise.simple
+        ? `It fits inside your unassigned money, so your ${money(plan.keep)} reserve stays untouched; ${money(plan.unassigned)} stays unassigned after it.`
+        : `${joinAnd([rise.fromUnassigned ? `${money(rise.fromUnassigned)} fits in your unassigned money` : '', rise.fromReserve ? `${money(rise.fromReserve)} would come out of the ${money(plan.keep)} you protected for the destination` : '', rise.beyond ? `${money(rise.beyond)} is beyond your whole ${money(plan.vacation)}` : ''].filter(Boolean))}. ${plan.raid > rise.fromReserve ? `The previous price already took ${money(plan.raid - rise.fromReserve)} of that reserve${plan.over > rise.beyond ? ` and ${money(plan.over - rise.beyond)} beyond your whole ${money(plan.vacation)}` : ''}. ` : ''}In all, this booking would use ${reserveUse(plan, 'your')}, and you would arrive with ${money(plan.arrive)}${rise.prevArrive !== plan.arrive ? ` instead of ${money(rise.prevArrive)}` : ''}. We don’t take any of that quietly.`}</p>
       <ul class="tb-rise-options">
         ${changes.length ? html`<li>${icon('trend')}<div><b>Find ${money(rise.amount)} in the booking</b><p>Any one of these brings the booking back under your ${dollars(budget)}:</p>${changeList(changes, { empty: '' })}</div></li>` : ''}
-        ${rise.fromReserve ? html`<li>${icon('lock')}<div><b>Take ${money(rise.fromReserve)} from my reserve</b><p>Approve below: the button says exactly that, and you arrive with ${money(plan.arrive)} instead of ${money(plan.arrive + rise.fromReserve)}.</p></div></li>` : html`<li>${icon('check')}<div><b>Use unassigned money</b><p>Approve below; your reserve is not part of it.</p></div></li>`}
+        ${rise.simple ? html`<li>${icon('check')}<div><b>Use unassigned money</b><p>Approve below; your reserve is not part of it.</p></div></li>` : html`<li>${icon('lock')}<div><b>Approve it as it is</b><p>The button below says exactly what the booking uses: ${reserveUse(plan, 'your')}. You arrive with ${money(plan.arrive)}${rise.prevArrive !== plan.arrive ? ` instead of ${money(rise.prevArrive)}` : ''}.</p></div></li>`}
         <li>${icon('sliders')}<div><b>Change my reserve</b><p><a href="${reserveUrl(cx)}">Protect a different amount</a> and we rebuild the trips around it.</p></div></li>
         <li>${icon('arrow-left')}<div><b>Don’t accept the new price</b><p>${cx.searchParams ? html`<a href="/trips?${cx.searchParams}">Back to your trips</a>` : html`<a href="/trip/${token}?${contextParams(cx)}">Back to the trip</a>`}; nothing has been charged.</p></div></li>
       </ul>
@@ -415,7 +431,7 @@ function reviewView(ctx, { data, cx, verify, user, promoError, promoCode }) {
       <h2>Happy with everything?</h2>
       <p class="tb-muted">Next: traveler details and payment. <b>Nothing will be charged until you confirm.</b></p>
       <div class="tb-confirm-actions">
-        <button class="btn btn-navy btn-lg" type="submit">${rise && rise.fromReserve ? `Approve ${money(t.total)} and take ${money(rise.fromReserve)} from my reserve` : rise ? `Approve ${money(t.total)} from unassigned money` : verify.status === 'higher' ? `Approve ${money(t.total)} and continue` : plan && plan.raid ? `Book for ${money(t.total)}, using ${money(plan.raid)} of my reserve` : 'Yes — continue to book'} ${icon('arrow')}</button>
+        <button class="btn btn-navy btn-lg" type="submit">${rise && !rise.simple ? `Approve ${money(t.total)}, using ${reserveUse(plan, 'my')}` : rise ? `Approve ${money(t.total)} from unassigned money` : verify.status === 'higher' ? `Approve ${money(t.total)} and continue` : plan && plan.raid ? `Book for ${money(t.total)}, using ${reserveUse(plan, 'my')}` : 'Yes — continue to book'} ${icon('arrow')}</button>
         <a class="btn btn-ghost btn-lg" href="/trip/${token}?${contextParams(cx)}#customize">Change something</a>
       </div>
       <p class="tb-muted tb-small">Not sure yet? ${user ? html`<a href="/trip/${token}?${contextParams(cx)}">Save or watch this trip</a>` : html`<a href="/signin?next=${encodeURIComponent(`/trip/${token}?${contextParams(cx)}`)}">Sign in to save or watch it</a>`} · <button class="tb-linkbtn" type="button" data-share="${token}" data-share-title="${s.nights} nights in ${t.dest.name}">share it with someone</button> · <a href="/contact">talk to support</a>. We don’t do pressure.</p>

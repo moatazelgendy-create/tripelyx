@@ -143,14 +143,20 @@ function answerStrip(q, raw) {
 
 function noDeadEnd(q, result, originCity, relax = null) {
   const base = searchParams(q);
+  // Two relaxations that land on the same trip at the same price (two nights fewer landing on
+  // the one-night-fewer pick under "a longer trip") are one answer, shown once.
+  const works = relax ? relax.works.filter((w, i, all) => all.findIndex(o => o.dest === w.dest && o.nights === w.nights && o.total === w.total && o.over === w.over && o.used === w.used) === i) : [];
   const without = keys => `/plan?${new URLSearchParams(Object.entries(Object.fromEntries(new URLSearchParams(base))).filter(([k]) => !keys.includes(k))).toString()}`;
+  // When the one-rule-away block is on the page, the single-rule links (length, style, priority,
+  // 10% over) are either offered there with a real price or named as not enough alone; repeating
+  // them here would offer what we just said does not work.
   const links = [
     ['Change dates', without(['when', 'depart', 'month'])],
-    ['Shorten the trip', `/trips?${searchParams({ ...q, nights: Math.max(2, q.nights - 2) })}`],
+    ...(relax ? [] : [['Shorten the trip', `/trips?${searchParams({ ...q, nights: Math.max(2, q.nights - 2) })}`]]),
     ...(q.dest || q.region ? [['Different destination', `/trips?${searchParams({ ...q, dest: null, region: null })}`]] : []),
-    ...(q.style !== 'surprise' ? [['Relax one rule: any style', `/trips?${searchParams({ ...q, style: 'surprise' })}`]] : []),
-    ...(q.priority !== 'price' ? [['Relax one rule: lowest price first', `/trips?${searchParams({ ...q, priority: 'price' })}`]] : []),
-    ...(!q.allowOver ? [['Allow up to 10% more', `/trips?${searchParams({ ...q, allowOver: 10 })}`]] : []),
+    ...(!relax && q.style !== 'surprise' ? [['Relax one rule: any style', `/trips?${searchParams({ ...q, style: 'surprise' })}`]] : []),
+    ...(!relax && q.priority !== 'price' ? [['Relax one rule: lowest price first', `/trips?${searchParams({ ...q, priority: 'price' })}`]] : []),
+    ...(!relax && !q.allowOver ? [['Allow up to 10% more', `/trips?${searchParams({ ...q, allowOver: 10 })}`]] : []),
     ...(q.keep ? [['Protect less for the destination', without(['k'])]] : []),
     ['Increase budget', without(['b', 'k'])],
     ['Ask a trip specialist', `/custom-trip?budget=${q.budgetInput}&from=${encodeURIComponent(originCity)}&travelers=${q.travelers}`],
@@ -158,11 +164,11 @@ function noDeadEnd(q, result, originCity, relax = null) {
   return html`<div class="tb-advisor">
     <h2>We couldn’t build a trip that meets all your rules for ${dollars(q.budget)}${result.cheapest ? html`. Trips start at <b>${money(result.cheapest)}</b>` : ''}.</h2>
     ${q.keep ? html`<p class="tb-collision">${icon('lock')} Your vacation budget is ${dollars(q.vacationBudget)}. You protect ${dollars(q.keep)} for the destination, which leaves ${dollars(q.budget)} for the booking${result.cheapest ? `, and the cheapest complete trip we built is ${money(result.cheapest)}` : ''}. We don’t spend your reserve to make a booking fit; you can.</p>` : ''}
-    ${relax && relax.works.length ? html`<h3 class="tb-relax-title">${icon('sparkle')} One rule away</h3>
+    ${works.length ? html`<h3 class="tb-relax-title">${icon('sparkle')} One rule away</h3>
     <p>We re-ran your search with exactly one rule relaxed at a time. These are the ones that really get there, each re-priced in full:</p>
-    <ul class="tb-relax">${relax.works.map(w => html`<li><a href="/trips?${w.params}"><span><b>${w.label}</b><small>Instead of ${w.rule}. Our pick becomes ${w.dest}, ${plural(w.nights, 'night')}${w.over ? `, ${money(w.over)} over your ${dollars(q.budget)}` : w.used ? `, a booking of ${money(w.total)} read against ${dollars(q.budget + w.used)}` : `, within your ${dollars(q.budget)}`}.</small></span><b>${money(w.total)}</b></a></li>`)}</ul>` : relax ? html`<p class="tb-muted">${icon('info')} We re-ran your search with each rule relaxed on its own (${relax.notAlone.map(n => n.label.toLowerCase()).join('; ')}). None of them gets there alone, so we won’t pretend one does.</p>` : ''}
-    ${relax && relax.works.length && relax.notAlone.length ? html`<p class="tb-muted tb-small">On their own, these don’t get there: ${relax.notAlone.map(n => n.label.toLowerCase()).join('; ')}.</p>` : ''}
-    <p>Here are the closest ones and the smallest changes that get there. We never hide an over-budget amount, and we never call a trip within budget when it isn’t.</p>
+    <ul class="tb-relax">${works.map(w => html`<li><a href="/trips?${w.params}"><span><b>${w.label}</b><small>Instead of ${w.rule}. Our pick becomes ${w.dest}, ${plural(w.nights, 'night')}${w.over ? `, ${money(w.over)} over your ${dollars(q.budget)}` : w.used ? `, a booking of ${money(w.total)} read against ${dollars(q.budget + w.used)}` : `, within your ${dollars(q.budget)}`}.</small></span><b>${money(w.total)}</b></a></li>`)}</ul>` : relax && relax.notAlone.length ? html`<p class="tb-muted">${icon('info')} We re-ran your search with each rule relaxed on its own (${relax.notAlone.map(n => n.label.toLowerCase()).join('; ')}). None of them gets there alone, so we won’t pretend one does.</p>` : relax ? html`<p class="tb-muted">${icon('info')} Your dates, length, style and priority are already as open as they go, so there is no single rule left to relax.</p>` : ''}
+    ${works.length && relax.notAlone.length ? html`<p class="tb-muted tb-small">On their own, these don’t get there: ${relax.notAlone.map(n => n.label.toLowerCase()).join('; ')}.</p>` : ''}
+    <p>${relax ? 'Here are the closest ones, and other ways to change the search.' : 'Here are the closest ones and the smallest changes that get there.'} We never hide an over-budget amount, and we never call a trip within budget when it isn’t.</p>
     <ul class="tb-advisor-links">${links.map(([l, h]) => html`<li><a class="btn btn-ghost btn-sm" href="${h}">${l}</a></li>`)}</ul>
   </div>`;
 }
@@ -233,7 +239,7 @@ function decisionBand(picks, q, cx, keepMoney, result) {
     ? html`Nothing we built fits under ${dollars(q.budget)}. The ${ce ? 'strongest fit' : 'closest'} is <a href="${bestUrl}">${name}</a>, ${money(-bv.diff)} over${ce ? html`; the closest to your budget is <a href="/trip/${encodeSpec(ce.spec)}?${contextParams(cx)}">${ce.dest.name}</a>, ${money(ce.total - q.budget)} over` : ''}.`
     : html`If it were our ${dollars(q.budget)}, we’d book <a href="${bestUrl}">${name}</a>.`;
   const figures = html`<dl class="tb-keep${spare < 0 ? ' is-over' : ''}">
-    <div><dt>${q.keep ? 'For the booking' : 'You gave us'}</dt><dd>${money(q.budget)}${q.keep ? html`<small>of ${money(q.vacationBudget)}, ${money(q.keep)} protected</small>` : ''}</dd></div>
+    <div><dt>${q.keep ? 'For the booking' : 'You gave us'}</dt><dd>${money(q.budget)}${q.keep ? html` <small>of ${money(q.vacationBudget)}, ${money(q.keep)} protected</small>` : ''}</dd></div>
     <div><dt>We need</dt><dd>${money(best.trip.total)}</dd></div>
     <div><dt>${spare < 0 ? 'Over by' : q.keep ? 'Unassigned' : 'You keep'}</dt><dd>${money(Math.abs(spare))}</dd></div>
   </dl>`;
@@ -272,7 +278,7 @@ function resultsView(ctx, { result, relax = null, originCity, user }) {
     <div>
       <p class="eyebrow">Your trips</p>
       <h1>${heading}</h1>
-      <p class="tb-results-sub">From ${originCity} · ${plural(q.travelers, 'traveler')} · we priced ${result.considered.toLocaleString('en-US')} combinations across ${plural(result.destinations, 'destination')} and kept the best. ${q.keep ? `Your ${dollars(q.vacationBudget)} is the whole vacation: ${dollars(q.keep)} is protected for after you land, so every trip here is a booking of ${dollars(q.budget)} or less.` : ''} ${demoBadge(ctx.tripService.demo, 'Demo inventory and prices')}</p>
+      <p class="tb-results-sub">From ${originCity} · ${plural(q.travelers, 'traveler')} · we priced ${result.considered.toLocaleString('en-US')} combinations across ${plural(result.destinations, 'destination')} and kept the best. ${q.keep ? `Your ${dollars(q.vacationBudget)} is the whole vacation: ${dollars(q.keep)} is protected for after you land, so ${picks.length && !over.length ? `every trip here is a booking of ${dollars(q.budget)} or less` : `every trip here is read against a ${dollars(q.budget)} booking budget, and anything marked over it would use your reserve`}.` : ''} ${demoBadge(ctx.tripService.demo, 'Demo inventory and prices')}</p>
     </div>
     ${answerStrip(q, { originCity })}
   </header>
@@ -287,7 +293,7 @@ function resultsView(ctx, { result, relax = null, originCity, user }) {
     <div data-results-body>
       ${picks.length ? decisionBand(picks, q, cx, result.keepMoney, result) : ''}
       ${picks.length ? html`<div class="tb-cards">${picks.map((p, i) => tripCard(p, q, cx, { over: p.trip.total > q.budget, rank: i }))}${keepCard ? keepMoneyCard(result.keepMoney, best, q, cx) : ''}</div>` : ''}
-      ${over.length ? html`<p class="tb-over-note">${icon('info')} Trips marked “over your budget” use the extra 10% you allowed. Switch to “Stay under my budget” to hide them.</p>` : ''}
+      ${over.length ? html`<p class="tb-over-note">${icon('info')} Trips marked “over your ${q.keep ? 'booking budget' : 'budget'}” use the extra 10% you allowed${q.keep ? ', which would come out of what you protected' : ''}. Switch to “Stay under my budget” to hide them.</p>` : ''}
       ${cheapestNote}
       ${!picks.length ? html`${noDeadEnd(q, result, originCity, relax)}
         ${result.closest.length ? html`<h2 class="tb-closest-title">The closest we could get</h2><div class="tb-cards">${result.closest.map((p, i) => tripCard({ ...p, label: 'Closest option', why: [`${money(p.trip.total - q.budget)} over your ${dollars(q.budget)} budget`, ...p.trip.included.slice(0, 2)] }, q, cx, { over: true, rank: i }))}</div>` : ''}` : ''}
