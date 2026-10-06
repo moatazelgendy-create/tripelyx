@@ -24,7 +24,7 @@ function newState({ id, visitor = null, userId = null, now = new Date() }) {
     locks: { hotel: false, flight: false, dates: false, nights: false, dest: false, budget: false },
     // What has been built: the current trip, the three options from the last build, a pending proposal
     // the traveler has not approved, and the running or finished search job.
-    current: null, options: [], proposal: null, job: null, challenged: {},
+    current: null, options: [], proposal: null, job: null, challenged: {}, challenger: null, compromises: [],
     // A booking the conversation is about (post-booking questions).
     booking: null,
     pending: null, messages: [], turns: 0, assumed: [],

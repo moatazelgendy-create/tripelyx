@@ -11,11 +11,13 @@ const { COMMANDS } = require('../../agent/agent');
 const optimizer = require('../../trips/optimizer');
 
 const EXAMPLES = [
-  'I have $2,000. Two of us, from New York, 5 nights, somewhere warm. Nonstop only.',
-  'Build me the best beach trip under $1,500 from Miami.',
-  'Paris for max $3,000 from Boston in June, me and my wife.',
-  'I don’t care where. Pick the best trip my money can buy: $1,200, flying from Chicago.',
+  'Build me the best beach trip under $1,500.',
+  'I found this trip for $1,800. Can you beat it?',
+  'I have $2,000 total. Keep $500 for spending after I arrive.',
+  'I want 5 nights, nonstop, somewhere warm.',
+  'I don’t care where. Pick the best trip my money can buy.',
 ];
+const AFTER_BOOKING = ['What do I need to do next?', 'What if I cancel?', 'Can I extend one night?', 'Do I need a car?', 'What happens if my flight changes?', 'Can I afford a $200 excursion?'];
 
 const sayForm = (id, say, label, cls = 'btn btn-ghost btn-sm', extra = '') => html`<form method="post" action="/agent/${id}" class="ag-say"><input type="hidden" name="say" value="${say}"><button class="${cls}" type="submit">${extra}${label}</button></form>`;
 
@@ -147,7 +149,27 @@ function chat(ctx, s, { canvas }) {
   </div>`;
 }
 
+// After booking, the canvas is the agent's home for that trip: today, next, status, money, the next
+// reservation and the actions that matter, each from the booking's own facts.
+function homePanel(ctx, s, home) {
+  const dot = st => html`<span class="ag-step-dot is-${st}" aria-hidden="true"></span>`;
+  return html`<div id="live-canvas" data-live="canvas"><div class="ag-canvas-head"><p class="tb-kicker">Your trip · ${home.ref}</p>${demoBadge(ctx.tripService.demo, 'Demo booking')}</div>
+    <dl class="ag-home-grid">
+      <div><dt>Today</dt><dd><b>${home.today.title}</b><small>${home.today.detail}</small></dd></div>
+      <div><dt>Next</dt><dd><b>${home.next.title}</b><small>${home.next.detail}</small></dd></div>
+      <div><dt>Trip status</dt><dd><b>${home.status.title}</b><small>${home.status.detail}</small></dd></div>
+      <div><dt>Remaining trip money</dt><dd><b>${home.remaining.title}</b><small>${home.remaining.detail}</small></dd></div>
+      <div class="ag-home-wide"><dt>Next reservation</dt><dd><b>${home.reservation.title}</b><small>${home.reservation.detail}</small></dd></div>
+    </dl>
+    <p class="tb-kicker">Important actions</p>
+    ${home.actions.length ? html`<ul class="ag-home-actions">${home.actions.map(a => html`<li>${dot(a.status)}<span>${a.text}</span></li>`)}</ul>` : html`<p class="tb-small tb-muted">Nothing is due from you.</p>`}
+    <div class="ag-chips ag-home-asks">${AFTER_BOOKING.map(c => sayForm(s.id, c, c, 'ag-chip'))}</div>
+    <p class="ag-canvas-foot"><a class="text-link" href="${home.bookingHref}">The booking page: every confirmation, every term ${icon('arrow')}</a></p>
+  </div>`;
+}
+
 function canvasPanel(ctx, s, canvas) {
+  if (canvas && canvas.home) return homePanel(ctx, s, canvas.home);
   const booking = bookingBudget(s), vacation = vacationBudget(s);
   const locks = LOCK_KEYS.filter(k => s.locks[k]);
   const lock = k => (s.locks[k] ? html`<span class="ag-lock" title="Locked">${icon('lock')}</span>` : '');
@@ -189,6 +211,7 @@ function canvasPanel(ctx, s, canvas) {
 
 function stickyBar(s, canvas) {
   if (!canvas) return '';
+  if (canvas.home) { const h = canvas.home; return html`<div class="ag-sticky" data-sticky><span><b>${money(h.total)}</b> ${h.paid ? 'paid' : 'due'}</span><span>${h.toGo > 0 && !h.cancelled ? html`<b>${h.toGo}</b> days to go` : h.today.title}</span><a class="btn btn-navy btn-sm" href="#canvas">View trip</a></div>`; }
   const booking = bookingBudget(s);
   const t = canvas.trip;
   return html`<div class="ag-sticky" data-sticky><span><b>${money(t.total)}</b> total</span><span>${booking ? (t.total > booking ? html`<b class="is-over">${money(t.total - booking)}</b> over` : html`<b>${money(booking - t.total)}</b> left`) : ''}</span><a class="btn btn-navy btn-sm" href="#canvas">View trip</a></div>`;
@@ -225,7 +248,7 @@ function agentView(ctx, { s, canvas, user, originCity }) {
 </section>
 ${stickyBar(s, canvas)}`;
   return layout({
-    title: canvas ? `${plural(canvas.trip.spec.nights, 'night')} in ${canvas.trip.dest.name} · Your travel agent` : 'Your travel agent', active: 'plan', body, ctx: running ? { ...ctx, preload: raw('<meta http-equiv="refresh" content="3">') } : ctx,
+    title: canvas && canvas.home ? `Trip ${canvas.home.ref} · Your travel agent` : canvas ? `${plural(canvas.trip.spec.nights, 'night')} in ${canvas.trip.dest.name} · Your travel agent` : 'Your travel agent', active: 'plan', body, ctx: running ? { ...ctx, preload: raw('<meta http-equiv="refresh" content="3">') } : ctx,
     scripts: ['/js/agent.js'], noindex: true, bodyClass: 'ag-body',
   });
 }

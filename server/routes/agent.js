@@ -7,6 +7,7 @@ const optimizer = require('../trips/optimizer');
 const decision = require('../trips/decision');
 const state = require('../agent/state');
 const { agentView, agentStartView, agentLive } = require('../views/trips/agent');
+const { bookingHome } = require('../agent/home');
 const { notFoundView } = require('../views/errors');
 
 const send = (res, view) => res.type('html').send(String(view));
@@ -29,7 +30,15 @@ function agentRouter(ctx, { writeLimiter, computeLimiter, sameOrigin }) {
 
   // What the canvas shows: the current trip re-priced now, its verdict and the budget context.
   const canvasFor = async s => {
-    if (!s.current) return null;
+    if (!s.current) {
+      // A conversation about a booked trip: the canvas is the agent's home for that booking.
+      if (!s.booking) return null;
+      const b = await ctx.store.getBookingByRef(s.booking.ref);
+      if (!b || !b.quote || !b.quote.trip) return null;
+      let preview = null;
+      try { preview = svc.bookingProvider().cancellationPreview(b, svc.now()); } catch (e) { preview = null; }
+      return { home: bookingHome(b, { now: svc.now(), preview, origin: svc.inv.maps.getOrigin(b.quote.trip.spec.from) }) };
+    }
     try {
       const q = state.toQuery(s, { maps: svc.inv.maps }).query;
       const cx = state.budgetContext(s, q);

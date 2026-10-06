@@ -1078,3 +1078,26 @@ a.tb-pill:hover { border-color: var(--blue-500); }
   .ag-hero-actions .btn { width: 100%; justify-content: center; }
   .ag-after-form { grid-template-columns: 1fr; }
 }
+
+/* The agent's home after booking, and the agent inside My Trips */
+.ag-home-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 0 0 14px; }
+.ag-home-grid > div { background: var(--bg-soft); border-radius: 10px; padding: 10px; min-width: 0; }
+.ag-home-grid .ag-home-wide { grid-column: 1 / -1; }
+.ag-home-grid dt { font-size: 11.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 700; }
+.ag-home-grid dd { margin: 2px 0 0; }
+.ag-home-grid dd b { display: block; font-size: 17px; line-height: 1.25; overflow-wrap: anywhere; }
+.ag-home-grid dd small { display: block; color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.ag-home-actions { list-style: none; margin: 6px 0 12px; padding: 0; display: grid; gap: 8px; }
+.ag-home-actions li { display: flex; gap: 8px; align-items: flex-start; font-size: 14px; line-height: 1.45; }
+.ag-home-actions .ag-step-dot { flex: none; margin-top: 6px; width: 9px; height: 9px; border-radius: 50%; background: var(--line-strong); }
+.ag-home-actions .ag-step-dot.is-ready { background: #0c7a4f; }
+.ag-home-actions .ag-step-dot.is-check { background: #b45309; }
+.ag-home-actions .ag-step-dot.is-info { background: var(--blue-600); }
+.ag-home-asks { margin: 0 0 12px; }
+.tb-mytrip-actions { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.tb-mytrip-actions form { margin: 0; }
+@media (max-width: 720px) { .tb-mytrip-actions { flex-direction: row; flex-wrap: wrap; } }
+/* Long answers on an ask card (the compromise options) wrap instead of widening the page */
+.ag-msg, .ag-bubble { min-width: 0; }
+.ag-actions .ag-say { max-width: 100%; }
+.ag-actions .ag-say .btn { white-space: normal; text-align: left; line-height: 1.3; padding-block: 8px; max-width: 100%; }

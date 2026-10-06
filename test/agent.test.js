@@ -10,6 +10,7 @@ const optimizer = require('../server/trips/optimizer');
 const { understand } = require('../server/agent/understand');
 const state = require('../server/agent/state');
 const { decodeSpec } = require('../server/trips/spec');
+const { money } = require('../server/views/trips/common');
 
 const inv = createTripIntegrations(loadConfig({ APP_ENV: 'development' }));
 const maps = inv.maps;
@@ -214,11 +215,16 @@ test('honesty: no win with unknowns, the contract names what is not as asked, an
     await agent.jobs.drain();
     await agent.say(s0.id, 'Can you beat this? I found it for $1,300.');
     let s = await agent.load(s0.id);
-    const v = last(s).card;
+    const verdictMsg = s.messages[s.messages.length - 2];
+    const v = verdictMsg.card;
     assert.equal(v.kind, 'verdict');
     assert.equal(v.state, 'info', 'unknown attributes mean no verdict either way');
-    assert.doesNotMatch(last(s).text, /We beat it|we saved you/i);
-    assert.match(last(s).text, /won't claim a win/);
+    assert.doesNotMatch(verdictMsg.text, /We beat it|we saved you/i);
+    assert.match(verdictMsg.text, /won't claim a win/);
+    assert.equal(last(s).card.kind, 'ask', 'then the first unknown about their trip is asked');
+    await agent.say(s0.id, 'That’s all I know');
+    s = await agent.load(s0.id);
+    assert.equal(last(s).card.kind, 'verdict'); assert.equal(last(s).card.state, 'info');
     // Book: a contract, a link to the live price check, no quote and no charge from the agent.
     const bookings = (await app.store.listBookings({ limit: 10 })).length;
     await agent.say(s0.id, 'Only nonstop.');
@@ -333,5 +339,151 @@ test('after booking: the booking page offers the agent, and its answers come fro
     assert.equal(last(await app.agent.load(s.id)).card.kind, 'facts');
     const booking = await app.store.getBookingByRef(b.ref);
     assert.equal(booking.status, 'confirmed', 'the agent changed nothing on the booking');
+  } finally { await app.close(); }
+});
+
+test('the challenge in conversation: unknowns are asked one at a time, never guessed, and the verdict follows', async () => {
+  const app = await startApp();
+  const agent = app.agent;
+  try {
+    const s0 = await agent.create({ visitor: 'v-ch' });
+    await agent.say(s0.id, 'I have $2,000, two of us from JFK, 5 nights, beach, only nonstop. Booking budget.');
+    await agent.jobs.drain();
+    const ask = async (t) => { await agent.say(s0.id, t); await agent.jobs.drain(); return agent.load(s0.id); };
+    let s = await ask('I found this trip for $1,800. Can you beat it?');
+    assert.equal(s.challenger.total, 180000);
+    assert.equal(s.pending, 'theirs');
+    assert.equal(s.challenger.asking, 'taxes', 'the first question is whether their price is complete');
+    assert.equal(last(s).card.kind, 'ask');
+    assert.ok(last(s).card.options.some(o => o.say === 'Don’t know'), '"Don’t know" is always an answer');
+    s = await ask('Taxes included');
+    assert.equal(s.challenger.taxes, 'included');
+    assert.equal(s.challenger.asking, 'stars', 'one question at a time');
+    s = await ask('3-star');
+    assert.equal(s.challenger.stars, 3);
+    assert.equal(s.hotelRules.minStars, null, 'their hotel class never becomes a rule on the traveler’s own trip');
+    s = await ask('Don’t know');
+    assert.deepEqual(s.challenger.asked, ['meals']);
+    assert.equal(s.challenger.meals, undefined, 'an unknown stays unknown');
+    assert.equal(s.challenger.asking, 'flight');
+    s = await ask('One stop or more');
+    assert.equal(s.challenger.flight, 'stops');
+    assert.equal(s.flightRule, 'hard', 'the traveler’s own nonstop rule is untouched');
+    s = await ask('That’s all I know');
+    assert.equal(s.pending, null, 'no more questions after "that’s all I know"');
+    const v = last(s);
+    assert.equal(v.card.kind, 'verdict');
+    assert.equal(v.card.state, 'info', 'no win is claimed while anything about their trip is unknown');
+    assert.match(v.text, /won't claim a win with unknowns/);
+    assert.match(v.text, /meals/);
+    assert.doesNotMatch(v.text, /One question at a time/);
+
+    // Every question answered: the comparison is like for like and the verdict is a real one.
+    const s1 = await agent.create({ visitor: 'v-ch2' });
+    await agent.say(s1.id, 'I have $2,000, two of us from JFK, 5 nights, beach, only nonstop. Booking budget.');
+    await agent.jobs.drain();
+    for (const t of ['I found this trip for $1,800. Can you beat it?', 'Taxes included', '3-star', 'No meals', 'One stop or more', 'Non-refundable', 'Carry-on only', 'No transfer']) { await agent.say(s1.id, t); await agent.jobs.drain(); }
+    let x = await agent.load(s1.id);
+    assert.equal(x.challenger.asking, 'dates');
+    await agent.say(s1.id, 'They leave November 10'); await agent.jobs.drain();
+    x = await agent.load(s1.id);
+    assert.equal(x.challenger.depart, '2026-11-10');
+    const verdict = last(x);
+    assert.equal(verdict.card.kind, 'verdict');
+    assert.notEqual(verdict.card.state, 'info', 'with everything known the verdict is beat, tradeoff or keep');
+    assert.ok(['beat', 'tradeoff', 'keep'].includes(verdict.card.state));
+    assert.equal(x.challenger.taxes, 'included'); assert.equal(x.challenger.cancel, 'nonrefundable'); assert.equal(x.challenger.bags, 'carry-on'); assert.equal(x.challenger.transfer, 'no');
+    assert.equal(x.flightRule, 'hard'); assert.equal(x.hotelRules.minStars, null);
+  } finally { await app.close(); }
+});
+
+test('one more compromise: an unreachable target becomes priced single changes the traveler picks, and only the chosen rule moves', async () => {
+  const app = await startApp();
+  const agent = app.agent;
+  try {
+    const s0 = await agent.create({ visitor: 'v-comp' });
+    await agent.say(s0.id, 'I have $2,500, two of us from JFK, 5 nights, beach, only nonstop, 4-star. Booking budget.');
+    await agent.jobs.drain();
+    let s = await agent.load(s0.id);
+    assert.ok(s.current, 'a trip was built');
+    const before = s.current.total;
+    await agent.say(s0.id, 'Make it $500 cheaper'); await agent.jobs.drain();
+    s = await agent.load(s0.id);
+    const m = last(s);
+    assert.match(m.text, /To reach \$[\d,.]+ I need one more compromise: A\. /);
+    assert.equal(m.card.kind, 'ask');
+    assert.equal(s.pending, 'options');
+    assert.ok(s.compromises.length >= 2);
+    const a = s.compromises.find(c => c.letter === 'A');
+    assert.equal(a.key, 'nonstop', 'the smallest compromise comes first');
+    assert.ok(a.total <= before - 50000, 'every option is priced at or under the target');
+    assert.match(a.label, /^Allow one connection/);
+    assert.ok(s.compromises.every(c => /\$[\d,]+\.\d\d/.test(money(c.total))));
+    assert.ok(m.card.options.some(o => o.say === 'Keep what I have'));
+    assert.equal(s.current.total, before, 'nothing changed until the traveler picks');
+    assert.equal(s.flightRule, 'hard');
+    await agent.say(s0.id, 'Option A'); await agent.jobs.drain();
+    s = await agent.load(s0.id);
+    assert.equal(s.current.total, a.total);
+    assert.equal(last(s).card.kind, 'diff');
+    assert.match(last(s).text, /^Done\. Before \$[\d,.]+ → after \$[\d,.]+/);
+    assert.equal(s.flightStops, 'any', 'the chosen rule was relaxed');
+    assert.equal(s.hotelRules.minStars, 4, 'the other rule was not');
+    assert.deepEqual(s.compromises, []);
+    assert.equal(s.pending, null);
+  } finally { await app.close(); }
+});
+
+test('the agent’s home after booking: today, next, status, money, reservation and actions from the booking itself, and the agent inside My Trips', async () => {
+  const app = await startApp();
+  try {
+    const c = client(app.base);
+    assert.equal((await c.req('/signup', { method: 'POST', form: { name: 'Ada Lovelace', email: 'ada2@example.com', password: 'correct horse battery', next: '/my-trips' } })).status, 303);
+    const results = await c.req('/trips?' + new URLSearchParams({ b: '1500', k: '0', from: 'SFO', who: 'couple', when: 'anytime', nights: '5', style: 'beach', prio: 'hotel' }));
+    const m = results.text.match(/href="(\/trip\/[^"?]+)\?([^"]*)"/);
+    const tripPath = m[1], cx = m[2].replace(/&amp;/g, '&');
+    const review = await c.req(`${tripPath}/review?${cx}&seen=0`);
+    const approvedTotal = Number(review.text.match(/name="approvedTotal" value="(\d+)"/)[1]);
+    const cxField = review.text.match(/name="cx" value="([^"]*)"/)[1].replace(/&amp;/g, '&');
+    const q = await c.req(`${tripPath}/quote`, { method: 'POST', form: { approvedTotal, cx: cxField, promo: '' } });
+    const quoteId = q.location.split('/').pop();
+    await c.req(q.location);
+    const cookie = () => Object.entries(c.jar).map(([k, v]) => `${k}=${v}`).join('; ');
+    const created = await fetch(app.base + '/api/bookings', { method: 'POST', headers: { 'content-type': 'application/json', cookie: cookie() }, body: JSON.stringify({ quoteId, traveler: { firstName: 'Ada', lastName: 'Lovelace', email: 'ada2@example.com' } }) });
+    assert.equal(created.status, 201);
+    const b = (await created.json()).booking;
+    for (const sc of created.headers.getSetCookie()) { const [kv] = sc.split(';'); const [k, v] = kv.split('='); c.jar[k] = v; }
+    const paid = await fetch(app.base + `/api/bookings/${b.ref}/pay`, { method: 'POST', headers: { 'content-type': 'application/json', cookie: cookie() }, body: JSON.stringify({ method: { type: 'test_card', number: '4242424242424242', expMonth: '12', expYear: '35', cvc: '123', name: 'Ada Lovelace' } }) });
+    assert.equal(paid.status, 200, await paid.text());
+
+    // My Trips carries the agent for every live booking.
+    const mine = await c.req('/my-trips');
+    assert.equal(mine.status, 200);
+    assert.match(mine.text, new RegExp(`<form method="post" action="/agent"><input type="hidden" name="ref" value="${b.ref}"><button[^>]*>Ask your travel agent</button>`));
+
+    // Opening the agent on the booking shows its home, with nothing invented.
+    const r = await c.req('/agent', { method: 'POST', form: { ref: b.ref } });
+    assert.equal(r.status, 303);
+    const conv = await c.req(r.location);
+    assert.equal(conv.status, 200);
+    assert.match(conv.text, new RegExp(`<title>Trip ${b.ref} · Your travel agent`));
+    const t = text(conv.text);
+    assert.match(t, new RegExp(`Your trip · ${b.ref}`));
+    assert.match(t, /Today \d+ days to departure Leaving \w+, \d+ \w+ \d{4} from San Francisco/);
+    assert.match(t, /Trip status Confirmed 4 of 4 parts confirmed/);
+    assert.match(t, /Remaining trip money \$[\d,.]+ of your \$1,500 after the \$[\d,.]+ booking/);
+    assert.match(t, /Next reservation .* to \w+ .* fare · nonstop/);
+    assert.match(t, /Important actions/);
+    assert.match(t, /Free cancellation of \w+ ends \w+, \d+ \w+ \d{4} \(UTC\)/, 'cutoffs are dated, from the supplier');
+    assert.match(t, /No airport transfer is in the price; the fare from the airport is not something we can quote \(needs verification\)/);
+    assert.doesNotMatch(t, /hours left|hurry|only \d+ left/i, 'no countdown, no scarcity');
+    assert.match(conv.text, /<div class="ag-sticky" data-sticky><span><b>\$[\d,.]+<\/b> paid<\/span><span><b>\d+<\/b> days to go<\/span>/);
+    assert.match(conv.text, new RegExp(`href="/booking/${b.ref}"`));
+    for (const chip of ['What do I need to do next?', 'What if I cancel?', 'Can I extend one night?', 'Do I need a car?']) assert.ok(conv.text.includes(`value="${chip}"`), chip);
+    const live = await c.req(r.location + '/live');
+    assert.equal(live.status, 200);
+    assert.match(live.text, /Remaining trip money/);
+    // The booking is untouched by any of it.
+    assert.equal((await app.store.getBookingByRef(b.ref)).status, 'confirmed');
   } finally { await app.close(); }
 });

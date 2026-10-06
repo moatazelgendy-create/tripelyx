@@ -30,6 +30,23 @@ const longDate = d => new Intl.DateTimeFormat('en-US', { weekday: 'short', day: 
 const FAST_DESTINATIONS = 4;
 const MATERIAL_SAVING = 2500; // $25: a better option must be at least this much cheaper with nothing given up, or clearly stronger for the same money
 
+const THEIRS_ORDER = ['taxes', 'stars', 'meals', 'flight', 'cancel', 'bags', 'transfer', 'dates'];
+const THEIRS_QUESTIONS = {
+  taxes: { text: c => `Is their ${money(c.total)} the final price with taxes and fees inside, or before them?`, options: [['Taxes included', 'Taxes included'], ['Taxes extra', 'Taxes extra']] },
+  stars: { text: 'What class is their hotel?', options: [['3-star', '3-star'], ['4-star', '4-star'], ['5-star', '5-star']] },
+  meals: { text: 'What meals does their price include?', options: [['All-inclusive', 'All-inclusive'], ['Breakfast', 'Breakfast included'], ['No meals', 'No meals']] },
+  flight: { text: 'Are their flights nonstop?', options: [['Nonstop', 'Nonstop'], ['One stop or more', 'One stop or more']] },
+  cancel: { text: 'Can their trip be cancelled for a refund?', options: [['Refundable', 'Refundable'], ['Non-refundable', 'Non-refundable']] },
+  bags: { text: 'Are bags in their price?', options: [['Checked bag included', 'Checked bag included'], ['Carry-on only', 'Carry-on only'], ['Personal item only', 'Personal item only']] },
+  transfer: { text: 'Is an airport transfer in their price?', options: [['Transfer included', 'Transfer included'], ['No transfer', 'No transfer']] },
+  dates: { text: 'What date does their trip leave? Type the date, or say you don’t know.', options: [] },
+};
+const THEIRS_WORDS = {
+  stars: v => `a ${v}-star hotel`, meals: v => (v === 'none' ? 'no meals' : v === 'breakfast' ? 'breakfast included' : 'all-inclusive'), bags: v => (v === 'checked' ? 'a checked bag included' : v === 'carry-on' ? 'carry-on only' : 'a personal item only'),
+  transfer: v => (v === 'yes' ? 'transfer included' : 'no transfer'), cancel: v => (v === 'refundable' ? 'refundable' : 'non-refundable'), taxes: v => (v === 'included' ? 'taxes and fees in the price' : 'taxes and fees extra'),
+  flight: v => (v === 'nonstop' ? 'nonstop flights' : 'flights with a stop'), depart: v => `leaving ${longDate(v)}`, nights: v => plural(v, 'night'),
+};
+
 const COMMANDS = ['Make it $200 cheaper', 'Don’t change the hotel', 'Give me one more night', 'Only nonstop', 'Try another country', 'Spend $100 if it actually helps', 'Make this easier', 'What’s the catch?', 'Which one would you pick?', 'Can you beat this?', 'Start over'];
 
 // ---- words from facts --------------------------------------------------------------------------
@@ -105,6 +122,8 @@ class AgentService {
     const intents = new Set(u.intents);
     const pending = s.pending;
     s.pending = null;
+    // A compromise menu is answered on the next turn or not at all.
+    if (s.compromises && s.compromises.length && !(pending === 'options' && u.updates.option)) s.compromises = [];
 
     if (intents.has('restart')) return this.restart(s);
     if (intents.has('stop')) {
@@ -115,13 +134,14 @@ class AgentService {
     }
 
     // Answers to what I asked, approvals and declines come first: they are about the thing on the table.
+    if (pending === 'options' && u.updates.option) { await this.chooseOption(s, u.updates.option); return this.afterTurn(s); }
     if (intents.has('approve') && !intents.has('cheaper') && !intents.has('better')) {
       if (await this.approve(s, text, pending)) return this.afterTurn(s);
     }
     if (intents.has('decline')) {
       if (this.decline(s, pending)) return this.afterTurn(s);
     }
-    if (pending === 'options' && u.updates.option) { await this.chooseOption(s, u.updates.option); return this.afterTurn(s); }
+    if (u.updates.theirs) { await this.theirsFlow(s, u.updates.theirs); return this.afterTurn(s); }
 
     const { rebuild } = state.applyUpdates(s, u.updates, { now });
     const ack = u.ack.length ? `Got it: ${joinAnd(u.ack)}.` : null;
@@ -415,11 +435,18 @@ class AgentService {
       this.speak(s, p.kind === 'switch' ? `Kept your first option at ${money(s.current.total)}. The better one stays in your options if you change your mind.` : `Kept your trip as it is${p.delta < 0 ? `, at ${money(s.current.total)}` : ''}.`);
       return true;
     }
+    if (pending === 'options' && s.current) { this.speak(s, `Kept your trip as it is, at ${money(s.current.total)}.`); return true; }
     if (s.options.length && !pending) { this.speak(s, `Kept our pick at ${money(s.current ? s.current.total : 0)}.`); return true; }
     return false;
   }
 
   async chooseOption(s, kind) {
+    if (typeof kind === 'string' && /^[A-C]$/.test(kind) && s.compromises && s.compromises.length) {
+      const c = s.compromises.find(x => x.letter === kind);
+      if (!c) { this.speak(s, 'That option is not on the table any more.'); return true; }
+      s.compromises = [];
+      return this.applyProposal(s, { kind: 'cheaper', token: c.token, total: c.total, delta: s.current ? c.total - s.current.total : 0, label: c.label, over: false, relax: c.key || null });
+    }
     const o = typeof kind === 'string' ? s.options.find(x => x.kind === kind) : kind;
     if (!o) { this.speak(s, 'That option is not on the table any more.'); return true; }
     if (s.current && s.current.token === o.token) { this.speak(s, `${o.label} is already your current trip.`); return true; }
@@ -430,6 +457,7 @@ class AgentService {
     const before = s.current ? await this.priceToken(s.current.token) : null;
     const after = await this.priceToken(p.token);
     if (!after) { s.proposal = null; this.speak(s, 'That version is no longer available from the suppliers, so I did not switch. Your trip is unchanged.'); return true; }
+    if (p.relax) this.applyRelax(s, p.relax);
     const q = state.toQuery(s, { maps: this.maps }).query;
     const ctx = state.budgetContext(s, q);
     s.current = { token: p.token, total: after.total, since: this.now().toISOString() };
@@ -476,6 +504,16 @@ class AgentService {
         }
         return;
       }
+      const menu = this.oneMoreCompromise(s, cur, target, settings);
+      if (menu.length) {
+        const floorOpt = out.floor && out.floor.total < t.total ? { key: null, short: `Stop at ${money(out.floor.total)}, nothing given up`, label: `Stop at ${money(out.floor.total)}, nothing given up`, total: out.floor.total, token: encodeSpec(out.floor.trip.spec) } : null;
+        s.compromises = [...menu.slice(0, floorOpt ? 2 : 3), ...(floorOpt ? [floorOpt] : [])].map((m, i) => ({ key: m.key, short: m.short, label: m.label, total: m.total, token: m.token, letter: 'ABC'[i] }));
+        s.pending = 'options';
+        const more = s.compromises.some(c => c.key && c.label !== c.short);
+        this.speak(s, `${floorOpt ? `Without giving anything up I can get it to ${money(out.floor.total)}${lockNote}, not ${money(target)}. ` : `I can't find ${money(cheaperBy)} without breaking what you asked for${lockNote}. `}To reach ${money(target)} I need one more compromise: ${s.compromises.filter(c => c.key).map(c => `${c.letter}. ${c.short}: ${money(c.total)}`).join('; ')}. Which one do you prefer?${more ? ' Each button says everything that version gives up.' : ''}${floorOpt ? ` Or ${floorOpt.short.toLowerCase()} (${s.compromises[s.compromises.length - 1].letter}).` : ''} You can also keep what you have.`,
+          { kind: 'ask', options: [...s.compromises.map(c => ({ label: `${c.letter}. ${c.label} · ${money(c.total)}`, say: `Option ${c.letter}` })), { label: 'Keep what I have', say: 'Keep what I have' }] });
+        return;
+      }
       this.speak(s, out.floor && out.floor.total < t.total
         ? `I can't find ${money(cheaperBy)} without breaking what you asked for${lockNote}. The most I can take off is ${money(t.total - out.floor.total)} (${words(out.floor)}). Say "take it" for that version.`
         : `I can't find ${money(cheaperBy)} without breaking what you asked for${lockNote}. There is no cheaper version of this trip in what suppliers returned that I would recommend. Keep what you have, or unlock something.`);
@@ -492,6 +530,52 @@ class AgentService {
     this.speak(s, a && a.total < t.total
       ? `You are already at the cheapest version I would recommend${lockNote}. Going lower means ${joinAnd(a.compromises.map(c => c.text)) || words(a)} for ${money(a.total)}; say "take $${Math.round((t.total - a.total) / 100)} back" if you want that trade.`
       : `This is already the cheapest version of this trip in what suppliers returned${lockNote}. To go lower, unlock something or change the destination.`);
+  }
+
+  // One rule or lock relaxed at a time, each priced: the single changes that would reach the target.
+  // Nothing is offered that was not priced, and the traveler picks the compromise, never the agent.
+  oneMoreCompromise(s, cur, target, settings) {
+    const t = cur.trip, ctx = cur.ctx, locks = s.locks;
+    const rules = ctx.rules || {};
+    const cands = [];
+    if (rules.nonstop) cands.push({ key: 'nonstop', label: 'Allow one connection', ctx: { ...ctx, rules: { ...rules, nonstop: false } }, locks: { ...locks, flight: false } });
+    else if (locks.flight) cands.push({ key: 'flight', label: 'Change the flights', ctx, locks: { ...locks, flight: false } });
+    if (rules.minStars) cands.push({ key: 'stars', label: `Allow a hotel under ${rules.minStars} stars`, ctx: { ...ctx, rules: { ...rules, minStars: 0 } }, locks });
+    if (locks.hotel) cands.push({ key: 'hotel', label: 'Change the hotel', ctx, locks: { ...locks, hotel: false } });
+    if (locks.dates) cands.push({ key: 'dates', label: 'Move the dates by a day or two', ctx, locks: { ...locks, dates: false } });
+    if (locks.nights && !locks.dates) cands.push({ key: 'nights', label: 'Fewer nights', ctx, locks: { ...locks, nights: false } });
+    const out = [];
+    for (const c of cands) {
+      // First with the nights held, so the relaxed rule is the only compromise; failing that, with
+      // the nights lever back, and whatever else is given up named in the label so "one more"
+      // never hides a second one.
+      let hit = null, extra = [];
+      for (const hold of [true, false]) {
+        if (!hold && (c.key === 'nights' || locks.nights)) break;
+        const r = decision.nameYourPrice(this.inv, t, settings, c.ctx, target, { now: this.now(), locks: hold && c.key !== 'nights' ? { ...c.locks, nights: true } : c.locks });
+        hit = r.recommended && r.recommended.total <= target ? r.recommended : r.anyway && r.anyway.total <= target ? r.anyway : null;
+        if (hit) {
+          // Everything else this version gives up, in words, so the choice is made with open eyes:
+          // the compromises the pricer names, then any other tradeoff against the current trip
+          // except the relaxed rule itself and what follows from a shorter stay.
+          const own = c.key === 'nonstop' || c.key === 'flight' ? /^flights:/ : c.key === 'stars' || c.key === 'hotel' ? /^hotel:/ : /^$/;
+          const comp = hit === r.anyway ? (hit.compromises || []).map(x => x.text) : [];
+          const shorter = comp.some(x => /night/.test(x));
+          extra = [...comp, ...changeWords(hit.changes.tradeoffs).filter(w => !own.test(w) && !(shorter && /^(length|usable vacation time):/.test(w)))];
+          break;
+        }
+      }
+      if (!hit) continue;
+      out.push({ key: c.key, short: c.label, label: extra.length ? `${c.label}, plus ${joinAnd(extra)}` : c.label, total: hit.total, token: encodeSpec(hit.trip.spec) });
+    }
+    return out.sort((a, b) => b.total - a.total);
+  }
+
+  // The rule or lock a chosen compromise lifts, by the traveler's own choice and nothing else.
+  applyRelax(s, key) {
+    if (key === 'nonstop') { s.flightStops = 'any'; s.flightRule = null; }
+    else if (key === 'stars') s.hotelRules.minStars = null;
+    else if (['hotel', 'flight', 'dates', 'nights'].includes(key)) s.locks[key] = false;
   }
 
   async makeBetter(s, cur, moreBy) {
@@ -599,31 +683,79 @@ class AgentService {
   }
 
   async challengeFlow(s, u, cur) {
-    const total = u.updates.competitorTotal || (s.challenger && s.challenger.total) || null;
+    const c = s.challenger || (s.challenger = {});
+    const total = (u.updates && u.updates.competitorTotal) || c.total || null;
     const dest = s.destination || (cur ? cur.trip.dest.id : null);
-    s.challenger = { ...(s.challenger || {}), total: total || (s.challenger && s.challenger.total) || null };
+    c.total = total;
+    if (u.updates && u.updates.competitorTotal) { c.asked = []; c.asking = null; }
     if (!total || !dest || !s.origin) {
       const need = [!total && 'their complete price (taxes and fees included)', !dest && 'the destination', !s.origin && 'where you fly from'].filter(Boolean);
       s.pending = 'challenge';
       this.speak(s, `I will compare like for like and tell you honestly who wins. I still need ${joinAnd(need)}. Say it here, or use the full challenge form for every detail.`, { kind: 'link', href: `/challenge?${new URLSearchParams(Object.entries({ dest: dest || '', total: total ? Math.round(total / 100) : '', from: s.origin || '', nights: s.nights || '' }).filter(([, v]) => v)).toString()}`, label: 'Open the challenge form' });
       return;
     }
-    const raw = { dest, from: s.origin, nights: String(s.nights || (cur ? cur.trip.spec.nights : 5)), who: s.who || 'couple', n: String(s.travelers || 2), total: String(Math.round(total / 100)), depart: s.dateMode === 'exact' && s.depart ? s.depart : '', flight: s.flightStops === 'nonstop' ? 'nonstop' : '', stars: s.hotelRules.minStars ? String(s.hotelRules.minStars) : '', meals: s.hotelRules.allInclusive ? 'all-inclusive' : s.hotelRules.breakfast ? 'breakfast' : '', transfer: s.transfer ? 'yes' : '', cancel: s.refundable ? 'refundable' : '' };
+    // What is shared between the trip they are planning and the one they found: the place, the
+    // origin, the party, the length and (when their dates are fixed) the dates. Everything about the
+    // found trip's quality comes only from what they told me about it; my own rules become the
+    // floor our version must meet, never a claim about theirs.
+    const raw = {
+      dest, from: s.origin, nights: String(c.nights || s.nights || (cur ? cur.trip.spec.nights : 5)), who: s.who || 'couple', n: String(s.travelers || 2), total: String(Math.round(total / 100)),
+      depart: c.depart || (s.dateMode === 'exact' && s.depart ? s.depart : ''), flight: c.flight || '', stars: c.stars ? String(c.stars) : '', meals: c.meals || '', bags: c.bags || '', transfer: c.transfer || '', cancel: c.cancel || '', taxes: c.taxes || '',
+      lock: [s.flightStops === 'nonstop' && s.flightRule === 'hard' ? 'nonstop' : null, s.locks.nights ? 'nights' : null, s.locks.dest ? 'dest' : null].filter(Boolean),
+    };
     const { challenger: ch, missing } = challenge.parseChallenger(raw, { maps: this.maps, now: this.now() });
     if (missing.length) { this.speak(s, `I can't compare yet: ${joinAnd(missing)} missing.`); return; }
-    const mode = /\b(better|same money|improve)\b/.test(u.text.toLowerCase()) ? 'better' : 'less';
+    const mode = /\b(better|same money|improve)\b/.test((u.text || '').toLowerCase()) ? 'better' : 'less';
     const out = challenge.runChallenge(this.inv, ch, await this.settings(), { mode, now: this.now() });
     const href = `/challenge/result?${challenge.challengerParams(ch, { mode })}`;
     const v = out.verdict;
     const ours = out.ours ? tripCard(out.ours, encodeSpec(out.ours.spec), out.ctx) : null;
     const unknownWords = (v.unknowns || []).map(k => challenge.UNKNOWN_LABELS[k] || k);
+    const toAsk = (v.unknowns || []).filter(k => !(c.asked || []).includes(k));
     let text;
     if (v.state === 'beat') text = `We beat it, like for like: ${ours.summary} for ${money(ours.total)} against their ${money(ch.total)}, so ${money(ch.total - ours.total)} stays with you. Everything their trip is known to include is in ours.`;
     else if (v.state === 'tradeoff') text = `We found a different trade-off, not a clean win: ${ours.summary} for ${money(ours.total)} against their ${money(ch.total)}. ${v.different.length ? `Different: ${joinAnd(v.different)}.` : ''} ${v.downs.length ? `Theirs is better on ${joinAnd(v.downs)}.` : ''} You decide.`;
-    else if (v.state === 'info') text = `${ours ? `Our closest like-for-like version is ${money(ours.total)} against their ${money(ch.total)}, but I` : 'I'} won't claim a win with unknowns. About their trip I don't know ${joinAnd(unknownWords)}. Tell me those and I will say who wins.`;
+    else if (v.state === 'info') text = `${ours ? `Our closest like-for-like version is ${money(ours.total)} against their ${money(ch.total)}, but I` : 'I'} won't claim a win with unknowns. About their trip I don't know ${joinAnd(unknownWords)}.${toAsk.length ? ' One question at a time:' : ' With those unknown, that is as far as an honest comparison goes; the full comparison shows the paper difference line by line.'}`;
     else text = `Your deal wins. ${out.cheapest ? `The same trip costs ${money(out.cheapest.total)} with us` : 'I could not build the same trip'}, which does not beat ${money(ch.total)}. Keep your current deal.`;
     this.speak(s, text, { kind: 'verdict', state: v.state, ours, theirs: ch.total, href, unknowns: unknownWords });
     if (ours && v.state !== 'keep' && (!s.current || s.current.token !== ours.token)) s.proposal = { kind: 'challenge', token: ours.token, total: ours.total, delta: s.current ? ours.total - s.current.total : 0, label: 'Our challenger', improvements: v.ups || [], tradeoffs: v.downs || [], neutral: v.different || [], over: false };
+    if (v.state === 'info' && toAsk.length) this.askTheirs(s, THEIRS_ORDER.find(k => toAsk.includes(k)) || toAsk[0]);
+  }
+
+  // One question about the trip they found, with the answers as buttons. "Don't know" is an answer.
+  askTheirs(s, key) {
+    const c = s.challenger;
+    const q = THEIRS_QUESTIONS[key];
+    c.asking = key;
+    s.pending = 'theirs';
+    this.speak(s, typeof q.text === 'function' ? q.text(c) : q.text, { kind: 'ask', options: [...q.options.map(([label, say]) => ({ label, say })), ['Don’t know', 'Don’t know'], ['That’s all I know, compare now', 'That’s all I know']].map(o => (Array.isArray(o) ? { label: o[0], say: o[1] } : o)) });
+  }
+
+  // An answer about their trip: record what was said, skip what they don't know, then ask the next
+  // thing or run the comparison. Their facts never become rules on the traveler's own trip.
+  async theirsFlow(s, t) {
+    const c = s.challenger || (s.challenger = {});
+    c.asked = c.asked || [];
+    const got = [];
+    for (const k of ['stars', 'meals', 'bags', 'transfer', 'cancel', 'taxes', 'flight', 'depart', 'nights']) if (t[k] !== undefined && t[k] !== null) { c[k] = t[k]; got.push(k); }
+    if (t.skip && c.asking) c.asked.push(c.asking);
+    const said = got.map(k => THEIRS_WORDS[k] ? THEIRS_WORDS[k](c[k]) : `${k}: ${c[k]}`);
+    const ackText = said.length ? `Got it about their trip: ${joinAnd(said)}.` : t.skip ? 'Fine, that stays unknown.' : null;
+    const known = k => (k === 'dates' ? !!c.depart : k === 'stars' ? !!c.stars : !!c[k]);
+    const open = Object.keys(challenge.UNKNOWN_LABELS).filter(k => !known(k) && !c.asked.includes(k));
+    const cur = s.current ? await this.currentTrip(s) : null;
+    if (t.done || !open.length) {
+      if (ackText) this.speak(s, ackText);
+      c.asking = null;
+      // "That's all I know": whatever is still open stays unknown and is not asked again; the
+      // verdict then says plainly how far an honest comparison goes.
+      if (t.done) for (const k of open) if (!c.asked.includes(k)) c.asked.push(k);
+      await this.challengeFlow(s, { updates: {}, text: '' }, cur);
+      return;
+    }
+    const next = THEIRS_ORDER.find(k => open.includes(k)) || open[0];
+    if (ackText) this.speak(s, ackText);
+    this.askTheirs(s, next);
   }
 
   async bookFlow(s, cur) {
@@ -722,10 +854,11 @@ class AgentService {
       return;
     }
     if (kind === 'afford') {
-      const budget = b.budget && b.budget.budget;
+      const bud = (b.quote && b.quote.budget) || b.budget || null;
+      const budget = bud && bud.budget;
       const left = budget ? budget - b.total : null;
       this.speak(s, left !== null
-        ? `Of the ${money(budget)} you set, ${money(b.total)} is paid and ${money(Math.max(0, left))} is left${b.budget.keep ? `, plus the ${money(b.budget.keep)} you protected for the destination` : ''}. Whether that covers what you have in mind I don't know yet: I only know your trip's prices, not local costs.`
+        ? `Of the ${money(budget)} you set, ${money(b.total)} is paid and ${money(Math.max(0, left))} is left${bud.keep ? `, plus the ${money(bud.keep)} you protected for the destination` : ''}. Whether that covers what you have in mind I don't know yet: I only know your trip's prices, not local costs.`
         : `I don't know yet: I know your trip's price (${money(b.total)}) but not the cost of what you have in mind, and no budget was set on this booking.`);
       return;
     }

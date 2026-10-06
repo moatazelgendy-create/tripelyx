@@ -36,7 +36,7 @@ function tripRow(b) {
       <p>${longDate(t.spec.depart)} – ${shortDate(t.flight.return)} · ${plural(t.spec.travelers, 'traveler')} · ${t.hotel.name}</p>
       <p class="tb-small tb-muted">Total paid ${money(b.total)}</p>
     </div>
-    <a class="btn btn-ghost btn-sm" href="/booking/${b.ref}">Open trip ${icon('arrow')}</a>
+    <div class="tb-mytrip-actions"><a class="btn btn-ghost btn-sm" href="/booking/${b.ref}">Open trip ${icon('arrow')}</a>${b.status === 'cancelled' || b.status === 'refunded' ? '' : html`<form method="post" action="/agent"><input type="hidden" name="ref" value="${b.ref}"><button class="btn btn-ghost btn-sm" type="submit">Ask your travel agent</button></form>`}</div>
   </li>`;
 }
 

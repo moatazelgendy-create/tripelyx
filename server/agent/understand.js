@@ -54,7 +54,7 @@ function parseDate(text, now) {
 }
 
 function destinationIn(text, maps) {
-  const lower = ` ${text.toLowerCase()} `;
+  const lower = ` ${text.toLowerCase().replace(/[\u2018\u2019]/g, "'")} `;
   // Longest alias or name first so "new york" beats "york" and "miami beach" beats "miami".
   const names = [...maps.listDestinations().map(d => [d.name.toLowerCase(), d.id]), ...Object.entries(DEST_ALIASES)].sort((a, b) => b[0].length - a[0].length);
   for (const [name, id] of names) {
@@ -74,7 +74,7 @@ function originIn(text, maps) {
   for (const o of maps.listOrigins()) for (const a of o.airports) {
     if (new RegExp(`(^|[^A-Z])${a.code}([^A-Z]|$)`).test(upper)) return { origin: o.id, airport: a.code };
   }
-  const lower = ` ${text.toLowerCase()} `;
+  const lower = ` ${text.toLowerCase().replace(/[\u2018\u2019]/g, "'")} `;
   const aliases = [...maps.listOrigins().map(o => [o.city.toLowerCase(), o.id]), ...Object.entries(ORIGIN_ALIASES)].sort((a, b) => b[0].length - a[0].length);
   for (const [name, id] of aliases) {
     const re = new RegExp(`(^|[^a-z])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z]|$)`, 'i');
@@ -95,7 +95,7 @@ function originIn(text, maps) {
 function extractUpdates(text, { maps, now = new Date() }) {
   const u = {};
   const ack = [];
-  const lower = text.toLowerCase();
+  const lower = text.toLowerCase().replace(/[\u2018\u2019]/g, "'");
 
   // Money: a reserve, an amount to cut or add, a competitor's price, and only then the budget.
   const reserve = money(lower, /(?:keep|save|leave|hold|protect|set aside|reserve)\s+(?:at least\s+)?\$?([\d,]+k?)\s*(?:dollars\s+)?(?:for|to|after|aside|spending|in my pocket|on hand|available|back|untouched)\b/) || money(lower, /\$?([\d,]+k?)\s*(?:for spending|to spend|spending money|pocket money|after (?:i|we) (?:arrive|land|get there)|available after|for (?:food|meals|shopping|fun|activities|extras|emergencies|expenses|the trip itself))\b/);
@@ -238,9 +238,39 @@ const INTENTS = [
   ['build', /\b(build|rebuild|plan|find (?:me|us)|get (?:me|us)|best trip|show me trips|show me (?:some|a few) (?:options|trips)|i want (?:to go|a trip)|i'?d like (?:to go|a trip)|take (?:me|us)|let'?s go|trip for|vacation|holiday|getaway|escape|somewhere|search again|try again)\b/],
 ];
 
+// What the traveler says about the trip they found, when the agent asked about it. Only what the
+// words state; an attribute nobody mentioned stays unknown, and "don't know" is an answer.
+function theirsFrom(lower, { now = new Date() } = {}) {
+  const t = {};
+  const stars = lower.match(/\b([345])[- ]?stars?\b/);
+  if (stars) t.stars = Number(stars[1]);
+  if (/\ball[- ]inclusive\b/.test(lower)) t.meals = 'all-inclusive';
+  else if (/\bbreakfast\b/.test(lower) && !/\bno breakfast\b/.test(lower)) t.meals = 'breakfast';
+  else if (/\b(no meals|room only|no breakfast|meals? (?:not included|extra)|nothing included|no food)\b/.test(lower)) t.meals = 'none';
+  if (/\b(personal item only|just a personal item|no carry[- ]?on)\b/.test(lower)) t.bags = 'personal';
+  else if (/\b(carry[- ]?on only|carry[- ]?on(?: bag)? (?:included|only)|cabin bag|hand luggage only|no checked bags?|checked bags? (?:not included|extra|cost extra))\b/.test(lower)) t.bags = 'carry-on';
+  else if (/\b(checked bags?|a checked bag|bags? (?:are |is )?included|luggage included|with bags?|suitcases? included)\b/.test(lower)) t.bags = 'checked';
+  if (/\b(no (?:airport )?transfers?|transfers? (?:not included|extra)|without (?:a |the )?transfer|no shuttle|no pickup)\b/.test(lower)) t.transfer = 'no';
+  else if (/\b(transfers? (?:is |are )?included|includes? (?:a |the )?(?:airport )?transfers?|with (?:a |the )?(?:airport )?transfer|shuttle included|pickup included|transfer(?:s)? in the price)\b/.test(lower)) t.transfer = 'yes';
+  if (/\b(non[- ]?refundable|no refunds?|can'?t cancel|cannot cancel|no cancellation|no free cancellation|not refundable)\b/.test(lower)) t.cancel = 'nonrefundable';
+  else if (/\b(refundable|free cancellation|can cancel|cancel(?:lation)? (?:is )?free|fully flexible)\b/.test(lower)) t.cancel = 'refundable';
+  if (/\b(plus tax(?:es)?|before tax(?:es)?|tax(?:es)? (?:and fees )?(?:are |is )?(?:extra|not included|on top|excluded|separate)|excluding tax|without tax|pre-?tax|fees? (?:extra|not included|on top))\b/.test(lower)) t.taxes = 'excluded';
+  else if (/\b(tax(?:es)? (?:and fees )?(?:are |is )?(?:included|in|inside|in the price)|includ(?:es|ing) (?:all )?tax|all[- ]in|final price|total price|everything included|incl\.? tax|with tax(?:es)?)\b/.test(lower)) t.taxes = 'included';
+  if (/\b(not (?:nonstop|non-stop|direct)|one stop|1 stop|two stops|a stop|with stops|stops|connection|connecting|layover)\b/.test(lower)) t.flight = 'stops';
+  else if (/\b(nonstop|non-stop|direct)\b/.test(lower)) t.flight = 'nonstop';
+  const d = parseDate(lower, now);
+  if (d && d.depart) t.depart = d.depart;
+  const nights = lower.match(/\b(\d+)\s*nights?\b/);
+  if (nights && Number(nights[1]) >= 1 && Number(nights[1]) <= 14) t.nights = Number(nights[1]);
+  return t;
+}
+
+const THEIRS_SKIP = /\b(don'?t know|do not know|not sure|no idea|unsure|skip|dunno|can'?t remember|no clue|not listed|doesn'?t say)\b/;
+const THEIRS_DONE = /\b(that'?s all|that is all|that'?s everything|all i know|compare now|run it|just compare|go ahead|enough|with what you have|say who wins|what you have)\b/;
+
 function understand(text, state, { maps, now = new Date() } = {}) {
   const clean = String(text || '').trim().slice(0, 600);
-  const lower = clean.toLowerCase();
+  const lower = clean.toLowerCase().replace(/[\u2018\u2019]/g, "'");
   const { updates, ack } = extractUpdates(clean, { maps, now });
   const intents = INTENTS.filter(([, re]) => re.test(lower)).map(([k]) => k);
   // An answer to the question the agent just asked, read in that light.
@@ -260,6 +290,20 @@ function understand(text, state, { maps, now = new Date() } = {}) {
   if (pending === 'budget' && !updates.budget) { const m = lower.match(/([\d,]+k?)/); if (m && num(m[1]) >= 100) { updates.budget = num(m[1]) * (/k$/i.test(m[1]) ? 1000 : 1) * 100; updates.budgetPer = 'total'; } }
   if (pending === 'options' && /^\s*(?:option\s*)?([abc])\b/i.test(lower)) updates.option = lower.match(/^\s*(?:option\s*)?([abc])\b/i)[1].toUpperCase();
   if (pending === 'challenge' && !updates.competitorTotal) { const m = lower.match(/\$?\s*([\d,]{3,}k?)\b/); if (m && num(m[1]) >= 100) { updates.competitorTotal = num(m[1]) * (/k$/i.test(m[1]) ? 1000 : 1) * 100; delete updates.budget; } if (!intents.includes('challenge')) intents.push('challenge'); }
+  // Facts about the trip they found: the answer to the agent's question about it, or a sentence
+  // about "their" trip while a challenge is on the table. These never touch the traveler's own rules.
+  if (pending === 'theirs' || (state && state.challenger && /\b(their|theirs|they|the other (?:trip|deal|site))\b/.test(lower) && !/\bbeat\b/.test(lower))) {
+    const t = theirsFrom(lower, { now });
+    const skip = THEIRS_SKIP.test(lower);
+    const done = THEIRS_DONE.test(lower);
+    if (Object.keys(t).length || skip || done) {
+      for (const k of ['minStars', 'clearStars', 'breakfast', 'hotelAllInclusive', 'flightStops', 'flightRule', 'refundable', 'transfer', 'beachfront', 'depart', 'dateMode', 'month', 'nights', 'budget', 'budgetPer', 'competitorTotal', 'locks', 'unlocks', 'destination', 'anywhere']) delete updates[k];
+      updates.theirs = { ...t, skip: skip && !Object.keys(t).length, done };
+      const keep = intents.filter(k => k === 'restart' || k === 'stop');
+      intents.length = 0; intents.push(...keep, 'challenge');
+      ack.length = 0;
+    }
+  }
   // A bare number answers whatever was asked.
   if (/^\s*\$?\s*[\d,]+k?\s*$/.test(lower) && !pending && !updates.budget) { const v = num(lower.match(/([\d,]+)/)[1]) * (/k/i.test(lower) ? 1000 : 1); if (v >= 100) { updates.budget = v * 100; updates.budgetPer = 'total'; } }
 
@@ -267,4 +311,4 @@ function understand(text, state, { maps, now = new Date() } = {}) {
   return { text: clean, updates, intents, ack, unknown };
 }
 
-module.exports = { understand, extractUpdates, parseDate, destinationIn, originIn, INTENTS, DEST_ALIASES };
+module.exports = { understand, extractUpdates, theirsFrom, parseDate, destinationIn, originIn, INTENTS, DEST_ALIASES };
