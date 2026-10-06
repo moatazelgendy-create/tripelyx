@@ -36,6 +36,7 @@ function querySummary(vertical, q) {
 const STATUS_LABEL = {
   pending_payment: 'Awaiting payment', confirming: 'Confirming', pending_supplier: 'Awaiting partner confirmation',
   confirmed: 'Confirmed', cancelling: 'Cancelling', cancelled: 'Cancelled', expired: 'Expired', failed: 'Not confirmed',
+  partially_confirmed: 'Partially confirmed', refund_pending: 'Refund pending', refunded: 'Refunded',
 };
 
 module.exports = { money, date, month, minutes, querySummary, UNIT_LABEL, STATUS_LABEL };

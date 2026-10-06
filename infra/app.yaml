@@ -27,6 +27,19 @@ Parameters:
     Type: String
     AllowedValues: ['true', 'false']
     Default: 'true'
+  AdminEmails:
+    Type: String
+    Default: ''
+    Description: Comma-separated emails of the accounts allowed into the admin control center (/admin).
+  EnableTrips:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'true'
+    Description: Serve the Travel by Budget planner as the homepage.
+  PublicBaseUrl:
+    Type: String
+    Default: ''
+    Description: Canonical site address, e.g. https://www.tripelyx.com (used for canonical links and the sitemap).
   DbInstanceClass:
     Type: String
     Default: db.t3.micro
@@ -211,6 +224,9 @@ Resources:
             - { Name: HTTPS_ONLY, Value: !If [HasCertificate, 'true', 'false'] }
             - { Name: PAYMENT_MODE, Value: !Ref PaymentMode }
             - { Name: ALLOW_DEMO_INVENTORY, Value: !Ref AllowDemoInventory }
+            - { Name: ENABLE_TRIPS, Value: !Ref EnableTrips }
+            - { Name: ADMIN_EMAILS, Value: !Ref AdminEmails }
+            - { Name: PUBLIC_BASE_URL, Value: !Ref PublicBaseUrl }
             - { Name: DATABASE_ENV, Value: !Ref AppEnv }
             - { Name: DATABASE_HOST, Value: !GetAtt Database.Endpoint.Address }
             - { Name: DATABASE_PORT, Value: !GetAtt Database.Endpoint.Port }

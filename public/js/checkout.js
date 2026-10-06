@@ -90,6 +90,9 @@
         // A booking that can no longer be paid (expired, already closed) starts fresh next time.
         if (['payment_window_expired', 'not_awaiting_payment', 'booking_not_found'].indexOf(err.code) >= 0) { try { sessionStorage.removeItem(storeKey); } catch (x) { /* ignore */ } }
         if (err.code === 'not_awaiting_payment' && ref) { window.location.assign('/booking/' + encodeURIComponent(ref)); return; }
+        // The live price moved between the quote and payment: nothing was charged. Back to the review
+        // page, where the new price is shown and the traveler decides.
+        if (err.code === 'price_changed' && err.details && err.details.url) { try { sessionStorage.removeItem(storeKey); } catch (x) { /* ignore */ } window.location.assign(err.details.url); return; }
         showStatus(err.message);
         status.scrollIntoView({ block: 'center', behavior: 'smooth' });
       });

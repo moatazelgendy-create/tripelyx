@@ -4,6 +4,7 @@ const { refine, parseRefine } = require('../booking/refine');
 const { brandsView, technologyView, partnersView, aboutView, contactView } = require('../views/pages');
 const { bookView, bookIndexView, offerView, checkoutView, bookingView, manageView, defaultsFor } = require('../views/book');
 const { notFoundView } = require('../views/errors');
+const { tripCheckoutView, tripBookingView } = require('../views/trips/pages');
 const { VERTICALS, getVertical } = require('../verticals');
 const { AppError } = require('../lib/errors');
 const { readCookies, bookingCookieName, setBookingCookie } = require('../lib/cookies');
@@ -19,7 +20,8 @@ function pagesRouter(ctx, { writeLimiter }) {
 
   r.use((req, res, next) => { res.setHeader('Cache-Control', 'no-cache'); next(); });
 
-  r.get('/', (req, res) => {
+  // With Travel by Budget on, the trips router owns "/" and the corporate homepage moves to /company.
+  r.get(ctx.trips ? '/company' : '/', (req, res) => {
     const verticals = VERTICALS.filter(v => enabled(v.key)).map(v => ({ meta: v, values: defaultsFor(v), lookups: lookupsFor(v.key) }));
     send(res, homeView(ctx, { verticals }));
   });
@@ -96,7 +98,8 @@ function pagesRouter(ctx, { writeLimiter }) {
     try {
       const quote = await engine.getQuote(req.params.quoteId);
       res.setHeader('Cache-Control', 'no-store');
-      send(res, checkoutView(ctx, { quote, paymentConfig: ctx.payments.clientConfig() }));
+      const view = quote.vertical === 'trips' ? tripCheckoutView : checkoutView;
+      send(res, view(ctx, { quote, paymentConfig: ctx.payments.clientConfig() }));
     } catch (err) { next(err); }
   });
 
@@ -117,11 +120,26 @@ function pagesRouter(ctx, { writeLimiter }) {
 
   const cookieAuth = req => ({ token: readCookies(req)[bookingCookieName(req.params.ref)] });
 
+  // A signed-in traveler can open their own trip bookings without the per-booking cookie.
+  const getBooking = async req => {
+    try { return await engine.getBooking(req.params.ref, cookieAuth(req)); } catch (err) {
+      if (req.user && err instanceof AppError && err.code === 'booking_not_found') {
+        const own = (await ctx.store.listBookings({ userId: req.user.id, limit: 200 })).find(b => b.ref === String(req.params.ref).toUpperCase());
+        if (own) return { booking: engine.publicBooking(own), cancellationPreview: engine.cancellationPreview(own), payment: own.status === 'pending_payment' ? ctx.payments.clientConfig() : null };
+      }
+      throw err;
+    }
+  };
+
   r.get('/booking/:ref', async (req, res, next) => {
     try {
       res.setHeader('Cache-Control', 'no-store');
-      const data = await engine.getBooking(req.params.ref, cookieAuth(req));
-      send(res, bookingView(ctx, { ...data, notice: req.query.cancelled ? 'Your booking has been cancelled.' : null }));
+      const data = await getBooking(req);
+      const notice = req.query.cancelled ? 'Your booking has been cancelled.' : req.query.sent ? 'Message sent. We reply by email and here.' : null;
+      if (data.booking.vertical === 'trips') {
+        return send(res, tripBookingView(ctx, { ...data, notice, user: req.user || null, messages: await ctx.tripService.supportMessages(data.booking.ref) }));
+      }
+      send(res, bookingView(ctx, { ...data, notice }));
     } catch (err) {
       if (err instanceof AppError && err.code === 'booking_not_found') return send(res.status(404), manageView(ctx, { ref: String(req.params.ref).toUpperCase().slice(0, 20) }));
       next(err);

@@ -10,6 +10,7 @@ class MemoryStore {
     this.refs = new Map();
     this.intents = new Map();
     this.leads = [];
+    this.records = new Map();
   }
 
   async init() {}
@@ -41,6 +42,27 @@ class MemoryStore {
   async getPaymentIntent(id) { return clone(this.intents.get(id)) || null; }
 
   async savePartnerLead(lead) { this.leads.push(clone(lead)); return lead; }
+
+  // Newest first.
+  async listBookings({ userId, limit = 500 } = {}) {
+    return [...this.bookings.values()].filter(b => !userId || b.userId === userId)
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)).slice(0, limit).map(clone);
+  }
+
+  // Generic records (accounts, saved trips, analytics events, settings, support messages, …): a kind,
+  // an id, an optional owner and a JSON document.
+  async putRecord(kind, id, data, { userId = null } = {}) {
+    const key = `${kind}:${id}`;
+    const prev = this.records.get(key);
+    this.records.set(key, { kind, id, userId: userId ?? (prev && prev.userId) ?? null, data: clone(data), createdAt: prev ? prev.createdAt : new Date().toISOString(), seq: prev ? prev.seq : (this.seq = (this.seq || 0) + 1) });
+    return data;
+  }
+  async getRecord(kind, id) { const r = this.records.get(`${kind}:${id}`); return r ? clone(r.data) : null; }
+  async deleteRecord(kind, id) { return this.records.delete(`${kind}:${id}`); }
+  async listRecords(kind, { userId, limit = 1000, since } = {}) {
+    return [...this.records.values()].filter(r => r.kind === kind && (!userId || r.userId === userId) && (!since || r.createdAt >= since))
+      .sort((a, b) => b.seq - a.seq).slice(0, limit).map(r => clone(r.data));
+  }
 }
 
 module.exports = { MemoryStore };
