@@ -87,6 +87,16 @@ function tripDiff(a, b, { date = x => x } = {}) {
   return rows.map(([key, label, va, vb]) => ({ key, label, a: va, b: vb, changed: va !== vb }));
 }
 
+// The price lines two trips can differ on, in money: what each part costs in one trip against the
+// other. Keys follow pricing.js; a line a trip does not have counts as zero.
+const LINE_ORDER = ['flights', 'hotel', 'experiences', 'transfer', 'bags', 'taxes', 'service', 'promo'];
+const LINE_LABEL = { flights: 'Flight fares', hotel: 'Hotel stay', experiences: 'Experiences', transfer: 'Airport transfer', bags: 'Checked bags', taxes: 'Taxes and mandatory fees', service: 'Service fee', promo: 'Promo code' };
+const lineAmount = (t, key) => (t.lines.find(l => l.key === key) || { amount: 0 }).amount;
+function lineDiff(a, b) {
+  const keys = LINE_ORDER.filter(k => a.lines.some(l => l.key === k) || b.lines.some(l => l.key === k));
+  return keys.map(key => ({ key, label: LINE_LABEL[key] || key, a: lineAmount(a, key), b: lineAmount(b, key), delta: lineAmount(b, key) - lineAmount(a, key) }));
+}
+
 // Which way each difference between two trips goes, from the facts rather than the wording.
 const MEAL_RANK = h => (h.features.allInclusive ? 2 : h.features.breakfast ? 1 : 0);
 const BAG_RANK = t => (t.flight.checkedBagIncluded || t.spec.bags ? 2 : t.flight.carryOn ? 1 : 0);
@@ -115,4 +125,4 @@ function classifyChanges(a, b, opts) {
   return { improvements: rows.filter(r => r.direction > 0), tradeoffs: rows.filter(r => r.direction < 0), neutral: rows.filter(r => r.direction === 0) };
 }
 
-module.exports = { usableTime, clock, hoursLabel, direction, classifyChanges, tripDiff, DAY_START, DAY_END, FULL_DAY, ARRIVAL_BUFFER, AIRPORT_BUFFER };
+module.exports = { usableTime, clock, hoursLabel, direction, classifyChanges, tripDiff, lineDiff, lineAmount, LINE_ORDER, LINE_LABEL, DAY_START, DAY_END, FULL_DAY, ARRIVAL_BUFFER, AIRPORT_BUFFER };

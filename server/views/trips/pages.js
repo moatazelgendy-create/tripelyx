@@ -6,9 +6,9 @@ const { layout } = require('../layout');
 const { pageHero } = require('../pages');
 const { encodeSpec } = require('../../trips/spec');
 const { contextParams, searchParams } = require('../../trips/optimizer');
-const { money, dollars, longDate, shortDate, plural, hm, statusPill, demoBadge, budgetMeter, recipe, stepsBar } = require('./common');
+const { money, dollars, longDate, shortDate, plural, joinAnd, cutoffText, hm, statusPill, demoBadge, budgetMeter, recipe, stepsBar } = require('./common');
 const { budgetForm } = require('./home');
-const { vacationPlan } = require('../../trips/vacation');
+const { vacationPlan, coveredBy, unpricedFor } = require('../../trips/vacation');
 const { tripCard } = require('./plan');
 
 function howItWorksView(ctx) {
@@ -257,6 +257,7 @@ function tripBookingView(ctx, { booking: b, cancellationPreview: preview, paymen
         ${budget && b.total <= budget ? html`<p class="tb-celebrate">${icon('sparkle')} Great choice. You came in <b>${money(budget - b.total)}</b> under your ${dollars(budget)}${plan && plan.keep ? ' booking' : ''} budget.</p>` : ''}
         ${plan && plan.keep ? html`<p class="tb-vac-after">${icon('lock')}<span>${afterWords(plan)}</span></p>` : ''}
       </section>
+      ${coversPanel(b, t)}
       <section class="tb-panel" aria-labelledby="info-title">
         <h2 id="info-title">Important travel information</h2>
         <ul class="tb-list">
@@ -271,7 +272,7 @@ function tripBookingView(ctx, { booking: b, cancellationPreview: preview, paymen
       ${preview && preview.allowed ? html`<form class="tb-panel" method="post" action="/booking/${b.ref}/cancel" data-cancel-form>
         <h2>Cancel this trip</h2>
         <p>${preview.policy} If you cancel now you’ll be refunded <b>${money(preview.refundAmount, preview.currency)}</b>.</p>
-        ${preview.breakdown ? html`<ul class="tb-list tb-small">${preview.breakdown.map(x => html`<li>${x.component}: ${money(x.amount)}</li>`)}</ul>` : ''}
+        ${cancelDeadlines(preview)}
         <div data-form-status role="alert"></div>
         <button class="btn btn-ghost" type="submit" data-confirm="Cancel TRIP #${b.ref}? You’ll be refunded ${money(preview.refundAmount, preview.currency)}."><span class="btn-label">Cancel trip</span></button>
       </form>` : preview && !preview.allowed ? html`<p class="tb-muted">${preview.reason}</p>` : ''}
@@ -293,6 +294,47 @@ function tripBookingView(ctx, { booking: b, cancellationPreview: preview, paymen
   </div>
 </div>`;
   return layout({ title: `TRIP #${b.ref}`, active: 'my-trips', body, ctx, scripts: ['/js/book.js'], noindex: true });
+}
+
+// What this booking pays for, what it leaves out and what we never price, from the booking's own
+// facts; plus any part a supplier has not confirmed yet.
+function coversPanel(b, t) {
+  const covered = coveredBy(t);
+  // Things the price leaves out that are bookable or required (bags, a transfer, insurance,
+  // documents); what the traveler simply pays on the spot is the "not priced by us" line below.
+  const notIn = (t.notIncluded || []).filter(i => !/^(meals|tips)/i.test(i)).map(i => i.replace(/\s*\([^)]*\)\s*$/, '')).map(i => i.charAt(0).toLowerCase() + i.slice(1));
+  const pending = (b.components || []).filter(c => c.status !== 'confirmed');
+  const name = c => (c.kind === 'flight' ? 'flights' : c.kind === 'hotel' ? 'the hotel' : c.kind === 'transfer' ? 'the airport transfer' : c.name);
+  return html`<section class="tb-panel" aria-labelledby="cov-title">
+    <h2 id="cov-title">${icon('layers')} What this booking covers, and what it doesn’t</h2>
+    <ul class="tb-ready tb-ready-wrap">
+      <li>${icon('check')}<span><b>Paid for already:</b> round-trip flights, ${plural(t.spec.nights, 'night')} at ${t.hotel.name}${covered.length ? `, ${covered.join(', ')}` : ''}, taxes, mandatory fees and our service fee.</span></li>
+      ${notIn.length ? html`<li class="is-miss">${icon('minus')}<span><b>Not in this booking:</b> ${notIn.join('; ')}.</span></li>` : ''}
+      <li>${icon('info')}<span><b>Not priced by us, you pay there:</b> ${unpricedFor(t).join(', ')}. We don’t guess those amounts.</span></li>
+      ${pending.length ? html`<li class="is-miss">${icon('alert')}<span><b>Still to confirm:</b> ${joinAnd(pending.map(name))}. ${b.status === 'partially_confirmed' ? 'Our team is on it and will contact you.' : 'We’ll update this page as each supplier answers.'}</span></li>` : ''}
+    </ul>
+  </section>`;
+}
+
+// The refund you would get now, part by part, with each part's dated cutoff from the suppliers'
+// own terms: the full-refund window when it is open, then what is still free to cancel and until
+// when. Dates, never countdowns.
+function cancelDeadlines(preview) {
+  const byComponent = new Map((preview.deadlines || []).map(d => [d.component, d]));
+  const when = x => {
+    if (x.component === 'Whole trip') return '';
+    const d = byComponent.get(x.component);
+    if (!d) return '';
+    if (d.cutoff && d.open) return ` · free to cancel ${cutoffText(d.cutoff)}`;
+    if (d.cutoff) return ' · the free-cancellation cutoff has passed';
+    return x.component === 'Service fee' ? ' · refunded only in the first 24 hours' : ' · non-refundable';
+  };
+  const ahead = (preview.deadlines || []).filter(d => d.open);
+  return html`${preview.fullRefundUntil ? html`<p class="tb-small">${preview.freeWindowOpen && preview.breakdown && preview.breakdown[0] && preview.breakdown[0].component === 'Whole trip'
+      ? `Full refund ${cutoffText(preview.fullRefundUntil)}, 24 hours after you booked. After that, each part follows its own cutoff: ${ahead.length ? joinAnd(ahead.map(d => `${d.component} ${cutoffText(d.cutoff)}`)) : 'nothing on this trip is free to cancel'}.`
+      : `The 24-hour full-refund window closed ${cutoffText(preview.fullRefundUntil).replace(/^before /, 'at the start of ').replace(/^by /, 'at ')}.`}</p>` : ''}
+    ${preview.breakdown ? html`<ul class="tb-list tb-small">${preview.breakdown.map(x => html`<li>${x.component}: ${money(x.amount)}${when(x)}</li>`)}</ul>` : ''}
+    ${preview.nextCutoff && !(preview.breakdown && preview.breakdown[0] && preview.breakdown[0].component === 'Whole trip') ? html`<p class="tb-small tb-muted">Next cutoff: ${preview.nextCutoff.component}, ${cutoffText(preview.nextCutoff.cutoff)}. These are the suppliers’ own terms, dated; nothing here is a countdown.</p>` : ''}`;
 }
 
 function confirmationFor(b, kind, name) {

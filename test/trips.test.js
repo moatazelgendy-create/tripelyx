@@ -12,6 +12,10 @@ const { singleChanges } = require('../server/views/trips/trip');
 const { addDays, today } = require('../server/lib/dates');
 const { createTripIntegrations } = require('../server/trips/integrations');
 const { vacationPlan } = require('../server/trips/vacation');
+const { cutoffs, isOpen, nextCutoff, fullRefundApplies } = require('../server/trips/deadlines');
+const { lineDiff, lineAmount } = require('../server/trips/facts');
+const { money: fmtMoney, longDate, cutoffText } = require('../server/views/trips/common');
+const { daysBetween } = require('../server/lib/dates');
 
 const inv = createTripIntegrations(loadConfig({ APP_ENV: 'development' }));
 const QUERY = { b: '1500', k: '0', from: 'SFO', who: 'couple', when: 'anytime', nights: '5', style: 'beach', prio: 'hotel' };
@@ -916,4 +920,151 @@ test('the whole vacation: money protected for the destination travels with the t
   }
   const open = await c.req('/trips?b=300&k=0&from=SFO&who=couple&when=anytime&nights=2&style=surprise&prio=price&ov=10');
   if (/couldn’t build a trip/.test(open.text)) { assert.ok(!/on its own \(\)/.test(open.text)); assert.match(open.text, /no single rule left to relax/); }
+});
+
+test('deciding today and after: dated cutoffs shared by the pages and the refund, what a booking covers, why Save more is cheaper, money rows, a second trip, what blocks a search', async t => {
+  const esc = str => str.replace(/[$.()[\]+?*|^]/g, '\\$&');
+  const settings = DEFAULT_SETTINGS;
+
+  // Cutoffs are the suppliers' stated hours on the trip's own dates, counted from the start of the
+  // departure day; the 24-hour full-refund window exists only for a booking made 7 or more days ahead.
+  const spec = { dest: 'cancun', from: 'SFO', depart: '2027-03-02', nights: 5, travelers: 2, who: 'couple', hotel: 'cun-2', flight: 'nonstop', activities: ['cun-a1'], bags: false, transfer: true };
+  const flex = priceTrip(inv, spec, settings);
+  const { items, fullRefundUntil } = cutoffs(flex, { bookedAt: '2027-02-20T12:00:00Z' });
+  const by = k => items.find(i => i.key === k);
+  assert.ok(flex.flight.refundable && flex.hotel.refundable, 'the fixture is the refundable fare and rate');
+  assert.equal(by('flights').cutoff, `${addDays(spec.depart, -flex.flight.freeCancelHours / 24)}T00:00:00.000Z`);
+  assert.equal(by('hotel').cutoff, `${addDays(spec.depart, -flex.hotel.freeCancelHours / 24)}T00:00:00.000Z`);
+  assert.equal(by('activity:cun-a1').cutoff, `${addDays(spec.depart, -1)}T00:00:00.000Z`);
+  assert.equal(by('transfer').cutoff, `${addDays(spec.depart, -1)}T00:00:00.000Z`);
+  assert.equal(by('service').cutoff, null);
+  assert.equal(fullRefundUntil, '2027-02-21T12:00:00.000Z');
+  assert.equal(cutoffs(flex, { bookedAt: '2027-02-24T12:00:00Z' }).fullRefundUntil, null, 'no 24-hour window with under 7 days to departure');
+  assert.equal(cutoffs(flex).fullRefundUntil, null, 'no window before a booking exists');
+  assert.equal(fullRefundApplies(flex, new Date('2027-02-23T23:00:00Z')), true);
+  assert.equal(fullRefundApplies(flex, new Date('2027-02-24T01:00:00Z')), false);
+  const at = new Date('2027-02-24T12:00:00Z');
+  assert.deepEqual(items.map(i => isOpen(i, at)), [false, true, true, true, false], 'flights closed 7 days out, the rest still open');
+  assert.equal(nextCutoff(items, at).key, 'hotel');
+  assert.equal(nextCutoff(items, new Date('2027-03-02T00:00:00Z')), null);
+  // A non-refundable rate and fare have no cutoff and never a date.
+  const strict = priceTrip(inv, { ...spec, flight: 'basic' }, settings);
+  assert.equal(cutoffs(strict).items[0].cutoff, null);
+  assert.match(cutoffs(strict).items[0].rule, /not refundable after the first 24 hours/);
+  assert.equal(cutoffText('2027-02-27T00:00:00.000Z'), `before ${longDate('2027-02-27')}`);
+  assert.match(cutoffText('2027-02-21T12:00:00.000Z'), /^by 12:00 PM UTC on /);
+
+  const app = await startApp({ ADMIN_EMAILS: 'ops@example.com' });
+  t.after(app.close);
+  const c = client(app.base);
+  const { query } = optimizer.parseSearch(QUERY, { maps: inv.maps });
+  const r = optimizer.search(inv, query, { settings });
+  const ours = r.picks.find(p => p.kind === 'our-pick'), save = r.picks.find(p => p.kind === 'save-more');
+  assert.ok(ours && save, 'our pick and save more');
+  const results = await c.req(`/trips?${new URLSearchParams(QUERY)}`);
+  assert.equal(results.status, 200);
+
+  // Save more says why it is cheaper: each price line that differs, then what it gives up from the
+  // facts, or that the data shows no trade-off, never an invented one.
+  assert.match(results.text, new RegExp(`Why it’s ${esc(fmtMoney(ours.trip.total - save.trip.total))} cheaper than our pick`));
+  assert.match(results.text, /Where the money differs/);
+  const lines = lineDiff(ours.trip, save.trip);
+  assert.ok(lines.some(l => l.delta !== 0));
+  for (const l of lines.filter(x => x.delta !== 0)) assert.ok(results.text.includes(`${l.label}: ${fmtMoney(Math.abs(l.delta))} ${l.delta < 0 ? 'less' : 'more'} (${fmtMoney(l.b)} here, ${fmtMoney(l.a)} in our pick)`), l.label);
+  for (const l of lines.filter(x => x.delta === 0)) assert.ok(!results.text.includes(`${l.label}: $0 less`) && !results.text.includes(`${l.label}: $0 more`), `${l.label}: an equal line is not a difference`);
+  const ch = decision.classifyChanges(ours.trip, save.trip);
+  if (ch.tradeoffs.length) assert.match(results.text, /What you give up/); else assert.match(results.text, /didn’t find a trade-off against our pick/);
+  assert.equal((results.text.match(/cheaper than our pick/g) || []).length, 1, 'only the Save more card explains itself against our pick');
+
+  // Keep your money can start a second trip with the spare, in whole dollars, when the planner can take it.
+  if (r.keepMoney && r.keepMoney.spare >= 10000 && !r.picks.some(p => p.kind === 'upgrade')) {
+    assert.ok(results.text.includes(`href="/plan?b=${Math.floor(r.keepMoney.spare / 100)}&amp;from=SFO&amp;who=couple&amp;n=2"`), 'a second search at the spare');
+    assert.match(results.text, /Start a second trip with it/);
+  }
+  const tiny = await c.req(`/trips?${new URLSearchParams({ ...QUERY, b: String(Math.ceil(ours.trip.total / 100) + 40) })}`);
+  if (/Keep your money/.test(tiny.text)) assert.doesNotMatch(tiny.text, /Start a second trip with it/, 'under $100 spare, no second search is offered');
+
+  // Compare shows where the money goes, each line against the first column; only changed lines unless asked.
+  const cmpAll = await c.req(`/compare?t=${encodeSpec(ours.trip.spec)}&t=${encodeSpec(save.trip.spec)}&l=Our+pick&l=Save+more&b=1500&all=1`);
+  assert.equal(cmpAll.status, 200);
+  assert.match(cmpAll.text, /Where the money goes/);
+  for (const l of lines) {
+    assert.ok(cmpAll.text.includes(`<th scope="row">${l.label}</th>`), `${l.label} row`);
+    if (l.delta) assert.ok(cmpAll.text.includes(`${fmtMoney(Math.abs(l.delta))} ${l.delta > 0 ? 'more' : 'less'} than Our pick`), `${l.label} delta`);
+  }
+  assert.equal((cmpAll.text.match(/tb-compare-line/g) || []).length, lines.length);
+  const cmp = await c.req(`/compare?t=${encodeSpec(ours.trip.spec)}&t=${encodeSpec(save.trip.spec)}&b=1500`);
+  assert.equal((cmp.text.match(/tb-compare-line/g) || []).length, lines.filter(l => l.delta !== 0).length, 'only lines that differ by default');
+
+  // Nothing fits: what blocks it is the cheapest priced trip's own lines, and the flights' share of the budget.
+  const tight = optimizer.search(inv, { ...query, budget: 40000 }, { settings });
+  assert.equal(tight.picks.length, 0);
+  const cheap = tight.closest[0].trip;
+  const nofit = await c.req(`/trips?${new URLSearchParams({ ...QUERY, b: '400' })}`);
+  assert.match(nofit.text, /What blocks it:/);
+  assert.ok(nofit.text.includes(`${cheap.dest.name} for ${cheap.spec.nights} nights with 2 travelers, is ${fmtMoney(cheap.total)}: flight fares ${fmtMoney(lineAmount(cheap, 'flights'))}, hotel stay ${fmtMoney(lineAmount(cheap, 'hotel'))}`), 'the cheapest trip, line by line');
+  const fares = lineAmount(cheap, 'flights');
+  assert.ok(nofit.text.includes(fares > 40000 ? 'The flight fares alone are more than your $400.' : `The flight fares alone take ${Math.round((fares / 40000) * 100)}% of your $400.`));
+
+  // The review page answers "do I need to decide today?" with what holds the price and the dated cutoffs.
+  const trip = await buildTrip(c);
+  const review = await c.req(`${trip.tripPath}/review?${trip.cx}&seen=0`);
+  assert.equal(review.status, 200);
+  assert.match(review.text, /Do I need to decide today\?/);
+  assert.match(review.text, /No\. Nothing holds this price before checkout, and we don’t predict where it goes/);
+  assert.match(review.text, new RegExp(`held for ${app.config.quoteTtlMinutes} minutes at checkout`));
+  const pt = priceTrip(inv, decodeSpec(trip.tripPath.split('/')[2]), settings);
+  const days = daysBetween(today(), pt.spec.depart);
+  if (days >= 7) assert.match(review.text, new RegExp(`you leave in ${days} days, so the 24-hour rule applies`)); else assert.match(review.text, /The 24-hour full-refund window would not apply/);
+  const dated = cutoffs(pt).items.filter(i => i.cutoff);
+  assert.ok(dated.length >= 1, 'something on the pick has a dated cutoff');
+  for (const it of dated) assert.ok(review.text.includes(`${it.component}: free to cancel before ${longDate(it.cutoff.slice(0, 10))}.`), `${it.component} cutoff on the review page`);
+  for (const it of cutoffs(pt).items.filter(i => !i.cutoff && i.key !== 'service')) assert.ok(/not refundable/.test(review.text), `${it.component} named as not refundable`);
+  assert.doesNotMatch(review.text, /only \d+ left|selling fast|hurry|prices (usually|will|tend to) (rise|go up)|book (now|today) before/i, 'no urgency, no prediction');
+  // Dated terms on the review page and the trip page's Know Before You Book.
+  assert.match(review.text, /Cancellation terms[\s\S]*Free to cancel before/);
+  assert.match((await c.req(`${trip.tripPath}?${trip.cx}`)).text, /Cancellation and changes[\s\S]*Free to cancel before/);
+
+  // After booking: what the booking covers, what it leaves out, what we never price; the full-refund
+  // window dated 24 hours after booking; then each part's cutoff, the same ones the refund follows.
+  assert.equal((await c.req('/signup', { method: 'POST', form: { name: 'Ada Lovelace', email: 'ada6@example.com', password: 'correct horse battery' } })).status, 303);
+  const { booking } = await quoteAndBook(c, trip, { firstName: 'Ada', lastName: 'Lovelace', email: 'ada6@example.com' });
+  const paid = await c.req(`/api/bookings/${booking.ref}/pay`, { method: 'POST', json: { method: CARD } });
+  assert.equal(paid.status, 200, paid.text);
+  const b = paid.json().booking;
+  const page = await c.req(`/booking/${booking.ref}`);
+  assert.equal(page.status, 200);
+  assert.match(page.text, /What this booking covers, and what it doesn’t/);
+  assert.match(page.text, new RegExp(`Paid for already:</b> round-trip flights, ${pt.spec.nights} nights at ${esc(pt.hotel.name)}`));
+  assert.match(page.text, /Not priced by us, you pay there:<\/b> meals/);
+  assert.ok(!/Not in this booking:<\/b>[^<]*(meals|tips)/i.test(page.text), 'meals and tips are on the unpriced line only');
+  assert.doesNotMatch(page.text, /Still to confirm/, 'every part confirmed');
+  const data = await app.engine.getBooking(booking.ref, { token: decodeURIComponent(c.jar[`txbk_${booking.ref}`]) });
+  const pv = data.cancellationPreview;
+  assert.equal(pv.fullRefundUntil, new Date(Date.parse(b.createdAt) + 86400000).toISOString());
+  assert.equal(pv.refundAmount, booking.total);
+  assert.ok(page.text.includes(`Full refund ${cutoffText(pv.fullRefundUntil)}, 24 hours after you booked.`));
+  assert.match(page.text, /After that, each part follows its own cutoff: /);
+  for (const d of pv.deadlines.filter(x => x.cutoff)) assert.ok(page.text.includes(`${d.component} ${cutoffText(d.cutoff)}`), `${d.component} on the booking page`);
+  assert.deepEqual(pv.deadlines.map(d => d.cutoff), cutoffs(b.trip).items.map(i => i.cutoff), 'the refund preview carries the page\'s cutoffs');
+
+  // The refund follows the same cutoffs: after the window, parts past their cutoff refund nothing.
+  const raw = await app.store.getBookingByRef(booking.ref);
+  const provider = app.engine.extraProviders.trips;
+  const afterWindow = new Date(Date.parse(pv.fullRefundUntil) + 1000);
+  const p2 = provider.cancellationPreview(raw, afterWindow);
+  assert.equal(p2.breakdown[0].component, 'Flights');
+  assert.equal(p2.breakdown.find(x => x.component === 'Flights').amount, raw.quote.trip.flight.refundable ? raw.quote.refundBasis.flights : 0);
+  assert.equal(p2.breakdown.find(x => x.component === 'Hotel').amount, raw.quote.trip.hotel.refundable ? raw.quote.refundBasis.hotel : 0);
+  assert.equal(p2.breakdown.find(x => x.component === 'Service fee').amount, 0);
+  for (const d of p2.deadlines) assert.equal(d.open, !!(d.cutoff && afterWindow < new Date(d.cutoff)));
+  if (p2.nextCutoff) {
+    const justAfter = new Date(Date.parse(p2.nextCutoff.cutoff) + 1000);
+    const p3 = provider.cancellationPreview(raw, justAfter);
+    assert.equal(p3.breakdown.find(x => x.component === p2.nextCutoff.component).amount, 0, 'a part past its cutoff refunds nothing');
+    assert.ok(p3.refundAmount <= p2.refundAmount);
+    assert.ok(!p3.nextCutoff || Date.parse(p3.nextCutoff.cutoff) > Date.parse(p2.nextCutoff.cutoff));
+  }
+  const started = provider.cancellationPreview(raw, new Date(`${raw.startDate}T00:00:00Z`));
+  assert.equal(started.allowed, false);
 });

@@ -5,12 +5,33 @@ const { icon } = require('../icons');
 const { format } = require('../../lib/money');
 const { date } = require('../format');
 const { clock } = require('../../trips/decision');
+const { cutoffs } = require('../../trips/deadlines');
 
 const money = c => format(c, 'USD');
 const dollars = c => `$${Math.round(c / 100).toLocaleString('en-US')}`;
 const shortDate = d => date(d, { day: 'numeric', month: 'short' });
 const longDate = d => date(d, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+
+const joinAnd = items => (items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`);
+
+// A cutoff as a date the traveler can act on. Cutoffs fall at midnight UTC at the start of a day
+// (see trips/deadlines), so "before <that day>" is exact; an instant inside a day shows its time.
+function cutoffText(iso) {
+  if (!iso) return '';
+  const day = iso.slice(0, 10);
+  if (iso.slice(11, 19) === '00:00:00') return `before ${longDate(day)}`;
+  return `by ${new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' }).format(new Date(iso))} UTC on ${longDate(day)}`;
+}
+
+// Each part's cancellation terms with its dated cutoff, where the supplier states one.
+function termsFor(t, { bookedAt = null } = {}) {
+  const { items } = cutoffs(t, { bookedAt });
+  return t.policies.map(p => {
+    const it = items.find(x => x.component === p.component);
+    return { ...p, cutoff: it ? it.cutoff : null, when: it && it.cutoff ? `Free to cancel ${cutoffText(it.cutoff)}.` : null };
+  });
+}
 
 function hm(minutes) {
   const h = Math.floor(minutes / 60), m = minutes % 60;
@@ -100,4 +121,4 @@ function stepsBar(current) {
   return html`<ol class="progress-steps tb-steps" aria-label="Booking steps">${steps.map((s, i) => html`<li class="${i < current ? 'is-done' : i === current ? 'is-current' : ''}"${i === current ? raw(' aria-current="step"') : ''}><span class="step-dot">${i + 1}</span>${s}</li>`)}</ol>`;
 }
 
-module.exports = { money, dollars, shortDate, longDate, plural, hm, clock, statusPill, demoBadge, budgetMeter, recipe, scorecard, stepsBar, fitBadge, hiddenParams, TRIP_STATUS };
+module.exports = { money, dollars, shortDate, longDate, plural, joinAnd, cutoffText, termsFor, hm, clock, statusPill, demoBadge, budgetMeter, recipe, scorecard, stepsBar, fitBadge, hiddenParams, TRIP_STATUS };

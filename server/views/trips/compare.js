@@ -5,6 +5,7 @@ const { icon } = require('../icons');
 const { layout } = require('../layout');
 const { contextParams } = require('../../trips/optimizer');
 const { tripDiff, verdict } = require('../../trips/decision');
+const { lineAmount, LINE_ORDER, LINE_LABEL } = require('../../trips/facts');
 const { money, dollars, longDate, plural, demoBadge, fitBadge } = require('./common');
 
 const LOCK_LABEL = { hotel: 'the hotel', flight: 'the flights', dates: 'the dates' };
@@ -17,6 +18,12 @@ function compareView(ctx, { items, cx, mode = 'compare', all = false, locks = {}
     return { key: r.key, label: r.label, values, changed: values.some(v => v !== values[0]) };
   });
   const shown = rows.filter(r => all || r.changed || r.key === 'total');
+  // Where the money goes: each price line across the columns, with the difference from the first.
+  const moneyRows = LINE_ORDER.filter(k => cols.some(c => c.trip.lines.some(l => l.key === k))).map(key => {
+    const values = cols.map(c => lineAmount(c.trip, key));
+    return { key: `line:${key}`, label: LINE_LABEL[key], values, changed: values.some(v => v !== values[0]) };
+  }).filter(r => all || r.changed);
+  const firstLabel = cols[0].label || 'Trip 1';
   const budget = cx.budget;
   const optimize = mode === 'optimize';
   const proposal = optimize ? cols[1] : null;
@@ -43,6 +50,7 @@ function compareView(ctx, { items, cx, mode = 'compare', all = false, locks = {}
       <thead><tr><th scope="col"><span class="sr-only">Field</span></th>${cols.map((c, i) => html`<th scope="col"><small>${c.label || `Trip ${i + 1}`}</small><b>${c.trip.dest.name}</b><small>${plural(c.trip.spec.nights, 'night')} · ${plural(c.trip.spec.travelers, 'traveler')}</small>${fitBadge(c.v, { compact: true })}</th>`)}</tr></thead>
       <tbody>
         ${shown.map(r => html`<tr class="${r.changed ? '' : 'is-same'}"><th scope="row">${r.label}</th>${r.values.map((v, i) => html`<td class="${r.key === 'total' ? 'tb-compare-total' : ''}">${v}${r.key === 'total' && budget ? html`<small class="tb-compare-vs ${cols[i].trip.total > budget ? 'is-over' : ''}">${cols[i].trip.total > budget ? `${money(cols[i].trip.total - budget)} over your budget` : `${money(budget - cols[i].trip.total)} under your budget`}</small>` : ''}</td>`)}</tr>`)}
+        ${moneyRows.length ? html`<tr class="tb-compare-group"><th scope="row" colspan="${cols.length + 1}">Where the money goes</th></tr>${moneyRows.map(r => html`<tr class="tb-compare-line${r.changed ? '' : ' is-same'}"><th scope="row">${r.label}</th>${r.values.map((v, i) => html`<td>${money(v)}${i > 0 && v !== r.values[0] ? html`<small class="tb-compare-vs ${v > r.values[0] ? 'is-over' : ''}">${v > r.values[0] ? `${money(v - r.values[0])} more` : `${money(r.values[0] - v)} less`} than ${firstLabel}</small>` : ''}</td>`)}</tr>`)}` : ''}
         <tr><th scope="row">Our verdict</th>${cols.map(c => html`<td>${fitBadge(c.v, { compact: true })} ${c.v.action}</td>`)}</tr>
       </tbody>
       <tfoot><tr><td></td>${cols.map((c, i) => html`<td>${optimize

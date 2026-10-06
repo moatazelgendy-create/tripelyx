@@ -812,3 +812,16 @@ a.tb-pill:hover { border-color: var(--blue-500); }
 .tb-relax a > span b { display: block; }
 .tb-relax a > span small { display: block; color: var(--muted); margin-top: 2px; font-size: 13.5px; }
 .tb-relax a > b { white-space: nowrap; font-size: 18px; color: #0c5e43; }
+
+/* Round six: dated cutoffs, why Save more is cheaper, money rows, what blocks a search, covers panel */
+.tb-deadline { color: #0c5e43; font-weight: 600; }
+.tb-today p { margin: 0 0 10px; }
+.tb-vs-title { font-weight: 600; margin: 12px 0 0; font-size: 13.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
+.tb-vs-lines .is-more .icon, .tb-vs-neutral .icon { color: var(--muted); }
+.tb-compare-group th { background: var(--bg-soft); font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); padding-top: 8px; padding-bottom: 8px; }
+.tb-compare-line th { font-weight: 500; padding-left: 28px; }
+.tb-cost-why { background: var(--bg-soft); border-radius: var(--radius); padding: 12px 14px; font-size: 14.5px; line-height: 1.5; }
+.tb-ready-wrap li { align-items: flex-start; }
+.tb-ready-wrap .icon { margin-top: 3px; }
+.tb-ready-wrap .is-miss .icon { color: var(--warning); }
+.tb-card-keep .tb-card-actions .btn { flex: 1 1 100%; }

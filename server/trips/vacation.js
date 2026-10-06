@@ -28,21 +28,8 @@ function vacationPlan(t, cx, options = null) {
     if (acts.length) optional.push({ key: 'experiences', label: acts.length === 1 ? acts[0].activity.name : `${acts.length} experiences you could add`, amount: Math.min(...acts.map(a => a.cost)), from: acts.length > 1 });
   }
 
-  // What the reserve does not need to cover, from the booking's own facts.
-  const covered = [];
-  if (t.hotel.features.allInclusive) covered.push('all meals and drinks at the resort');
-  else if (t.hotel.features.breakfast) covered.push('daily breakfast');
-  if (t.transfer) covered.push('the airport transfer both ways');
-  if (t.flight.checkedBagIncluded || t.spec.bags) covered.push('checked bags');
-  if (t.activities.length) covered.push(t.activities.length === 1 ? t.activities[0].name : `${t.activities.length} experiences`);
-
-  // What we do not price for the traveler, and say so.
-  const unknown = [
-    ...(t.hotel.features.allInclusive ? ['meals away from the resort'] : t.hotel.features.breakfast ? ['meals other than breakfast'] : ['meals and drinks']),
-    'getting around once there',
-    'tips and shopping',
-    ...(t.internationalTrip ? ['visas or entry fees'] : []),
-  ];
+  const covered = coveredBy(t);
+  const unknown = unpricedFor(t);
 
   return {
     keep, vacation, booking: t.total, unassigned, raid, over, reserveLeft, arrive, days, perDay,
@@ -50,4 +37,25 @@ function vacationPlan(t, cx, options = null) {
   };
 }
 
-module.exports = { vacationPlan };
+// What a booking already pays for beyond flights, the stay, taxes and fees, from its own facts.
+function coveredBy(t) {
+  const covered = [];
+  if (t.hotel.features.allInclusive) covered.push('all meals and drinks at the resort');
+  else if (t.hotel.features.breakfast) covered.push('daily breakfast');
+  if (t.transfer) covered.push('the airport transfer both ways');
+  if (t.flight.checkedBagIncluded || t.spec.bags) covered.push('checked bags');
+  if (t.activities.length) covered.push(t.activities.length === 1 ? t.activities[0].name : `${t.activities.length} experiences`);
+  return covered;
+}
+
+// What we do not price for the traveler, and say so.
+function unpricedFor(t) {
+  return [
+    ...(t.hotel.features.allInclusive ? ['meals away from the resort'] : t.hotel.features.breakfast ? ['meals other than breakfast'] : ['meals and drinks']),
+    'getting around once there',
+    'tips and shopping',
+    ...(t.internationalTrip ? ['visas or entry fees'] : []),
+  ];
+}
+
+module.exports = { vacationPlan, coveredBy, unpricedFor };

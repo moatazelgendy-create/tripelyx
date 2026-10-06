@@ -3,13 +3,14 @@
 // support messages, custom trip requests, analytics events and the admin control center's numbers.
 const { AppError } = require('../lib/errors');
 const { id } = require('../lib/ids');
-const { addDays, today, hoursUntil, daysBetween } = require('../lib/dates');
+const { addDays, today, hoursUntil } = require('../lib/dates');
 const { str, EMAIL } = require('../lib/validate');
 const { format: fmtMoney } = require('../lib/money');
 const { encodeSpec, decodeSpec } = require('./spec');
 const { priceTrip, publicTrip, requireTrip, DEFAULT_SETTINGS } = require('./pricing');
 const optimizer = require('./optimizer');
 const decision = require('./decision');
+const { cutoffs, isOpen, nextCutoff } = require('./deadlines');
 
 const FUNNEL = ['home_visit', 'budget_entered', 'search_started', 'results_viewed', 'trip_selected', 'checkout_started', 'payment_attempted', 'booking_confirmed'];
 const FUNNEL_LABELS = {
@@ -257,28 +258,32 @@ class TripService {
           : { status: 'confirmed', supplierRef: flight.confirmation, components };
       },
       async cancel() { /* Demo suppliers accept every cancellation; real adapters cancel each component here. */ },
+      // Refunds follow the same dated cutoffs the pages show (trips/deadlines): the 24-hour window
+      // after a booking made at least 7 days ahead, then each part's own cutoff.
       cancellationPreview(b, now) {
         if (b.status === 'partially_confirmed') return { allowed: false, reason: 'Our team is already working on this trip and will contact you about your options and any refund.' };
         const q = b.quote, rb = q.refundBasis;
         const paid = (b.payment && b.payment.amount) || b.total;
-        const hours = hoursUntil(b.startDate, now);
-        if (hours <= 0) return { allowed: false, reason: 'This trip has already started.' };
-        const sinceBooking = (now.getTime() - Date.parse(b.createdAt)) / 3600000;
-        if (sinceBooking <= 24 && daysBetween(today(now), b.startDate) >= 7) {
-          return { allowed: true, refundAmount: paid, currency: b.currency, freeWindowOpen: true, policy: 'You’re within 24 hours of booking, so the whole trip is refundable.', breakdown: [{ component: 'Whole trip', amount: paid }] };
+        if (hoursUntil(b.startDate, now) <= 0) return { allowed: false, reason: 'This trip has already started.' };
+        const { items, fullRefundUntil } = cutoffs(q.trip, { bookedAt: b.createdAt });
+        const open = key => isOpen(items.find(x => x.key === key), now);
+        const deadlines = items.map(it => ({ key: it.key, component: it.component, cutoff: it.cutoff, rule: it.rule, open: isOpen(it, now) }));
+        const next = nextCutoff(items, now);
+        const common = { currency: b.currency, fullRefundUntil, deadlines, nextCutoff: next ? { component: next.component, cutoff: next.cutoff } : null };
+        if (fullRefundUntil && now.getTime() < Date.parse(fullRefundUntil)) {
+          return { allowed: true, refundAmount: paid, freeWindowOpen: true, policy: 'You’re within 24 hours of booking, so the whole trip is refundable.', breakdown: [{ component: 'Whole trip', amount: paid }], ...common };
         }
-        const f = q.trip.flight, h = q.trip.hotel;
         const breakdown = [
-          { component: 'Flights', amount: f.refundable && hours >= (f.freeCancelHours || 0) ? rb.flights : 0 },
-          { component: 'Hotel', amount: h.refundable && hours >= h.freeCancelHours ? rb.hotel : 0 },
-          ...rb.activities.map(a => ({ component: (q.trip.activities.find(x => x.id === a.id) || {}).name || 'Experience', amount: hours >= 24 ? a.amount : 0 })),
-          ...(rb.transfer ? [{ component: 'Airport transfer', amount: hours >= 24 ? rb.transfer : 0 }] : []),
+          { component: 'Flights', amount: open('flights') ? rb.flights : 0 },
+          { component: 'Hotel', amount: open('hotel') ? rb.hotel : 0 },
+          ...rb.activities.map(a => ({ component: (q.trip.activities.find(x => x.id === a.id) || {}).name || 'Experience', amount: open(`activity:${a.id}`) ? a.amount : 0 })),
+          ...(rb.transfer ? [{ component: 'Airport transfer', amount: open('transfer') ? rb.transfer : 0 }] : []),
           { component: 'Service fee', amount: 0 },
         ];
         const gross = breakdown.reduce((s, x) => s + x.amount, 0);
         const before = paid + (rb.discount || 0);
         const refund = Math.min(paid, Math.round(rb.discount ? gross * (paid / before) : gross));
-        return { allowed: true, refundAmount: refund, currency: b.currency, freeWindowOpen: refund === paid, policy: 'Refunds follow each part’s own terms.', breakdown };
+        return { allowed: true, refundAmount: refund, freeWindowOpen: refund === paid, policy: 'Refunds follow each part’s own terms.', breakdown, ...common };
       },
     };
   }

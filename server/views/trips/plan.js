@@ -5,7 +5,8 @@ const { layout } = require('../layout');
 const { addDays, today } = require('../../lib/dates');
 const { encodeSpec } = require('../../trips/spec');
 const { searchParams, contextParams, tradeoffs, WHO_DEFAULT } = require('../../trips/optimizer');
-const { verdict, tripDiff } = require('../../trips/decision');
+const { verdict, tripDiff, classifyChanges } = require('../../trips/decision');
+const { lineDiff, LINE_LABEL } = require('../../trips/facts');
 const { money, dollars, shortDate, longDate, plural, hm, demoBadge, budgetMeter, fitBadge } = require('./common');
 
 // Items joined with commas and a final "or", as an array the template renders in order.
@@ -88,7 +89,23 @@ function includedChips(t) {
   return chips;
 }
 
-function tripCard(p, q, cx, { over = false, rank } = {}) {
+// Why "Save more" costs less than our pick: the money line by line, then what it gives up, what is
+// merely different and what is better, all from the two priced trips. When the data shows no
+// trade-off, we say so instead of inventing one.
+function saveMoreWhy(ours, t) {
+  const ch = classifyChanges(ours, t, { date: longDate });
+  const lines = lineDiff(ours, t).filter(l => l.delta !== 0);
+  const row = r => `${r.label}: ${r.b} (our pick: ${r.a})`;
+  return html`<details class="tb-why tb-vs"><summary>Why it’s ${money(ours.total - t.total)} cheaper than our pick</summary>
+    <p class="tb-vs-title">Where the money differs</p>
+    <ul class="tb-why-list tb-vs-lines">${lines.map(l => html`<li class="${l.delta < 0 ? 'is-less' : 'is-more'}">${icon(l.delta < 0 ? 'trend' : 'plus')}<span>${l.label}: ${l.delta < 0 ? `${money(-l.delta)} less` : `${money(l.delta)} more`} (${money(l.b)} here, ${money(l.a)} in our pick)</span></li>`)}</ul>
+    ${ch.tradeoffs.length ? html`<p class="tb-tradeoff-title">What you give up</p><ul class="tb-tradeoff-list">${ch.tradeoffs.map(r => html`<li>${icon('minus')}<span>${row(r)}</span></li>`)}</ul>` : html`<p class="tb-small tb-muted">We didn’t find a trade-off against our pick in the data we have; what you’d give up is nothing we can name.</p>`}
+    ${ch.neutral.length ? html`<p class="tb-vs-title">What’s just different</p><ul class="tb-why-list tb-vs-neutral">${ch.neutral.map(r => html`<li>${icon('info')}<span>${row(r)}</span></li>`)}</ul>` : ''}
+    ${ch.improvements.length ? html`<p class="tb-vs-title">What’s better here</p><ul class="tb-why-list">${ch.improvements.map(r => html`<li>${icon('check')}<span>${row(r)}</span></li>`)}</ul>` : ''}
+  </details>`;
+}
+
+function tripCard(p, q, cx, { over = false, rank, vs = null } = {}) {
   const t = p.trip;
   const token = encodeSpec(t.spec);
   const link = extra => `/trip/${token}?${contextParams(cx, extra)}`;
@@ -115,6 +132,7 @@ function tripCard(p, q, cx, { over = false, rank } = {}) {
         <div><span>Total, everything included</span><b>${money(t.total)}</b><small>${money(t.perTraveler)} per traveler · ${money(t.perNight)} per night</small></div>
         <div class="${diff < 0 ? 'is-over' : ''}"><span>${diff < 0 ? `Over your ${q.keep ? 'booking budget' : 'budget'}` : q.keep ? 'Unassigned' : 'You keep'}</span><b>${money(Math.abs(diff))}</b><small>of your ${money(q.budget)} ${q.keep ? 'booking budget' : 'budget'}${q.keep ? `, plus ${money(q.keep)} protected` : ''}</small></div>
       </div>
+      ${vs && p.kind === 'save-more' && vs.total > t.total ? saveMoreWhy(vs, t) : ''}
       <details class="tb-why"><summary>Why we picked this${tos.length ? ' · trade-offs' : ''}</summary>
         <ul class="tb-why-list">${p.why.map(w => html`<li>${icon('check')}${w}</li>`)}</ul>
         ${tos.length ? html`<p class="tb-tradeoff-title">Trade-offs</p><ul class="tb-tradeoff-list">${tos.map(w => html`<li>${icon('minus')}${w}</li>`)}</ul>` : ''}
@@ -139,6 +157,18 @@ function answerStrip(q, raw) {
     ${item('Style', q.style === 'surprise' ? 'Surprise me' : q.style, ['style'])}
     ${item('Matters most', (PRIO_OPTIONS.find(p => p[0] === q.priority) || [])[1], ['prio'])}
   </ul>`;
+}
+
+// What blocked the search, in the cheapest complete trip's own numbers: where its money goes, and
+// how much of the budget the flights alone take. Facts from a priced package, nothing inferred.
+function costWhy(q, result) {
+  const cheap = result.closest && result.closest[0];
+  if (!cheap) return '';
+  const t = cheap.trip;
+  const lines = t.lines.filter(l => l.amount > 0);
+  const flights = (t.lines.find(l => l.key === 'flights') || { amount: 0 }).amount;
+  const share = Math.round((flights / q.budget) * 100);
+  return html`<p class="tb-cost-why"><b>What blocks it:</b> even the cheapest complete trip we built, ${t.dest.name} for ${plural(t.spec.nights, 'night')} with ${plural(t.spec.travelers, 'traveler')}, is ${money(t.total)}: ${lines.map(l => `${(LINE_LABEL[l.key] || l.label).toLowerCase()} ${money(l.amount)}`).join(', ')}. ${flights > q.budget ? `The flight fares alone are more than your ${dollars(q.budget)}.` : `The flight fares alone take ${share}% of your ${dollars(q.budget)}.`}</p>`;
 }
 
 function noDeadEnd(q, result, originCity, relax = null) {
@@ -168,6 +198,7 @@ function noDeadEnd(q, result, originCity, relax = null) {
     <p>We re-ran your search with exactly one rule relaxed at a time. These are the ones that really get there, each re-priced in full:</p>
     <ul class="tb-relax">${works.map(w => html`<li><a href="/trips?${w.params}"><span><b>${w.label}</b><small>Instead of ${w.rule}. Our pick becomes ${w.dest}, ${plural(w.nights, 'night')}${w.over ? `, ${money(w.over)} over your ${dollars(q.budget)}` : w.used ? `, a booking of ${money(w.total)} read against ${dollars(q.budget + w.used)}` : `, within your ${dollars(q.budget)}`}.</small></span><b>${money(w.total)}</b></a></li>`)}</ul>` : relax && relax.notAlone.length ? html`<p class="tb-muted">${icon('info')} We re-ran your search with each rule relaxed on its own (${relax.notAlone.map(n => n.label.toLowerCase()).join('; ')}). None of them gets there alone, so we won’t pretend one does.</p>` : relax ? html`<p class="tb-muted">${icon('info')} Your dates, length, style and priority are already as open as they go, so there is no single rule left to relax.</p>` : ''}
     ${works.length && relax.notAlone.length ? html`<p class="tb-muted tb-small">On their own, these don’t get there: ${relax.notAlone.map(n => n.label.toLowerCase()).join('; ')}.</p>` : ''}
+    ${costWhy(q, result)}
     <p>${relax ? 'Here are the closest ones, and other ways to change the search.' : 'Here are the closest ones and the smallest changes that get there.'} We never hide an over-budget amount, and we never call a trip within budget when it isn’t.</p>
     <ul class="tb-advisor-links">${links.map(([l, h]) => html`<li><a class="btn btn-ghost btn-sm" href="${h}">${l}</a></li>`)}</ul>
   </div>`;
@@ -207,14 +238,16 @@ function keepSentence(keep, q) {
 // The third card when no upgrade earns its price: not a trip, an honest answer.
 function keepMoneyCard(keep, best, q, cx) {
   const url = `/trip/${encodeSpec(best.trip.spec)}?${contextParams(cx)}#unlock`;
+  // The planner's smallest budget is $100; below that a second search is not an honest offer.
+  const second = keep.spare >= 10000 ? `/plan?${new URLSearchParams({ b: String(Math.floor(keep.spare / 100)), from: q.origin, who: q.who, n: String(q.travelers) })}` : null;
   return html`<article class="tb-card tb-card-keep" aria-labelledby="card-keep">
     <div class="tb-card-body">
       <span class="tb-kicker">Instead of a third trip</span>
       <h2 id="card-keep">Keep your money</h2>
       <p class="tb-card-keep-sum"><b>${money(keep.spare)}</b> stays with you.</p>
       <p>${keepSentence(keep, q)}</p>
-      <p class="tb-muted">Coming in under budget is a win, not a gap we fill.</p>
-      <div class="tb-card-actions"><a class="btn btn-ghost" href="${url}">See what a little more would buy anyway</a></div>
+      <p class="tb-muted">Coming in under budget is a win, not a gap we fill.${second ? ` Or put it toward a second trip: the planner starts a new search at $${Math.floor(keep.spare / 100).toLocaleString('en-US')}.` : ''}</p>
+      <div class="tb-card-actions">${second ? html`<a class="btn btn-navy" href="${second}">Start a second trip with it ${icon('arrow')}</a>` : ''}<a class="btn btn-ghost" href="${url}">See what a little more would buy anyway</a></div>
     </div>
   </article>`;
 }
@@ -292,7 +325,7 @@ function resultsView(ctx, { result, relax = null, originCity, user }) {
     </ol>
     <div data-results-body>
       ${picks.length ? decisionBand(picks, q, cx, result.keepMoney, result) : ''}
-      ${picks.length ? html`<div class="tb-cards">${picks.map((p, i) => tripCard(p, q, cx, { over: p.trip.total > q.budget, rank: i }))}${keepCard ? keepMoneyCard(result.keepMoney, best, q, cx) : ''}</div>` : ''}
+      ${picks.length ? html`<div class="tb-cards">${picks.map((p, i) => tripCard(p, q, cx, { over: p.trip.total > q.budget, rank: i, vs: best.trip }))}${keepCard ? keepMoneyCard(result.keepMoney, best, q, cx) : ''}</div>` : ''}
       ${over.length ? html`<p class="tb-over-note">${icon('info')} Trips marked “over your ${q.keep ? 'booking budget' : 'budget'}” use the extra 10% you allowed${q.keep ? ', which would come out of what you protected' : ''}. Switch to “Stay under my budget” to hide them.</p>` : ''}
       ${cheapestNote}
       ${!picks.length ? html`${noDeadEnd(q, result, originCity, relax)}
