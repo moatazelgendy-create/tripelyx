@@ -1,10 +1,13 @@
-// The Travel by Budget homepage: one dominant question, a live example, where a budget can take you,
-// and the two journeys (I have a budget / I know where I want to go).
+// The homepage: one product, the AI travel agent. One question, a sentence in the traveler's own
+// words, and the agent does the searching, comparing and negotiating. Below it: a live example of
+// what one sentence gets you, where a budget can take you, how the agent works, the three ways in
+// (a budget, a dream destination, a trip to beat), and the promise.
 const { html, raw, jsonScript } = require('../../lib/html');
 const { icon } = require('../icons');
 const { layout } = require('../layout');
 const { addDays, today } = require('../../lib/dates');
 const { money, dollars, demoBadge, plural } = require('./common');
+const { EXAMPLES } = require('./agent');
 
 const BUDGET_LEVELS = [500, 1000, 1500, 2000, 3000, 5000];
 const STYLE_CHIPS = [['beach', 'Beach'], ['city', 'City break'], ['adventure', 'Adventure'], ['romantic', 'Romantic'], ['family', 'Family'], ['all-inclusive', 'All-inclusive']];
@@ -48,14 +51,26 @@ function keepTile(keep) {
 
 function homeView(ctx, { example, levels, dreamDestinations, origins, user, recent }) {
   const budget = example.query.budget;
+  const exampleSentence = `I have ${dollars(budget)} for ${example.query.travelers} people, from ${example.originCity}, ${plural(example.query.nights, 'night')}, beach. The hotel matters most.`;
   const body = html`
-<section class="tb-hero" aria-labelledby="tb-hero-title">
+<section class="tb-hero ag-hero" aria-labelledby="tb-hero-title">
   <div class="tb-hero-media" role="img" aria-label="A bright coastline with turquoise water and white sand"></div>
   <div class="container tb-hero-inner">
-    <p class="eyebrow eyebrow-light">Don’t tell us where. Tell us how much.</p>
-    <h1 id="tb-hero-title" class="tb-hero-title">How much do you<br>want to spend?</h1>
-    <p class="tb-hero-lead">Tell us your budget. We’ll show you the best trips you can actually take, with every tax and fee already in the price.</p>
-    ${budgetForm({ id: 'hero', autofocus: false })}
+    <p class="eyebrow eyebrow-light">Your AI travel agent</p>
+    <h1 id="tb-hero-title" class="tb-hero-title">What do you want<br>your trip to do?</h1>
+    <p class="tb-hero-lead">Say it in your own words. The agent searches, compares, optimizes and negotiates complete trips inside your budget. You decide.</p>
+    <form class="ag-hero-form" method="post" action="/agent">
+      <label class="sr-only" for="hero-say">Tell your travel agent what you want</label>
+      <textarea id="hero-say" name="say" rows="2" maxlength="600" placeholder="Tell your travel agent what you want…"></textarea>
+      <div class="ag-hero-actions">
+        <button class="btn btn-blue btn-lg" type="submit">Build my trip ${icon('arrow')}</button>
+        <button class="btn btn-white btn-lg" type="submit" name="mode" value="surprise">${icon('sparkle')} Surprise me</button>
+        <a class="btn btn-ghost-light btn-lg" href="/challenge">I already found a trip</a>
+      </div>
+      <p class="tb-budget-hint">Try one:</p>
+      <div class="ag-chips ag-hero-examples">${EXAMPLES.map(e => html`<button class="ag-chip" type="submit" name="example" value="${e}">${e}</button>`)}</div>
+    </form>
+    <p class="tb-budget-hint">Every price includes taxes and fees. First strong match in seconds, then it keeps searching. Nothing is booked until you confirm.</p>
   </div>
 </section>
 
@@ -70,17 +85,17 @@ ${recent ? html`<section class="tb-section tb-section-tight" aria-label="Your un
 <section class="tb-section" aria-labelledby="tb-example-title">
   <div class="container">
     <div class="section-head">
-      <div><p class="eyebrow">Live example</p><h2 id="tb-example-title" class="section-title">“I have ${dollars(budget)} for ${example.query.travelers} people.”</h2></div>
+      <div><p class="eyebrow">What one sentence gets you</p><h2 id="tb-example-title" class="section-title">“${exampleSentence}”</h2></div>
       ${demoBadge(ctx.tripService.demo, 'Demo inventory')}
     </div>
     <div class="tb-example" data-example>
       <ol class="tb-building" data-building aria-live="polite">
-        <li>Finding destinations within your budget…</li><li>Checking flight options…</li><li>Finding the best hotels…</li><li>Optimizing your ${dollars(budget)}…</li><li>Deciding what’s worth your money…</li>
+        <li>Reading what you asked for…</li><li>Pricing the likeliest destinations first…</li><li>First strong match…</li><li>Checking every destination…</li><li>Deciding what’s worth your money…</li>
       </ol>
       <div class="tb-example-result" data-example-result>
-        <p class="tb-example-head">Three answers. One budget. You choose.</p>
+        <p class="tb-example-head">Three answers. One budget. You choose, or keep talking.</p>
         <ul class="tb-example-grid">${example.picks.map(p => exampleCard(p, budget))}${example.picks.length < 3 && example.keepMoney && example.keepMoney.spare > 0 ? keepTile(example.keepMoney) : ''}</ul>
-        <p class="tb-example-foot">From ${example.originCity} · ${plural(example.query.travelers, 'traveler')} · every price includes taxes, mandatory fees and our service fee. <a href="/trips?${example.params}">See these trips ${icon('arrow')}</a></p>
+        <div class="tb-example-foot">From ${example.originCity} · ${plural(example.query.travelers, 'traveler')} · every price includes taxes, mandatory fees and our service fee. <form class="ag-say" method="post" action="/agent"><input type="hidden" name="say" value="${exampleSentence}"><button class="tb-linkbtn" type="submit">Say this to your agent ${icon('arrow')}</button></form> · <a href="/trips?${example.params}">See these trips ${icon('arrow')}</a></div>
       </div>
     </div>
   </div>
@@ -117,46 +132,50 @@ ${recent ? html`<section class="tb-section tb-section-tight" aria-label="Your un
 <section class="tb-section" aria-labelledby="tb-how-title">
   <div class="container">
     <p class="eyebrow eyebrow-center">How it works</p>
-    <h2 id="tb-how-title" class="section-title section-title-center">Your budget. Your trip. Your way.</h2>
+    <h2 id="tb-how-title" class="section-title section-title-center">Stop searching. Tell your travel agent.</h2>
     <ol class="tb-how">
-      <li><span class="tb-how-num">1</span><b>Set your budget</b><p>Tell us how much you want to spend on the whole trip, and how much to keep aside for food and spending.</p></li>
-      <li><span class="tb-how-num">2</span><b>Tell us what you want</b><p>One question at a time: who’s going, where from, when, and the kind of trip you’re after.</p></li>
-      <li><span class="tb-how-num">3</span><b>We build your trip</b><p>We combine flights, hotel, experiences and transfers, price everything in full, and show the three best fits. Not 247 hotels.</p></li>
-      <li><span class="tb-how-num">4</span><b>Review and book</b><p>Change anything and see the new total instantly. We recheck the live price before you pay, and nothing is charged until you confirm.</p></li>
+      <li><span class="tb-how-num">1</span><b>Say what you want</b><p>One message in your words: budget, who’s going, where from, what must be true. The agent asks only what it can’t go without, and never guesses.</p></li>
+      <li><span class="tb-how-num">2</span><b>First strong match, then better</b><p>The likeliest destinations are priced first, so a complete trip lands in seconds. Then every destination is checked, and if a better one turns up you choose whether to switch.</p></li>
+      <li><span class="tb-how-num">3</span><b>Negotiate it</b><p>“Make it $200 cheaper.” “Don’t change the hotel.” “Spend $100 if it actually helps.” Every change is shown before and after, and nothing changes without your approval.</p></li>
+      <li><span class="tb-how-num">4</span><b>Book what you were promised</b><p>What you asked for against what you’re getting, the live price re-checked, every term in the open. Then you confirm. The agent never charges anything.</p></li>
     </ol>
     <p class="center"><a class="text-link" href="/how-it-works">More about how we build and price trips ${icon('arrow')}</a></p>
   </div>
 </section>
 
-<section class="tb-section tb-dream" aria-labelledby="tb-dream-title">
-  <div class="container tb-dream-inner">
-    <div>
-      <p class="eyebrow eyebrow-light">Think your dream trip is too expensive?</p>
-      <h2 id="tb-dream-title">Give us the destination and your maximum. We’ll see how close we can get.</h2>
-      <p>Our Budget Negotiator finds the closest version of the trip you want, shows exactly what would have to change to fit your budget, and lets you decide. No “no results”.</p>
-    </div>
-    <form class="tb-dream-form form" action="/dream" method="get">
-      <div class="field"><label for="dream-dest">I want to go to</label>
-        <select id="dream-dest" name="dest" required>${dreamDestinations.map(d => html`<option value="${d.id}">${d.name}, ${d.country}</option>`)}</select></div>
-      <div class="field"><label for="dream-b">My maximum</label><div class="tb-budget-input tb-budget-input-sm"><span class="tb-currency" aria-hidden="true">$</span><input id="dream-b" name="b" type="text" inputmode="numeric" placeholder="3,000" required></div></div>
-      <div class="field"><label for="dream-from">Leaving from</label><select id="dream-from" name="from">${origins.map(o => html`<option value="${o.id}">${o.city}</option>`)}</select></div>
-      <div class="field"><label for="dream-depart">I have to be there on <span class="optional">(optional)</span></label><input id="dream-depart" type="date" name="depart" min="${addDays(today(), 3)}" max="${addDays(today(), 330)}"></div>
-      <button class="btn btn-white btn-lg" type="submit">Make it work ${icon('arrow')}</button>
-    </form>
-  </div>
-</section>
-
-<section class="tb-section tb-beat" aria-labelledby="tb-beat-title">
+<section class="tb-section tb-section-soft" aria-labelledby="tb-ways-title">
   <div class="container">
-    <div class="section-head"><div><p class="eyebrow">Already found a trip?</p><h2 id="tb-beat-title" class="section-title">Challenge us. Can we build a better vacation?</h2></div></div>
-    <form class="tb-beat-form form" action="/challenge" method="get">
-      <div class="field"><label for="beat-dest">The trip you found</label><select id="beat-dest" name="dest" required>${dreamDestinations.map(d => html`<option value="${d.id}">${d.name}, ${d.country}</option>`)}</select></div>
-      <div class="field"><label for="beat-b">Their total price</label><div class="tb-budget-input tb-budget-input-sm"><span class="tb-currency" aria-hidden="true">$</span><input id="beat-b" name="total" type="text" inputmode="numeric" placeholder="2,400" required></div></div>
-      <div class="field"><label for="beat-from">Leaving from</label><select id="beat-from" name="from">${origins.map(o => html`<option value="${o.id}">${o.city}</option>`)}</select></div>
-      <div class="field"><label for="beat-nights">Nights</label><select id="beat-nights" name="nights">${[3, 4, 5, 6, 7, 10].map(n => html`<option value="${n}"${n === 5 ? raw(' selected') : ''}>${n}</option>`)}</select></div>
-      <button class="btn btn-navy" type="submit">Challenge us ${icon('arrow')}</button>
-    </form>
-    <p class="tb-muted tb-small">Same trip for less, a better trip for the same money, more nights, an easier trip, or somewhere new. We compare like for like, complete prices only, and we don’t have to win: if your deal is better, we’ll tell you to keep it.</p>
+    <p class="eyebrow eyebrow-center">Three ways in</p>
+    <h2 id="tb-ways-title" class="section-title section-title-center">Start from a budget, a destination, or a trip you already found.</h2>
+    <div class="tb-ways">
+      <form class="tb-way form" action="/plan" method="get">
+        <p class="tb-kicker">I have a budget</p>
+        <h3>How much do you want to spend?</h3>
+        <div class="field"><label for="way-b" class="sr-only">Budget</label><div class="tb-budget-input tb-budget-input-sm"><span class="tb-currency" aria-hidden="true">$</span><input id="way-b" name="b" type="text" inputmode="numeric" placeholder="1,500" required></div></div>
+        <button class="btn btn-navy" type="submit">Build my best trip ${icon('arrow')}</button>
+        <p class="tb-small tb-muted">One question at a time, then three answers: our pick, save more, and an upgrade only if it’s worth it.</p>
+      </form>
+      <form class="tb-way form" action="/dream" method="get">
+        <p class="tb-kicker">I know where I want to go</p>
+        <h3>Give us the destination and your maximum.</h3>
+        <div class="field"><label for="dream-dest">Destination</label><select id="dream-dest" name="dest" required>${dreamDestinations.map(d => html`<option value="${d.id}">${d.name}, ${d.country}</option>`)}</select></div>
+        <div class="field"><label for="dream-b">My maximum</label><div class="tb-budget-input tb-budget-input-sm"><span class="tb-currency" aria-hidden="true">$</span><input id="dream-b" name="b" type="text" inputmode="numeric" placeholder="3,000" required></div></div>
+        <div class="field"><label for="dream-from">Leaving from</label><select id="dream-from" name="from">${origins.map(o => html`<option value="${o.id}">${o.city}</option>`)}</select></div>
+        <div class="field"><label for="dream-depart">I have to be there on <span class="optional">(optional)</span></label><input id="dream-depart" type="date" name="depart" min="${addDays(today(), 3)}" max="${addDays(today(), 330)}"></div>
+        <button class="btn btn-navy" type="submit">Make it work ${icon('arrow')}</button>
+        <p class="tb-small tb-muted">The closest version of the trip you want, what would have to change to fit, and you decide. No “no results”.</p>
+      </form>
+      <form class="tb-way form" action="/challenge" method="get">
+        <p class="tb-kicker">Already found a trip?</p>
+        <h3>Challenge us. Can we build a better vacation?</h3>
+        <div class="field"><label for="beat-dest">The trip you found</label><select id="beat-dest" name="dest" required>${dreamDestinations.map(d => html`<option value="${d.id}">${d.name}, ${d.country}</option>`)}</select></div>
+        <div class="field"><label for="beat-b">Their total price</label><div class="tb-budget-input tb-budget-input-sm"><span class="tb-currency" aria-hidden="true">$</span><input id="beat-b" name="total" type="text" inputmode="numeric" placeholder="2,400" required></div></div>
+        <div class="field"><label for="beat-from">Leaving from</label><select id="beat-from" name="from">${origins.map(o => html`<option value="${o.id}">${o.city}</option>`)}</select></div>
+        <input type="hidden" name="nights" value="5">
+        <button class="btn btn-navy" type="submit">Challenge us ${icon('arrow')}</button>
+        <p class="tb-small tb-muted">Like for like, complete prices only, and we don’t have to win: if your deal is better, we say keep it.</p>
+      </form>
+    </div>
   </div>
 </section>
 
@@ -171,16 +190,16 @@ ${recent ? html`<section class="tb-section tb-section-tight" aria-label="Your un
   <div class="container">
     <ul class="tb-promise-grid">
       <li>${icon('shield')}<b>The price you see is the price you pay.</b><span>Taxes, mandatory fees and our service fee are always in the total. Nothing is added at checkout.</span></li>
-      <li>${icon('check')}<b>Under your budget means under your budget.</b><span>We never call a trip “within budget” if fees push it over, and we never hide an over-budget amount.</span></li>
-      <li>${icon('eye')}<b>No fake urgency.</b><span>You won’t see invented “only 2 left” messages or made-up discounts. We show what suppliers actually report.</span></li>
-      <li>${icon('users')}<b>We don’t try to spend your budget. We try to beat it.</b><span>Coming in under budget is a win we celebrate, not a gap we fill.</span></li>
+      <li>${icon('check')}<b>Under your budget means under your budget.</b><span>We never call a trip “within budget” if fees push it over, and we never hide an over-budget amount. Your maximum is a ceiling, not a target.</span></li>
+      <li>${icon('eye')}<b>No fake urgency, no invented facts.</b><span>No made-up “only 2 left”, no invented discounts, prices, ratings or savings. When the agent doesn’t know, it says “needs verification”.</span></li>
+      <li>${icon('users')}<b>Nothing happens without you.</b><span>The agent never books, charges, cancels or changes a trip on its own. Every change is shown before and after, and you approve it.</span></li>
     </ul>
   </div>
 </section>
 <script type="application/json" id="tb-home-data">${jsonScript({ levels: levels.map(l => l.budget) })}</script>`;
   return layout({
     title: null, active: 'home', body, ctx,
-    description: 'Tell us how much you want to spend. Tripelyx builds complete trips (flights, hotel, experiences) that fit your budget, with every tax and fee in the price.',
+    description: 'Tell your AI travel agent what you want your trip to do. It searches, compares and negotiates complete trips (flights, hotel, experiences) inside your budget, with every tax and fee in the price.',
     scripts: ['/js/trips.js'], canonical: '/',
   });
 }

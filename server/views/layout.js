@@ -92,7 +92,7 @@ function footer() {
 
 function layout({ title, description, active, body, scripts = [], bodyClass = '', ctx = {}, canonical = null, noindex = false }) {
   const trips = !!(ctx.trips);
-  const fullTitle = title ? `${title} | Tripelyx` : trips ? 'Tripelyx — How much do you want to spend? We’ll build the trip.' : 'Tripelyx — Travel technology that powers better journeys';
+  const fullTitle = title ? `${title} | Tripelyx` : trips ? 'Tripelyx — Tell us what you want your trip to do. The AI builds it.' : 'Tripelyx — Travel technology that powers better journeys';
   const desc = description || 'Tripelyx builds travel platforms and technology that connect travelers, destinations and local businesses across the world.';
   return html`<!doctype html>
 <html lang="en">

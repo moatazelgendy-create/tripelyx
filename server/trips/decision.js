@@ -5,7 +5,7 @@
 // platform's margin is never an input (the internal economics aren't passed in anywhere here).
 const { addDays, today } = require('../lib/dates');
 const { priceTrip } = require('./pricing');
-const { scoreTrip, memoInventory, activitySets, hotelAllowed } = require('./optimizer');
+const { scoreTrip, memoInventory, activitySets, hotelAllowed, rulesAllowHotel, rulesAllowFlight } = require('./optimizer');
 // The fact-only comparison helpers live in facts.js (shared with the optimizer); re-exported here so
 // every page keeps requiring them from the decision layer.
 const { usableTime, classifyChanges, tripDiff, clock, hoursLabel } = require('./facts');
@@ -136,15 +136,18 @@ function optimizeAround(inventory, t, settings, ctx = {}, { locks = {}, cap = t.
   const base = scoreTrip(t, qctx);
   const baseGrade = GRADE_RANK[verdict(t, qctx, base).grade];
   const baseHard = compromises(t, ctx).filter(c => c.w >= 3).length;
-  const hotels = locks.hotel ? [s.hotel] : t.hotelOptions.filter(h => hotelAllowed(h, { who: s.who, style: ctx.style })).map(h => h.id);
-  const flights = locks.flight ? [s.flight] : t.flightOptions.map(f => f.id);
+  const hotels = locks.hotel ? [s.hotel] : t.hotelOptions.filter(h => hotelAllowed(h, { who: s.who, style: ctx.style }) && rulesAllowHotel(h, ctx.rules)).map(h => h.id);
+  const flights = locks.flight ? [s.flight] : t.flightOptions.filter(f => rulesAllowFlight(f, ctx.rules)).map(f => f.id);
+  if (!hotels.includes(s.hotel)) hotels.push(s.hotel);
+  if (!flights.includes(s.flight)) flights.push(s.flight);
   const earliest = addDays(today(now), 3);
   const dates = locks.dates ? [s.depart] : [s.depart, ...[-2, -1, 1, 2].map(o => addDays(s.depart, o)).filter(d => d >= earliest)];
-  const nightsList = locks.dates ? [s.nights] : [s.nights, s.nights + 1].filter(n => n <= 14); // never shorter: that is "make it cheaper", not "better"
+  const nightsList = locks.dates || locks.nights ? [s.nights] : [s.nights, s.nights + 1].filter(n => n <= 14); // never shorter: that is "make it cheaper", not "better"
   const sets = [s.activities, ...activitySets(t.activityOptions, ctx.style || 'surprise')];
+  const transfers = ctx.rules && ctx.rules.transfer ? [true] : [s.transfer, !s.transfer];
   const seen = new Set();
   let best = null;
-  for (const depart of dates) for (const nights of nightsList) for (const hotel of hotels) for (const flight of flights) for (const activities of sets) for (const transfer of [s.transfer, !s.transfer]) {
+  for (const depart of dates) for (const nights of nightsList) for (const hotel of hotels) for (const flight of flights) for (const activities of sets) for (const transfer of transfers) {
     const spec = { ...s, depart, nights, hotel, flight, activities: [...activities].sort(), transfer };
     const key = JSON.stringify(spec);
     if (seen.has(key)) continue;
@@ -190,19 +193,20 @@ function rungLabel(v, changes, base) {
 }
 const changeText = r => `${r.label}: ${r.b}`;
 
-function nameYourPrice(inventory, t, settings, ctx = {}, target, { now = new Date() } = {}) {
+function nameYourPrice(inventory, t, settings, ctx = {}, target, { now = new Date(), locks = {} } = {}) {
   const inv = memoInventory(inventory);
   const s = t.spec;
   const qctx = { ...ctx, budget: null, allowOver: 0 };
-  const hotels = t.hotelOptions.filter(h => hotelAllowed(h, { who: s.who, style: ctx.style })).map(h => h.id);
+  const hotels = locks.hotel ? [s.hotel] : t.hotelOptions.filter(h => hotelAllowed(h, { who: s.who, style: ctx.style }) && rulesAllowHotel(h, ctx.rules)).map(h => h.id);
   if (!hotels.includes(s.hotel)) hotels.push(s.hotel);
-  const flights = t.flightOptions.map(f => f.id);
+  const flights = locks.flight ? [s.flight] : t.flightOptions.filter(f => rulesAllowFlight(f, ctx.rules)).map(f => f.id);
+  if (!flights.includes(s.flight)) flights.push(s.flight);
   const earliest = addDays(today(now), 3);
-  const dates = [s.depart, ...[-3, -2, -1, 1, 2, 3].map(o => addDays(s.depart, o)).filter(d => d >= earliest)];
+  const dates = locks.dates ? [s.depart] : [s.depart, ...[-3, -2, -1, 1, 2, 3].map(o => addDays(s.depart, o)).filter(d => d >= earliest)];
   const nightsList = [];
-  for (let n = s.nights; n >= Math.max(2, s.nights - 2); n--) nightsList.push(n);
+  for (let n = s.nights; n >= (locks.nights || locks.dates ? s.nights : Math.max(2, s.nights - 2)); n--) nightsList.push(n);
   const sets = [s.activities, [], ...activitySets(t.activityOptions, ctx.style || 'surprise')];
-  const transfers = s.transfer ? [true, false] : [false];
+  const transfers = s.transfer ? (ctx.rules && ctx.rules.transfer ? [true] : [true, false]) : [false];
   const bagsList = s.bags ? [true, false] : [s.bags];
   const currentV = verdict(t, qctx);
   const base = { grade: currentV.grade, texts: new Set(currentV.compromises.map(c => c.text)), priorityKeys: PRIORITY_KEYS[ctx.priority] || [] };

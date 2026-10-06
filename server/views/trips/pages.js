@@ -258,6 +258,17 @@ function tripBookingView(ctx, { booking: b, cancellationPreview: preview, paymen
         ${plan && plan.keep ? html`<p class="tb-vac-after">${icon('lock')}<span>${afterWords(plan)}</span></p>` : ''}
       </section>
       ${coversPanel(b, t)}
+      ${['confirmed', 'partially_confirmed', 'pending_supplier', 'confirming'].includes(b.status) ? html`<section class="tb-panel ag-after" aria-labelledby="ag-after-title">
+        <h2 id="ag-after-title">${icon('sparkle')} Ask your travel agent</h2>
+        <p class="tb-muted tb-small">The same agent that built this trip, now with your booking in front of it. It answers from the booking’s own facts, says “I don’t know yet” when it doesn’t, and never changes a booked trip on its own.</p>
+        <form class="ag-after-form" method="post" action="/agent">
+          <input type="hidden" name="ref" value="${b.ref}">
+          <label class="sr-only" for="ag-after-say">Ask your travel agent anything</label>
+          <textarea id="ag-after-say" name="say" rows="2" maxlength="600" placeholder="Ask your travel agent anything…"></textarea>
+          <button class="btn btn-navy btn-sm" type="submit">Ask ${icon('arrow')}</button>
+          <div class="ag-chips">${['What do I need to do next?', 'What if I cancel?', 'Can I extend one night?', 'Do I need a car?', 'What happens if my flight changes?'].map(q => html`<button class="ag-chip" type="submit" name="example" value="${q}">${q}</button>`)}</div>
+        </form>
+      </section>` : ''}
       <section class="tb-panel" aria-labelledby="info-title">
         <h2 id="info-title">Important travel information</h2>
         <ul class="tb-list">

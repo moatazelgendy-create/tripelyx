@@ -67,6 +67,10 @@ function parseSearch(raw = {}, { maps, now = new Date() } = {}) {
   // Optional narrowing used by landing pages: one destination, or international trips only.
   const dest = maps && raw.dest && maps.getDestination(String(raw.dest)) ? String(raw.dest) : null;
   const region = raw.region === 'international' ? 'international' : null;
+  // The traveler's standing rules (nonstop only, 4-star or better, ...): every package must obey them.
+  const rules = parseRules(raw);
+  const dests = maps && typeof raw.ds === 'string' ? raw.ds.split(',').filter(d => maps.getDestination(d)).slice(0, 30) : null;
+  const notCountry = typeof raw.notc === 'string' && raw.notc ? raw.notc.slice(0, 40) : null;
 
   if (!budgetInput || budgetInput < 100) missing.push('budget');
   else if (!keepGiven) missing.push('keep');
@@ -82,13 +86,41 @@ function parseSearch(raw = {}, { maps, now = new Date() } = {}) {
   const vacationBudget = perPartyInput ? perPartyInput * 100 : null;
   const budget = perPartyInput ? Math.max(0, perPartyInput - keep) * 100 : null;
   return {
-    query: { budget, vacationBudget, keep: keep * 100, budgetInput, budgetType, travelers, who: who || 'couple', origin, dateMode: dateMode || 'anytime', depart, month, nights, style: style || 'surprise', priority: priority || 'price', allowOver, dest, region },
+    query: { budget, vacationBudget, keep: keep * 100, budgetInput, budgetType, travelers, who: who || 'couple', origin, dateMode: dateMode || 'anytime', depart, month, nights, style: style || 'surprise', priority: priority || 'price', allowOver, dest, region, rules, dests: dests && dests.length ? dests : null, notCountry },
     missing,
   };
 }
 
+// Standing rules a traveler states once and the search keeps (ns=1 nonstop only, stars=4, ai=1
+// all-inclusive, bf=1 breakfast, bch=1 beachfront, tr=1 transfer included, rf=1 refundable).
+function parseRules(raw = {}) {
+  const on = v => v === '1' || v === 1 || v === true;
+  const stars = int(raw.stars, null, 3, 5);
+  const rules = { nonstop: on(raw.ns), minStars: stars, allInclusive: on(raw.ai), breakfast: on(raw.bf), beachfront: on(raw.bch), transfer: on(raw.tr), refundable: on(raw.rf) };
+  return Object.values(rules).some(Boolean) ? rules : null;
+}
+function rulesParams(rules) {
+  if (!rules) return {};
+  return { ns: rules.nonstop ? '1' : undefined, stars: rules.minStars || undefined, ai: rules.allInclusive ? '1' : undefined, bf: rules.breakfast ? '1' : undefined, bch: rules.beachfront ? '1' : undefined, tr: rules.transfer ? '1' : undefined, rf: rules.refundable ? '1' : undefined };
+}
+function rulesAllowFlight(f, rules) {
+  if (!rules) return true;
+  if (rules.nonstop && f.stops > 0) return false;
+  if (rules.refundable && !f.refundable) return false;
+  return true;
+}
+function rulesAllowHotel(h, rules) {
+  if (!rules) return true;
+  if (rules.minStars && h.stars < rules.minStars) return false;
+  if (rules.allInclusive && !h.features.allInclusive) return false;
+  if (rules.breakfast && !h.features.breakfast && !h.features.allInclusive) return false;
+  if (rules.beachfront && !h.features.beachfront) return false;
+  if (rules.refundable && !h.refundable) return false;
+  return true;
+}
+
 function searchParams(q, extra = {}) {
-  const p = { b: q.budgetInput, k: q.keep !== undefined ? Math.round(q.keep / 100) : undefined, bt: q.budgetType === 'pp' ? 'pp' : undefined, from: q.origin, who: q.who, n: q.travelers, when: q.dateMode, depart: q.dateMode === 'exact' ? q.depart : undefined, month: q.dateMode === 'flexible' ? q.month : undefined, nights: q.nights, style: q.style, prio: q.priority, ov: q.allowOver ? '10' : undefined, dest: q.dest || undefined, region: q.region || undefined, ...extra };
+  const p = { b: q.budgetInput, k: q.keep !== undefined ? Math.round(q.keep / 100) : undefined, bt: q.budgetType === 'pp' ? 'pp' : undefined, from: q.origin, who: q.who, n: q.travelers, when: q.dateMode, depart: q.dateMode === 'exact' ? q.depart : undefined, month: q.dateMode === 'flexible' ? q.month : undefined, nights: q.nights, style: q.style, prio: q.priority, ov: q.allowOver ? '10' : undefined, dest: q.dest || undefined, region: q.region || undefined, ...rulesParams(q.rules), ds: q.dests && q.dests.length ? q.dests.join(',') : undefined, notc: q.notCountry || undefined, ...extra };
   return new URLSearchParams(Object.entries(p).filter(([, v]) => v !== undefined && v !== null && v !== '')).toString();
 }
 
@@ -247,10 +279,11 @@ function packagesFor(inv, q, dest, airport, settings, now) {
   for (const depart of candidateDates(inv, q, airport, dest.id, now)) {
     for (const nights of nightsList) {
       const base = { dest: dest.id, from: airport, depart, nights, travelers: q.travelers, who: q.who };
-      const flights = inv.flights.search({ from: airport, destId: dest.id, depart, nights, travelers: q.travelers });
-      const hotels = inv.hotels.search({ destId: dest.id, checkIn: depart, nights, rooms: roomsFor(base) }).filter(h => hotelAllowed(h, q));
+      const flights = inv.flights.search({ from: airport, destId: dest.id, depart, nights, travelers: q.travelers }).filter(f => rulesAllowFlight(f, q.rules));
+      const hotels = inv.hotels.search({ destId: dest.id, checkIn: depart, nights, rooms: roomsFor(base) }).filter(h => hotelAllowed(h, q) && rulesAllowHotel(h, q.rules));
       const acts = inv.activities.search({ destId: dest.id, date: depart, travelers: q.travelers });
-      for (const f of flights) for (const h of hotels) for (const a of activitySets(acts, q.style)) for (const transfer of [false, true]) {
+      const transfers = q.rules && q.rules.transfer ? [true] : [false, true];
+      for (const f of flights) for (const h of hotels) for (const a of activitySets(acts, q.style)) for (const transfer of transfers) {
         const t = priceTrip(inv, { ...base, flight: f.id, hotel: h.id, activities: a, bags: false, transfer }, settings);
         if (t) out.push(t);
       }
@@ -258,6 +291,9 @@ function packagesFor(inv, q, dest, airport, settings, now) {
   }
   return out;
 }
+
+// Demo data spells the United States two ways; a real maps provider will not.
+const sameCountry = (a, b) => { const n = s => (/^(usa|united states)$/i.test(String(s).trim()) ? 'united states' : String(s).trim().toLowerCase()); return n(a) === n(b); };
 
 function search(inventory, rawQuery, { settings, now = new Date() }) {
   const inv = memoInventory(inventory);
@@ -271,7 +307,9 @@ function search(inventory, rawQuery, { settings, now = new Date() }) {
   for (const dest of inv.maps.listDestinations()) {
     if (disabled.has(dest.id)) continue;
     if (q.dest && dest.id !== q.dest) continue;
-    if (q.region === 'international' && dest.country === (origin.country || 'United States')) continue;
+    if (q.dests && !q.dests.includes(dest.id)) continue;
+    if (q.notCountry && sameCountry(dest.country, q.notCountry)) continue;
+    if (q.region === 'international' && sameCountry(dest.country, origin.country || 'United States')) continue;
     for (const t of packagesFor(inv, q, dest, airport, settings, now)) {
       const sc = scoreTrip(t, ctx);
       all.push({ trip: t, ...sc, why: whyThisTrip(t, ctx) });
@@ -424,6 +462,8 @@ function oneRuleAway(inventory, q, { settings, now = new Date() }) {
     q.nights > 3 && { key: 'nights2', rule: `${q.nights} nights`, label: `${q.nights - 2} nights instead of ${q.nights}`, q: { ...q, nights: q.nights - 2 } },
     q.style !== 'surprise' && { key: 'style', rule: STYLE_WORD[q.style] || q.style, label: `Any style, not only ${STYLE_WORD[q.style] || q.style}`, q: { ...q, style: 'surprise' } },
     q.priority !== 'price' && { key: 'prio', rule: `${PRIO_WORD[q.priority] || q.priority} first`, label: `Lowest price first, instead of ${PRIO_WORD[q.priority] || q.priority}`, q: { ...q, priority: 'price' } },
+    q.rules && q.rules.nonstop && { key: 'nonstop', rule: 'nonstop flights only', label: 'Allow one stop', q: { ...q, rules: { ...q.rules, nonstop: false } } },
+    q.rules && q.rules.minStars && { key: 'stars', rule: `${q.rules.minStars}-star hotels or better`, label: 'Any star class', q: { ...q, rules: { ...q.rules, minStars: null } } },
     !q.allowOver && { key: 'over', rule: 'your budget as a hard ceiling', label: 'Up to 10% over your budget', q: { ...q, allowOver: 10 } },
     q.keep > 0 && { key: 'keep', rule: `${fmt(q.keep)} protected for the destination`, label: 'Part of your reserve', q: { ...q, budget: q.budget + q.keep, keep: 0 } },
   ].filter(Boolean);
@@ -460,4 +500,4 @@ function oneRuleAway(inventory, q, { settings, now = new Date() }) {
   return { works, notAlone };
 }
 
-module.exports = { search, dreamSearch, oneRuleAway, parseSearch, searchParams, budgetContext, parseContext, contextParams, tradeoffs, scoreTrip, whyThisTrip, customizerOptions, memoInventory, activitySets, hotelAllowed, candidateDates, int, STYLES, PRIORITIES, WHO_DEFAULT };
+module.exports = { search, dreamSearch, oneRuleAway, parseSearch, searchParams, budgetContext, parseContext, contextParams, parseRules, rulesParams, rulesAllowFlight, rulesAllowHotel, sameCountry, tradeoffs, scoreTrip, whyThisTrip, customizerOptions, memoInventory, activitySets, hotelAllowed, candidateDates, int, STYLES, PRIORITIES, WHO_DEFAULT };

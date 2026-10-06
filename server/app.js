@@ -10,7 +10,9 @@ const { BookingEngine } = require('./booking/engine');
 const { createPaymentProcessor } = require('./payments');
 const { apiRouter } = require('./routes/api');
 const { pagesRouter } = require('./routes/pages');
-const { tripsRouter } = require('./routes/trips');
+const { tripsRouter, sameOrigin } = require('./routes/trips');
+const { agentRouter } = require('./routes/agent');
+const { AgentService } = require('./agent/agent');
 const { adminRouter } = require('./routes/admin');
 const { Accounts, visitorId } = require('./accounts');
 const { runWithContext } = require('./lib/requestContext');
@@ -35,11 +37,13 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
   // (mock inventory is refused where demo inventory isn't allowed).
   const clock = now || (() => new Date());
   const inventory = config.trips.enabled ? createTripIntegrations(config, { now: clock, overrides: tripOverrides }) : null;
-  let tripService = null, accounts = null;
+  let tripService = null, accounts = null, agent = null;
   if (inventory) {
     const notifier = createNotifier(config, { store, now: clock, log });
     tripService = new TripService({ inventory, store, notifier, config, now: clock, log });
     accounts = new Accounts({ store, config, now: clock });
+    // The AI travel agent: the deterministic engines behind a conversation (server/agent).
+    agent = new AgentService({ tripService, store, now: clock, log });
     engine.extraProviders.trips = tripService.bookingProvider();
     engine.hooks.bookingEvent = (type, b) => tripService.onBookingEvent(type, b).catch(e => log.error('[trips] booking event', e));
   } else if (config.trips.enabled) {
@@ -103,6 +107,7 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
     trips: !!tripService,
     tripService,
     accounts,
+    agent,
   };
 
   // Who is asking: the signed-in user (session cookie) and an anonymous visitor id for the funnel.
@@ -125,6 +130,7 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
   app.use('/api', apiLimiter, apiRouter(ctx, { writeLimiter }));
   if (tripService) {
     app.use('/admin', adminRouter(ctx, { writeLimiter }));
+    app.use('/', agentRouter(ctx, { writeLimiter, computeLimiter, sameOrigin }));
     app.use('/', tripsRouter(ctx, { writeLimiter, computeLimiter }));
   }
   app.use('/', pagesRouter(ctx, { writeLimiter }));
@@ -151,7 +157,7 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
     res.status(status).type('html').send(String(errorView(ctx, { status, ...body })));
   });
 
-  return { app, engine, store, registry, payments, ctx, tripService, accounts };
+  return { app, engine, store, registry, payments, ctx, tripService, accounts, agent };
 }
 
 module.exports = { createApp };
