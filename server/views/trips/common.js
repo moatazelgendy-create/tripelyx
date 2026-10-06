@@ -5,7 +5,8 @@ const { icon } = require('../icons');
 const { format } = require('../../lib/money');
 const { date } = require('../format');
 const { clock } = require('../../trips/decision');
-const { cutoffs } = require('../../trips/deadlines');
+const { cutoffs, isOpen, fullRefundApplies, FULL_REFUND_MIN_DAYS } = require('../../trips/deadlines');
+const { addDays } = require('../../lib/dates');
 
 const money = c => format(c, 'USD');
 const dollars = c => `$${Math.round(c / 100).toLocaleString('en-US')}`;
@@ -15,21 +16,30 @@ const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 
 const joinAnd = items => (items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`);
 
-// A cutoff as a date the traveler can act on. Cutoffs fall at midnight UTC at the start of a day
-// (see trips/deadlines), so "before <that day>" is exact; an instant inside a day shows its time.
+// A cutoff as a moment the traveler can act on. Cutoffs fall at midnight UTC at the start of a day
+// (see trips/deadlines), which is "the end of" the day before, in UTC; the zone is always named,
+// because a bare date would read as the traveler's own midnight, hours after the refund closes.
 function cutoffText(iso) {
   if (!iso) return '';
   const day = iso.slice(0, 10);
-  if (iso.slice(11, 19) === '00:00:00') return `before ${longDate(day)}`;
+  if (iso.slice(11, 19) === '00:00:00') return `by the end of ${longDate(addDays(day, -1))} (UTC)`;
   return `by ${new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' }).format(new Date(iso))} UTC on ${longDate(day)}`;
 }
 
-// Each part's cancellation terms with its dated cutoff, where the supplier states one.
-function termsFor(t, { bookedAt = null } = {}) {
+// Each part's cancellation terms with its dated cutoff where the supplier states one, read at `now`:
+// a cutoff still ahead, one that has passed, one the supplier has not stated (needs verification),
+// and, for a trip leaving in under 7 days, that the 24-hour window the terms mention does not apply.
+function termsFor(t, { now = null, bookedAt = null } = {}) {
   const { items } = cutoffs(t, { bookedAt });
+  const window = now ? fullRefundApplies(t, now) : true;
   return t.policies.map(p => {
-    const it = items.find(x => x.component === p.component);
-    return { ...p, cutoff: it ? it.cutoff : null, when: it && it.cutoff ? `Free to cancel ${cutoffText(it.cutoff)}.` : null };
+    const it = items.find(x => x.key === p.key) || null;
+    let when = null, tone = null;
+    if (it && it.unverified) { when = 'The supplier has not stated its free-cancellation cutoff: needs verification.'; tone = 'verify'; }
+    else if (it && it.cutoff && now && !isOpen(it, now)) { when = `The free-cancellation cutoff (${cutoffText(it.cutoff)}) has passed.`; tone = 'passed'; }
+    else if (it && it.cutoff) { when = `Free to cancel ${cutoffText(it.cutoff)}${p.key.startsWith('activity:') ? '; we count it from the day you arrive, since the activity’s day is set after booking' : ''}.`; tone = 'ok'; }
+    if (!window && (p.key === 'service' || (p.key === 'flights' && !(it && it.cutoff)))) { when = `${when ? `${when} ` : ''}No 24-hour window on this trip: departure is under ${FULL_REFUND_MIN_DAYS} days away.`; tone = tone || 'passed'; }
+    return { ...p, cutoff: it ? it.cutoff : null, when, tone };
   });
 }
 

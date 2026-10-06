@@ -297,44 +297,56 @@ function tripBookingView(ctx, { booking: b, cancellationPreview: preview, paymen
 }
 
 // What this booking pays for, what it leaves out and what we never price, from the booking's own
-// facts; plus any part a supplier has not confirmed yet.
+// facts; plus any part a supplier has not confirmed yet. Not shown once a booking has failed,
+// expired, been cancelled or refunded: it covers nothing then.
 function coversPanel(b, t) {
+  if (['failed', 'expired', 'cancelled', 'refund_pending', 'refunded'].includes(b.status)) return '';
   const covered = coveredBy(t);
-  // Things the price leaves out that are bookable or required (bags, a transfer, insurance,
-  // documents); what the traveler simply pays on the spot is the "not priced by us" line below.
-  const notIn = (t.notIncluded || []).filter(i => !/^(meals|tips)/i.test(i)).map(i => i.replace(/\s*\([^)]*\)\s*$/, '')).map(i => i.charAt(0).toLowerCase() + i.slice(1));
+  // Things the price leaves out that are bookable or required (bags, a transfer, insurance); what
+  // the traveler pays on the spot or must carry (meals, tips, passports) is on the lines below.
+  const notIn = (t.notIncluded || []).filter(i => !/^(meals|tips|passports)/i.test(i)).map(i => i.replace(/\s*\([^)]*\)\s*$/, '')).map(i => i.charAt(0).toLowerCase() + i.slice(1));
   const pending = (b.components || []).filter(c => c.status !== 'confirmed');
   const name = c => (c.kind === 'flight' ? 'flights' : c.kind === 'hotel' ? 'the hotel' : c.kind === 'transfer' ? 'the airport transfer' : c.name);
+  const state = c => (c.status === 'failed' ? ' (could not be confirmed)' : c.status === 'not_booked' ? ' (not booked)' : '');
+  const heading = ['confirmed', 'partially_confirmed', 'pending_supplier', 'confirming'].includes(b.status) ? 'Paid for already' : b.status === 'pending_payment' ? 'In this booking, once paid' : 'In this booking';
   return html`<section class="tb-panel" aria-labelledby="cov-title">
     <h2 id="cov-title">${icon('layers')} What this booking covers, and what it doesn’t</h2>
     <ul class="tb-ready tb-ready-wrap">
-      <li>${icon('check')}<span><b>${['confirmed', 'partially_confirmed', 'pending_supplier', 'confirming'].includes(b.status) ? 'Paid for already' : b.status === 'pending_payment' ? 'In this booking, once paid' : 'This booking covered'}:</b> round-trip flights, ${plural(t.spec.nights, 'night')} at ${t.hotel.name}${covered.length ? `, ${covered.join(', ')}` : ''}, taxes, mandatory fees and our service fee.</span></li>
-      ${notIn.length ? html`<li class="is-miss">${icon('minus')}<span><b>Not in this booking:</b> ${notIn.join('; ')}.</span></li>` : ''}
+      <li>${icon('check')}<span><b>${heading}:</b> round-trip flights, ${plural(t.spec.nights, 'night')} at ${t.hotel.name}${covered.length ? `, ${covered.join(', ')}` : ''}, taxes, mandatory fees and our service fee.</span></li>
+      ${notIn.length ? html`<li class="is-miss">${icon('minus')}<span><b>Not in this booking:</b> ${notIn.join(', ')}.</span></li>` : ''}
       <li>${icon('info')}<span><b>Not priced by us, you pay there:</b> ${unpricedFor(t).join(', ')}. We don’t guess those amounts.</span></li>
-      ${pending.length ? html`<li class="is-miss">${icon('alert')}<span><b>Still to confirm:</b> ${joinAnd(pending.map(name))}. ${b.status === 'partially_confirmed' ? 'Our team is on it and will contact you.' : 'We’ll update this page as each supplier answers.'}</span></li>` : ''}
+      ${pending.length ? html`<li class="is-miss">${icon('alert')}<span><b>Still to confirm:</b> ${joinAnd(pending.map(c => `${name(c)}${state(c)}`))}. ${b.status === 'partially_confirmed' ? 'Our team is on it and will contact you.' : 'We’ll update this page as each supplier answers.'}</span></li>` : ''}
     </ul>
   </section>`;
 }
 
 // The refund you would get now, part by part, with each part's dated cutoff from the suppliers'
 // own terms: the full-refund window when it is open, then what is still free to cancel and until
-// when. Dates, never countdowns.
+// when, and what is not refundable once the window closes. Dates, never countdowns.
 function cancelDeadlines(preview) {
-  const byComponent = new Map((preview.deadlines || []).map(d => [d.component, d]));
+  const all = preview.deadlines || [];
+  const byKey = new Map(all.map(d => [d.key, d]));
+  const window = !!preview.fullRefundUntil;
   const when = x => {
-    if (x.component === 'Whole trip') return '';
-    const d = byComponent.get(x.component);
+    const d = x.key ? byKey.get(x.key) : null;
     if (!d) return '';
+    if (d.unverified) return ' · free-cancellation cutoff not stated by the supplier: needs verification';
     if (d.cutoff && d.open) return ` · free to cancel ${cutoffText(d.cutoff)}`;
     if (d.cutoff) return ' · the free-cancellation cutoff has passed';
-    return x.component === 'Service fee' ? ' · refunded only in the first 24 hours' : ' · non-refundable';
+    if (d.key === 'service') return window ? ' · refunded only in the first 24 hours' : ' · non-refundable: no 24-hour window on this trip';
+    return ' · non-refundable';
   };
-  const ahead = (preview.deadlines || []).filter(d => d.open);
-  return html`${preview.fullRefundUntil ? html`<p class="tb-small">${preview.freeWindowOpen && preview.breakdown && preview.breakdown[0] && preview.breakdown[0].component === 'Whole trip'
-      ? `Full refund ${cutoffText(preview.fullRefundUntil)}, 24 hours after you booked. After that, each part follows its own cutoff: ${ahead.length ? joinAnd(ahead.map(d => `${d.component} ${cutoffText(d.cutoff)}`)) : 'nothing on this trip is free to cancel'}.`
-      : `The 24-hour full-refund window closed ${cutoffText(preview.fullRefundUntil).replace(/^before /, 'at the start of ').replace(/^by /, 'at ')}.`}</p>` : ''}
+  const whole = preview.breakdown && preview.breakdown[0] && preview.breakdown[0].component === 'Whole trip';
+  const until = window ? Date.parse(preview.fullRefundUntil) : 0;
+  // A cutoff that falls inside the window adds nothing to it: that part closes with the window.
+  const later = all.filter(d => d.open && Date.parse(d.cutoff) > until);
+  const closing = all.filter(d => d.key !== 'service' && !d.unverified && !later.includes(d));
+  const unverified = all.filter(d => d.unverified);
+  return html`${window ? html`<p class="tb-small">${preview.freeWindowOpen && whole
+      ? `Full refund ${cutoffText(preview.fullRefundUntil)}, 24 hours after you booked. After that, each part follows its own cutoff: ${later.length ? joinAnd(later.map(d => `${d.component} ${cutoffText(d.cutoff)}`)) : 'nothing on this trip is free to cancel'}; ${closing.length ? `${joinAnd(closing.map(d => d.component))} and the service fee are` : 'the service fee is'} not refundable after the window${unverified.length ? `; ${joinAnd(unverified.map(d => d.component))}: cutoff not stated by the supplier, needs verification` : ''}.`
+      : `The 24-hour full-refund window closed ${cutoffText(preview.fullRefundUntil).replace(/^by /, 'at ')}.`}</p>` : ''}
     ${preview.breakdown ? html`<ul class="tb-list tb-small">${preview.breakdown.map(x => html`<li>${x.component}: ${money(x.amount)}${when(x)}</li>`)}</ul>` : ''}
-    ${preview.nextCutoff && !(preview.breakdown && preview.breakdown[0] && preview.breakdown[0].component === 'Whole trip') ? html`<p class="tb-small tb-muted">Next cutoff: ${preview.nextCutoff.component}, ${cutoffText(preview.nextCutoff.cutoff)}. These are the suppliers’ own terms, dated; nothing here is a countdown.</p>` : ''}`;
+    ${preview.nextCutoff && !whole ? html`<p class="tb-small tb-muted">Next cutoff: ${preview.nextCutoff.component}, ${cutoffText(preview.nextCutoff.cutoff)}. These are the suppliers’ own terms, dated; nothing here is a countdown.</p>` : ''}`;
 }
 
 function confirmationFor(b, kind, name) {

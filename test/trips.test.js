@@ -13,8 +13,8 @@ const { addDays, today } = require('../server/lib/dates');
 const { createTripIntegrations } = require('../server/trips/integrations');
 const { vacationPlan } = require('../server/trips/vacation');
 const { cutoffs, isOpen, nextCutoff, fullRefundApplies } = require('../server/trips/deadlines');
-const { lineDiff, lineAmount } = require('../server/trips/facts');
-const { money: fmtMoney, longDate, cutoffText } = require('../server/views/trips/common');
+const { lineDiff, lineAmount, LINE_LABEL } = require('../server/trips/facts');
+const { money: fmtMoney, longDate, cutoffText, joinAnd } = require('../server/views/trips/common');
 const { daysBetween } = require('../server/lib/dates');
 
 const inv = createTripIntegrations(loadConfig({ APP_ENV: 'development' }));
@@ -922,7 +922,7 @@ test('the whole vacation: money protected for the destination travels with the t
   if (/couldn’t build a trip/.test(open.text)) { assert.ok(!/on its own \(\)/.test(open.text)); assert.match(open.text, /no single rule left to relax/); }
 });
 
-test('deciding today and after: dated cutoffs shared by the pages and the refund, what a booking covers, why Save more is cheaper, money rows, a second trip, what blocks a search', async t => {
+test('deciding today and after: dated cutoffs shared by the pages and the refund, what a booking covers, why Save more is cheaper, money rows, what blocks a search, a trip leaving soon, after the window', async t => {
   const esc = str => str.replace(/[$.()[\]+?*|^]/g, '\\$&');
   const settings = DEFAULT_SETTINGS;
 
@@ -951,8 +951,21 @@ test('deciding today and after: dated cutoffs shared by the pages and the refund
   const strict = priceTrip(inv, { ...spec, flight: 'basic' }, settings);
   assert.equal(cutoffs(strict).items[0].cutoff, null);
   assert.match(cutoffs(strict).items[0].rule, /not refundable after the first 24 hours/);
-  assert.equal(cutoffText('2027-02-27T00:00:00.000Z'), `before ${longDate('2027-02-27')}`);
-  assert.match(cutoffText('2027-02-21T12:00:00.000Z'), /^by 12:00 PM UTC on /);
+  const strictHotel = cutoffs({ ...flex, hotel: { ...flex.hotel, refundable: false } }).items[1];
+  assert.equal(strictHotel.cutoff, null);
+  assert.equal(strictHotel.rule, 'non-refundable rate');
+  // A refundable part whose supplier states no hours gets no invented cutoff: it needs verification, and refunds nothing outside the window.
+  const unstated = cutoffs({ ...flex, hotel: { ...flex.hotel, freeCancelHours: undefined } }).items[1];
+  assert.equal(unstated.cutoff, null);
+  assert.equal(unstated.unverified, true);
+  assert.match(unstated.rule, /needs verification/);
+  assert.equal(isOpen(unstated, new Date('2026-01-01T00:00:00Z')), false);
+  // The window is enforced to the minute it is shown at, never later.
+  assert.equal(cutoffs(flex, { bookedAt: '2027-02-20T12:00:45.500Z' }).fullRefundUntil, '2027-02-21T12:00:00.000Z');
+  // A midnight-UTC cutoff is the end of the day before, in UTC: never a bare date the traveler would read in their own zone.
+  assert.equal(cutoffText('2027-02-27T00:00:00.000Z'), `by the end of ${longDate('2027-02-26')} (UTC)`);
+  assert.equal(cutoffText('2027-02-21T12:00:00.000Z'), `by 12:00 PM UTC on ${longDate('2027-02-21')}`);
+  assert.equal(cutoffText(null), '');
 
   const app = await startApp({ ADMIN_EMAILS: 'ops@example.com' });
   t.after(app.close);
@@ -973,16 +986,14 @@ test('deciding today and after: dated cutoffs shared by the pages and the refund
   for (const l of lines.filter(x => x.delta !== 0)) assert.ok(results.text.includes(`${l.label}: ${fmtMoney(Math.abs(l.delta))} ${l.delta < 0 ? 'less' : 'more'} (${fmtMoney(l.b)} here, ${fmtMoney(l.a)} in our pick)`), l.label);
   for (const l of lines.filter(x => x.delta === 0)) assert.ok(!results.text.includes(`${l.label}: $0 less`) && !results.text.includes(`${l.label}: $0 more`), `${l.label}: an equal line is not a difference`);
   const ch = decision.classifyChanges(ours.trip, save.trip);
-  if (ch.tradeoffs.length) assert.match(results.text, /What you give up/); else assert.match(results.text, /didn’t find a trade-off against our pick/);
+  if (ch.tradeoffs.length) assert.match(results.text, /What you give up against our pick/); else assert.match(results.text, /didn’t find a trade-off against our pick/);
+  assert.match(results.text, /Where the money differs from our pick/);
+  // When Save more is a different trip (place, dates or length), that comes first, before the money lines.
+  const otherTrip = save.trip.spec.dest !== ours.trip.spec.dest || save.trip.spec.depart !== ours.trip.spec.depart || save.trip.spec.nights !== ours.trip.spec.nights;
+  if (otherTrip) assert.match(results.text, /A different trip:<\/b> [\s\S]*Where the money differs/); else assert.doesNotMatch(results.text, /A different trip:/);
+  if (save.trip.spec.dest !== ours.trip.spec.dest) assert.ok(results.text.includes(`${save.trip.dest.name} instead of ${ours.trip.dest.name}`));
   assert.equal((results.text.match(/cheaper than our pick/g) || []).length, 1, 'only the Save more card explains itself against our pick');
-
-  // Keep your money can start a second trip with the spare, in whole dollars, when the planner can take it.
-  if (r.keepMoney && r.keepMoney.spare >= 10000 && !r.picks.some(p => p.kind === 'upgrade')) {
-    assert.ok(results.text.includes(`href="/plan?b=${Math.floor(r.keepMoney.spare / 100)}&amp;from=SFO&amp;who=couple&amp;n=2"`), 'a second search at the spare');
-    assert.match(results.text, /Start a second trip with it/);
-  }
-  const tiny = await c.req(`/trips?${new URLSearchParams({ ...QUERY, b: String(Math.ceil(ours.trip.total / 100) + 40) })}`);
-  if (/Keep your money/.test(tiny.text)) assert.doesNotMatch(tiny.text, /Start a second trip with it/, 'under $100 spare, no second search is offered');
+  assert.doesNotMatch(results.text, /second trip/i, 'Keep your money sells nothing');
 
   // Compare shows where the money goes, each line against the first column; only changed lines unless asked.
   const cmpAll = await c.req(`/compare?t=${encodeSpec(ours.trip.spec)}&t=${encodeSpec(save.trip.spec)}&l=Our+pick&l=Save+more&b=1500&all=1`);
@@ -990,7 +1001,7 @@ test('deciding today and after: dated cutoffs shared by the pages and the refund
   assert.match(cmpAll.text, /Where the money goes/);
   for (const l of lines) {
     assert.ok(cmpAll.text.includes(`<th scope="row">${l.label}</th>`), `${l.label} row`);
-    if (l.delta) assert.ok(cmpAll.text.includes(`${fmtMoney(Math.abs(l.delta))} ${l.delta > 0 ? 'more' : 'less'} than Our pick`), `${l.label} delta`);
+    if (l.delta) assert.ok(cmpAll.text.includes(`${fmtMoney(Math.abs(l.delta))} ${l.delta > 0 ? 'more' : 'less'} than our pick`), `${l.label} delta`);
   }
   assert.equal((cmpAll.text.match(/tb-compare-line/g) || []).length, lines.length);
   const cmp = await c.req(`/compare?t=${encodeSpec(ours.trip.spec)}&t=${encodeSpec(save.trip.spec)}&b=1500`);
@@ -1003,8 +1014,17 @@ test('deciding today and after: dated cutoffs shared by the pages and the refund
   const nofit = await c.req(`/trips?${new URLSearchParams({ ...QUERY, b: '400' })}`);
   assert.match(nofit.text, /What blocks it:/);
   assert.ok(nofit.text.includes(`${cheap.dest.name} for ${cheap.spec.nights} nights with 2 travelers, is ${fmtMoney(cheap.total)}: flight fares ${fmtMoney(lineAmount(cheap, 'flights'))}, hotel stay ${fmtMoney(lineAmount(cheap, 'hotel'))}`), 'the cheapest trip, line by line');
-  const fares = lineAmount(cheap, 'flights');
-  assert.ok(nofit.text.includes(fares > 40000 ? 'The flight fares alone are more than your $400.' : `The flight fares alone take ${Math.round((fares / 40000) * 100)}% of your $400.`));
+  const label = l => (LINE_LABEL[l.key] || l.label).toLowerCase();
+  const overLines = cheap.lines.filter(l => l.amount > 40000);
+  const biggest = cheap.lines.filter(l => l.amount > 0).reduce((m, l) => (l.amount > m.amount ? l : m));
+  if (overLines.length) assert.ok(nofit.text.includes(`${joinAnd(overLines.map(label))} alone ${overLines.length === 1 && !/s$/.test(label(overLines[0])) ? 'is' : 'are'} more than your $400.`.replace(/^./, c0 => c0.toUpperCase())), 'every line that alone exceeds the budget is named');
+  else assert.ok(nofit.text.includes(`The largest line, ${label(biggest)}, takes ${Math.round((biggest.amount / 40000) * 100)}% of your $400 on its own.`));
+  // Unlabeled compare columns are Trip 1, Trip 2…, and a third column is read against the first too.
+  const cmp3 = await c.req(`/compare?t=${encodeSpec(ours.trip.spec)}&t=${encodeSpec(save.trip.spec)}&t=${encodeSpec(cheap.spec)}&b=1500&all=1`);
+  assert.equal(cmp3.status, 200);
+  assert.match(cmp3.text, /than Trip 1</);
+  assert.doesNotMatch(cmp3.text, /than Trip 2</);
+  assert.ok((cmp3.text.match(/tb-compare-line/g) || []).length >= lines.length);
 
   // The review page answers "do I need to decide today?" with what holds the price and the dated cutoffs.
   const trip = await buildTrip(c);
@@ -1015,15 +1035,41 @@ test('deciding today and after: dated cutoffs shared by the pages and the refund
   assert.match(review.text, new RegExp(`held for ${app.config.quoteTtlMinutes} minutes at checkout`));
   const pt = priceTrip(inv, decodeSpec(trip.tripPath.split('/')[2]), settings);
   const days = daysBetween(today(), pt.spec.depart);
-  if (days >= 7) assert.match(review.text, new RegExp(`you leave in ${days} days, so the 24-hour rule applies`)); else assert.match(review.text, /The 24-hour full-refund window would not apply/);
-  const dated = cutoffs(pt).items.filter(i => i.cutoff);
+  assert.ok(days >= 14, 'an anytime search departs at least two weeks out');
+  assert.match(review.text, new RegExp(`If you book today, you can cancel everything within 24 hours for a full refund: you leave in ${days} days, so the 24-hour rule applies`));
+  const dated = cutoffs(pt).items.filter(i => i.cutoff).sort((x, y) => Date.parse(x.cutoff) - Date.parse(y.cutoff));
   assert.ok(dated.length >= 1, 'something on the pick has a dated cutoff');
-  for (const it of dated) assert.ok(review.text.includes(`${it.component}: free to cancel before ${longDate(it.cutoff.slice(0, 10))}.`), `${it.component} cutoff on the review page`);
-  for (const it of cutoffs(pt).items.filter(i => !i.cutoff && i.key !== 'service')) assert.ok(/not refundable/.test(review.text), `${it.component} named as not refundable`);
+  // The panel names the first cutoff once and points at the terms for the rest, where every part is dated.
+  assert.ok(review.text.includes(`After that, the first cutoff is ${dated[0].component}: free to cancel ${cutoffText(dated[0].cutoff)}.`), 'the first cutoff on the review page');
+  if (dated.length > 1) assert.match(review.text, /Every part’s date is under Cancellation terms below\./);
+  for (const it of dated) assert.ok(review.text.includes(`Free to cancel ${cutoffText(it.cutoff)}`), `${it.component} cutoff in the terms`);
+  for (const it of cutoffs(pt).items.filter(i => !i.cutoff && i.key !== 'service')) assert.ok(/not refundable after the first 24 hours/.test(review.text), `${it.component} named as not refundable`);
   assert.doesNotMatch(review.text, /only \d+ left|selling fast|hurry|prices (usually|will|tend to) (rise|go up)|book (now|today) before/i, 'no urgency, no prediction');
+  assert.doesNotMatch(review.text, /has passed|needs verification|No 24-hour window/, 'nothing on this pick has passed or is unverified');
   // Dated terms on the review page and the trip page's Know Before You Book.
-  assert.match(review.text, /Cancellation terms[\s\S]*Free to cancel before/);
-  assert.match((await c.req(`${trip.tripPath}?${trip.cx}`)).text, /Cancellation and changes[\s\S]*Free to cancel before/);
+  assert.match(review.text, /Cancellation terms[\s\S]*Free to cancel by/);
+  assert.match((await c.req(`${trip.tripPath}?${trip.cx}`)).text, /Cancellation and changes[\s\S]*Free to cancel by/);
+
+  // A trip leaving in five days: no 24-hour window, a cutoff already passed is said plainly and never shown as a green date.
+  const soonSpec = { ...decodeSpec(trip.tripPath.split('/')[2]), depart: addDays(today(), 5) };
+  const soon = await c.req(`/trip/${encodeSpec(soonSpec)}/review?${trip.cx}&seen=0`);
+  assert.equal(soon.status, 200);
+  const soonTrip = priceTrip(inv, soonSpec, settings);
+  assert.match(soon.text, /The 24-hour full-refund window would not apply: you leave in 5 days, and it needs at least 7 days\./);
+  assert.match(soon.text, /No 24-hour window on this trip: departure is under 7 days away\./);
+  const soonNow = app.tripService.now();
+  const soonItems = cutoffs(soonTrip).items;
+  for (const it of soonItems.filter(i => i.cutoff)) {
+    if (isOpen(it, soonNow)) assert.ok(soon.text.includes(`Free to cancel ${cutoffText(it.cutoff)}`), `${it.component} still open`);
+    else {
+      assert.ok(soon.text.includes(`The free-cancellation cutoff (${cutoffText(it.cutoff)}) has passed.`), `${it.component} passed, in the terms`);
+      assert.match(soon.text, new RegExp(`${it.component}: the free-cancellation cutoff has already passed, so it is not refundable\\.`));
+    }
+  }
+  if (soonTrip.flight.refundable) assert.ok(soonItems.some(i => i.cutoff && !isOpen(i, soonNow)), 'the refundable fare closes 7 days out, so five days out it has passed');
+  assert.doesNotMatch(soon.text, /the 24-hour rule applies|Free to cancel before/);
+  // A trip that has already left cannot be quoted.
+  assert.equal((await app.tripService.verify(encodeSpec({ ...soonSpec, depart: addDays(today(), -1) }), 0)).available, false);
 
   // After booking: what the booking covers, what it leaves out, what we never price; the full-refund
   // window dated 24 hours after booking; then each part's cutoff, the same ones the refund follows.
@@ -1041,12 +1087,17 @@ test('deciding today and after: dated cutoffs shared by the pages and the refund
   assert.doesNotMatch(page.text, /Still to confirm/, 'every part confirmed');
   const data = await app.engine.getBooking(booking.ref, { token: decodeURIComponent(c.jar[`txbk_${booking.ref}`]) });
   const pv = data.cancellationPreview;
-  assert.equal(pv.fullRefundUntil, new Date(Date.parse(b.createdAt) + 86400000).toISOString());
+  assert.equal(pv.fullRefundUntil, new Date(Math.floor((Date.parse(b.createdAt) + 86400000) / 60000) * 60000).toISOString(), '24 hours after booking, to the minute shown');
   assert.equal(pv.refundAmount, booking.total);
   assert.ok(page.text.includes(`Full refund ${cutoffText(pv.fullRefundUntil)}, 24 hours after you booked.`));
   assert.match(page.text, /After that, each part follows its own cutoff: /);
-  for (const d of pv.deadlines.filter(x => x.cutoff)) assert.ok(page.text.includes(`${d.component} ${cutoffText(d.cutoff)}`), `${d.component} on the booking page`);
+  // Only a cutoff beyond the window is dated after it; a part whose cutoff falls inside the window, or that has none, closes with it.
+  const later = pv.deadlines.filter(x => x.open && Date.parse(x.cutoff) > Date.parse(pv.fullRefundUntil));
+  const closing = pv.deadlines.filter(x => x.key !== 'service' && !later.includes(x));
+  for (const d of later) assert.ok(page.text.includes(`${d.component} ${cutoffText(d.cutoff)}`), `${d.component} on the booking page`);
+  assert.ok(page.text.includes(closing.length ? `${joinAnd(closing.map(d => d.component))} and the service fee are not refundable after the window.` : 'the service fee is not refundable after the window.'));
   assert.deepEqual(pv.deadlines.map(d => d.cutoff), cutoffs(b.trip).items.map(i => i.cutoff), 'the refund preview carries the page\'s cutoffs');
+  assert.deepEqual(pv.deadlines.map(d => d.key), cutoffs(b.trip).items.map(i => i.key));
 
   // The refund follows the same cutoffs: after the window, parts past their cutoff refund nothing.
   const raw = await app.store.getBookingByRef(booking.ref);
@@ -1054,6 +1105,7 @@ test('deciding today and after: dated cutoffs shared by the pages and the refund
   const afterWindow = new Date(Date.parse(pv.fullRefundUntil) + 1000);
   const p2 = provider.cancellationPreview(raw, afterWindow);
   assert.equal(p2.breakdown[0].component, 'Flights');
+  assert.deepEqual(p2.breakdown.map(x => x.key), p2.deadlines.map(d => d.key), 'refund rows and cutoffs share their keys');
   assert.equal(p2.breakdown.find(x => x.component === 'Flights').amount, raw.quote.trip.flight.refundable ? raw.quote.refundBasis.flights : 0);
   assert.equal(p2.breakdown.find(x => x.component === 'Hotel').amount, raw.quote.trip.hotel.refundable ? raw.quote.refundBasis.hotel : 0);
   assert.equal(p2.breakdown.find(x => x.component === 'Service fee').amount, 0);
@@ -1067,4 +1119,37 @@ test('deciding today and after: dated cutoffs shared by the pages and the refund
   }
   const started = provider.cancellationPreview(raw, new Date(`${raw.startDate}T00:00:00Z`));
   assert.equal(started.allowed, false);
+
+  // Before payment the covers panel says what the booking will cover once paid. With the clock moved
+  // past the window, the booking page says it closed, dates each part's own cutoff and names the next.
+  let clock = new Date();
+  const app2 = await startApp({ ADMIN_EMAILS: 'ops@example.com' }, { now: () => clock });
+  t.after(app2.close);
+  const c2 = client(app2.base);
+  assert.equal((await c2.req('/signup', { method: 'POST', form: { name: 'Ada Lovelace', email: 'ada7@example.com', password: 'correct horse battery' } })).status, 303);
+  const trip2 = await buildTrip(c2);
+  const { booking: bk2 } = await quoteAndBook(c2, trip2, { firstName: 'Ada', lastName: 'Lovelace', email: 'ada7@example.com' });
+  const unpaid = await c2.req(`/booking/${bk2.ref}`);
+  assert.match(unpaid.text, /In this booking, once paid:<\/b> round-trip flights/);
+  assert.doesNotMatch(unpaid.text, /Paid for already/);
+  assert.equal((await c2.req(`/api/bookings/${bk2.ref}/pay`, { method: 'POST', json: { method: CARD } })).status, 200);
+  const raw2 = await app2.store.getBookingByRef(bk2.ref);
+  const provider2 = app2.engine.extraProviders.trips;
+  const pv2 = provider2.cancellationPreview(raw2, clock);
+  assert.ok(pv2.fullRefundUntil);
+  clock = new Date(Date.parse(pv2.fullRefundUntil) + 60000);
+  const after = await c2.req(`/booking/${bk2.ref}`);
+  assert.equal(after.status, 200);
+  assert.ok(after.text.includes(`The 24-hour full-refund window closed ${cutoffText(pv2.fullRefundUntil).replace(/^by /, 'at ')}.`), 'the closed window is dated');
+  assert.doesNotMatch(after.text, /Full refund by/);
+  const pv3 = provider2.cancellationPreview(raw2, clock);
+  assert.equal(pv3.breakdown[0].component, 'Flights');
+  for (const x of pv3.breakdown) {
+    const d = pv3.deadlines.find(y => y.key === x.key);
+    if (d.cutoff && d.open) assert.ok(after.text.includes(`${x.component}: ${fmtMoney(x.amount)} · free to cancel ${cutoffText(d.cutoff)}`), `${x.component} row`);
+    else if (d.cutoff) assert.ok(after.text.includes(`${x.component}: ${fmtMoney(x.amount)} · the free-cancellation cutoff has passed`), `${x.component} row`);
+    else if (x.key === 'service') assert.ok(after.text.includes('Service fee: $0 · refunded only in the first 24 hours'));
+    else assert.ok(after.text.includes(`${x.component}: $0 · non-refundable`), `${x.component} row`);
+  }
+  if (pv3.nextCutoff) assert.ok(after.text.includes(`Next cutoff: ${pv3.nextCutoff.component}, ${cutoffText(pv3.nextCutoff.cutoff)}.`), 'the next cutoff is named');
 });

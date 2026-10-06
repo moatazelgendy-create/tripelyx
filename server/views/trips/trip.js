@@ -163,7 +163,7 @@ function changeList(items, { empty }) {
   return html`<ul class="tb-changes">${items.map(c => html`<li><a href="${c.url}"><span>${c.label}</span>${delta(c.delta)}<small>new total ${money(c.total)}</small></a></li>`)}</ul>`;
 }
 
-function knowBeforeYouBook(t, { weather, origin, token, cx }) {
+function knowBeforeYouBook(t, { weather, origin, token, cx, now }) {
   const h = t.hotel, f = t.flight;
   const flexCount = [f.refundable, h.refundable, ...(t.activities.length ? [true] : []), ...(t.transfer ? [true] : [])].filter(Boolean).length;
   const parts = 2 + (t.activities.length ? 1 : 0) + (t.transfer ? 1 : 0);
@@ -175,7 +175,7 @@ function knowBeforeYouBook(t, { weather, origin, token, cx }) {
       <div><h3>${icon('check')} What’s included</h3><ul class="tb-list">${t.included.map(i => html`<li>${i}</li>`)}</ul></div>
       <div><h3>${icon('minus')} Not included</h3><ul class="tb-list">${t.notIncluded.map(i => html`<li>${i}</li>`)}</ul></div>
       <div><h3>${icon('bag')} Baggage</h3><p>${f.carryOn ? 'One carry-on bag' : 'One personal item only (no carry-on)'} per traveler. ${f.checkedBagIncluded || t.spec.bags ? 'One checked bag per traveler each way is in the price.' : `Checked bags cost ${money(f.bagFeePerTraveler)} per traveler both ways; add them in the customizer so they’re in your total.`} ${f.seatSelection ? 'Seat selection is available on this fare.' : 'Seats are assigned at check-in on this fare.'}</p></div>
-      <div><h3>${icon('shield')} Cancellation and changes · ${flex[0]}</h3><p>${flex[1]}</p><ul class="tb-list">${termsFor(t).map(p => html`<li><b>${p.component}:</b> ${p.text}${p.when ? html` <span class="tb-deadline">${p.when}</span>` : ''}</li>`)}</ul></div>
+      <div><h3>${icon('shield')} Cancellation and changes · ${flex[0]}</h3><p>${flex[1]}</p><ul class="tb-list">${termsFor(t, { now }).map(p => html`<li><b>${p.component}:</b> ${p.text}${p.when ? html` <span class="tb-deadline${p.tone === 'ok' ? '' : ` is-${p.tone}`}">${p.when}</span>` : ''}</li>`)}</ul></div>
       <div><h3>${icon('bed')} Hotel terms</h3><p>Check-in from 3:00 PM, check-out by 11:00 AM (confirm on your voucher). ${h.resortFeePerNight ? `This hotel charges a mandatory resort fee of ${money(h.resortFeePerNight)} per room per night. It is already in your total, so you won’t pay it at the desk.` : 'No resort fee at this hotel.'} ${h.features.adultsOnly ? 'Adults only (18+).' : ''}</p></div>
       <div><h3>${icon('bus')} Getting there</h3><p>Fly from ${origin ? `${origin.name} (${origin.code})` : t.spec.from} to ${t.dest.airport}. ${t.transfer ? `A private transfer meets you at the airport and takes you back for your return flight (${t.transfer.vehicles} vehicle${t.transfer.vehicles > 1 ? 's' : ''}).` : 'No transfer is included; taxis and shuttles are available at the airport, or add our private transfer above.'}</p></div>
       ${t.internationalTrip ? html`<div><h3>${icon('globe')} Travel documents</h3><p>${t.dest.country} is an international destination. Each traveler needs a valid passport, and entry rules depend on nationality. Check the official requirements for your passport before booking; we can’t guarantee entry to any country.</p></div>` : html`<div><h3>${icon('globe')} Travel documents</h3><p>A domestic flight: US travelers usually need a REAL ID-compliant licence or a passport at security. Check the TSA list for your document.</p></div>`}
@@ -289,7 +289,7 @@ function tripView(ctx, { data, cx, user, saved, dreamGap, named = null }) {
         <h3>${icon('sliders')} One change at a time</h3>
         <p class="tb-muted">Single changes, biggest saving first. We never remove anything without showing you.</p>${changeList(cheaper, { empty: 'This is already the cheapest version of this trip we can build.' })}</section>
 
-      ${knowBeforeYouBook(t, { weather, origin, token, cx })}
+      ${knowBeforeYouBook(t, { weather, origin, token, cx, now: ctx.tripService.now() })}
       ${confidenceQuestions(t)}
     </div>
 
@@ -332,8 +332,9 @@ function riseParts(plan, total, amount, budget) {
 const reserveUse = (plan, whose) => `${plan.raid >= plan.keep ? `all ${money(plan.keep)}` : money(plan.raid)} of ${whose} reserve${plan.over ? ` and ${money(plan.over)} beyond ${whose} whole ${money(plan.vacation)}` : ''}`;
 
 // "Do I need to decide today?": what holds the price (nothing before checkout; the quote hold and
-// the recheck at payment), what booking today would commit the traveler to, from the suppliers'
-// stated cutoffs on this trip's own dates. No prediction of where the price goes, no countdown.
+// the recheck at payment), what changes if the traveler waits a day (the 24-hour rule lost, a cutoff
+// within a day), and what booking today commits them to, from the suppliers' stated cutoffs on this
+// trip's own dates. No prediction of where the price goes, no countdown.
 function decideToday(ctx, t, token, cx, user) {
   const now = ctx.tripService.now();
   const daysAway = daysBetween(today(now), t.spec.depart);
@@ -342,18 +343,29 @@ function decideToday(ctx, t, token, cx, user) {
   const { items } = cutoffs(t);
   const ahead = items.filter(it => isOpen(it, now)).sort((a, b) => Date.parse(a.cutoff) - Date.parse(b.cutoff));
   const passed = items.filter(it => it.cutoff && !isOpen(it, now));
-  const kept = items.filter(it => !it.cutoff && it.key !== 'service').map(it => (it.key === 'flights' ? `the ${t.flight.name} fare` : it.key === 'hotel' ? 'the hotel rate' : it.component));
+  const unverified = items.filter(it => it.unverified);
+  const kept = items.filter(it => !it.cutoff && !it.unverified && it.key !== 'service').map(it => (it.key === 'flights' ? `the ${t.flight.name} fare` : it.key === 'hotel' ? 'the hotel rate' : it.component));
+  const first = ahead[0] || null;
+  // What a day's wait changes, from the rules alone: the 24-hour window needs 7 days to departure,
+  // and a cutoff may fall within the next day.
+  const waits = [
+    ...(window && daysAway === FULL_REFUND_MIN_DAYS ? ['from tomorrow the 24-hour full-refund rule no longer applies, because it needs 7 days to departure'] : []),
+    ...ahead.filter(it => Date.parse(it.cutoff) - now.getTime() <= 86400000).map(it => `${it.component.toLowerCase()} can only be cancelled free ${cutoffText(it.cutoff)}`),
+  ];
   const tripUrl = `/trip/${token}?${contextParams(cx)}`;
   return html`<section class="tb-panel tb-today" aria-labelledby="today-title">
     <h2 id="today-title">${icon('clock')} Do I need to decide today?</h2>
-    <p>No. Nothing holds this price before checkout, and we don’t predict where it goes. When you continue, it is confirmed and held for ${ctx.config.quoteTtlMinutes} minutes at checkout, then checked once more before payment.</p>
+    <p>${waits.length
+      ? `Not for the price: nothing holds it before checkout, and we don’t predict where it goes. But ${waits.length === 1 ? 'one thing changes' : 'these things change'} if you wait: ${joinAnd(waits)}.`
+      : 'No. Nothing holds this price before checkout, and we don’t predict where it goes.'} When you continue, the price is confirmed and held for ${ctx.config.quoteTtlMinutes} minutes at checkout, then checked once more before payment.</p>
     <ul class="tb-list tb-small">
       <li>${window
-        ? `Book now and you can cancel everything within 24 hours for a full refund: ${leave}, so the 24-hour rule applies.`
+        ? `If you book today, you can cancel everything within 24 hours for a full refund: ${leave}, so the 24-hour rule applies.`
         : `The 24-hour full-refund window would not apply: ${leave}, and it needs at least ${FULL_REFUND_MIN_DAYS} days. Each part’s own terms apply from the moment you book.`}</li>
-      ${ahead.map(it => html`<li>${it.component}: free to cancel ${cutoffText(it.cutoff)}.</li>`)}
-      ${passed.length ? html`<li>${joinAnd(passed.map(it => it.component))}: the free-cancellation cutoff has already passed, so ${passed.length === 1 ? 'it is' : 'they are'} not refundable${window ? ' after the first 24 hours' : ''}.</li>` : ''}
-      ${kept.length ? html`<li>${joinAnd(kept)}: not refundable${window ? ' after the first 24 hours' : ''}.</li>` : ''}
+      ${first ? html`<li>${window ? 'After that, the' : 'The'} first cutoff is ${first.component}: free to cancel ${cutoffText(first.cutoff)}.${ahead.length > 1 ? ' Every part’s date is under Cancellation terms below.' : ''}</li>` : ''}
+      ${passed.length ? html`<li>${cap(joinAnd(passed.map(it => it.component)))}: the free-cancellation cutoff has already passed, so ${passed.length === 1 ? 'it is' : 'they are'} not refundable${window ? ' after the first 24 hours' : ''}.</li>` : ''}
+      ${kept.length ? html`<li>${cap(joinAnd(kept))}: not refundable${window ? ' after the first 24 hours' : ''}.</li>` : ''}
+      ${unverified.length ? html`<li>${cap(joinAnd(unverified.map(it => it.component)))}: the supplier has not stated a free-cancellation cutoff, so don’t count on one until it is verified.</li>` : ''}
       <li>Not ready? ${user ? html`<a href="${tripUrl}">Save it or watch its price</a>` : html`<a href="/signin?next=${encodeURIComponent(tripUrl)}">Sign in to save it or watch its price</a>`}; we show the new price when you come back, whichever way it moved.</li>
     </ul>
   </section>`;
@@ -449,7 +461,7 @@ function reviewView(ctx, { data, cx, verify, user, promoError, promoCode }) {
         ${decideToday(ctx, t, token, cx, user)}
         <section class="tb-panel" aria-labelledby="terms-title">
           <h2 id="terms-title">Cancellation terms</h2>
-          <ul class="tb-list tb-small">${termsFor(t).map(p => html`<li><b>${p.component}:</b> ${p.text}${p.when ? html` <span class="tb-deadline">${p.when}</span>` : ''}</li>`)}</ul>
+          <ul class="tb-list tb-small">${termsFor(t, { now: ctx.tripService.now() }).map(p => html`<li><b>${p.component}:</b> ${p.text}${p.when ? html` <span class="tb-deadline${p.tone === 'ok' ? '' : ` is-${p.tone}`}">${p.when}</span>` : ''}</li>`)}</ul>
           <p class="tb-small tb-muted">Full details, baggage and hotel terms are on the <a href="/trip/${token}?${contextParams(cx)}#know">trip page</a>.</p>
         </section>
       </aside>

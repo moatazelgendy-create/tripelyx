@@ -160,7 +160,9 @@ class TripService {
   // Live price check before checkout: re-ask the suppliers and compare with what the traveler saw.
   async verify(token, seen, { promoCode } = {}) {
     const promo = await this.promo(promoCode);
-    const t = await this.price(decodeSpec(token), { promo });
+    const spec = decodeSpec(token);
+    if (spec.depart < today(this.now())) return { available: false }; // a trip that has already left cannot be quoted
+    const t = await this.price(spec, { promo });
     if (!t) return { available: false };
     const diff = Number.isFinite(seen) && seen > 0 ? t.total - seen : 0;
     return { available: true, trip: t, promo, status: diff === 0 ? 'same' : diff < 0 ? 'cheaper' : 'higher', diff: Math.abs(diff) };
@@ -267,22 +269,28 @@ class TripService {
         if (hoursUntil(b.startDate, now) <= 0) return { allowed: false, reason: 'This trip has already started.' };
         const { items, fullRefundUntil } = cutoffs(q.trip, { bookedAt: b.createdAt });
         const open = key => isOpen(items.find(x => x.key === key), now);
-        const deadlines = items.map(it => ({ key: it.key, component: it.component, cutoff: it.cutoff, rule: it.rule, open: isOpen(it, now) }));
+        const deadlines = items.map(it => ({ key: it.key, component: it.component, cutoff: it.cutoff, rule: it.rule, unverified: !!it.unverified, open: isOpen(it, now) }));
         const next = nextCutoff(items, now);
         const common = { currency: b.currency, fullRefundUntil, deadlines, nextCutoff: next ? { component: next.component, cutoff: next.cutoff } : null };
         if (fullRefundUntil && now.getTime() < Date.parse(fullRefundUntil)) {
           return { allowed: true, refundAmount: paid, freeWindowOpen: true, policy: 'You’re within 24 hours of booking, so the whole trip is refundable.', breakdown: [{ component: 'Whole trip', amount: paid }], ...common };
         }
         const breakdown = [
-          { component: 'Flights', amount: open('flights') ? rb.flights : 0 },
-          { component: 'Hotel', amount: open('hotel') ? rb.hotel : 0 },
-          ...rb.activities.map(a => ({ component: (q.trip.activities.find(x => x.id === a.id) || {}).name || 'Experience', amount: open(`activity:${a.id}`) ? a.amount : 0 })),
-          ...(rb.transfer ? [{ component: 'Airport transfer', amount: open('transfer') ? rb.transfer : 0 }] : []),
-          { component: 'Service fee', amount: 0 },
+          { key: 'flights', component: 'Flights', amount: open('flights') ? rb.flights : 0 },
+          { key: 'hotel', component: 'Hotel', amount: open('hotel') ? rb.hotel : 0 },
+          ...rb.activities.map(a => ({ key: `activity:${a.id}`, component: (q.trip.activities.find(x => x.id === a.id) || {}).name || 'Experience', amount: open(`activity:${a.id}`) ? a.amount : 0 })),
+          ...(rb.transfer ? [{ key: 'transfer', component: 'Airport transfer', amount: open('transfer') ? rb.transfer : 0 }] : []),
+          { key: 'service', component: 'Service fee', amount: 0 },
         ];
         const gross = breakdown.reduce((s, x) => s + x.amount, 0);
         const before = paid + (rb.discount || 0);
         const refund = Math.min(paid, Math.round(rb.discount ? gross * (paid / before) : gross));
+        if (rb.discount && gross) {
+          // A promo discount is shared across the parts, so each row carries its share and the rows add up to the refund.
+          for (const x of breakdown) x.amount = Math.round(x.amount * (paid / before));
+          const largest = breakdown.reduce((m, x) => (x.amount > m.amount ? x : m), breakdown[0]);
+          largest.amount += refund - breakdown.reduce((s, x) => s + x.amount, 0);
+        }
         return { allowed: true, refundAmount: refund, freeWindowOpen: refund === paid, policy: 'Refunds follow each part’s own terms.', breakdown, ...common };
       },
     };

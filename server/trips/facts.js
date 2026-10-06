@@ -63,6 +63,7 @@ function usableTime(t) {
 // ---- side by side -----------------------------------------------------------------------------
 // The fields two trips can differ on, as readable values. Used by the compare page, the before/after
 // view of an optimization, and the optimizer's upgrade test.
+const dur = m => `${Math.floor(m / 60)}h${m % 60 ? ` ${String(m % 60).padStart(2, '0')}m` : ''}`;
 function tripDiff(a, b, { date = x => x } = {}) {
   const stopsText = f => (f.stops ? `${f.stops} stop` : 'nonstop');
   const flex = t => [t.flight.refundable && 'flights refundable', t.hotel.refundable && 'hotel free to cancel'].filter(Boolean).join(', ') || 'flights and hotel non-refundable after 24h';
@@ -75,7 +76,7 @@ function tripDiff(a, b, { date = x => x } = {}) {
     ['hotel', 'Hotel', `${a.hotel.name} · ${a.hotel.stars}-star · ${a.hotel.rating}/5`, `${b.hotel.name} · ${b.hotel.stars}-star · ${b.hotel.rating}/5`],
     ['area', 'Location', `${a.hotel.area}${a.hotel.features.beachfront ? ' · beachfront' : ''}`, `${b.hotel.area}${b.hotel.features.beachfront ? ' · beachfront' : ''}`],
     ['meals', 'Meals', a.hotel.features.allInclusive ? 'All-inclusive' : a.hotel.features.breakfast ? 'Breakfast included' : 'Not included', b.hotel.features.allInclusive ? 'All-inclusive' : b.hotel.features.breakfast ? 'Breakfast included' : 'Not included'],
-    ['flight', 'Flights', `${stopsText(a.flight)}, ${Math.round(a.flight.durationMinutes / 60)}h each way, ${a.flight.name} fare`, `${stopsText(b.flight)}, ${Math.round(b.flight.durationMinutes / 60)}h each way, ${b.flight.name} fare`],
+    ['flight', 'Flights', `${stopsText(a.flight)}, ${dur(a.flight.durationMinutes)} each way, ${a.flight.name} fare`, `${stopsText(b.flight)}, ${dur(b.flight.durationMinutes)} each way, ${b.flight.name} fare`],
     ['time', 'Usable vacation time', ta ? ta.usableLabel : 'Schedule not available', tb ? tb.usableLabel : 'Schedule not available'],
     ['bags', 'Bags', a.flight.checkedBagIncluded || a.spec.bags ? 'Checked bag included' : a.flight.carryOn ? 'Carry-on only' : 'Personal item only', b.flight.checkedBagIncluded || b.spec.bags ? 'Checked bag included' : b.flight.carryOn ? 'Carry-on only' : 'Personal item only'],
     ['experiences', 'Experiences', a.activities.length ? a.activities.map(x => x.name).join(', ') : 'None', b.activities.length ? b.activities.map(x => x.name).join(', ') : 'None'],

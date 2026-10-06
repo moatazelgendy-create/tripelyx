@@ -121,11 +121,11 @@ function priceTrip(inv, spec, settings = DEFAULT_SETTINGS, { promo = null } = {}
     { component: 'Trip planning and booking', provider: 'Tripelyx' },
   ];
   const policies = [
-    { component: 'Flights', text: `${flight.policy} US rules let you cancel within 24 hours of booking for a full refund when departure is at least 7 days away.` },
-    { component: 'Hotel', text: hotel.policy },
-    ...acts.map(a => ({ component: a.name, text: a.policy })),
-    ...(transfer ? [{ component: 'Airport transfer', text: transfer.policy }] : []),
-    { component: 'Service fee', text: 'Refunded if you cancel within 24 hours of booking; otherwise non-refundable.' },
+    { key: 'flights', component: 'Flights', text: `${flight.policy} US rules let you cancel within 24 hours of booking for a full refund when departure is at least 7 days away.` },
+    { key: 'hotel', component: 'Hotel', text: hotel.policy },
+    ...acts.map(a => ({ key: `activity:${a.id}`, component: a.name, text: a.policy })),
+    ...(transfer ? [{ key: 'transfer', component: 'Airport transfer', text: transfer.policy }] : []),
+    { key: 'service', component: 'Service fee', text: 'Refunded if you cancel within 24 hours of booking; otherwise non-refundable.' },
   ];
 
   return {

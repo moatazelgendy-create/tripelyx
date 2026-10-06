@@ -815,6 +815,10 @@ a.tb-pill:hover { border-color: var(--blue-500); }
 
 /* Round six: dated cutoffs, why Save more is cheaper, money rows, what blocks a search, covers panel */
 .tb-deadline { color: #0c5e43; font-weight: 600; }
+.tb-deadline.is-passed { color: var(--muted); font-weight: 500; }
+.tb-deadline.is-verify { color: var(--warning); font-weight: 600; }
+.tb-iconline { display: flex; gap: 8px; align-items: flex-start; }
+.tb-iconline .icon { width: 18px; height: 18px; flex: none; margin-top: 2px; }
 .tb-today p { margin: 0 0 10px; }
 .tb-vs-title { font-weight: 600; margin: 12px 0 0; font-size: 13.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
 .tb-vs-lines .is-more .icon, .tb-vs-neutral .icon { color: var(--muted); }
@@ -824,4 +828,4 @@ a.tb-pill:hover { border-color: var(--blue-500); }
 .tb-ready-wrap li { align-items: flex-start; }
 .tb-ready-wrap .icon { margin-top: 3px; }
 .tb-ready-wrap .is-miss .icon { color: var(--warning); }
-.tb-card-keep .tb-card-actions .btn { flex: 1 1 100%; }
+.tb-card-keep .tb-card-actions .btn { flex: 1 1 100%; text-align: center; }
