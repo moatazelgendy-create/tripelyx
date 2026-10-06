@@ -6,6 +6,7 @@ const { layout } = require('../layout');
 const { contextParams, tradeoffs } = require('../../trips/optimizer');
 const { verdict, usableTime, timeAlternatives, budgetUnlocks, realityCheck, hoursLabel, weekdaysAway, ptoAlternatives } = require('../../trips/decision');
 const { money, dollars, shortDate, longDate, plural, hm, clock, demoBadge, budgetMeter, recipe, scorecard, stepsBar, fitBadge, hiddenParams } = require('./common');
+const { vacationPlan } = require('../../trips/vacation');
 
 const cap = s => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 
@@ -90,6 +91,57 @@ function unlockPanel(t, unlock, { budget, diff, token, cx, reviewUrl }) {
   </section>`;
 }
 
+// The planner step where the traveler says what to protect for the destination, with the search
+// they already made kept, so changing the reserve rebuilds the same trips around the new number.
+function reserveUrl(cx) {
+  if (cx.searchParams) return `/plan?${new URLSearchParams(Object.entries(Object.fromEntries(new URLSearchParams(cx.searchParams))).filter(([k]) => k !== 'k')).toString()}`;
+  return `/plan?b=${Math.round(((cx.budget || 0) + (cx.keep || 0)) / 100)}`;
+}
+
+// "Your money, the whole vacation": the booking next to the money the traveler protects for the
+// destination, every amount labeled as known, optional or the traveler's own, and nothing guessed.
+function vacationPanel(plan, { t, cx, token, reviewUrl }) {
+  if (!plan) return '';
+  const vacation = money(plan.vacation);
+  if (!plan.keep) {
+    return html`<section class="tb-panel tb-vac" id="vacation" aria-labelledby="vac-title">
+      <h2 id="vac-title">${icon('wallet')} Your money, the whole vacation</h2>
+      <p class="tb-muted">You told us ${vacation} is the booking. Money for after you land, for meals, getting around, tips and shopping, is not in this picture, and we never guess it for you.</p>
+      <p><a class="btn btn-ghost" href="${reserveUrl(cx)}">${icon('lock')} Protect some money for after I land</a></p>
+    </section>`;
+  }
+  const tag = (kind, text) => html`<span class="tb-vac-tag tb-vac-tag-${kind}">${text}</span>`;
+  const reserveRow = plan.raid
+    ? html`<div class="tb-vac-row is-over"><dt><b>Taken from your reserve</b>${tag('reserve', 'Your reserve')}<small>This booking is ${money(t.total - cx.budget)} over your booking budget, so it would use ${money(plan.raid)} of the ${money(plan.keep)} you protected${plan.over ? `, and ${money(plan.over)} beyond your whole ${vacation}` : ''}. We never do that quietly: it is your call.</small></dt><dd>−${money(plan.raid)}</dd></div>
+       <div class="tb-vac-row"><dt><b>Left of your reserve</b></dt><dd>${money(plan.reserveLeft)}</dd></div>`
+    : html`<div class="tb-vac-row"><dt><b>Protected for the destination</b>${tag('reserve', 'Your reserve')}<small>Your number, for after you land. The booking does not touch it. <a href="${reserveUrl(cx)}">Change it</a>.</small></dt><dd>${money(plan.keep)}</dd></div>
+       <div class="tb-vac-row"><dt><b>Unassigned</b>${tag('left', 'Left over')}<small>Left in your ${vacation} after this booking and your reserve, assigned to nothing yet.</small></dt><dd>${money(plan.unassigned)}</dd></div>`;
+  return html`<section class="tb-panel tb-vac${plan.raid ? ' tb-panel-warn' : ''}" id="vacation" aria-labelledby="vac-title">
+    <h2 id="vac-title">${icon('wallet')} Your money, the whole vacation</h2>
+    <p class="tb-muted">Your ${vacation} covers the vacation, not just the booking. Here is where it goes if you book this: your numbers and the booking’s complete price, nothing guessed.</p>
+    <dl class="tb-vac-rows">
+      <div class="tb-vac-row"><dt><b>Booking, paid today</b>${tag('known', 'Known')}<small>The complete price: flights, hotel${t.activities.length ? ', experiences' : ''}${t.transfer ? ', transfer' : ''}, taxes, mandatory fees and our service fee. Nothing is added at checkout.</small></dt><dd>${money(plan.booking)}</dd></div>
+      ${reserveRow}
+      <div class="tb-vac-row tb-vac-total"><dt>Total planned</dt><dd>${money(plan.planned)} <small>of ${vacation}</small></dd></div>
+    </dl>
+    <div class="tb-vac-arrive${plan.raid ? ' is-over' : ''}">
+      <span>If you book this, you arrive with</span><b>${money(plan.arrive)}</b>
+      <small>${plan.raid ? `What is left of your reserve after the booking.` : `Your ${money(plan.keep)} reserve${plan.unassigned ? ` plus ${money(plan.unassigned)} unassigned` : ''}.`} Over ${plural(plan.days, 'day')}, arrival to departure, that is about ${money(plan.perDay)} a day. Whether that is the vacation you want is your call; we don’t say what is enough.</small>
+    </div>
+    <div class="tb-vac-actions">
+      <a class="btn btn-navy" href="${reviewUrl}">${plan.raid ? 'Review it anyway' : 'That works, review and book'} ${icon('arrow')}</a>
+      <a class="btn btn-ghost" href="${reserveUrl(cx)}">${plan.raid ? 'Change what I protect' : 'I want more money there'}</a>
+      ${plan.raid ? html`<a class="btn btn-ghost" href="#cheaper">Make the booking cheaper</a>` : ''}
+    </div>
+    ${plan.optional.length ? html`<h3>${icon('plus')} Optional, at real prices</h3>
+      <p class="tb-muted tb-small">Not in this booking. Add any of them <a href="#customize">in the customizer</a> and the booking total changes before you pay; nothing is added on its own.</p>
+      <ul class="tb-vac-list">${plan.optional.map(o => html`<li><span>${o.label}</span><b>${o.from ? 'from ' : ''}${money(o.amount)}</b></li>`)}</ul>` : ''}
+    ${plan.covered.length ? html`<h3>${icon('check')} Your reserve does not need to cover</h3><p class="tb-muted tb-small">Already in the booking: ${plan.covered.join(', ')}.</p>` : ''}
+    <h3>${icon('minus')} We don’t put a number on</h3>
+    <p class="tb-muted tb-small">${plan.unknown.map(u => u.charAt(0).toUpperCase() + u.slice(1)).join(', ')}. There is no reliable figure for how you travel, so we don’t invent one. If you want them in the picture, <a href="${reserveUrl(cx)}">raise your reserve</a> and we rebuild the booking around what is left.</p>
+  </section>`;
+}
+
 // Smart alternatives / Make it cheaper / Make it better, all from real re-priced single changes.
 function singleChanges(t, options, token, cx) {
   const s = t.spec;
@@ -160,6 +212,7 @@ function tripView(ctx, { data, cx, user, saved, dreamGap, named = null }) {
   const unlock = budgetUnlocks(changes, diff);
   const reviewUrl = `/trip/${token}/review?${contextParams(cx, { seen: t.total })}`;
   const tos = tradeoffs(t, cx);
+  const plan = vacationPlan(t, cx, options);
   const body = html`
 <div class="container tb-trip">
   <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a> / ${cx.searchParams ? html`<a href="/trips?${cx.searchParams}">Your trips</a> / ` : ''}<span aria-current="page">${t.dest.name}</span></nav>
@@ -191,8 +244,9 @@ function tripView(ctx, { data, cx, user, saved, dreamGap, named = null }) {
   <div class="tb-trip-grid">
     <div class="tb-trip-main">
       ${verdictPanel(v, scores)}
-      ${budget ? budgetMeter(t.total, budget) : ''}
-      ${rescue.length ? html`<section class="tb-panel tb-panel-warn" aria-labelledby="rescue-title"><h2 id="rescue-title">${icon('alert')} Get me back to my price</h2><p>This trip is ${money(-diff)} over your ${dollars(budget)}. Any one of these gets it back under:</p>${changeList(rescue, { empty: '' })}</section>` : ''}
+      ${budget ? budgetMeter(t.total, budget, { title: cx.keep ? 'Your booking budget' : 'Your budget' }) : ''}
+      ${vacationPanel(plan, { t, cx, token, reviewUrl })}
+      ${rescue.length ? html`<section class="tb-panel tb-panel-warn" aria-labelledby="rescue-title"><h2 id="rescue-title">${icon('alert')} Get me back to my price</h2><p>This trip is ${money(-diff)} over your ${dollars(budget)}${cx.keep ? ' booking budget' : ''}. Any one of these gets it back under:</p>${changeList(rescue, { empty: '' })}</section>` : ''}
       ${unlockPanel(t, unlock, { budget, diff, token, cx, reviewUrl })}
       ${time ? timePanel(t, time, timeAlts, token, cx, pto) : ''}
 
@@ -240,7 +294,7 @@ function tripView(ctx, { data, cx, user, saved, dreamGap, named = null }) {
     <aside class="tb-trip-side">
       <div class="tb-sticky">
         <div class="tb-side-price"><span>Total for ${plural(s.travelers, 'traveler')}</span><b>${money(t.total)}</b><small>${money(t.perTraveler)} per traveler · ${money(t.perNight)} per night · taxes and fees included</small>
-          ${budget ? html`<p class="${diff < 0 ? 'tb-side-over' : 'tb-side-under'}">${diff < 0 ? `${money(-diff)} over your budget` : `${money(diff)} under your ${dollars(budget)} budget`}</p>` : ''}
+          ${budget ? html`<p class="${diff < 0 ? 'tb-side-over' : 'tb-side-under'}">${diff < 0 ? `${money(-diff)} over your ${cx.keep ? 'booking budget' : 'budget'}` : `${money(diff)} under your ${dollars(budget)} ${cx.keep ? 'booking budget' : 'budget'}`}</p>${cx.keep ? html`<p class="tb-side-keep">${icon('lock')} ${money(cx.keep)} protected for the destination · <a href="#vacation">the whole picture</a></p>` : ''}` : ''}
           <a class="btn btn-navy btn-block" href="${reviewUrl}">Review and book ${icon('arrow')}</a>
           <p class="tb-muted tb-small">Nothing is charged until you confirm on the payment page.</p></div>
         ${scorecard(scores, t.demo)}
@@ -269,8 +323,12 @@ function reviewView(ctx, { data, cx, verify, user, promoError, promoCode }) {
   const reality = realityCheck(t, { weather });
   const REALITY_STATUS = { ok: 'Fine', 'heads-up': 'Heads-up', verify: 'Check before paying' };
   const changes = verify.status !== 'same' && diff !== null && diff < 0 ? singleChanges(t, data.options, token, cx).filter(c => c.total <= budget).sort((a, b) => b.total - a.total).slice(0, 4) : [];
+  const plan = vacationPlan(t, cx, data.options);
+  // A price rise with money protected for the destination: say where the increase comes from,
+  // and never take it from the reserve without the traveler choosing that by name.
+  const rise = verify.status === 'higher' && plan && plan.keep ? { amount: verify.diff, fromReserve: Math.max(0, plan.raid - Math.max(0, Math.min(plan.keep, (t.total - verify.diff) - budget))) } : null;
   const said = [];
-  if (budget) said.push([`Under ${dollars(budget)}`, t.total <= budget]);
+  if (budget) said.push([cx.keep ? `A booking under ${dollars(budget)}, keeping ${dollars(cx.keep)} for the destination` : `Under ${dollars(budget)}`, t.total <= budget]);
   if (cx.style && cx.style !== 'surprise') said.push([cx.style === 'city' ? 'A city break' : cx.style === 'all-inclusive' ? 'All-inclusive' : `A ${cx.style} trip`, cx.style === 'all-inclusive' ? t.hotel.features.allInclusive : t.dest.styles.includes(cx.style)]);
   if (cx.nightsAsked) said.push([plural(cx.nightsAsked, 'night'), s.nights >= cx.nightsAsked]);
   if (cx.priority === 'flights') said.push(['Nonstop flights', t.flight.stops === 0]);
@@ -281,6 +339,18 @@ function reviewView(ctx, { data, cx, verify, user, promoError, promoCode }) {
     cheaper: html`<div class="alert alert-success tb-price-status" role="status">${icon('trend')}<span><b>Good news — your trip dropped to ${money(t.total)}</b> (${money(verify.diff)} less than when you last looked).</span></div>`,
     higher: html`<div class="alert alert-warning tb-price-status" role="alert">${icon('alert')}<span><b>Your trip price changed by ${money(verify.diff)}</b> and is now ${money(t.total)}. We never charge a changed price without your approval: continue only if that’s fine, or change something below.</span></div>`,
   }[verify.status];
+  const riseBlock = rise ? html`<section class="tb-panel tb-panel-warn tb-rise" aria-labelledby="rise-title">
+      <h2 id="rise-title">${icon('alert')} The booking went up by ${money(rise.amount)}. Where should it come from?</h2>
+      <p>${rise.fromReserve
+        ? `Your unassigned money covers ${money(rise.amount - rise.fromReserve)} of it; the other ${money(rise.fromReserve)} would come out of the ${money(plan.keep)} you protected for the destination. We don’t take that quietly.`
+        : `It fits inside your unassigned money, so your ${money(plan.keep)} reserve stays untouched; ${money(plan.unassigned)} stays unassigned after it.`}</p>
+      <ul class="tb-rise-options">
+        ${changes.length ? html`<li>${icon('trend')}<div><b>Find ${money(rise.amount)} in the booking</b><p>Any one of these brings the booking back under your ${dollars(budget)}:</p>${changeList(changes, { empty: '' })}</div></li>` : ''}
+        ${rise.fromReserve ? html`<li>${icon('lock')}<div><b>Take ${money(rise.fromReserve)} from my reserve</b><p>Approve below: the button says exactly that, and you arrive with ${money(plan.arrive)} instead of ${money(plan.arrive + rise.fromReserve)}.</p></div></li>` : html`<li>${icon('check')}<div><b>Use unassigned money</b><p>Approve below; your reserve is not part of it.</p></div></li>`}
+        <li>${icon('sliders')}<div><b>Change my reserve</b><p><a href="${reserveUrl(cx)}">Protect a different amount</a> and we rebuild the trips around it.</p></div></li>
+        <li>${icon('arrow-left')}<div><b>Don’t accept the new price</b><p>${cx.searchParams ? html`<a href="/trips?${cx.searchParams}">Back to your trips</a>` : html`<a href="/trip/${token}?${contextParams(cx)}">Back to the trip</a>`}; nothing has been charged.</p></div></li>
+      </ul>
+    </section>` : '';
   const body = html`
 <div class="container tb-review">
   ${stepsBar(1)}
@@ -288,7 +358,8 @@ function reviewView(ctx, { data, cx, verify, user, promoError, promoCode }) {
   <div data-checked>
     ${statusBlock}
     ${verdictPanel(v, data.scores, { compact: true })}
-    ${changes.length ? html`<section class="tb-panel tb-panel-warn"><h2>${icon('alert')} Get me back to my price</h2><p>The new price is ${money(-diff)} over your ${dollars(budget)}. Any of these brings it back under:</p>${changeList(changes, { empty: '' })}</section>` : ''}
+    ${riseBlock}
+    ${changes.length && !rise ? html`<section class="tb-panel tb-panel-warn"><h2>${icon('alert')} Get me back to my price</h2><p>The new price is ${money(-diff)} over your ${dollars(budget)}. Any of these brings it back under:</p>${changeList(changes, { empty: '' })}</section>` : ''}
     <div class="tb-review-grid">
       <section class="tb-panel" aria-labelledby="this-title">
         <h2 id="this-title">This is your trip</h2>
@@ -301,7 +372,12 @@ function reviewView(ctx, { data, cx, verify, user, promoError, promoCode }) {
           <div><dt>Experiences</dt><dd>${t.activities.length ? t.activities.map(a => a.name).join(', ') : 'None added'}</dd></div>
           <div><dt>Extras</dt><dd>${[t.transfer && 'Private airport transfer', (s.bags || t.flight.checkedBagIncluded) && 'Checked bags'].filter(Boolean).join(', ') || 'None'}</dd></div>
         </dl>
-        ${budget ? html`<div class="tb-final-nums"><div><span>Your original budget</span><b>${money(budget)}</b></div><div><span>Final price</span><b>${money(t.total)}</b></div><div class="${diff < 0 ? 'is-over' : ''}"><span>${diff < 0 ? 'Over budget' : 'You keep'}</span><b>${money(Math.abs(diff))}</b></div></div>` : html`<div class="tb-final-nums"><div><span>Final price</span><b>${money(t.total)}</b></div></div>`}
+        ${plan && plan.keep ? html`<div class="tb-vac-final" id="vacation"><p class="tb-recipe-title">Your vacation plan</p>
+          <div class="tb-final-nums"><div><span>Pay today</span><b>${money(plan.booking)}</b></div><div class="${plan.raid ? 'is-over' : ''}"><span>${plan.raid ? 'Left of your reserve' : 'Protected for the destination'}</span><b>${money(plan.reserveLeft)}</b></div><div class="${plan.raid ? 'is-over' : ''}"><span>${plan.raid ? 'Taken from your reserve' : 'Unassigned'}</span><b>${money(plan.raid || plan.unassigned)}</b></div></div>
+          <p class="tb-vac-fit ${plan.fits ? 'is-ok' : 'is-over'}">${icon(plan.fits ? 'check' : 'alert')} <b>Does the whole trip fit?</b> ${plan.fits
+            ? `Yes. ${money(plan.booking)} booking plus your ${money(plan.keep)} reserve is ${money(plan.planned)} of your ${money(plan.vacation)}, and you arrive with ${money(plan.arrive)}: about ${money(plan.perDay)} a day over ${plural(plan.days, 'day')}. Whether that is enough is your call.`
+            : `Not as planned. The booking is ${money(t.total - budget)} over your ${dollars(budget)} booking budget, so it takes ${money(plan.raid)} of the ${money(plan.keep)} you protected${plan.over ? ` and ${money(plan.over)} beyond your whole ${money(plan.vacation)}` : ''}. You would arrive with ${money(plan.arrive)}. Only you can decide that; nothing happens without the button below.`}</p></div>`
+          : budget ? html`<div class="tb-final-nums"><div><span>Your original budget</span><b>${money(budget)}</b></div><div><span>Final price</span><b>${money(t.total)}</b></div><div class="${diff < 0 ? 'is-over' : ''}"><span>${diff < 0 ? 'Over budget' : 'You keep'}</span><b>${money(Math.abs(diff))}</b></div></div>` : html`<div class="tb-final-nums"><div><span>Final price</span><b>${money(t.total)}</b></div></div>`}
         ${recipe(t, budget)}
       </section>
       <aside>
@@ -339,7 +415,7 @@ function reviewView(ctx, { data, cx, verify, user, promoError, promoCode }) {
       <h2>Happy with everything?</h2>
       <p class="tb-muted">Next: traveler details and payment. <b>Nothing will be charged until you confirm.</b></p>
       <div class="tb-confirm-actions">
-        <button class="btn btn-navy btn-lg" type="submit">${verify.status === 'higher' ? `Approve ${money(t.total)} and continue` : 'Yes — continue to book'} ${icon('arrow')}</button>
+        <button class="btn btn-navy btn-lg" type="submit">${rise && rise.fromReserve ? `Approve ${money(t.total)} and take ${money(rise.fromReserve)} from my reserve` : rise ? `Approve ${money(t.total)} from unassigned money` : verify.status === 'higher' ? `Approve ${money(t.total)} and continue` : plan && plan.raid ? `Book for ${money(t.total)}, using ${money(plan.raid)} of my reserve` : 'Yes — continue to book'} ${icon('arrow')}</button>
         <a class="btn btn-ghost btn-lg" href="/trip/${token}?${contextParams(cx)}#customize">Change something</a>
       </div>
       <p class="tb-muted tb-small">Not sure yet? ${user ? html`<a href="/trip/${token}?${contextParams(cx)}">Save or watch this trip</a>` : html`<a href="/signin?next=${encodeURIComponent(`/trip/${token}?${contextParams(cx)}`)}">Sign in to save or watch it</a>`} · <button class="tb-linkbtn" type="button" data-share="${token}" data-share-title="${s.nights} nights in ${t.dest.name}">share it with someone</button> · <a href="/contact">talk to support</a>. We don’t do pressure.</p>

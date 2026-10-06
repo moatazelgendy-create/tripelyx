@@ -8,6 +8,7 @@ const { encodeSpec } = require('../../trips/spec');
 const { contextParams, searchParams } = require('../../trips/optimizer');
 const { money, dollars, longDate, shortDate, plural, hm, statusPill, demoBadge, budgetMeter, recipe, stepsBar } = require('./common');
 const { budgetForm } = require('./home');
+const { vacationPlan } = require('../../trips/vacation');
 const { tripCard } = require('./plan');
 
 function howItWorksView(ctx) {
@@ -120,14 +121,30 @@ ${pageHero({ eyebrow, title, lead })}
 }
 
 // ---- checkout for a trip quote ----
+// The checkout aside shows the whole-vacation plan next to what is paid today, in the traveler's
+// own numbers: pay today, the reserve they protected, and what is left unassigned.
+function vacationSummary(plan) {
+  if (!plan || !plan.keep) return '';
+  return html`<div class="tb-vac-final tb-vac-compact"><p class="tb-recipe-title">Your vacation plan</p>
+    <dl class="tb-vac-rows">
+      <div class="tb-vac-row"><dt>Pay today</dt><dd>${money(plan.booking)}</dd></div>
+      <div class="tb-vac-row${plan.raid ? ' is-over' : ''}"><dt>${plan.raid ? 'Left of your reserve' : 'Protected for the destination'}</dt><dd>${money(plan.reserveLeft)}</dd></div>
+      ${plan.raid ? html`<div class="tb-vac-row is-over"><dt>Taken from your reserve</dt><dd>−${money(plan.raid)}</dd></div>` : html`<div class="tb-vac-row"><dt>Unassigned</dt><dd>${money(plan.unassigned)}</dd></div>`}
+      <div class="tb-vac-row tb-vac-total"><dt>Total planned</dt><dd>${money(plan.planned)} <small>of ${money(plan.vacation)}</small></dd></div>
+    </dl>
+    <p class="tb-small tb-muted">You arrive with ${money(plan.arrive)}: about ${money(plan.perDay)} a day over ${plural(plan.days, 'day')}. Only the booking is charged; the rest stays yours.</p></div>`;
+}
+
 function tripCheckoutView(ctx, { quote: q, paymentConfig }) {
   const t = q.trip;
   const b = q.budget && q.budget.budget;
-  const tripUrl = `/trip/${t.token}?${contextParams({ budget: b, allowOver: q.budget && q.budget.allowOver })}`;
+  const bcx = { budget: b, keep: (q.budget && q.budget.keep) || 0, allowOver: q.budget && q.budget.allowOver };
+  const plan = vacationPlan(t, bcx);
+  const tripUrl = `/trip/${t.token}?${contextParams(bcx)}`;
   const body = html`
 <div class="container tb-checkout">
   ${stepsBar(2)}
-  ${q.expired ? html`<div class="empty-state">${icon('clock')}<h3>This price has expired</h3><p>Prices are held for ${ctx.config.quoteTtlMinutes} minutes. Go back to re-check the live price.</p><a class="btn btn-navy btn-sm" href="/trip/${t.token}/review?${contextParams({ budget: b }, { seen: q.total })}">Re-check the price</a></div>`
+  ${q.expired ? html`<div class="empty-state">${icon('clock')}<h3>This price has expired</h3><p>Prices are held for ${ctx.config.quoteTtlMinutes} minutes. Go back to re-check the live price.</p><a class="btn btn-navy btn-sm" href="/trip/${t.token}/review?${contextParams(bcx, { seen: q.total })}">Re-check the price</a></div>`
     : html`<div class="checkout-layout">
     <div>
       <p class="alert alert-info" data-quote-timer data-expires="${q.expiresAt}">${icon('clock')}<span>Your price of ${money(q.total)} is confirmed and held for <span class="timer" data-timer>${ctx.config.quoteTtlMinutes}:00</span>. We check it once more when you pay; a changed price is never charged without your approval.</span></p>
@@ -166,7 +183,7 @@ function tripCheckoutView(ctx, { quote: q, paymentConfig }) {
       <p class="summary-meta">${longDate(t.spec.depart)} – ${shortDate(t.flight.return)} · ${plural(t.spec.travelers, 'traveler')} · from ${t.origin.city}</p>
       <ul class="tb-list tb-small">${t.included.map(i => html`<li>${i}</li>`)}</ul>
       ${recipe(t, b)}
-      ${b ? budgetMeter(q.total, b, { compact: true }) : ''}
+      ${plan && plan.keep ? vacationSummary(plan) : b ? budgetMeter(q.total, b, { compact: true }) : ''}
       <details class="tb-small"><summary>Cancellation terms</summary><ul class="tb-list">${t.policies.map(p => html`<li><b>${p.component}:</b> ${p.text}</li>`)}</ul></details>
       ${q.demo ? html`<p class="policy">${icon('info')}Demo inventory — this booking won’t reach a real supplier.</p>` : ''}
       <p class="tb-small"><a href="${tripUrl}">${icon('arrow-left')} Change something</a></p>
@@ -197,6 +214,7 @@ function tripBookingView(ctx, { booking: b, cancellationPreview: preview, paymen
     failed: 'This trip couldn’t be confirmed', refund_pending: 'Refund in progress', refunded: 'Refunded',
   }[b.status] || b.status;
   const budget = b.budget && b.budget.budget;
+  const plan = vacationPlan(t, { budget, keep: (b.budget && b.budget.keep) || 0 });
   const body = html`
 <div class="container tb-command">
   ${ok ? stepsBar(3) : ''}
@@ -227,7 +245,8 @@ function tripBookingView(ctx, { booking: b, cancellationPreview: preview, paymen
         ${recipe(t, budget)}
         ${b.payment ? html`<p class="secure-note">${icon('card')}Paid ${money(b.total)} with ${b.payment.brand} •••• ${b.payment.last4}${b.payment.mode === 'test' ? ' (test mode)' : ''}. Remaining balance: ${money(0)}.</p>` : ''}
         ${b.refundAmount ? html`<p class="secure-note">${icon('info')}Refund: ${money(b.refundAmount)}</p>` : ''}
-        ${budget && b.total <= budget ? html`<p class="tb-celebrate">${icon('sparkle')} Great choice. You came in <b>${money(budget - b.total)}</b> under your ${dollars(budget)} budget.</p>` : ''}
+        ${budget && b.total <= budget ? html`<p class="tb-celebrate">${icon('sparkle')} Great choice. You came in <b>${money(budget - b.total)}</b> under your ${dollars(budget)}${plan && plan.keep ? ' booking' : ''} budget.</p>` : ''}
+        ${plan && plan.keep ? html`<p class="tb-vac-after">${icon('lock')} You protected <b>${money(plan.reserveLeft)}</b> for the destination${plan.unassigned ? `, plus ${money(plan.unassigned)} unassigned` : ''}: about ${money(plan.perDay)} a day over ${plural(plan.days, 'day')}, arrival to departure. Nothing on this page spends it.</p>` : ''}
       </section>
       <section class="tb-panel" aria-labelledby="info-title">
         <h2 id="info-title">Important travel information</h2>

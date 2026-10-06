@@ -90,7 +90,8 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
       const { query, missing } = svc.parse(req.query);
       if (missing.length) return res.redirect(303, `/plan?${new URLSearchParams(Object.entries(req.query).filter(([, v]) => typeof v === 'string' && v)).toString()}`);
       const result = await svc.search(query, { visitor: req.visitor, user: user(req) });
-      send(res, resultsView(ctx, { result, originCity: originCity(query.origin), user: user(req) }));
+      const relax = result.picks.length ? null : await svc.oneRuleAway(query);
+      send(res, resultsView(ctx, { result, relax, originCity: originCity(query.origin), user: user(req) }));
     } catch (e) { next(e); }
   });
 
@@ -224,7 +225,7 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
   r.post('/trip/:token/quote', writeLimiter, sameOrigin, form, async (req, res, next) => {
     const cx = optimizer.parseContext(Object.fromEntries(new URLSearchParams(String(req.body.cx || ''))));
     try {
-      const quote = await svc.createQuote(req.params.token, { approvedTotal: Number(req.body.approvedTotal), budget: cx.budget, allowOver: cx.allowOver, promoCode: req.body.promo, user: user(req) });
+      const quote = await svc.createQuote(req.params.token, { approvedTotal: Number(req.body.approvedTotal), budget: cx.budget, keep: cx.keep, allowOver: cx.allowOver, promoCode: req.body.promo, user: user(req) });
       await tracked(req, 'checkout_started', { dest: quote.trip.dest.id, total: quote.total });
       res.redirect(303, `/checkout/${quote.id}`);
     } catch (e) {

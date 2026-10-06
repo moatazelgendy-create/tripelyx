@@ -94,21 +94,23 @@ function searchParams(q, extra = {}) {
 
 // The budget context a trip page carries so its numbers can be read against the traveler's budget.
 function budgetContext(q) {
-  return { budget: q.budget, allowOver: q.allowOver, style: q.style, priority: q.priority, nightsAsked: q.nights };
+  return { budget: q.budget, keep: q.keep || 0, allowOver: q.allowOver, style: q.style, priority: q.priority, nightsAsked: q.nights };
 }
 
-// The same context carried on trip page links (?b=1500&ov=10&style=beach&prio=hotel&nights=5).
+// The same context carried on trip page links (?b=1500&k=300&ov=10&style=beach&prio=hotel&nights=5).
+// `b` is the booking budget the trip is read against; `k` is the money the traveler protects for
+// the destination, so the whole vacation budget is b + k.
 function parseContext(raw = {}) {
   const b = int(raw.b, null, 100, 1000000);
   return {
-    budget: b ? b * 100 : null, allowOver: raw.ov === '10' ? 10 : 0,
+    budget: b ? b * 100 : null, keep: b ? int(raw.k, 0, 0, 1000000) * 100 : 0, allowOver: raw.ov === '10' ? 10 : 0,
     style: STYLES.includes(raw.style) ? raw.style : 'surprise', priority: PRIORITIES.includes(raw.prio) ? raw.prio : 'price',
     nightsAsked: int(raw.nights, null, 2, 14) || undefined, searchParams: typeof raw.s === 'string' ? raw.s.slice(0, 400) : null,
   };
 }
 
 function contextParams(ctx, extra = {}) {
-  const p = { b: ctx.budget ? Math.round(ctx.budget / 100) : undefined, ov: ctx.allowOver ? '10' : undefined, style: ctx.style && ctx.style !== 'surprise' ? ctx.style : undefined, prio: ctx.priority && ctx.priority !== 'price' ? ctx.priority : undefined, nights: ctx.nightsAsked, s: ctx.searchParams || undefined, ...extra };
+  const p = { b: ctx.budget ? Math.round(ctx.budget / 100) : undefined, k: ctx.budget && ctx.keep ? Math.round(ctx.keep / 100) : undefined, ov: ctx.allowOver ? '10' : undefined, style: ctx.style && ctx.style !== 'surprise' ? ctx.style : undefined, prio: ctx.priority && ctx.priority !== 'price' ? ctx.priority : undefined, nights: ctx.nightsAsked, s: ctx.searchParams || undefined, ...extra };
   return new URLSearchParams(Object.entries(p).filter(([, v]) => v !== undefined && v !== null && v !== '')).toString();
 }
 
@@ -408,4 +410,42 @@ function customizerOptions(inventory, t, settings, now = new Date()) {
   return { hotels, flights, nights, activities, transfer, bags, dates };
 }
 
-module.exports = { search, dreamSearch, parseSearch, searchParams, budgetContext, parseContext, contextParams, tradeoffs, scoreTrip, whyThisTrip, customizerOptions, memoInventory, activitySets, hotelAllowed, int, STYLES, PRIORITIES, WHO_DEFAULT };
+
+// One rule away: when nothing fits, re-run the search with exactly one of the traveler's rules
+// relaxed and report only the relaxations that really produce a trip, with its real price. A rule
+// that does not get there on its own is named as such; nothing is suggested that was not priced.
+const STYLE_WORD = { beach: 'a beach trip', city: 'a city break', adventure: 'an adventure trip', romantic: 'a romantic trip', family: 'a family trip', 'all-inclusive': 'an all-inclusive trip' };
+const PRIO_WORD = { hotel: 'the hotel', flights: 'nonstop flights', activities: 'experiences', longer: 'a longer trip' };
+function oneRuleAway(inventory, q, { settings, now = new Date() }) {
+  const candidates = [
+    q.dateMode !== 'anytime' && { key: 'dates', rule: q.dateMode === 'exact' ? 'your exact dates' : `travel in ${q.month}`, label: 'Any dates in the next few months', q: { ...q, dateMode: 'anytime', depart: null, month: null } },
+    q.nights > 2 && { key: 'nights', rule: `${q.nights} nights`, label: `${q.nights - 1} nights instead of ${q.nights}`, q: { ...q, nights: q.nights - 1 } },
+    q.nights > 3 && { key: 'nights2', rule: `${q.nights} nights`, label: `${q.nights - 2} nights instead of ${q.nights}`, q: { ...q, nights: q.nights - 2 } },
+    q.style !== 'surprise' && { key: 'style', rule: STYLE_WORD[q.style] || q.style, label: `Any style, not only ${STYLE_WORD[q.style] || q.style}`, q: { ...q, style: 'surprise' } },
+    q.priority !== 'price' && { key: 'prio', rule: `${PRIO_WORD[q.priority] || q.priority} first`, label: `Lowest price first, instead of ${PRIO_WORD[q.priority] || q.priority}`, q: { ...q, priority: 'price' } },
+    !q.allowOver && { key: 'over', rule: 'your budget as a hard ceiling', label: 'Up to 10% over your budget', q: { ...q, allowOver: 10 } },
+    q.keep > 0 && { key: 'keep', rule: `${fmt(q.keep)} protected for the destination`, label: 'Part of your reserve', q: { ...q, budget: q.budget + q.keep, keep: 0 } },
+  ].filter(Boolean);
+  const works = [];
+  const notAlone = [];
+  for (const c of candidates) {
+    const r = search(inventory, c.q, { settings, now });
+    const pick = r.picks[0];
+    if (!pick) { notAlone.push({ key: c.key, label: c.label }); continue; }
+    const total = pick.trip.total;
+    let out = { key: c.key, rule: c.rule, label: c.label, total, dest: pick.trip.dest.name, nights: pick.trip.spec.nights, over: Math.max(0, total - q.budget), params: searchParams(c.q) };
+    if (c.key === 'keep') {
+      const used = Math.ceil((total - q.budget) / 100) * 100; // whole dollars, rounded up, so the pick fits the budget it is read against
+      if (used <= 0 || used > q.keep) { notAlone.push({ key: c.key, label: c.label }); continue; }
+      // Offer exactly the part of the reserve the pick needs, so the booking budget it is read
+      // against is the one the traveler agreed to, and the rest stays protected.
+      const rq = { ...q, budget: q.budget + used, keep: q.keep - used };
+      out = { ...out, label: `Use ${fmt(used)} of the ${fmt(q.keep)} you protected`, used, over: 0, params: searchParams(rq) };
+    }
+    works.push(out);
+  }
+  works.sort((a, b) => a.over - b.over || a.total - b.total);
+  return { works, notAlone };
+}
+
+module.exports = { search, dreamSearch, oneRuleAway, parseSearch, searchParams, budgetContext, parseContext, contextParams, tradeoffs, scoreTrip, whyThisTrip, customizerOptions, memoInventory, activitySets, hotelAllowed, int, STYLES, PRIORITIES, WHO_DEFAULT };

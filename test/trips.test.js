@@ -11,6 +11,7 @@ const decision = require('../server/trips/decision');
 const { singleChanges } = require('../server/views/trips/trip');
 const { addDays, today } = require('../server/lib/dates');
 const { createTripIntegrations } = require('../server/trips/integrations');
+const { vacationPlan } = require('../server/trips/vacation');
 
 const inv = createTripIntegrations(loadConfig({ APP_ENV: 'development' }));
 const QUERY = { b: '1500', k: '0', from: 'SFO', who: 'couple', when: 'anytime', nights: '5', style: 'beach', prio: 'hotel' };
@@ -738,4 +739,137 @@ test('cross-site form posts are refused', async t => {
   t.after(app.close);
   const res = await fetch(app.base + '/signin', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', 'sec-fetch-site': 'cross-site' }, body: 'email=a@b.co&password=x', redirect: 'manual' });
   assert.equal(res.status, 403);
+});
+
+test('the whole vacation: money protected for the destination travels with the trip and is never spent quietly', async t => {
+  const settings = DEFAULT_SETTINGS;
+  const money = c => `$${(c / 100).toLocaleString('en-US', { minimumFractionDigits: c % 100 ? 2 : 0, maximumFractionDigits: 2 })}`;
+  // The reserve rides on the trip-page context only together with the budget it belongs to.
+  const cx = optimizer.parseContext({ b: '1600', k: '400', style: 'beach' });
+  assert.equal(cx.budget, 160000); assert.equal(cx.keep, 40000);
+  assert.match(optimizer.contextParams(cx), /^b=1600&k=400/);
+  assert.equal(optimizer.parseContext({ k: '400' }).keep, 0, 'no reserve without a budget');
+  assert.ok(!/k=/.test(optimizer.contextParams(optimizer.parseContext({ b: '1600' }))));
+  assert.equal(optimizer.parseContext(Object.fromEntries(new URLSearchParams(optimizer.contextParams(cx)))).keep, 40000, 'round trip');
+
+  // A vacation budget with a reserve is a booking budget of the difference: a $1,900 booking is
+  // never "within" a $2,000 vacation that protects $400.
+  const { query } = optimizer.parseSearch({ ...QUERY, b: '2000', k: '400' }, { maps: inv.maps });
+  assert.equal(query.vacationBudget, 200000); assert.equal(query.keep, 40000); assert.equal(query.budget, 160000);
+  const r = optimizer.search(inv, query, { settings });
+  assert.ok(r.picks.length);
+  assert.ok(r.picks.every(p => p.trip.total <= 160000));
+  assert.equal(r.ctx.keep, 40000);
+
+  // The plan is the traveler's numbers and the booking's price, nothing estimated.
+  const t0 = r.picks[0].trip;
+  const options = optimizer.customizerOptions(inv, t0, settings);
+  const plan = vacationPlan(t0, r.ctx, options);
+  assert.equal(plan.vacation, 200000); assert.equal(plan.keep, 40000); assert.equal(plan.booking, t0.total);
+  assert.equal(plan.unassigned, 160000 - t0.total); assert.equal(plan.raid, 0); assert.equal(plan.arrive, 200000 - t0.total);
+  assert.equal(plan.planned, t0.total + 40000); assert.equal(plan.fits, true); assert.equal(plan.days, t0.spec.nights + 1);
+  assert.equal(plan.perDay % 100, 0, 'a planning figure in whole dollars, never false precision');
+  assert.ok(plan.unknown.length >= 3 && !('estimated' in plan), 'we never put a number on what we cannot know');
+  const transfer = plan.optional.find(o => o.key === 'transfer');
+  if (transfer) assert.equal(transfer.amount, options.transfer.delta, 'an optional amount is the customizer’s real price');
+  const over = vacationPlan(t0, { budget: t0.total - 10000, keep: 40000 });
+  assert.equal(over.fits, false); assert.equal(over.raid, 10000); assert.equal(over.reserveLeft, 30000); assert.equal(over.over, 0); assert.equal(over.arrive, 30000);
+  const beyond = vacationPlan(t0, { budget: t0.total - 50000, keep: 40000 });
+  assert.equal(beyond.raid, 40000); assert.equal(beyond.over, 10000); assert.equal(beyond.arrive, 0);
+  assert.equal(vacationPlan(t0, {}), null);
+
+  // One rule away: every relaxation offered was really searched, leads to the same pick at the
+  // same price, and every candidate rule is accounted for, offered or named as not enough alone.
+  for (const raw of [{ ...QUERY, b: '1300', k: '300', nights: '7' }, { ...QUERY, b: '700', k: '300', nights: '5', style: 'city', prio: 'flights' }, { ...QUERY, b: '900', k: '0', who: 'family', n: '4', nights: '7' }]) {
+    const nq = optimizer.parseSearch(raw, { maps: inv.maps }).query;
+    const nr = optimizer.search(inv, nq, { settings });
+    if (nr.picks.length) continue;
+    const relax = optimizer.oneRuleAway(inv, nq, { settings });
+    const candidates = (nq.dateMode !== 'anytime') + (nq.nights > 2) + (nq.nights > 3) + (nq.style !== 'surprise') + (nq.priority !== 'price') + (!nq.allowOver) + (nq.keep > 0);
+    assert.equal(relax.works.length + relax.notAlone.length, candidates, 'no rule is dropped silently');
+    for (const w of relax.works) {
+      const rq = optimizer.parseSearch(Object.fromEntries(new URLSearchParams(w.params)), { maps: inv.maps }).query;
+      const rr = optimizer.search(inv, rq, { settings });
+      assert.ok(rr.picks.length, `${w.key}: the page it links to has trips`);
+      assert.equal(rr.picks[0].trip.total, w.total, `${w.key}: the price named is the pick on that page`);
+      if (w.key === 'over') assert.ok(w.over > 0 && w.total <= Math.round(nq.budget * 1.1));
+      else assert.ok(w.total <= rq.budget, `${w.key}: within the budget it is read against`);
+      if (w.key === 'keep') { assert.equal(w.used % 100, 0); assert.ok(w.used > 0 && w.used <= nq.keep); assert.equal(rq.keep, nq.keep - w.used); assert.equal(rq.budget, nq.budget + w.used); }
+    }
+  }
+
+  // The pages: the question, the picture on the trip page, the review's fit check, a price rise
+  // that names where the money comes from, and the plan at checkout and after booking.
+  const app = await startApp();
+  t.after(app.close);
+  const c = client(app.base);
+  const noInline = (p, body) => { assert.ok(!/\sstyle="/.test(body), `${p} inline style`); assert.ok(!/<script(?![^>]*\bsrc=)(?![^>]*application\/json)[^>]*>/.test(body), `${p} inline script`); };
+  assert.match((await c.req('/plan?b=2000')).text, /just the booking, or the whole vacation\?[\s\S]*How much do you want available after you land\?/);
+  const results = await c.req(`/trips?${new URLSearchParams({ ...QUERY, b: '2000', k: '400' })}`);
+  assert.match(results.text, /\$400 is protected for after you land/);
+  assert.match(results.text, /Unassigned/);
+  const m = results.text.match(/href="(\/trip\/[^"?]+)\?([^"]*)"/);
+  const tripPath = m[1], qs = m[2].replace(/&amp;/g, '&');
+  assert.match(qs, /^b=1600&k=400/, 'the trip link carries the reserve with the booking budget');
+  const page = await c.req(`${tripPath}?${qs}`);
+  const total = Number(page.text.match(/"total":(\d+)/)[1]);
+  noInline('/trip', page.text);
+  assert.match(page.text, /Your money, the whole vacation/);
+  assert.match(page.text, /Your booking budget/);
+  assert.ok(page.text.includes(`Protected for the destination`) && page.text.includes(`<dd>${money(40000)}</dd>`));
+  assert.ok(page.text.includes(`you arrive with</span><b>${money(200000 - total)}</b>`), 'arrive = vacation − booking');
+  assert.match(page.text, /that is about \$\d{1,3}(,\d{3})* a day/, 'per day in whole dollars');
+  assert.match(page.text, /We don’t put a number on/);
+  assert.ok(!/estimated/i.test(page.text.slice(page.text.indexOf('id="vacation"'), page.text.indexOf('id="vacation"') + 6000)), 'nothing in the picture is an estimate');
+  assert.match(page.text, /href="\/plan\?b=2000&amp;from=SFO[^"]*"/, 'changing the reserve keeps the search');
+  const booking0 = await c.req(`${tripPath}?b=1600`);
+  assert.match(booking0.text, /You told us \$1,600 is the booking/);
+
+  const same = await c.req(`${tripPath}/review?${qs}&seen=${total}`);
+  assert.match(same.text, /Your vacation plan/); assert.match(same.text, /Does the whole trip fit\?<\/b> Yes\./); assert.match(same.text, /Yes — continue to book/);
+  assert.match(same.text, /A booking under \$1,600, keeping \$400 for the destination/);
+  noInline('/review', same.text);
+  const unassigned = 160000 - total;
+  const small = await c.req(`${tripPath}/review?${qs}&seen=${total - 5000}`);
+  assert.match(small.text, /went up by \$50\. Where should it come from\?/);
+  assert.match(small.text, /reserve stays untouched/); assert.match(small.text, new RegExp(`Approve ${money(total).replace(/[$.]/g, '\\$&')} from unassigned money`));
+  assert.ok(!/from my reserve/.test(small.text));
+  // A rise bigger than the unassigned money names the part that would come out of the reserve.
+  const bBelow = Math.floor((total - 5000) / 100); // a booking budget $50 below the price
+  const rose = await c.req(`${tripPath}/review?b=${bBelow}&k=400&ov=10&seen=${bBelow * 100 - 2000}`);
+  const fromReserve = total - bBelow * 100;
+  assert.match(rose.text, /Where should it come from\?/);
+  assert.ok(rose.text.includes(`take ${money(fromReserve)} from my reserve`), 'the button says exactly what it takes from the reserve');
+  assert.match(rose.text, /Change my reserve/); assert.match(rose.text, /Don’t accept the new price/);
+  // Over the booking budget without a rise: the trip page and the review say so by name.
+  const raidPage = await c.req(`${tripPath}?b=${bBelow}&k=400&ov=10`);
+  assert.match(raidPage.text, /Taken from your reserve/); assert.match(raidPage.text, /We never do that quietly/);
+  assert.match(raidPage.text, /tb-meter tb-meter-over/); assert.ok(!/tb-meter-(good|near|full)|Comfortably within budget|>Within budget</.test(raidPage.text), 'never "within budget" when the booking eats the reserve');
+  const raidReview = await c.req(`${tripPath}/review?b=${bBelow}&k=400&ov=10&seen=${total}`);
+  assert.match(raidReview.text, /Not as planned/); assert.ok(raidReview.text.includes(`using ${money(fromReserve)} of my reserve`));
+
+  // Checkout and the confirmation carry the plan; only the booking is charged.
+  const cxField = same.text.match(/name="cx" value="([^"]*)"/)[1].replace(/&amp;/g, '&');
+  assert.match(cxField, /k=400/);
+  const { quoteId, booking } = await quoteAndBook(c, { tripPath, approvedTotal: total, cxField });
+  const checkout = await c.req(`/checkout/${quoteId}`);
+  assert.match(checkout.text, /Your vacation plan/); assert.match(checkout.text, /Pay today/); assert.ok(checkout.text.includes(`<dd>${money(40000)}</dd>`));
+  assert.match(checkout.text, new RegExp(`Confirm &amp; pay ${money(total).replace(/[$.]/g, '\\$&')}`), 'the charge is the booking alone');
+  const paid = await c.req(`/api/bookings/${booking.ref}/pay`, { method: 'POST', json: { method: CARD } });
+  assert.equal(paid.status, 200, paid.text);
+  const confirmed = await c.req(`/booking/${booking.ref}`);
+  assert.ok(confirmed.text.includes(`You protected <b>${money(40000)}</b> for the destination`));
+  assert.match(confirmed.text, /under your \$1,600 booking budget/);
+
+  // No fit with a reserve: the collision is spelled out and only real relaxations are offered.
+  const nofit = await c.req(`/trips?${new URLSearchParams({ ...QUERY, b: '1300', k: '300', nights: '7' })}`);
+  if (/couldn’t build a trip/.test(nofit.text)) {
+    assert.match(nofit.text, /Your vacation budget is \$1,300\. You protect \$300 for the destination, which leaves \$1,000 for the booking/);
+    assert.match(nofit.text, /Protect less for the destination/);
+    assert.match(nofit.text, /One rule away|None of them gets there alone/);
+    for (const [, href] of nofit.text.matchAll(/<ul class="tb-relax">[\s\S]*?<\/ul>/g).next().value ? [...nofit.text.match(/<ul class="tb-relax">[\s\S]*?<\/ul>/)[0].matchAll(/href="([^"]+)"/g)] : []) {
+      const linked = await c.req(href.replace(/&amp;/g, '&'));
+      assert.equal(linked.status, 200); assert.match(linked.text, /Our pick/); assert.ok(!/couldn’t build a trip/.test(linked.text), 'a one-rule-away link never lands on another dead end');
+    }
+  }
 });

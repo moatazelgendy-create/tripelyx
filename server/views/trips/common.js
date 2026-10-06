@@ -34,7 +34,7 @@ function demoBadge(on, text = 'Demo data') {
 }
 
 // Budget health meter. Never hides an over-budget amount.
-function budgetMeter(total, budget, { compact = false } = {}) {
+function budgetMeter(total, budget, { compact = false, title = 'Your budget' } = {}) {
   if (!budget) return '';
   const diff = budget - total;
   const used = total / budget;
@@ -42,7 +42,7 @@ function budgetMeter(total, budget, { compact = false } = {}) {
   const label = diff < 0 ? `${money(-diff)} over budget` : state === 'full' ? 'Budget fully used' : state === 'near' ? 'Within budget' : 'Comfortably within budget';
   return html`<div class="tb-meter tb-meter-${state}${compact ? ' tb-meter-compact' : ''}">
     <div class="tb-meter-nums">
-      <div><span>Your budget</span><b>${money(budget)}</b></div>
+      <div><span>${title}</span><b>${money(budget)}</b></div>
       <div><span>This trip</span><b>${money(total)}</b></div>
       <div><span>${diff < 0 ? 'Over by' : 'You keep'}</span><b>${money(Math.abs(diff))}</b></div>
     </div>

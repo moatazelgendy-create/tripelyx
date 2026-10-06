@@ -47,9 +47,9 @@ function stepView(ctx, { step, raw: given, query, origins, dream }) {
     budget: html`<h1>How much do you want to spend?</h1><p class="tb-q-sub">Your total for the whole trip: flights, hotel, experiences, taxes and fees. You can keep part of it aside for spending next.</p>
       <div class="tb-budget-input"><span class="tb-currency" aria-hidden="true">$</span><input id="q-b" name="b" type="text" inputmode="numeric" pattern="[0-9,]*" placeholder="1,500" value="${given.b || ''}" required autofocus aria-label="Budget in dollars"><button class="btn btn-blue btn-lg" type="submit">Continue ${icon('arrow')}</button></div>
       <div class="tb-radio-row" role="radiogroup" aria-label="Budget type"><label><input type="radio" name="bt" value="total"${given.bt !== 'pp' ? raw(' checked') : ''}> Total for everyone</label><label><input type="radio" name="bt" value="pp"${given.bt === 'pp' ? raw(' checked') : ''}> Per person</label></div>`,
-    keep: html`<h1>Keep some money for food and spending?</h1><p class="tb-q-sub">We’ll build the trip around what’s left, so your ${dollars(query.budgetInput * 100)} covers the whole vacation, not just the booking.</p>
-      ${choice('k', [['0', 'Use my full budget', 'wallet', `Build around ${dollars(query.budgetInput * 100)}`], ['200', 'Keep $200', null, `Build around ${dollars((query.budgetInput - 200) * 100)}`], ['300', 'Keep $300', null, `Build around ${dollars((query.budgetInput - 300) * 100)}`], ['500', 'Keep $500', null, `Build around ${dollars((query.budgetInput - 500) * 100)}`]])}
-      <div class="tb-inline-form"><label for="q-k">Custom amount to keep</label><div class="tb-budget-input tb-budget-input-sm"><span class="tb-currency" aria-hidden="true">$</span><input id="q-k" name="k" type="text" inputmode="numeric" pattern="[0-9,]*" placeholder="400"><button class="btn btn-ghost" type="submit">Continue</button></div></div>`,
+    keep: html`<h1>Is ${dollars(query.budgetInput * 100)} just the booking, or the whole vacation?</h1><p class="tb-q-sub">If it is the whole vacation, say how much you want available after you land, for meals, getting around, tips and shopping. We build the booking around the rest and never count that money as spent. It is your number: we don’t say how much is enough.</p>
+      ${choice('k', [['0', 'Just the booking', 'wallet', `Build the booking around ${dollars(query.budgetInput * 100)}`], ['200', 'The whole vacation, keep $200', 'lock', `Booking up to ${dollars((query.budgetInput - 200) * 100)}, $200 protected`], ['300', 'The whole vacation, keep $300', 'lock', `Booking up to ${dollars((query.budgetInput - 300) * 100)}, $300 protected`], ['500', 'The whole vacation, keep $500', 'lock', `Booking up to ${dollars((query.budgetInput - 500) * 100)}, $500 protected`]])}
+      <div class="tb-inline-form"><label for="q-k">How much do you want available after you land?</label><div class="tb-budget-input tb-budget-input-sm"><span class="tb-currency" aria-hidden="true">$</span><input id="q-k" name="k" type="text" inputmode="numeric" pattern="[0-9,]*" placeholder="400" aria-describedby="q-k-hint"><button class="btn btn-ghost" type="submit">Protect it</button></div><p class="tb-muted tb-small" id="q-k-hint">Any amount under ${dollars(query.budgetInput * 100)}. The booking is built from what is left.</p></div>`,
     from: html`<h1>Where are you leaving from?</h1><p class="tb-q-sub">We check your city’s main airport, and tell you when a nearby one would save money.</p>${choice('from', origins.map(o => [o.id, o.city, null, o.airports.map(a => a.code).join(' · ')]))}`,
     who: html`<h1>Who’s traveling?</h1>${choice('who', WHO_OPTIONS.map(([v, l, ic]) => [v, l, ic, v === 'solo' ? '1 traveler' : v === 'couple' ? '2 travelers, one room' : v === 'family' ? 'Family rooms, no adults-only hotels' : 'Shared rooms, two to a room']))}`,
     n: html`<h1>How many travelers?</h1><p class="tb-q-sub">Including you.</p>${choice('n', [2, 3, 4, 5, 6, 7, 8].map(n => [String(n), String(n)]))}`,
@@ -113,7 +113,7 @@ function tripCard(p, q, cx, { over = false, rank } = {}) {
       ${p.upgrade ? html`<p class="tb-card-upgrade">${icon('trend')}<span>+${money(p.upgrade.delta)} for ${p.upgrade.gets}${p.upgrade.over ? ', using the extra you allowed' : ''}</span></p>` : ''}
       <div class="tb-card-price">
         <div><span>Total, everything included</span><b>${money(t.total)}</b><small>${money(t.perTraveler)} per traveler · ${money(t.perNight)} per night</small></div>
-        <div class="${diff < 0 ? 'is-over' : ''}"><span>${diff < 0 ? 'Over your budget' : 'You keep'}</span><b>${money(Math.abs(diff))}</b><small>of your ${money(q.budget)} budget</small></div>
+        <div class="${diff < 0 ? 'is-over' : ''}"><span>${diff < 0 ? `Over your ${q.keep ? 'booking budget' : 'budget'}` : q.keep ? 'Unassigned' : 'You keep'}</span><b>${money(Math.abs(diff))}</b><small>of your ${money(q.budget)} ${q.keep ? 'booking budget' : 'budget'}${q.keep ? `, plus ${money(q.keep)} protected` : ''}</small></div>
       </div>
       <details class="tb-why"><summary>Why we picked this${tos.length ? ' · trade-offs' : ''}</summary>
         <ul class="tb-why-list">${p.why.map(w => html`<li>${icon('check')}${w}</li>`)}</ul>
@@ -141,7 +141,7 @@ function answerStrip(q, raw) {
   </ul>`;
 }
 
-function noDeadEnd(q, result, originCity) {
+function noDeadEnd(q, result, originCity, relax = null) {
   const base = searchParams(q);
   const without = keys => `/plan?${new URLSearchParams(Object.entries(Object.fromEntries(new URLSearchParams(base))).filter(([k]) => !keys.includes(k))).toString()}`;
   const links = [
@@ -151,11 +151,17 @@ function noDeadEnd(q, result, originCity) {
     ...(q.style !== 'surprise' ? [['Relax one rule: any style', `/trips?${searchParams({ ...q, style: 'surprise' })}`]] : []),
     ...(q.priority !== 'price' ? [['Relax one rule: lowest price first', `/trips?${searchParams({ ...q, priority: 'price' })}`]] : []),
     ...(!q.allowOver ? [['Allow up to 10% more', `/trips?${searchParams({ ...q, allowOver: 10 })}`]] : []),
+    ...(q.keep ? [['Protect less for the destination', without(['k'])]] : []),
     ['Increase budget', without(['b', 'k'])],
     ['Ask a trip specialist', `/custom-trip?budget=${q.budgetInput}&from=${encodeURIComponent(originCity)}&travelers=${q.travelers}`],
   ];
   return html`<div class="tb-advisor">
     <h2>We couldn’t build a trip that meets all your rules for ${dollars(q.budget)}${result.cheapest ? html`. Trips start at <b>${money(result.cheapest)}</b>` : ''}.</h2>
+    ${q.keep ? html`<p class="tb-collision">${icon('lock')} Your vacation budget is ${dollars(q.vacationBudget)}. You protect ${dollars(q.keep)} for the destination, which leaves ${dollars(q.budget)} for the booking${result.cheapest ? `, and the cheapest complete trip we built is ${money(result.cheapest)}` : ''}. We don’t spend your reserve to make a booking fit; you can.</p>` : ''}
+    ${relax && relax.works.length ? html`<h3 class="tb-relax-title">${icon('sparkle')} One rule away</h3>
+    <p>We re-ran your search with exactly one rule relaxed at a time. These are the ones that really get there, each re-priced in full:</p>
+    <ul class="tb-relax">${relax.works.map(w => html`<li><a href="/trips?${w.params}"><span><b>${w.label}</b><small>Instead of ${w.rule}. Our pick becomes ${w.dest}, ${plural(w.nights, 'night')}${w.over ? `, ${money(w.over)} over your ${dollars(q.budget)}` : w.used ? `, a booking of ${money(w.total)} read against ${dollars(q.budget + w.used)}` : `, within your ${dollars(q.budget)}`}.</small></span><b>${money(w.total)}</b></a></li>`)}</ul>` : relax ? html`<p class="tb-muted">${icon('info')} We re-ran your search with each rule relaxed on its own (${relax.notAlone.map(n => n.label.toLowerCase()).join('; ')}). None of them gets there alone, so we won’t pretend one does.</p>` : ''}
+    ${relax && relax.works.length && relax.notAlone.length ? html`<p class="tb-muted tb-small">On their own, these don’t get there: ${relax.notAlone.map(n => n.label.toLowerCase()).join('; ')}.</p>` : ''}
     <p>Here are the closest ones and the smallest changes that get there. We never hide an over-budget amount, and we never call a trip within budget when it isn’t.</p>
     <ul class="tb-advisor-links">${links.map(([l, h]) => html`<li><a class="btn btn-ghost btn-sm" href="${h}">${l}</a></li>`)}</ul>
   </div>`;
@@ -227,9 +233,9 @@ function decisionBand(picks, q, cx, keepMoney, result) {
     ? html`Nothing we built fits under ${dollars(q.budget)}. The ${ce ? 'strongest fit' : 'closest'} is <a href="${bestUrl}">${name}</a>, ${money(-bv.diff)} over${ce ? html`; the closest to your budget is <a href="/trip/${encodeSpec(ce.spec)}?${contextParams(cx)}">${ce.dest.name}</a>, ${money(ce.total - q.budget)} over` : ''}.`
     : html`If it were our ${dollars(q.budget)}, we’d book <a href="${bestUrl}">${name}</a>.`;
   const figures = html`<dl class="tb-keep${spare < 0 ? ' is-over' : ''}">
-    <div><dt>You gave us</dt><dd>${money(q.budget)}</dd></div>
+    <div><dt>${q.keep ? 'For the booking' : 'You gave us'}</dt><dd>${money(q.budget)}${q.keep ? html`<small>of ${money(q.vacationBudget)}, ${money(q.keep)} protected</small>` : ''}</dd></div>
     <div><dt>We need</dt><dd>${money(best.trip.total)}</dd></div>
-    <div><dt>${spare < 0 ? 'Over by' : 'You keep'}</dt><dd>${money(Math.abs(spare))}</dd></div>
+    <div><dt>${spare < 0 ? 'Over by' : q.keep ? 'Unassigned' : 'You keep'}</dt><dd>${money(Math.abs(spare))}</dd></div>
   </dl>`;
   const money_ = upgrade
     ? html`<p class="tb-keep-note">${icon('trend')}<span>Spending ${money(upgrade.upgrade.delta)} more would get you ${upgrade.upgrade.gets}${upgrade.upgrade.over ? ` (that is ${money(upgrade.trip.total - q.budget)} over your budget, using the extra you allowed)` : ''}. Your call: <a href="#card-upgrade">see the upgrade below</a>, or ${spare > 0 ? `keep the ${money(spare)}` : 'keep it as it is'}.</span></p>`
@@ -246,7 +252,7 @@ function decisionBand(picks, q, cx, keepMoney, result) {
   </section>`;
 }
 
-function resultsView(ctx, { result, originCity, user }) {
+function resultsView(ctx, { result, relax = null, originCity, user }) {
   const q = result.query, cx = { ...result.ctx, searchParams: searchParams(q) };
   const picks = result.picks;
   const over = picks.filter(p => p.trip.total > q.budget);
@@ -266,7 +272,7 @@ function resultsView(ctx, { result, originCity, user }) {
     <div>
       <p class="eyebrow">Your trips</p>
       <h1>${heading}</h1>
-      <p class="tb-results-sub">From ${originCity} · ${plural(q.travelers, 'traveler')} · we priced ${result.considered.toLocaleString('en-US')} combinations across ${plural(result.destinations, 'destination')} and kept the best. ${q.keep ? `You’re keeping ${dollars(q.keep)} of your ${dollars(q.vacationBudget)} for food and spending.` : ''} ${demoBadge(ctx.tripService.demo, 'Demo inventory and prices')}</p>
+      <p class="tb-results-sub">From ${originCity} · ${plural(q.travelers, 'traveler')} · we priced ${result.considered.toLocaleString('en-US')} combinations across ${plural(result.destinations, 'destination')} and kept the best. ${q.keep ? `Your ${dollars(q.vacationBudget)} is the whole vacation: ${dollars(q.keep)} is protected for after you land, so every trip here is a booking of ${dollars(q.budget)} or less.` : ''} ${demoBadge(ctx.tripService.demo, 'Demo inventory and prices')}</p>
     </div>
     ${answerStrip(q, { originCity })}
   </header>
@@ -283,7 +289,7 @@ function resultsView(ctx, { result, originCity, user }) {
       ${picks.length ? html`<div class="tb-cards">${picks.map((p, i) => tripCard(p, q, cx, { over: p.trip.total > q.budget, rank: i }))}${keepCard ? keepMoneyCard(result.keepMoney, best, q, cx) : ''}</div>` : ''}
       ${over.length ? html`<p class="tb-over-note">${icon('info')} Trips marked “over your budget” use the extra 10% you allowed. Switch to “Stay under my budget” to hide them.</p>` : ''}
       ${cheapestNote}
-      ${!picks.length ? html`${noDeadEnd(q, result, originCity)}
+      ${!picks.length ? html`${noDeadEnd(q, result, originCity, relax)}
         ${result.closest.length ? html`<h2 class="tb-closest-title">The closest we could get</h2><div class="tb-cards">${result.closest.map((p, i) => tripCard({ ...p, label: 'Closest option', why: [`${money(p.trip.total - q.budget)} over your ${dollars(q.budget)} budget`, ...p.trip.included.slice(0, 2)] }, q, cx, { over: true, rank: i }))}</div>` : ''}` : ''}
       ${picks.length ? html`<section class="tb-more" aria-label="Other options">
         <h2>Not quite right?</h2>

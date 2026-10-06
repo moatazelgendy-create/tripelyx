@@ -749,3 +749,63 @@ a.tb-pill:hover { border-color: var(--blue-500); }
 @media (max-width: 640px) {
   .tb-guide-step { padding: 16px; }
 }
+
+/* Your money, the whole vacation */
+.tb-vac-rows { margin: 0 0 16px; }
+.tb-vac-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.tb-vac-row dt { min-width: 0; }
+.tb-vac-row dt b { display: block; font-size: 15.5px; }
+.tb-vac-row dt small { display: block; color: var(--muted); font-size: 13.5px; margin-top: 4px; }
+.tb-vac-row dd { margin: 0; font-weight: 700; font-size: 19px; white-space: nowrap; letter-spacing: -0.02em; }
+.tb-vac-row dd small { display: block; font-weight: 500; font-size: 12.5px; color: var(--muted); text-align: right; }
+.tb-vac-row.is-over dd { color: var(--danger); }
+.tb-vac-total { border-bottom: 0; }
+.tb-vac-total dt { font-weight: 700; font-size: 16px; }
+.tb-vac-tag { display: inline-block; margin-left: 8px; padding: 2px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; background: var(--bg-soft); color: var(--muted); vertical-align: middle; }
+.tb-vac-tag-known { background: #e3f3ea; color: #0c5e43; }
+.tb-vac-tag-reserve { background: #e8effa; color: var(--blue-600); }
+.tb-vac-arrive { background: var(--bg-soft); border-radius: var(--radius); padding: 16px 18px; margin: 4px 0 16px; }
+.tb-vac-arrive span { display: block; font-size: 12.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+.tb-vac-arrive b { display: block; font-size: 28px; letter-spacing: -0.02em; color: #0c5e43; margin: 2px 0 4px; }
+.tb-vac-arrive.is-over b { color: var(--danger); }
+.tb-vac-arrive small { display: block; color: var(--text); font-size: 14px; }
+.tb-vac-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.tb-vac-actions .btn { flex: 1 1 auto; white-space: normal; text-align: center; }
+.tb-vac-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; font-size: 14.5px; }
+.tb-vac-list li { display: flex; justify-content: space-between; gap: 12px; }
+.tb-vac-list b { white-space: nowrap; }
+.tb-vac-final { margin: 8px 0 18px; }
+.tb-vac-final .tb-final-nums { margin-bottom: 12px; }
+.tb-vac-fit { display: flex; gap: 8px; align-items: flex-start; margin: 0; padding: 12px 14px; border-radius: var(--radius); background: #e3f3ea; color: #0c5e43; font-size: 14.5px; }
+.tb-vac-fit .icon { width: 18px; height: 18px; flex: none; margin-top: 2px; }
+.tb-vac-fit.is-over { background: #fdecea; color: #8a2a1f; }
+.tb-vac-compact .tb-vac-row { padding: 8px 0; }
+.tb-vac-compact .tb-vac-row dd { font-size: 16px; }
+.tb-vac-compact .tb-vac-row dt { font-size: 14px; }
+.tb-vac-after { display: flex; gap: 8px; align-items: flex-start; margin: 12px 0 0; padding: 12px 14px; border-radius: var(--radius); background: var(--bg-soft); font-size: 14.5px; }
+.tb-vac-after .icon { width: 18px; height: 18px; flex: none; color: var(--blue-500); margin-top: 2px; }
+.tb-side-keep { margin: 8px 0 0; font-size: 13.5px; color: var(--blue-300); display: flex; gap: 6px; align-items: center; }
+.tb-side-keep .icon { width: 14px; height: 14px; flex: none; }
+.tb-side-keep a { color: inherit; }
+.tb-collision { display: flex; gap: 8px; align-items: flex-start; padding: 12px 14px; border-radius: var(--radius); background: var(--bg-soft); }
+.tb-collision .icon { width: 18px; height: 18px; flex: none; color: var(--blue-500); margin-top: 2px; }
+.tb-rise-options { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 12px; }
+.tb-rise-options li { display: flex; gap: 10px; align-items: flex-start; }
+.tb-rise-options li > .icon { width: 18px; height: 18px; flex: none; color: var(--blue-500); margin-top: 3px; }
+.tb-rise-options li > div { min-width: 0; flex: 1 1 auto; }
+.tb-rise-options p { margin: 2px 0 0; color: var(--text); }
+@media (max-width: 640px) {
+  .tb-vac-row { flex-direction: column; gap: 4px; }
+  .tb-vac-row dd small { text-align: left; }
+}
+
+/* One rule away */
+.tb-relax-title { font-size: 18px; display: flex; align-items: center; gap: 8px; margin: 18px 0 6px; }
+.tb-relax-title .icon { width: 18px; height: 18px; color: var(--blue-500); }
+.tb-relax { list-style: none; padding: 0; margin: 0 0 16px; display: grid; gap: 8px; }
+.tb-relax a { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg-soft); color: inherit; text-decoration: none; }
+.tb-relax a:hover { border-color: var(--blue-300); }
+.tb-relax a > span { min-width: 0; }
+.tb-relax a > span b { display: block; }
+.tb-relax a > span small { display: block; color: var(--muted); margin-top: 2px; font-size: 13.5px; }
+.tb-relax a > b { white-space: nowrap; font-size: 18px; color: #0c5e43; }

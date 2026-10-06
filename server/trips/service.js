@@ -69,6 +69,12 @@ class TripService {
   // ---- search ----
   parse(raw) { return optimizer.parseSearch(raw, { maps: this.inv.maps, now: this.now() }); }
 
+  // When nothing fits: which single rule, relaxed on its own, really produces a trip.
+  async oneRuleAway(query) {
+    const settings = await this.settings();
+    return optimizer.oneRuleAway(this.inv, query, { settings, now: this.now() });
+  }
+
   async search(query, { visitor, user } = {}) {
     await this.track('search_started', { visitor, userId: user && user.id, data: { budget: query.budget, travelers: query.travelers, style: query.style, priority: query.priority, origin: query.origin } });
     const settings = await this.settings();
@@ -159,7 +165,7 @@ class TripService {
     return { available: true, trip: t, promo, status: diff === 0 ? 'same' : diff < 0 ? 'cheaper' : 'higher', diff: Math.abs(diff) };
   }
 
-  async createQuote(token, { approvedTotal, budget, allowOver, promoCode, user }) {
+  async createQuote(token, { approvedTotal, budget, keep, allowOver, promoCode, user }) {
     const v = await this.verify(token, approvedTotal, { promoCode });
     if (!v.available) throw new AppError('trip_unavailable', 'Part of this trip is no longer available. Please rebuild it.', 410);
     if (v.status !== 'same') throw new AppError('price_changed', `Your trip price changed to ${money(v.trip.total)}. Please review it before continuing.`, 409, { newTotal: v.trip.total });
@@ -195,7 +201,7 @@ class TripService {
         activities: t.activities.map(a => ({ id: a.id, amount: a.pricePerPerson * t.spec.travelers })),
         transfer: sum(['transfer']), service: sum(['service']), discount: -sum(['promo']),
       },
-      budget: { budget: budget || null, allowOver: allowOver || 0 },
+      budget: { budget: budget || null, keep: budget && keep ? keep : 0, allowOver: allowOver || 0 },
       promoCode: v.promo ? v.promo.code : null,
       internal: t.internal,
       userId: user ? user.id : null,
@@ -212,7 +218,7 @@ class TripService {
     return {
       async recheck(quote) {
         const v = await svc.verify(quote.trip.token, quote.total, { promoCode: quote.promoCode }).catch(() => ({ available: false }));
-        const url = `/trip/${quote.trip.token}/review?seen=${quote.total}${quote.budget && quote.budget.budget ? `&b=${quote.budget.budget / 100}` : ''}`;
+        const url = `/trip/${quote.trip.token}/review?seen=${quote.total}${quote.budget && quote.budget.budget ? `&b=${quote.budget.budget / 100}${quote.budget.keep ? `&k=${quote.budget.keep / 100}` : ''}` : ''}`;
         if (!v.available) return { changed: true, newTotal: null, url, message: 'Part of this trip is no longer available, so nothing was charged. Please review the trip.' };
         if (v.status === 'same') return { changed: false };
         return {
