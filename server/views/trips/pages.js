@@ -308,7 +308,7 @@ function coversPanel(b, t) {
   return html`<section class="tb-panel" aria-labelledby="cov-title">
     <h2 id="cov-title">${icon('layers')} What this booking covers, and what it doesn’t</h2>
     <ul class="tb-ready tb-ready-wrap">
-      <li>${icon('check')}<span><b>Paid for already:</b> round-trip flights, ${plural(t.spec.nights, 'night')} at ${t.hotel.name}${covered.length ? `, ${covered.join(', ')}` : ''}, taxes, mandatory fees and our service fee.</span></li>
+      <li>${icon('check')}<span><b>${['confirmed', 'partially_confirmed', 'pending_supplier', 'confirming'].includes(b.status) ? 'Paid for already' : b.status === 'pending_payment' ? 'In this booking, once paid' : 'This booking covered'}:</b> round-trip flights, ${plural(t.spec.nights, 'night')} at ${t.hotel.name}${covered.length ? `, ${covered.join(', ')}` : ''}, taxes, mandatory fees and our service fee.</span></li>
       ${notIn.length ? html`<li class="is-miss">${icon('minus')}<span><b>Not in this booking:</b> ${notIn.join('; ')}.</span></li>` : ''}
       <li>${icon('info')}<span><b>Not priced by us, you pay there:</b> ${unpricedFor(t).join(', ')}. We don’t guess those amounts.</span></li>
       ${pending.length ? html`<li class="is-miss">${icon('alert')}<span><b>Still to confirm:</b> ${joinAnd(pending.map(name))}. ${b.status === 'partially_confirmed' ? 'Our team is on it and will contact you.' : 'We’ll update this page as each supplier answers.'}</span></li>` : ''}
