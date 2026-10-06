@@ -10,6 +10,8 @@ const { homeView } = require('../views/trips/home');
 const { stepView, resultsView, STEPS } = require('../views/trips/plan');
 const { tripView, reviewView, unavailableView, singleChanges } = require('../views/trips/trip');
 const { dreamView } = require('../views/trips/dream');
+const challenge = require('../trips/challenge');
+const { challengeFormView, challengeReviewView, challengeResultView } = require('../views/trips/challenge');
 const { priceView } = require('../views/trips/price');
 const { guideView } = require('../views/trips/guide');
 const { compareView } = require('../views/trips/compare');
@@ -121,6 +123,39 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
           .map(c => ({ ...c, label: c.total <= query.budget ? `${c.label} — fits your budget` : c.label }));
       }
       send(res, dreamView(ctx, { dest, q: query, originCity: originCity(query.origin), best: out.best, under: out.under, gap: out.gap, closers, cx, user: user(req), beat }));
+    } catch (e) { next(e); }
+  });
+
+  // ---- Trip Challenge: bring the trip you found; we build a comparable one and say who wins ----
+  // Our hotels by destination, for "I love this hotel": a probe of the hotel supplier, names only.
+  const ourHotels = destId => svc.inv.hotels.search({ destId, checkIn: addDays(today(), 14), nights: 1, rooms: 1 }).map(h => ({ id: h.id, name: h.name, stars: h.stars }));
+  const hotelGroups = () => svc.inv.maps.listDestinations().slice().sort((a, b) => a.name.localeCompare(b.name))
+    .map(d => ({ dest: d, hotels: ourHotels(d.id) })).filter(g => g.hotels.length);
+  const challengeForm = (req, res, missing = []) => send(res, challengeFormView(ctx, {
+    raw: req.query, missing, destinations: svc.inv.maps.listDestinations().slice().sort((a, b) => a.name.localeCompare(b.name)), origins: svc.inv.maps.listOrigins(), hotels: hotelGroups(),
+  }));
+  r.get('/challenge', (req, res, next) => {
+    try { challengeForm(req, res); } catch (e) { next(e); }
+  });
+  r.get('/challenge/review', (req, res, next) => {
+    try {
+      const { challenger: ch, missing } = challenge.parseChallenger(req.query, { maps: svc.inv.maps });
+      if (missing.length) return challengeForm(req, res, missing);
+      const theirDest = svc.inv.maps.getDestination(ch.dest);
+      const hotel = ch.hotel ? ourHotels(ch.dest).find(h => h.id === ch.hotel) : null;
+      if (ch.hotel && !hotel) ch.hotel = null;
+      send(res, challengeReviewView(ctx, { ch, unknowns: challenge.unknownsOf(ch), theirDest, originCity: originCity(ch.origin), hotelName: hotel ? hotel.name : null }));
+    } catch (e) { next(e); }
+  });
+  r.get('/challenge/result', compute, async (req, res, next) => {
+    try {
+      const { challenger: ch, missing } = challenge.parseChallenger(req.query, { maps: svc.inv.maps });
+      if (missing.length) return challengeForm(req, res, missing);
+      let mode = challenge.MODES[req.query.mode] ? String(req.query.mode) : 'less';
+      if (mode === 'surprise' && ch.locks.includes('dest')) mode = 'less';
+      await tracked(req, 'search_started', { budget: ch.total, challenge: ch.dest, mode, origin: ch.origin });
+      const out = challenge.runChallenge(svc.inv, ch, await svc.settings(), { mode, now: new Date() });
+      send(res, challengeResultView(ctx, { out, theirDest: svc.inv.maps.getDestination(ch.dest), originCity: originCity(ch.origin), user: user(req) }));
     } catch (e) { next(e); }
   });
 

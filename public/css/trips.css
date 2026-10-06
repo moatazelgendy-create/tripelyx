@@ -829,3 +829,59 @@ a.tb-pill:hover { border-color: var(--blue-500); }
 .tb-ready-wrap .icon { margin-top: 3px; }
 .tb-ready-wrap .is-miss .icon { color: var(--warning); }
 .tb-card-keep .tb-card-actions .btn { flex: 1 1 100%; text-align: center; }
+
+/* ---- Trip Challenge ---- */
+.tb-chal-page .tb-results-head { margin-bottom: 20px; }
+.tb-chal-form { display: grid; gap: 18px; }
+.tb-chal-form .tb-panel { margin: 0; }
+.tb-chal-radios { border: 0; padding: 0; margin: 14px 0 0; min-width: 0; }
+.tb-chal-radios legend { font-weight: 600; font-size: 15px; padding: 0; margin-bottom: 2px; }
+.tb-chal-radios .tb-radio-row { margin-top: 8px; }
+.tb-radio-wrap { flex-wrap: wrap; row-gap: 10px; column-gap: 18px; }
+.tb-chal-actions { display: flex; flex-wrap: wrap; gap: 12px; }
+.tb-chal-grid { display: grid; gap: 18px; grid-template-columns: 1fr 1fr; align-items: start; margin-bottom: 18px; }
+.tb-challenger-rows { display: grid; gap: 6px 14px; grid-template-columns: max-content 1fr; margin: 0; font-size: 15px; }
+.tb-challenger-rows > div { display: contents; }
+.tb-challenger-rows dt { color: var(--muted); font-weight: 500; }
+.tb-challenger-rows dd { margin: 0; font-weight: 600; }
+.tb-challenger-rows dd.is-unknown { color: var(--warning, #b45309); font-weight: 600; }
+.tb-challenger-rows dd.is-unknown::before { content: "? "; }
+.tb-chal-modes h3 { font-size: 16px; margin: 20px 0 4px; display: flex; align-items: center; gap: 8px; }
+.tb-chal-modes h3 .icon { width: 18px; height: 18px; color: var(--blue-600); }
+.tb-modes { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); margin-top: 12px; }
+.tb-mode { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; text-align: left; padding: 16px; min-height: 108px; background: #fff; border: 1.5px solid var(--line); border-radius: var(--radius-lg); font: inherit; cursor: pointer; transition: border-color .15s, box-shadow .15s; }
+.tb-mode:hover, .tb-mode:focus-visible { border-color: var(--blue-500, #2563eb); box-shadow: var(--shadow-sm); }
+.tb-mode b { font-size: 16px; color: var(--ink); }
+.tb-mode span { font-size: 14px; color: var(--muted); line-height: 1.4; }
+.tb-mode[disabled] { opacity: .5; cursor: not-allowed; }
+.tb-verdict { border-radius: var(--radius-lg); padding: 26px 28px; margin-bottom: 20px; border: 1.5px solid var(--line); background: #fff; }
+.tb-verdict h2 { margin: 2px 0 8px; font-size: 30px; letter-spacing: -0.02em; }
+.tb-verdict > p { max-width: 70ch; font-size: 16.5px; line-height: 1.5; }
+.tb-verdict .tb-card-actions { margin-top: 16px; }
+.tb-verdict .tb-card-actions .btn { flex: 0 1 auto; }
+.tb-verdict.is-beat { background: #ecfdf5; border-color: #a7f3d0; }
+.tb-verdict.is-tradeoff { background: #eff6ff; border-color: #bfdbfe; }
+.tb-verdict.is-keep { background: var(--bg-soft); }
+.tb-verdict.is-info { background: #fffbeb; border-color: #fde68a; }
+.tb-score th[scope="row"] { font-weight: 600; white-space: nowrap; }
+.tb-score-mark > span { display: inline-flex; align-items: center; gap: 6px; font-size: 13.5px; white-space: nowrap; }
+.tb-score-mark .icon { width: 16px; height: 16px; }
+.tb-score tr.is-ours .tb-score-mark { color: var(--success); }
+.tb-score tr.is-theirs .tb-score-mark { color: #b91c1c; }
+.tb-score tr.is-same .tb-score-mark { color: var(--muted); }
+.tb-score tr.is-diff .tb-score-mark { color: var(--blue-600); }
+.tb-score tr.is-unknown .tb-score-mark { color: #b45309; }
+.tb-receipt-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+.tb-receipt-grid > div { background: var(--bg-soft); border-radius: var(--radius); padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; }
+.tb-receipt-grid span { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
+.tb-receipt-grid b { font-size: 16px; line-height: 1.35; }
+.tb-receipt-grid small { color: var(--muted); font-size: 13px; }
+.tb-receipt-grid > div.is-over b { color: #b91c1c; }
+.tb-other-modes li { font-size: 15px; }
+@media (max-width: 760px) {
+  .tb-chal-grid { grid-template-columns: 1fr; }
+  .tb-challenger-rows { grid-template-columns: 1fr; gap: 2px; }
+  .tb-challenger-rows dt { margin-top: 8px; }
+  .tb-verdict { padding: 20px 18px; }
+  .tb-verdict h2 { font-size: 24px; }
+}

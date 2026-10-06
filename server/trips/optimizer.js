@@ -460,4 +460,4 @@ function oneRuleAway(inventory, q, { settings, now = new Date() }) {
   return { works, notAlone };
 }
 
-module.exports = { search, dreamSearch, oneRuleAway, parseSearch, searchParams, budgetContext, parseContext, contextParams, tradeoffs, scoreTrip, whyThisTrip, customizerOptions, memoInventory, activitySets, hotelAllowed, int, STYLES, PRIORITIES, WHO_DEFAULT };
+module.exports = { search, dreamSearch, oneRuleAway, parseSearch, searchParams, budgetContext, parseContext, contextParams, tradeoffs, scoreTrip, whyThisTrip, customizerOptions, memoInventory, activitySets, hotelAllowed, candidateDates, int, STYLES, PRIORITIES, WHO_DEFAULT };

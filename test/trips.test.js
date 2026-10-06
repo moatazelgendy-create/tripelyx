@@ -555,7 +555,7 @@ test('pages render without inline scripts or styles; corporate site moves to /co
   assert.match(home, /Demo inventory/);
   assert.match(home, /Three answers\. One budget\. You choose\./);
   assert.match(home, /Our pick/);
-  assert.match(home, /Beat my quote/);
+  assert.match(home, /Challenge us/);
   assert.match(home, /I have to be there on/);
   assert.equal((await fetch(app.base + '/trips-under-7')).status, 404);
   assert.equal((await fetch(app.base + '/legal/nope')).status, 404);
