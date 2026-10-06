@@ -150,7 +150,8 @@ function askedFor(s, { maps }) {
   if (s.travelers) rows.push(['Travelers', `${s.travelers}${s.who === 'family' ? ' (family)' : s.who === 'friends' ? ' (friends)' : ''}`]);
   if (s.origin) { const o = maps.getOrigin(s.origin); rows.push(['Leaving from', o ? o.city : s.origin]); }
   if (s.destination) { const d = maps.getDestination(s.destination); rows.push(['Destination', d ? d.name : s.destination]); } else if (s.anywhere) rows.push(['Destination', 'Anywhere']);
-  if (s.region === 'international') rows.push(['Region', 'International']);
+  if (s.notCountry) rows.push(['Region', `Outside ${s.notCountry}`]);
+  else if (s.region === 'international') rows.push(['Region', 'International']);
   if (s.nights) rows.push(['Length', `${s.nights} nights`]);
   if (s.dateMode === 'exact' && s.depart) rows.push(['Leaving', s.depart]);
   else if (s.dateMode === 'flexible' && s.month) rows.push(['When', s.month]);

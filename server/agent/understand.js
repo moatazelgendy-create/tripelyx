@@ -132,7 +132,7 @@ function extractUpdates(text, { maps, now = new Date() }) {
   const d = destinationIn(text, maps);
   if (d) { u.destination = d; ack.push(`to ${maps.getDestination(d).name}`); }
   if (has(lower, /\b(don'?t care where|anywhere|wherever|surprise me|pick (?:the|a) (?:best|place|destination)|somewhere new|you choose|up to you|no preference on (?:the )?destination)\b/)) { u.destination = null; u.anywhere = true; u.style = u.style || 'surprise'; ack.push('anywhere'); }
-  if (has(lower, /\b(another country|different country|abroad|international|overseas|outside the (?:us|usa|country))\b/)) { u.region = 'international'; ack.push('somewhere international'); }
+  if (has(lower, /\b(abroad|international|overseas|outside the (?:us|usa|country))\b/)) { u.region = 'international'; ack.push('somewhere international'); }
 
   // How long.
   const nightsM = lower.match(/\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten|a)\s*-?\s*nights?\b/);
