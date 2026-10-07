@@ -1,5 +1,5 @@
 // The homepage: one product, the AI travel agent. One question, a sentence in the traveler's own
-// words, and the agent does the searching, comparing and negotiating. Below it: a live example of
+// words, and the agent does the searching, comparing and pricing. Below it: a live example of
 // what one sentence gets you, where a budget can take you, how the agent works, the three ways in
 // (a budget, a dream destination, a trip to beat), and the promise.
 const { html, raw, jsonScript } = require('../../lib/html');
@@ -222,7 +222,7 @@ ${recent ? html`<section class="tb-section tb-section-tight" aria-label="Your un
 <script type="application/json" id="tb-home-data">${jsonScript({ levels: levels.map(l => l.budget) })}</script>`;
   return layout({
     title: null, active: 'home', body, ctx,
-    description: 'Tell your AI travel agent what you want your trip to do. It searches, compares and negotiates complete trips (flights, hotel, experiences) inside your budget, with every tax and fee in the price.',
+    description: 'Tell your AI travel agent what you want your trip to do. It searches, compares and prices complete trips (flights, hotel, experiences) inside your budget, with every tax and fee in the price.',
     scripts: ['/js/trips.js'], canonical: '/',
   });
 }

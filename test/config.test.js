@@ -45,18 +45,20 @@ test('staging and production need their own DATABASE_URL', () => {
   assert.throws(() => loadConfig({ APP_ENV: 'production', DATABASE_URL: 'memory' }), /not allowed/);
 });
 
-test('live payments need production, a processor, credentials and no demo inventory', () => {
+test('live payments need production, a processor, credentials, reviewed policies and no demo inventory', () => {
   assert.throws(() => loadConfig({ PAYMENT_MODE: 'live' }), /only allowed when APP_ENV=production/);
   const prod = { APP_ENV: 'production', DATABASE_URL: 'postgres://x/p', PAYMENT_MODE: 'live' };
   assert.throws(() => loadConfig(prod), /needs PAYMENT_LIVE_PROCESSOR/);
-  const full = { ...prod, PAYMENT_LIVE_PROCESSOR: 'paymob', PAYMENT_LIVE_SECRET_KEY: 'sk', PAYMENT_LIVE_WEBHOOK_SECRET: 'wh' };
+  const keys = { ...prod, PAYMENT_LIVE_PROCESSOR: 'paymob', PAYMENT_LIVE_SECRET_KEY: 'sk', PAYMENT_LIVE_WEBHOOK_SECRET: 'wh' };
+  assert.throws(() => loadConfig(keys), /POLICIES_REVIEWED=true/, 'policies must be reviewed before real money is taken');
+  const full = { ...keys, POLICIES_REVIEWED: 'true' };
   assert.equal(loadConfig(full).payment.mode, 'live');
   assert.throws(() => loadConfig({ ...full, ALLOW_DEMO_INVENTORY: 'true' }), /demo inventory must never take real money/);
   assert.throws(() => loadConfig({ PAYMENT_MODE: 'sandbox' }), /"test" or "live"/);
 });
 
 test('publicConfig exposes no secrets', () => {
-  const c = loadConfig({ APP_ENV: 'production', DATABASE_URL: 'postgres://u:secretpw@h/p', PAYMENT_MODE: 'live', PAYMENT_LIVE_PROCESSOR: 'paymob', PAYMENT_LIVE_SECRET_KEY: 'sk_live_123', PAYMENT_LIVE_WEBHOOK_SECRET: 'whsec' });
+  const c = loadConfig({ APP_ENV: 'production', DATABASE_URL: 'postgres://u:secretpw@h/p', PAYMENT_MODE: 'live', PAYMENT_LIVE_PROCESSOR: 'paymob', PAYMENT_LIVE_SECRET_KEY: 'sk_live_123', PAYMENT_LIVE_WEBHOOK_SECRET: 'whsec', POLICIES_REVIEWED: 'true' });
   const json = JSON.stringify(publicConfig(c));
   for (const s of ['secretpw', 'sk_live_123', 'whsec', 'paymob']) assert.ok(!json.includes(s), `leaks ${s}`);
 });
@@ -73,4 +75,17 @@ test('HTTPS_ONLY defaults on outside development and production refuses to turn 
   assert.equal(loadConfig({ APP_ENV: 'staging', ...db }).httpsOnly, true);
   assert.equal(loadConfig({ APP_ENV: 'staging', HTTPS_ONLY: 'false', ...db }).httpsOnly, false);
   assert.throws(() => loadConfig({ APP_ENV: 'production', HTTPS_ONLY: 'false', ...db }), /HTTPS_ONLY=false/);
+});
+
+test('company facts: confirmed defaults, unconfirmed ones left empty, environment overrides', () => {
+  const c = loadConfig({}).company;
+  assert.equal(c.legalName, 'Tripelyx Inc');
+  assert.equal(c.supportEmail, 'go@tripelyx.com');
+  for (const k of ['businessAddress', 'supportPhone', 'supportHours', 'jurisdiction']) assert.equal(c[k], null, `${k} is not confirmed, so it is not set`);
+  assert.equal(c.policiesReviewed, false);
+  const o = loadConfig({ SUPPORT_HOURS: 'Mon–Fri 9–5 ET', COPYRIGHT_YEAR: '2027' }).company;
+  assert.equal(o.supportHours, 'Mon–Fri 9–5 ET');
+  assert.equal(o.copyrightYear, 2027);
+  assert.throws(() => loadConfig({ SUPPORT_EMAIL: 'not-an-email' }), /SUPPORT_EMAIL/);
+  assert.throws(() => loadConfig({ COPYRIGHT_YEAR: '26' }), /COPYRIGHT_YEAR/);
 });

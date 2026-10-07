@@ -3,6 +3,7 @@
 // projection at the bottom — the frontend only ever learns which verticals are on and whether
 // payments are in test mode, never a key, URL with credentials, or provider name it doesn't need.
 const { VERTICALS } = require('./verticals');
+const { loadCompany } = require('./company');
 
 const APP_ENVS = ['development', 'staging', 'production'];
 
@@ -46,6 +47,7 @@ function loadConfig(env = process.env) {
   // ALLOW_DEMO_INVENTORY=true is set on purpose, e.g. for a public sales demo that takes no real money.
   const allowDemoInventory = bool(env.ALLOW_DEMO_INVENTORY, !isProduction);
 
+  const company = loadCompany(env);
   const paymentMode = (env.PAYMENT_MODE || 'test').trim().toLowerCase();
   if (!['test', 'live'].includes(paymentMode)) throw new Error(`PAYMENT_MODE must be "test" or "live" (got "${paymentMode}")`);
   const payment = {
@@ -63,6 +65,7 @@ function loadConfig(env = process.env) {
       throw new Error('PAYMENT_MODE=live needs PAYMENT_LIVE_PROCESSOR, PAYMENT_LIVE_SECRET_KEY and PAYMENT_LIVE_WEBHOOK_SECRET');
     }
     if (allowDemoInventory) throw new Error('PAYMENT_MODE=live cannot be combined with ALLOW_DEMO_INVENTORY=true — demo inventory must never take real money');
+    if (!company.policiesReviewed) throw new Error('PAYMENT_MODE=live needs POLICIES_REVIEWED=true — the policy pages must be professionally reviewed before real money is taken');
   }
 
   // Each environment has its own database. Development may run on the in-memory store; staging and
@@ -124,8 +127,8 @@ function loadConfig(env = process.env) {
     payment,
     quoteTtlMinutes: Number(env.QUOTE_TTL_MINUTES || 20),
     paymentWindowMinutes: Number(env.PAYMENT_WINDOW_MINUTES || 20),
-    alameinGoUrl: env.ALAMEIN_GO_URL || '/book/hotels?where=New+Alamein',
-    contactEmail: env.CONTACT_EMAIL || null,
+    // Company facts (legal entity, support contact): see server/company.js.
+    company,
   };
 }
 

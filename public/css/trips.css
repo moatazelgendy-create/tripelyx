@@ -448,6 +448,11 @@ a.tb-pill:hover { border-color: var(--blue-500); }
 .tb-prose p, .tb-prose li { font-size: 17px; line-height: 1.6; color: var(--text); }
 .tb-prose ul { padding-left: 22px; }
 .tb-prose .alert { margin-bottom: 20px; }
+.tb-prose ul.tb-promises { list-style: none; padding: 0; display: grid; gap: 14px; }
+.tb-promises li { display: flex; gap: 12px; align-items: flex-start; }
+.tb-promises .icon { flex: none; width: 22px; height: 22px; color: var(--blue-500); margin-top: 4px; }
+.tb-reach { padding: 0; margin: 0 0 20px; list-style: none; }
+.tb-reach a { overflow-wrap: anywhere; }
 .tb-dest-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 20px; list-style: none; padding: 0; margin: 0; }
 .tb-dest { display: block; position: relative; border-radius: var(--radius-lg); overflow: hidden; text-decoration: none; color: #fff; box-shadow: var(--shadow-sm); }
 .tb-dest img { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: cover; transition: transform .4s var(--ease); }

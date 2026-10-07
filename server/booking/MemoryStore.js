@@ -42,6 +42,7 @@ class MemoryStore {
   async getPaymentIntent(id) { return clone(this.intents.get(id)) || null; }
 
   async savePartnerLead(lead) { this.leads.push(clone(lead)); return lead; }
+  async listPartnerLeads({ limit = 500 } = {}) { return this.leads.slice(-limit).reverse().map(clone); }
 
   // Newest first.
   async listBookings({ userId, limit = 500 } = {}) {

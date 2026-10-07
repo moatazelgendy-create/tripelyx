@@ -538,10 +538,10 @@ test('Journey B: a dream destination gets the gap and real single-change closers
   assert.match(await missing.text(), /How much do you want to spend\?/);
 });
 
-test('pages render without inline scripts or styles; corporate site moves to /company; flag turns it all off', async t => {
+test('pages render without inline scripts or styles; the planner flag turns it all off and leaves a pre-launch home', async t => {
   const app = await startApp();
   t.after(app.close);
-  const paths = ['/', '/plan', '/plan?b=1500', '/plan?b=1500&k=0&from=SFO&who=family', `/trips?${new URLSearchParams(QUERY)}`, '/how-it-works', '/faq', '/legal/terms', '/legal/privacy', '/custom-trip', '/destinations', '/trips-to-cancun', '/beach-vacations', '/trips-under-1500', '/trips-under-2000?region=international', '/signin', '/signup', '/company', '/about', '/book/hotels', '/robots.txt', '/sitemap.xml'];
+  const paths = ['/', '/plan', '/plan?b=1500', '/plan?b=1500&k=0&from=SFO&who=family', `/trips?${new URLSearchParams(QUERY)}`, '/how-it-works', '/faq', '/legal/terms', '/legal/privacy', '/custom-trip', '/destinations', '/trips-to-cancun', '/beach-vacations', '/trips-under-1500', '/trips-under-2000?region=international', '/signin', '/signup', '/about', '/contact', '/partners', '/book/hotels', '/robots.txt', '/sitemap.xml'];
   for (const p of paths) {
     const res = await fetch(app.base + p);
     assert.equal(res.status, 200, p);
@@ -565,8 +565,12 @@ test('pages render without inline scripts or styles; corporate site moves to /co
 
   const off = await startApp({ ENABLE_TRIPS: 'false' });
   t.after(off.close);
-  assert.match(await (await fetch(off.base + '/')).text(), /Travel technology/);
+  const offHome = await (await fetch(off.base + '/')).text();
+  assert.match(offHome, /isn’t taking trips right now/);
+  assert.match(offHome, /go@tripelyx\.com/);
+  assert.ok(!/Travel technology|href="\/plan"|href="\/my-trips"/.test(offHome), 'no corporate copy and no links into the planner while it is off');
   assert.equal((await fetch(off.base + '/plan')).status, 404);
+  for (const p of ['/how-it-works', '/faq', '/legal/privacy', '/about', '/contact']) assert.equal((await fetch(off.base + p)).status, 200, `${p} works with the planner off`);
   const prod = await startApp({ APP_ENV: 'production', ENABLE_TRIPS: 'true', ALLOW_DEMO_INVENTORY: 'false', DATABASE_URL: 'memory', PAYMENT_MODE: 'test', HTTPS_ONLY: 'true', DATABASE_ENV: 'production' }).catch(e => e);
   if (!(prod instanceof Error)) { t.after(prod.close); assert.equal((await fetch(prod.base + '/plan')).status, 404, 'mock trip inventory is refused where demo data is not allowed'); }
 });

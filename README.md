@@ -1,9 +1,9 @@
 # Tripelyx
 
-**Travel by Budget**: a budget-first trip planner ("How much do you want to spend?") that builds
-complete trips (flights, hotel, experiences, transfers) priced in full and shows the three best fits,
-plus the Tripelyx corporate site and a provider-agnostic booking platform for hotels, flights, cars,
-cruises, yachts, transfers, activities and experiences. Everything runs today on **isolated demo
+Tripelyx is an AI travel agent and travel decision platform: "Tell us your budget. We'll build the
+trip." The **Travel by Budget** planner and agent build complete trips (flights, hotel, experiences,
+transfers) priced in full around one budget, on top of a provider-agnostic booking platform for
+hotels, flights, cars, cruises, yachts, transfers, activities and experiences. Everything runs today on **isolated demo
 inventory** and a **test-mode payment processor**; real suppliers and a real payment processor plug in
 later by adding adapters, without touching the trip engine, booking engine, routes or UI.
 
@@ -25,8 +25,14 @@ Test cards at checkout: `4242 4242 4242 4242` (success), `5555 5555 5555 4444` (
 
 ## Travel by Budget
 
-The planner is on by default outside production (`ENABLE_TRIPS`) and becomes the homepage; the
-corporate homepage moves to `/company`. Admin access is given by email (`ADMIN_EMAILS`).
+The planner is on by default outside production (`ENABLE_TRIPS`) and is the homepage; with it off,
+`/` is a pre-launch page that says who we are and how to reach us. Admin access is given by email
+(`ADMIN_EMAILS`).
+
+Company facts (brand, legal entity, support email, and the address, phone, hours and jurisdiction
+once confirmed) live in one place, `server/company.js`, and can be set from the environment
+(`.env.example`, Company section). A fact with no confirmed value is shown nowhere. The policy pages
+say the service is in preview until `POLICIES_REVIEWED=true`, and live payments are refused until then.
 
 | Route | What it is |
 | --- | --- |
@@ -183,13 +189,13 @@ waits for data we don't have or belongs after booking:
 
 | Route | What it is |
 | --- | --- |
-| `/company` | Corporate homepage (served at `/` when `ENABLE_TRIPS=false`) |
-| `/brands`, `/technology`, `/partners`, `/about`, `/contact` | Site pages (partner form stores leads) |
+| `/about`, `/contact`, `/partners` | About Tripelyx (company history kept to its own section), Contact support (`?trip=` carries the trip into the message), For travel businesses. Messages are saved, support is told in the outbox, and admins read them under Messages. `/company` and `/brands` redirect to `/about`, `/technology` to `/partners` |
+| `/how-it-works`, `/faq`, `/legal/:key` | Served with the planner on or off |
 | `/book`, `/book/:vertical` | Search per vertical, server-rendered with JS-enhanced loading states |
 | `/book/:vertical/:offerId` | Offer details and options; "Reserve" creates a time-limited quote |
 | `/checkout/:quoteId` | Traveler details and payment (test mode) |
 | `/booking/:ref`, `/manage` | Booking confirmation, cancellation, lookup by reference + email |
-| `/api/*` | JSON API used by the UI (search, offers, quotes, bookings, pay, cancel, partners) |
+| `/api/*` | JSON API used by the UI (search, offers, quotes, bookings, pay, cancel, messages) |
 
 ## Architecture
 
@@ -315,6 +321,6 @@ deployments on `staging`.
 
 ## Assets
 
-Photography is derived from Alamein Go's own `public/hero-beach.jpg`; illustrations, icons, device
-mockups and demo images are original. The Inter font is bundled under the SIL Open Font License
+The coast photograph (`public/img/coast-hero.*`) was supplied with the original site; illustrations,
+icons and demo images are original. The Inter font is bundled under the SIL Open Font License
 (see `public/fonts/OFL.txt`).

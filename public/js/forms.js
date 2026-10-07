@@ -1,4 +1,4 @@
-// Partner / contact form: client-side checks, JSON submit, inline errors and a success message.
+// Contact support / business form: client-side checks, JSON submit, inline errors and a success message.
 (function () {
   'use strict';
   document.querySelectorAll('[data-lead-form]').forEach(function (form) {
@@ -24,12 +24,12 @@
       if (Object.keys(errs).length) { form.querySelector('[aria-invalid="true"]').focus(); return; }
       btn.disabled = true;
       status.innerHTML = '';
-      fetch('/api/partners', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
+      fetch('/api/messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
         .then(function (res) { return res.json().then(function (body) { return { ok: res.ok, body: body }; }); })
         .then(function (r) {
           if (!r.ok) { showErrors(r.body.error && r.body.error.details); throw new Error(r.body.error ? r.body.error.message : 'Something went wrong.'); }
           form.reset();
-          status.innerHTML = '<div class="alert alert-success">Thanks — your message is in. We’ll be in touch soon.</div>';
+          status.innerHTML = '<div class="alert alert-success">Thanks, your message is in. We’ll reply by email.</div>';
         })
         .catch(function (err) {
           var d = document.createElement('div'); d.className = 'alert alert-error'; d.textContent = err.message || 'We couldn’t send your message. Please try again.';

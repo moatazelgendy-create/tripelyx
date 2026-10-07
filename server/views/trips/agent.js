@@ -617,7 +617,7 @@ function chat(ctx, s, { canvas, hunt }) {
   const live = huntOf(s, hunt);
   return html`<div id="live-chat" data-live="chat" data-running="${running ? '1' : '0'}">
     <ol class="ag-messages">
-      ${s.messages.length ? '' : html`<li class="ag-msg is-agent"><div class="ag-bubble"><p>What do you want your trip to do? Tell me the budget, who is going, where you fly from, and anything that must be true. I search, compare and negotiate; you decide.</p></div></li>`}
+      ${s.messages.length ? '' : html`<li class="ag-msg is-agent"><div class="ag-bubble"><p>What do you want your trip to do? Tell me the budget, who is going, where you fly from, and anything that must be true. I search, compare and price; you decide.</p></div></li>`}
       ${s.messages.map(m => html`<li class="ag-msg is-${m.role}"><div class="ag-bubble"><p>${m.text}</p>${m.role === 'agent' ? card(s.id, m, { current, hunt: live, budget: bookingBudget(s) }) : ''}</div></li>`)}
     </ol>
     ${progress(s.job, { mission: s.mission ? bookingBudget(s) : null })}
@@ -846,7 +846,7 @@ function agentStartView(ctx, { user, booking = null }) {
   <div class="container ag-layout ag-layout-start">
     <div class="ag-chat">
       <div class="ag-chat-head"><p class="tb-kicker">Your travel agent</p><h1>What do you want your trip to do?</h1>
-        <p class="tb-muted">Tell me the budget, who is going, where you fly from, and anything that must be true. I do the searching, comparing and negotiating. You decide.</p></div>
+        <p class="tb-muted">Tell me the budget, who is going, where you fly from, and anything that must be true. I do the searching, comparing and pricing. You decide.</p></div>
       ${composer(null)}
       <div class="ag-chips ag-examples">${EXAMPLES.map(e => html`<form method="post" action="/agent" class="ag-say"><input type="hidden" name="say" value="${e}"><button class="ag-chip" type="submit">${e}</button></form>`)}</div>
       <p class="ag-foot tb-small tb-muted">Prices and terms come from suppliers, every total includes taxes and fees, and nothing is booked or charged until you confirm it yourself.</p>
@@ -855,7 +855,7 @@ function agentStartView(ctx, { user, booking = null }) {
       <ul class="tb-list tb-small"><li>Say what must be true: “only nonstop”, “don’t change the hotel”.</li><li>Negotiate: “make it $200 cheaper”, “spend $100 if it actually helps”.</li><li>Challenge: “I found this for $1,800, can you beat it?”</li></ul></div></aside>
   </div>
 </section>`;
-  return layout({ title: 'Your travel agent', active: 'plan', body, ctx, scripts: ['/js/agent.js'], canonical: '/agent', description: 'Tell your travel agent what you want your trip to do. It searches, compares and negotiates complete trips inside your budget; you decide.' });
+  return layout({ title: 'Your travel agent', active: 'plan', body, ctx, scripts: ['/js/agent.js'], canonical: '/agent', description: 'Tell your travel agent what you want your trip to do. It searches, compares and prices complete trips inside your budget; you decide.' });
 }
 
 module.exports = { agentView, agentStartView, agentLive, EXAMPLES };

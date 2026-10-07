@@ -3,7 +3,7 @@
 const { html, raw, jsonScript } = require('../../lib/html');
 const { icon } = require('../icons');
 const { layout } = require('../layout');
-const { pageHero } = require('../pages');
+const { pageHero } = require('../components');
 const { encodeSpec } = require('../../trips/spec');
 const { contextParams, searchParams } = require('../../trips/optimizer');
 const { money, dollars, longDate, shortDate, plural, joinAnd, cutoffText, hm, statusPill, demoBadge, budgetMeter, recipe, stepsBar } = require('./common');
@@ -59,19 +59,25 @@ const LEGAL = {
   cancellation: ['Cancellation Policy', ['Within 24 hours of booking, with departure at least 7 days away, you may cancel the whole trip for a full refund.', 'After that, each part follows its own terms: refundable hotel rates until the hotel’s deadline; flexible flight fares until the airline’s deadline; experiences and transfers until 24 hours before. Non-refundable rates and basic fares are not refundable.', 'The Tripelyx service fee is refundable only within the first 24 hours.', 'The exact terms for your trip are shown before booking and on your trip page.']],
   refunds: ['Refund Policy', ['Refunds are made to the original payment method. Processing times depend on your bank, typically 5–10 business days after we issue the refund.', 'If a supplier fails to confirm part of your trip after payment, we refund that part in full, or the whole trip if the flights cannot be confirmed.', 'Refund amounts are always shown to you before you cancel.']],
   cookies: ['Cookie Policy', ['Tripelyx uses strictly necessary cookies: a session cookie when you sign in, a per-booking access cookie after you book, and a random first-party visitor id used to count how travelers move through the planning steps. None of them track you across other sites and we use no third-party advertising cookies.']],
-  'travel-disclosures': ['Travel Disclosures', ['Flight schedules, hotel details and activity descriptions are supplied by the providers named on each trip and may change. Hotel ratings are labeled with their source and are not Tripelyx’s own assessment.', 'Weather information is based on historical climate data and is not a forecast.', 'Travel document and entry requirements change; always check official sources for your nationality before traveling.', 'In this preview environment, inventory and prices are demo data for development and are not real offers.']],
+  'travel-disclosures': ['Travel Disclosures', ['Flight schedules, hotel details and activity descriptions are supplied by the providers named on each trip and may change. Hotel ratings are labeled with their source and are not Tripelyx’s own assessment.', 'Weather information is based on historical climate data and is not a forecast.', 'Travel document and entry requirements change; always check official sources for your nationality before traveling.', { demoOnly: true, text: 'While the site shows demo inventory, its trips, prices and ratings are demonstration data and are not real offers.' }]],
 };
+
+// The date the policy text below last changed. It moves only when the text does.
+const POLICIES_UPDATED = '2026-10-08';
 
 function legalView(ctx, key) {
   const [title, paras] = LEGAL[key];
+  const c = ctx.company || ctx.config.company;
+  const demo = !!(ctx.tripService && ctx.tripService.demo);
   const body = html`
 ${pageHero({ eyebrow: 'Policies', title })}
 <section class="section"><div class="container tb-prose">
-  <div class="alert alert-warning" role="note">${icon('alert')}<span><b>Draft for professional review.</b> This text is a placeholder written for the preview. It must be reviewed and approved by a qualified legal professional before launch and does not create any guarantee beyond the terms actually shown at booking.</span></div>
-  ${paras.map(p => html`<p>${p}</p>`)}
-  <p class="tb-muted tb-small">Last updated: ${new Date().toISOString().slice(0, 10)} (draft).</p>
+  ${c.policiesReviewed ? '' : html`<div class="alert alert-info" role="note">${icon('info')}<span><b>${c.brandName} is in preview.</b> These policies describe how the service works today. They will be reviewed and finalized before ${c.brandName} takes real bookings and payments. The terms shown for your trip before you pay always apply.</span></div>`}
+  ${paras.filter(p => demo || !p.demoOnly).map(p => html`<p>${p.text || p}</p>`)}
+  <p>${c.brandName} is operated by ${c.legalName}.${c.jurisdiction ? ` These policies are governed by the laws of ${c.jurisdiction}.` : ''} Questions: <a href="mailto:${c.supportEmail}">${c.supportEmail}</a>.</p>
+  <p class="tb-muted tb-small">Last updated: ${longDate(POLICIES_UPDATED)}.</p>
 </div></section>`;
-  return layout({ title, body, ctx, canonical: `/legal/${key}`, noindex: true });
+  return layout({ title, body, ctx, canonical: `/legal/${key}`, noindex: !c.policiesReviewed });
 }
 
 function customTripView(ctx, { values = {}, errors = {}, done = false, user }) {

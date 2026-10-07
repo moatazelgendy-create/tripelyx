@@ -109,7 +109,7 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
     assetVersion: ASSET_VERSION,
     envBanner: config.appEnv === 'production' ? null
       : `${config.appEnv === 'staging' ? 'Staging' : 'Development'} build · demo inventory · payments in ${config.payment.mode} mode — no real charges`,
-    alameinGoUrl: config.alameinGoUrl,
+    company: config.company,
     log,
     trips: !!tripService,
     tripService,

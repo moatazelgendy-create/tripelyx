@@ -336,7 +336,7 @@ function tripView(ctx, { data, cx, user, saved, dreamGap, named = null, promo = 
         ${scorecard(scores, t.demo)}
         <div class="tb-side-why"><h3>Why we picked this</h3><ul class="tb-why-list">${why.map(w => html`<li>${icon('check')}${w}</li>`)}</ul>
           ${tos.length ? html`<h3>Trade-offs</h3><ul class="tb-tradeoff-list">${tos.map(w => html`<li>${icon('minus')}${w}</li>`)}</ul>` : ''}</div>
-        <div class="tb-side-help"><h3>Need help with this trip?</h3><ul class="tb-list"><li><a href="/custom-trip?budget=${budget ? Math.round(budget / 100) : ''}&from=${origin ? encodeURIComponent(origin.city) : ''}&travelers=${s.travelers}&dest=${encodeURIComponent(t.dest.name)}">Ask a trip specialist to build it for me</a></li><li><a href="/contact">Ask a question about this trip</a></li>${cx.searchParams ? html`<li><a href="/trips?${cx.searchParams}">Back to my three trips</a></li>` : ''}</ul></div>
+        <div class="tb-side-help"><h3>Need help with this trip?</h3><ul class="tb-list"><li><a href="/custom-trip?budget=${budget ? Math.round(budget / 100) : ''}&from=${origin ? encodeURIComponent(origin.city) : ''}&travelers=${s.travelers}&dest=${encodeURIComponent(t.dest.name)}">Ask a trip specialist to build it for me</a></li><li><a href="/contact?trip=${token}">Ask a question about this trip</a></li>${cx.searchParams ? html`<li><a href="/trips?${cx.searchParams}">Back to my three trips</a></li>` : ''}</ul></div>
       </div>
     </aside>
   </div>
@@ -518,7 +518,7 @@ function reviewView(ctx, { data, cx, verify, user, promoError, promoCode, leak =
         <button class="btn btn-navy btn-lg" type="submit">${rise && !rise.simple ? `Approve ${money(t.total)}, using ${reserveUse(plan, 'my')}` : rise ? `Approve ${money(t.total)} from unassigned money` : verify.status === 'higher' ? `Approve ${money(t.total)} and continue` : plan && plan.raid ? `Book for ${money(t.total)}, using ${reserveUse(plan, 'my')}` : 'Yes — continue to book'} ${icon('arrow')}</button>
         <a class="btn btn-ghost btn-lg" href="/trip/${token}?${contextParams(cx)}#customize">Change something</a>
       </div>
-      <p class="tb-muted tb-small">Not sure yet? ${user ? html`<a href="/trip/${token}?${contextParams(cx)}">Save or watch this trip</a>` : html`<a href="/signin?next=${encodeURIComponent(`/trip/${token}?${contextParams(cx)}`)}">Sign in to save or watch it</a>`} · <button class="tb-linkbtn" type="button" data-share="${token}" data-share-title="${s.nights} nights in ${t.dest.name}">share it with someone</button> · <a href="/contact">talk to support</a>. We don’t do pressure.</p>
+      <p class="tb-muted tb-small">Not sure yet? ${user ? html`<a href="/trip/${token}?${contextParams(cx)}">Save or watch this trip</a>` : html`<a href="/signin?next=${encodeURIComponent(`/trip/${token}?${contextParams(cx)}`)}">Sign in to save or watch it</a>`} · <button class="tb-linkbtn" type="button" data-share="${token}" data-share-title="${s.nights} nights in ${t.dest.name}">share it with someone</button> · <a href="/contact?trip=${token}">talk to support</a>. We don’t do pressure.</p>
     </form>
   </div>
 </div>`;

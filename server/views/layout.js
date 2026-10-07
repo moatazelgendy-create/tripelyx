@@ -2,21 +2,12 @@ const { html, raw } = require('../lib/html');
 const { sprite, icon } = require('./icons');
 const { current } = require('../lib/requestContext');
 
-const NAV = [
-  { href: '/', label: 'Home', key: 'home' },
-  { href: '/brands', label: 'Our Brands', key: 'brands' },
-  { href: '/technology', label: 'Technology', key: 'technology' },
-  { href: '/partners', label: 'Partners', key: 'partners' },
-  { href: '/about', label: 'About', key: 'about' },
-  { href: '/contact', label: 'Contact', key: 'contact' },
-];
-
-// With Travel by Budget on, the site leads with trip planning; the company pages move to the footer.
+// The consumer navigation. Links that need the trip planner are left out when it is off.
 const TRIP_NAV = [
-  { href: '/plan', label: 'Build My Trip', key: 'plan' },
+  { href: '/plan', label: 'Build My Trip', key: 'plan', trips: true },
   { href: '/how-it-works', label: 'How It Works', key: 'how' },
-  { href: '/destinations', label: 'Destinations', key: 'destinations' },
-  { href: '/my-trips', label: 'My Trips', key: 'my-trips' },
+  { href: '/destinations', label: 'Destinations', key: 'destinations', trips: true },
+  { href: '/my-trips', label: 'My Trips', key: 'my-trips', trips: true },
   { href: '/faq', label: 'Help', key: 'faq' },
 ];
 
@@ -33,21 +24,19 @@ function accountArea(user) {
 }
 
 function header(active, trips) {
-  const nav = trips ? TRIP_NAV : NAV;
+  const nav = TRIP_NAV.filter(n => trips || !n.trips);
   const { user } = current();
   return html`
-<header class="site-header${trips ? ' site-header-trips' : ''}" data-header>
+<header class="site-header site-header-trips" data-header>
   <div class="container header-inner">
     <a class="header-logo" href="/" aria-label="Tripelyx home">${logo()}</a>
     <nav class="main-nav" id="main-nav" aria-label="Main">
       <ul>
         ${nav.map(n => html`<li><a href="${n.href}"${n.key === active ? raw(' aria-current="page"') : ''}>${n.label}</a></li>`)}
       </ul>
-      ${trips
-        ? html`<a class="btn btn-navy btn-sm nav-cta-mobile" href="${user ? '/my-trips' : '/signin'}">${user ? 'My account' : 'Sign in'} ${icon('arrow')}</a>`
-        : html`<a class="btn btn-navy btn-sm nav-cta-mobile" href="/partners#partner-form">Partner With Us ${icon('arrow')}</a>`}
+      ${trips ? html`<a class="btn btn-navy btn-sm nav-cta-mobile" href="${user ? '/my-trips' : '/signin'}">${user ? 'My account' : 'Sign in'} ${icon('arrow')}</a>` : ''}
     </nav>
-    ${trips ? accountArea(user) : html`<a class="btn btn-navy btn-sm header-cta" href="/partners#partner-form">Partner With Us ${icon('arrow')}</a>`}
+    ${trips ? accountArea(user) : ''}
     <button class="nav-toggle" type="button" aria-controls="main-nav" aria-expanded="false" data-nav-toggle>
       <span class="sr-only">Menu</span>${icon('menu', 'icon-open')}${icon('close', 'icon-close')}
     </button>
@@ -55,45 +44,34 @@ function header(active, trips) {
 </header>`;
 }
 
-function tripFooter() {
+// Explore / Company / Support / Legal, the brand line and the legal entity from the company config.
+function footer(company, trips) {
   const col = (title, links) => html`<div class="tf-col"><h2>${title}</h2><ul>${links.map(([h, l]) => html`<li><a href="${h}">${l}</a></li>`)}</ul></div>`;
+  const year = company.copyrightYear || new Date().getUTCFullYear();
   return html`
 <footer class="site-footer trip-footer">
   <div class="container">
     <div class="tf-top">
-      <div class="tf-brand"><a class="footer-logo" href="/" aria-label="Tripelyx home">${logo()}</a><p>You set the budget. We build the trip, and keep the numbers clear.</p></div>
-      ${col('Plan', [['/plan', 'Build My Trip'], ['/plan?style=surprise', 'Surprise Me'], ['/destinations', 'Destinations'], ['/trips-under-1000', 'Trips under $1,000'], ['/trips-under-1500', 'Trips under $1,500'], ['/beach-vacations', 'Beach vacations']])}
-      ${col('Help', [['/how-it-works', 'How it works'], ['/faq', 'FAQ'], ['/my-trips', 'My Trips'], ['/manage', 'Find a booking'], ['/custom-trip', 'Request a custom trip'], ['/contact', 'Contact us']])}
-      ${col('Company', [['/about', 'About us'], ['/brands', 'Our brands'], ['/technology', 'Technology'], ['/partners', 'Partners'], ['/book', 'Alamein Go booking']])}
-      ${col('Policies', [['/legal/terms', 'Terms & Conditions'], ['/legal/privacy', 'Privacy Policy'], ['/legal/cancellation', 'Cancellation Policy'], ['/legal/refunds', 'Refund Policy'], ['/legal/cookies', 'Cookie Policy'], ['/legal/travel-disclosures', 'Travel Disclosures']])}
+      <div class="tf-brand"><a class="footer-logo" href="/" aria-label="Tripelyx home">${logo()}</a><p>${company.footerLine}</p></div>
+      ${col('Explore', trips
+        ? [['/plan', 'Build my trip'], ['/challenge', 'Beat my trip'], ['/destinations', 'Destinations'], ['/how-it-works', 'How it works']]
+        : [['/how-it-works', 'How it works']])}
+      ${col('Company', [['/about', 'About Tripelyx'], ['/partners', 'For travel businesses']])}
+      ${col('Support', [['/faq', 'Help and FAQ'], ['/contact', 'Contact support'], ...(trips ? [['/manage', 'Find a booking'], ['/my-trips', 'My Trips']] : [])])}
+      ${col('Legal', [['/legal/terms', 'Terms'], ['/legal/privacy', 'Privacy'], ['/legal/cookies', 'Cookies'], ['/legal/cancellation', 'Cancellation'], ['/legal/refunds', 'Refunds'], ['/legal/travel-disclosures', 'Travel disclosures']])}
     </div>
-    <p class="copyright">© ${new Date().getFullYear()} Tripelyx LLC. All rights reserved.</p>
-  </div>
-</footer>`;
-}
-
-function footer() {
-  return html`
-<footer class="site-footer">
-  <div class="container footer-inner">
-    <a class="footer-logo" href="/" aria-label="Tripelyx home">${logo()}</a>
-    <nav class="footer-nav" aria-label="Footer">
-      <ul>${NAV.slice(1).map(n => html`<li><a href="${n.href}">${n.label}</a></li>`)}</ul>
-    </nav>
-    <ul class="social" aria-label="Tripelyx on social media">
-      <li><a href="https://www.linkedin.com/" rel="noopener" target="_blank" aria-label="LinkedIn">${icon('linkedin')}</a></li>
-      <li><a href="https://www.instagram.com/" rel="noopener" target="_blank" aria-label="Instagram">${icon('instagram')}</a></li>
-      <li><a href="https://www.youtube.com/" rel="noopener" target="_blank" aria-label="YouTube">${icon('youtube')}</a></li>
-    </ul>
-    <p class="copyright">© ${new Date().getFullYear()} Tripelyx LLC. All rights reserved.</p>
+    <p class="copyright">© ${year} ${company.legalName}. All rights reserved.</p>
   </div>
 </footer>`;
 }
 
 function layout({ title, description, active, body, scripts = [], bodyClass = '', ctx = {}, canonical = null, noindex = false }) {
   const trips = !!(ctx.trips);
-  const fullTitle = title ? `${title} | Tripelyx` : trips ? 'Tripelyx — Tell us what you want your trip to do. The AI builds it.' : 'Tripelyx — Travel technology that powers better journeys';
-  const desc = description || 'Tripelyx builds travel platforms and technology that connect travelers, destinations and local businesses across the world.';
+  const company = ctx.company || (ctx.config && ctx.config.company);
+  const brand = company.brandName;
+  const fullTitle = title ? `${title} | ${brand}` : `${brand} — AI travel agent. ${company.promise}`;
+  const desc = description || company.description;
+  const base = ctx.config && ctx.config.publicBaseUrl ? ctx.config.publicBaseUrl.replace(/\/$/, '') : '';
   return html`<!doctype html>
 <html lang="en">
 <head>
@@ -105,11 +83,12 @@ function layout({ title, description, active, body, scripts = [], bodyClass = ''
 <meta property="og:title" content="${fullTitle}">
 <meta property="og:description" content="${desc}">
 <meta property="og:type" content="website">
-<meta property="og:image" content="/img/coast-hero.jpg">
+<meta property="og:site_name" content="${brand}">
+<meta property="og:image" content="${base}/img/coast-hero.jpg">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/css/site.css?v=${ctx.assetVersion || '1'}">
-${trips ? html`<link rel="stylesheet" href="/css/trips.css?v=${ctx.assetVersion || '1'}">` : ''}
+<link rel="stylesheet" href="/css/trips.css?v=${ctx.assetVersion || '1'}">
 ${canonical && ctx.config && ctx.config.publicBaseUrl ? html`<link rel="canonical" href="${ctx.config.publicBaseUrl}${canonical}">` : ''}
 ${noindex ? raw('<meta name="robots" content="noindex">') : ''}
 ${ctx.preload || ''}
@@ -122,11 +101,11 @@ ${header(active, trips)}
 <main id="main" tabindex="-1">
 ${body}
 </main>
-${trips ? tripFooter() : footer()}
+${footer(company, trips)}
 <script src="/js/site.js?v=${ctx.assetVersion || '1'}" defer></script>
 ${scripts.map(s => html`<script src="${s}?v=${ctx.assetVersion || '1'}" defer></script>`)}
 </body>
 </html>`;
 }
 
-module.exports = { layout, logo, NAV, TRIP_NAV };
+module.exports = { layout, logo, TRIP_NAV };

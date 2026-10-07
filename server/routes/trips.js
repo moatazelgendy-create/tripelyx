@@ -493,13 +493,7 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
     } catch (e) { next(e); }
   });
 
-  // ---- info pages ----
-  r.get('/how-it-works', (req, res) => send(res, pages.howItWorksView(ctx)));
-  r.get('/faq', (req, res) => send(res, pages.faqView(ctx)));
-  r.get('/legal/:key', (req, res) => {
-    if (!pages.LEGAL[req.params.key]) return send(res.status(404), notFoundView(ctx));
-    send(res, pages.legalView(ctx, req.params.key));
-  });
+  // How it works, FAQ and the policies are in the pages router, so they are served even with the planner off.
   r.get('/custom-trip', (req, res) => send(res, pages.customTripView(ctx, { values: { budget: str(req.query.budget, 20), from: str(req.query.from, 80), travelers: str(req.query.travelers, 10), dest: str(req.query.dest, 60), name: req.user ? req.user.name : '', email: req.user ? req.user.email : '' }, user: user(req) })));
   r.post('/custom-trip', writeLimiter, sameOrigin, form, async (req, res, next) => {
     try { await svc.createRequest(req.body, user(req)); send(res, pages.customTripView(ctx, { done: true, user: user(req) })); } catch (e) {

@@ -27,20 +27,23 @@ function validateTraveler(input) {
   return t;
 }
 
-function validatePartnerLead(input) {
-  const lead = {
+// A message from the Contact support or For travel businesses form.
+function validateMessage(input) {
+  const msg = {
+    kind: input && input.kind === 'partner' ? 'partner' : 'support',
     name: str(input && input.name, 100),
     company: str(input && input.company, 120),
     email: str(input && input.email, 120).toLowerCase(),
-    type: str(input && input.type, 40),
+    type: str(input && input.type, 60),
     message: str(input && input.message, 2000),
+    trip: /^[A-Za-z0-9~._-]{3,400}$/.test(String((input && input.trip) || '')) ? String(input.trip) : null,
   };
   const errors = {};
-  if (!lead.name) errors.name = 'Enter your name.';
-  if (!EMAIL.test(lead.email)) errors.email = 'Enter a valid email address.';
-  if (!lead.message || lead.message.length < 10) errors.message = 'Tell us a little more (at least 10 characters).';
-  if (Object.keys(errors).length) throw new AppError('invalid_lead', 'Check the highlighted fields.', 422, errors);
-  return lead;
+  if (!msg.name) errors.name = 'Enter your name.';
+  if (!EMAIL.test(msg.email)) errors.email = 'Enter a valid email address.';
+  if (!msg.message || msg.message.length < 10) errors.message = 'Tell us a little more (at least 10 characters).';
+  if (Object.keys(errors).length) throw new AppError('invalid_message', 'Check the highlighted fields.', 422, errors);
+  return msg;
 }
 
-module.exports = { str, validateTraveler, validatePartnerLead, EMAIL };
+module.exports = { str, validateTraveler, validateMessage, EMAIL };

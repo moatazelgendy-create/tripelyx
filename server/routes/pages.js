@@ -1,12 +1,12 @@
 const express = require('express');
-const { homeView } = require('../views/home');
 const { refine, parseRefine } = require('../booking/refine');
-const { brandsView, technologyView, partnersView, aboutView, contactView } = require('../views/pages');
+const { partnersView, aboutView, contactView, prelaunchView } = require('../views/pages');
+const { howItWorksView, faqView, legalView, LEGAL } = require('../views/trips/pages');
 const { bookView, bookIndexView, offerView, checkoutView, bookingView, manageView, defaultsFor } = require('../views/book');
 const { notFoundView } = require('../views/errors');
 const { tripCheckoutView, tripBookingView } = require('../views/trips/pages');
 const { worthItOpen } = require('../trips/service');
-const { VERTICALS, getVertical } = require('../verticals');
+const { getVertical } = require('../verticals');
 const { AppError } = require('../lib/errors');
 const { readCookies, bookingCookieName, setBookingCookie } = require('../lib/cookies');
 
@@ -21,16 +21,25 @@ function pagesRouter(ctx, { writeLimiter }) {
 
   r.use((req, res, next) => { res.setHeader('Cache-Control', 'no-cache'); next(); });
 
-  // With Travel by Budget on, the trips router owns "/" and the corporate homepage moves to /company.
-  r.get(ctx.trips ? '/company' : '/', (req, res) => {
-    const verticals = VERTICALS.filter(v => enabled(v.key)).map(v => ({ meta: v, values: defaultsFor(v), lookups: lookupsFor(v.key) }));
-    send(res, homeView(ctx, { verticals }));
-  });
-  r.get('/brands', (req, res) => send(res, brandsView(ctx)));
-  r.get('/technology', (req, res) => send(res, technologyView(ctx)));
+  // With the trip planner on, the trips router owns "/"; with it off, "/" says who we are and how to reach us.
+  if (!ctx.trips) r.get('/', (req, res) => send(res, prelaunchView(ctx)));
+  // The old corporate pages (brands, technology, the corporate homepage) are gone; their addresses
+  // lead to the pages that replaced them.
+  r.get(['/company', '/brands'], (req, res) => res.redirect(301, '/about'));
+  r.get('/technology', (req, res) => res.redirect(301, '/partners'));
   r.get('/partners', (req, res) => send(res, partnersView(ctx)));
   r.get('/about', (req, res) => send(res, aboutView(ctx)));
-  r.get('/contact', (req, res) => send(res, contactView(ctx)));
+  // ?trip= carries the trip a traveler was looking at into the message, so support sees the same trip.
+  r.get('/contact', (req, res) => {
+    const trip = typeof req.query.trip === 'string' && /^[A-Za-z0-9~._-]{3,400}$/.test(req.query.trip) ? req.query.trip : null;
+    send(res, contactView(ctx, { trip }));
+  });
+  r.get('/how-it-works', (req, res) => send(res, howItWorksView(ctx)));
+  r.get('/faq', (req, res) => send(res, faqView(ctx)));
+  r.get('/legal/:key', (req, res) => {
+    if (!Object.prototype.hasOwnProperty.call(LEGAL, req.params.key)) return send(res.status(404), notFoundView(ctx));
+    send(res, legalView(ctx, req.params.key));
+  });
 
   r.get('/book', (req, res) => send(res, bookIndexView(ctx)));
 
