@@ -139,7 +139,7 @@ test('common and old addresses redirect; accented destinations have plain addres
     assert.equal(r.location, to, from);
   }
   assert.equal((await c.req('/trips-to-reykjavik')).status, 200);
-  assert.match((await c.req('/sitemap.xml')).text, /\/trips-to-reykjavik</);
+  assert.match((await c.req('/destinations')).text, /href="\/trips-to-reykjavik"/);
   const robots = (await c.req('/robots.txt')).text;
   assert.match(robots, /^Disallow: \/trips\?$/m);
   assert.match(robots, /^Disallow: \/trips\$$/m);

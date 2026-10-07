@@ -260,7 +260,10 @@ class TripService {
     if (spec.depart < today(this.now())) throw new AppError('trip_expired', 'This trip link is no longer available: its dates have passed.', 410);
     const t = await this.price(spec, { promo });
     if (!t) return { available: false };
-    const diff = Number.isFinite(seen) && seen > 0 ? t.total - seen : 0;
+    // With no earlier price to compare (no `seen`), the status is just "priced": never "still", which
+    // would claim a comparison that was not made.
+    if (!(Number.isFinite(seen) && seen > 0)) return { available: true, trip: t, promo, status: 'priced', diff: 0 };
+    const diff = t.total - seen;
     return { available: true, trip: t, promo, status: diff === 0 ? 'same' : diff < 0 ? 'cheaper' : 'higher', diff: Math.abs(diff) };
   }
 
@@ -621,7 +624,10 @@ class TripService {
     const visitor = null;
     if (type === 'payment_attempted' || type === 'booking_confirmed') await this.track(type, { visitor, userId: b.userId, data: { ref: b.ref, total: b.total, dest: b.quote.trip.dest.id } });
     if (type === 'booking_confirmed') {
-      await this.notifier.send({ to: b.traveler.email, subject: `Your trip is confirmed · TRIP #${b.ref}`, body: `${b.quote.offer.title}. Total paid ${money(b.total)}.`, ref: b.ref });
+      // A demo booking says so in the subject: nothing was reserved and the payment was a test.
+      await this.notifier.send(b.demo
+        ? { to: b.traveler.email, subject: `Demo booking complete · TRIP #${b.ref}`, body: `${b.quote.offer.title}. Demo total ${money(b.total)}. This was a demo: nothing was reserved with any supplier and no card was charged.`, ref: b.ref }
+        : { to: b.traveler.email, subject: `Your trip is confirmed · TRIP #${b.ref}`, body: `${b.quote.offer.title}. Total paid ${money(b.total)}.`, ref: b.ref });
     }
     if (type === 'partially_confirmed' || type === 'booking_failed') {
       const alert = { id: id('alr'), ref: b.ref, type, message: type === 'partially_confirmed' ? 'Part of this trip could not be confirmed. Manual intervention needed.' : 'Booking failed after payment; the payment was refunded automatically.', open: true, at: this.now().toISOString() };

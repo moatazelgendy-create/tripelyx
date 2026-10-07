@@ -28,6 +28,18 @@ const { notFoundView, errorView } = require('./views/errors');
 
 const ASSET_VERSION = Date.now().toString(36);
 
+// Every page says plainly when what it shows is not real. Outside production the build is named; in
+// production the notice appears whenever trips come from demo inventory or payments are in test mode.
+function envBanner(config, tripService) {
+  if (config.appEnv !== 'production') return `${config.appEnv === 'staging' ? 'Staging' : 'Development'} build · demo inventory · payments in ${config.payment.mode} mode — no real charges`;
+  const demo = tripService ? tripService.demo : config.allowDemoInventory;
+  const parts = [
+    ...(demo ? ['the trips, prices, hotels and airlines shown are demo examples, not real offers'] : []),
+    ...(config.payment.mode !== 'live' ? ['payments are in test mode, so no card is ever charged'] : []),
+  ];
+  return parts.length ? `Preview: ${parts.join('; ')}.` : null;
+}
+
 async function createApp(config, { registryOverrides, tripOverrides, store: injectedStore, now, log = console } = {}) {
   const store = injectedStore || createStore(config);
   await store.init();
@@ -107,8 +119,7 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
     payments,
     publicConfig: publicConfig(config),
     assetVersion: ASSET_VERSION,
-    envBanner: config.appEnv === 'production' ? null
-      : `${config.appEnv === 'staging' ? 'Staging' : 'Development'} build · demo inventory · payments in ${config.payment.mode} mode — no real charges`,
+    envBanner: envBanner(config, tripService),
     company: config.company,
     log,
     trips: !!tripService,

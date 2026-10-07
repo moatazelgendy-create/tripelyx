@@ -77,16 +77,6 @@
 
 /* ---------- Live example and building animation ---------- */
 .tb-example { position: relative; min-height: 120px; }
-.tb-building { display: none; list-style: none; padding: 28px 0; margin: 0; gap: 12px; }
-.tb-building li { display: flex; align-items: center; gap: 12px; font-size: 17px; color: var(--muted); opacity: .35; transition: opacity .3s, color .3s; }
-.tb-building li::before { content: ''; width: 18px; height: 18px; border-radius: 50%; border: 2.5px solid #cfd8e3; flex: none; }
-.tb-building li.is-now { opacity: 1; color: var(--ink); }
-.tb-building li.is-now::before { border-color: var(--blue-500); border-top-color: transparent; animation: spin .8s linear infinite; }
-.tb-building li.is-done { opacity: 1; color: var(--ink); }
-.tb-building li.is-done::before { border-color: var(--success); background: var(--success) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12.5l4.5 4.5L19 7'/%3E%3C/svg%3E") center / 12px no-repeat; }
-.js .is-building .tb-building { display: grid; }
-.js .is-building [data-example-result], .js .is-building [data-results-body] { display: none; }
-.tb-building-page { padding: 48px 0; max-width: 520px; }
 .tb-example-head { font-size: 20px; font-weight: 600; margin: 0 0 18px; }
 .tb-example-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; list-style: none; padding: 0; margin: 0; }
 .tb-example-card { background: #fff; border: 1px solid var(--line); border-radius: var(--radius-lg); overflow: hidden; box-shadow: var(--shadow-sm); transition: transform .25s var(--ease), box-shadow .25s; }
@@ -349,9 +339,6 @@ a.tb-pill:hover { border-color: var(--blue-500); }
 
 /* ---------- Review ---------- */
 .tb-review, .tb-checkout, .tb-command { padding: 28px 0 80px; }
-.tb-checking { display: none; align-items: center; gap: 12px; font-size: 20px; font-weight: 600; padding: 60px 0; justify-content: center; color: var(--navy-800); }
-.tb-checking.is-on { display: flex; }
-.tb-checking .spinner { border-color: rgba(11, 37, 69, .2); border-top-color: var(--navy-800); width: 24px; height: 24px; }
 .tb-price-status { margin-bottom: 20px; font-size: 17px; }
 .tb-review-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 24px; align-items: start; }
 .tb-dl { margin: 0 0 18px; }
@@ -1604,3 +1591,5 @@ a.tb-mem-chip:hover, a.tb-mem-chip:focus-visible { border-color: var(--blue-500)
   .ag-x-list li { grid-template-columns: 26px minmax(0, 1fr); }
   .ag-x-list li > .ag-say, .ag-x-list li > span:last-child { grid-column: 2; justify-self: start; margin-left: 0; }
 }
+
+.tb-review-demo { margin: 0 0 12px; }

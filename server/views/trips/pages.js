@@ -108,11 +108,13 @@ ${pageHero({ eyebrow: 'Custom trip', title: 'Build a trip for me.', lead: 'If th
 // ---- SEO landing pages ----
 function destinationsView(ctx, { destinations }) {
   const body = html`
-${pageHero({ eyebrow: 'Destinations', title: 'Where can your budget take you?', lead: 'Every destination we build complete trips for. Prices are the cheapest complete trip for two from New York over the next five months, taxes and fees included.' })}
+${pageHero({ eyebrow: 'Destinations', title: 'Where can your budget take you?', lead: 'Every destination we build complete trips for. The prices are examples: the cheapest complete trip for two from New York over the next five months, taxes and fees included. Open a destination to price it for your own dates and airport.' })}
 <section class="section"><div class="container">
-  <ul class="tb-dest-grid">${destinations.map(d => html`<li><a class="tb-dest" href="/trips-to-${d.slug}"><img src="${d.image.url}" alt="${d.image.alt}" width="400" height="250" loading="lazy"><span class="tb-dest-body"><b>${d.name}</b><small>${d.country}${d.from ? ` · from ${money(d.from)}` : ''}</small></span></a></li>`)}</ul>
+  ${ctx.tripService.demo ? html`<p class="tb-results-sub">${demoBadge(true, 'Demo inventory and example prices')}</p>` : ''}
+  <ul class="tb-dest-grid">${destinations.map(d => html`<li><a class="tb-dest" href="/trips-to-${d.slug}"><img src="${d.image.url}" alt="${d.image.alt}" width="400" height="250" loading="lazy"><span class="tb-dest-body"><b>${d.name}</b><small>${d.country}${d.from ? ` · example from ${money(d.from)}` : ''}</small></span></a></li>`)}</ul>
 </div></section>`;
-  return layout({ title: 'Destinations', active: 'destinations', body, ctx, canonical: '/destinations' });
+  // Example prices from demo inventory are not offered to search engines as if they were real.
+  return layout({ title: 'Destinations', active: 'destinations', body, ctx, canonical: '/destinations', description: 'Every destination Tripelyx builds complete trips for, with example prices for two, taxes and fees included.', noindex: ctx.tripService.demo });
 }
 
 function landingView(ctx, { title, eyebrow, lead, intro, result, q, originCity, canonical, budgetValue, origins, moreLinks = [] }) {
@@ -126,7 +128,7 @@ ${pageHero({ eyebrow, title, lead })}
   <p class="tb-muted mt-28">From another city: ${origins.map(o => html`<a href="?from=${o.id}">${o.city}</a> `)}</p>
   ${moreLinks.length ? html`<ul class="tb-inspo mt-28">${moreLinks.map(([h, t, s]) => html`<li><a href="${h}"><b>${t}</b><span>${s}</span></a></li>`)}</ul>` : ''}
 </div></section>`;
-  return layout({ title, body, ctx, canonical, description: lead });
+  return layout({ title, body, ctx, canonical, description: lead, noindex: ctx.tripService.demo });
 }
 
 // ---- checkout for a trip quote ----
@@ -165,7 +167,7 @@ function tripCheckoutView(ctx, { quote: q, paymentConfig }) {
   ${q.expired ? html`<div class="empty-state">${icon('clock')}<h3>This price has expired</h3><p>Prices are held for ${ctx.config.quoteTtlMinutes} minutes. Go back to re-check the live price.</p><a class="btn btn-navy btn-sm" href="/trip/${t.token}/review?${contextParams(bcx, { seen: q.total })}">Re-check the price</a></div>`
     : html`<div class="checkout-layout">
     <div>
-      <p class="alert alert-info" data-quote-timer data-expires="${q.expiresAt}">${icon('clock')}<span>Your price of ${money(q.total)} is confirmed and held for <span class="timer" data-timer>${ctx.config.quoteTtlMinutes}:00</span>. We check it once more when you pay; a changed price is never charged without your approval.</span></p>
+      <p class="alert alert-info" data-quote-timer data-expires="${q.expiresAt}">${icon('clock')}<span>${q.demo ? 'Your demo price of' : 'Your price of'} ${money(q.total)} is ${q.demo ? 'held in this checkout' : 'confirmed and held'} for <span class="timer" data-timer>${ctx.config.quoteTtlMinutes}:00</span>${q.demo ? ' (demo inventory: no supplier is holding anything)' : ''}. We check it once more when you pay; a changed price is never charged without your approval.</span></p>
       <form class="checkout-step form" data-traveler-form novalidate>
         <h2><span class="step-num">1</span> Lead traveler</h2>
         <div class="form-row">
@@ -186,7 +188,7 @@ function tripCheckoutView(ctx, { quote: q, paymentConfig }) {
       <form class="checkout-step form" data-payment-form novalidate>
         <h2><span class="step-num">3</span> Payment</h2>
         <ul class="tb-ready tb-ready-compact">
-          <li>${icon('check')} Price rechecked: ${money(q.total)}</li><li>${icon('check')} Dates ${shortDate(t.spec.depart)} – ${shortDate(t.flight.return)}</li><li>${icon('check')} ${plural(t.spec.travelers, 'traveler')}</li><li>${icon('check')} ${t.hotel.name}</li><li>${icon('check')} ${t.flight.stops ? '1-stop' : 'Nonstop'} flights</li><li>${icon('check')} Mandatory fees included</li><li>${icon('check')} Cancellation terms shown below</li>
+          <li>${icon('check')} ${q.demo ? 'Demo price recalculated' : 'Price rechecked'}: ${money(q.total)}</li><li>${icon('check')} Dates ${shortDate(t.spec.depart)} – ${shortDate(t.flight.return)}</li><li>${icon('check')} ${plural(t.spec.travelers, 'traveler')}</li><li>${icon('check')} ${t.hotel.name}</li><li>${icon('check')} ${t.flight.stops ? '1-stop' : 'Nonstop'} flights</li><li>${icon('check')} Mandatory fees included</li><li>${icon('check')} Cancellation terms shown below</li>
         </ul>
         <div data-payment-widget data-mode="${paymentConfig.mode}"></div>
         <div data-form-status role="alert" aria-live="assertive"></div>
@@ -231,6 +233,8 @@ function tripBookingView(ctx, { booking: b, cancellationPreview: preview, paymen
     pending_supplier: 'Payment received — confirming with suppliers', confirming: 'Confirming your trip', cancelled: 'This trip is canceled', expired: 'This booking expired before payment',
     failed: 'This trip couldn’t be confirmed', refund_pending: 'Refund in progress', refunded: 'Refunded',
   }[b.status] || b.status;
+  // A demo booking never reads as a real reservation: the headline and every confirmation code say demo.
+  const title = b.demo && ok ? 'Demo booking complete' : headline;
   const budget = b.budget && b.budget.budget;
   const plan = vacationPlan(t, { budget, keep: (b.budget && b.budget.keep) || 0 });
   // The saver's victory screen: what the traveler gave as a maximum, what the trip costs, what they
@@ -243,10 +247,10 @@ function tripBookingView(ctx, { booking: b, cancellationPreview: preview, paymen
   ${ok ? stepsBar(3) : ''}
   <header class="confirm-hero tb-confirm-hero">
     <div class="confirm-badge${ok ? '' : partial || ['pending_payment', 'pending_supplier', 'confirming', 'refund_pending'].includes(b.status) ? ' is-warn' : ' is-bad'}">${icon(ok ? 'check' : 'info')}</div>
-    <h1>${headline}</h1>
+    <h1>${title}</h1>
     <p>Trip ID <span class="ref">TRIP #${b.ref}</span> ${statusPill(b.status)}</p>
     ${ok && days > 0 ? html`<p class="tb-countdown">${icon('calendar')} ${days === 1 ? 'Tomorrow!' : `${days} days to go`}</p>` : ''}
-    ${b.demo ? html`<p class="demo-note">${icon('info')}Demo booking — test payment, no real supplier was contacted.</p>` : ''}
+    ${b.demo ? html`<p class="demo-note">${icon('info')}This is a demo booking. The trip comes from demo inventory, the payment was a test, and no airline, hotel or other supplier was contacted, so nothing is reserved.</p>` : ''}
   </header>
   ${v ? victoryPanel(v, { keep: (b.budget && b.budget.keep) || 0 }) : ''}
   ${notice ? html`<div class="alert alert-success mb-16" role="status">${icon('check')}<span>${notice}</span></div>` : ''}
@@ -379,7 +383,7 @@ function cancelDeadlines(preview) {
 function confirmationFor(b, kind, name) {
   const c = (b.components || []).find(x => x.kind === kind && (!name || x.name === name));
   if (!c) return b.status === 'pending_payment' ? html`<p class="tb-small tb-muted">Confirmed after payment</p>` : '';
-  return html`<p class="tb-small">${componentStatus(c)} ${c.confirmation ? html`Confirmation <b class="ref">${c.confirmation}</b>` : ''}</p>`;
+  return html`<p class="tb-small">${componentStatus(c)} ${c.confirmation ? html`${b.demo ? 'Demo confirmation' : 'Confirmation'} <b class="ref">${c.confirmation}</b>` : ''}</p>`;
 }
 
 module.exports = { howItWorksView, faqView, legalView, LEGAL, customTripView, destinationsView, landingView, tripCheckoutView, tripBookingView };

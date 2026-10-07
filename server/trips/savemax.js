@@ -85,7 +85,7 @@ function whyNot(cheap, against, ctx = {}) {
     switch (row.key) {
       case 'nights': out.push(ctx.nightsAsked && s.nights < ctx.nightsAsked ? `${plural(s.nights, 'night')}, ${plural(ctx.nightsAsked - s.nights, 'night')} fewer than you asked for` : `${plural(s.nights, 'night')} instead of ${against.spec.nights}`); break;
       case 'flight': out.push(f.stops > 0 ? `${plural(f.stops, 'stop')}, ${dur(f.durationMinutes)} each way` : `${dur(f.durationMinutes)} each way on the ${f.name} fare`); break;
-      case 'hotel': out.push(`${h.stars}-star hotel rated ${h.rating}/5 (${h.name})`); break;
+      case 'hotel': out.push(`${h.stars}-star hotel rated ${h.rating}/5 (${h.name}; ${h.ratingSource})`); break;
       case 'area': out.push(`not beachfront: ${h.area}`); break;
       case 'meals': out.push(h.features.breakfast ? 'breakfast only, not all-inclusive' : against.hotel.features.allInclusive ? 'no meals included' : 'no breakfast included'); break;
       case 'bags': out.push(!f.carryOn ? (hasChecked(cheap) ? 'checked bag but no carry-on' : 'personal item only, no carry-on') : 'no checked bag'); break;

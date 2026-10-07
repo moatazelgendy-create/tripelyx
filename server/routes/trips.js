@@ -528,7 +528,7 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
     }
     landing(req, res, next, { title: `Trips to ${d.name}`, eyebrow: `${d.name}, ${d.country}`, lead: `${d.blurb} Tell us your budget and we’ll build the complete trip: flights, hotel and experiences, with every tax and fee in the price.`, intro: `Complete ${d.name} trips priced in full.`, canonical: `/trips-to-${req.params.slug}`, budget: 3000, raw: { dest: d.id, b: '3000' }, moreLinks: [[`/dream?dest=${d.id}&b=1500&from=${SAMPLE_ORIGIN}`, `${d.name} for $1,500?`, 'See how close we can get'], ['/destinations', 'All destinations', 'Where else your budget can go']] });
   });
-  r.get('/beach-vacations', (req, res, next) => landing(req, res, next, { title: 'Beach vacations by budget', eyebrow: 'Beach', lead: 'Tell us what you want to spend and we’ll find the beach trip that fits: flights, a hotel on or near the sand, and the extras, priced in full.', intro: 'The three best beach trips for $1,500.', canonical: '/beach-vacations', budget: 1500, raw: { style: 'beach' }, moreLinks: [['/trips-under-1000', 'Trips under $1,000', ''], ['/trips-under-2000', 'Trips under $2,000', '']] }));
+  r.get('/beach-vacations', (req, res, next) => landing(req, res, next, { title: 'Beach vacations by budget', eyebrow: 'Beach', lead: 'Tell us what you want to spend and we’ll find the beach trip that fits: flights, a hotel on or near the sand, and the extras, priced in full.', intro: 'The best beach trips for $1,500.', canonical: '/beach-vacations', budget: 1500, raw: { style: 'beach' }, moreLinks: [['/trips-under-1000', 'Trips under $1,000', ''], ['/trips-under-2000', 'Trips under $2,000', '']] }));
   r.get('/trips-under-:n', (req, res, next) => {
     const n = Number(req.params.n);
     if (![500, 1000, 1500, 2000, 3000, 5000].includes(n)) return send(res.status(404), notFoundView(ctx));
@@ -542,7 +542,10 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
   r.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nDisallow: /trip/\nDisallow: /trips?\nDisallow: /trips$\nDisallow: /compare\nDisallow: /plan\nDisallow: /checkout/\nDisallow: /booking/\nDisallow: /admin\nDisallow: /my-trips\n${config.publicBaseUrl ? `Sitemap: ${config.publicBaseUrl}/sitemap.xml\n` : ''}`));
   r.get('/sitemap.xml', (req, res) => {
     const base = config.publicBaseUrl || '';
-    const urls = ['/', '/how-it-works', '/faq', '/destinations', '/beach-vacations', '/about', '/contact', ...[500, 1000, 1500, 2000, 3000, 5000].map(n => `/trips-under-${n}`), ...svc.inv.maps.listDestinations().map(d => `/trips-to-${slug(d.name)}`)];
+    // Pages whose content is prices are listed only once the prices are real: demo inventory's example
+    // prices are not offered to search engines (those pages are noindex while it is on).
+    const priced = svc.demo ? [] : ['/destinations', '/beach-vacations', ...[1000, 1500, 2000, 3000, 5000].map(n => `/trips-under-${n}`), ...svc.inv.maps.listDestinations().map(d => `/trips-to-${slug(d.name)}`)];
+    const urls = ['/', '/agent', '/challenge', '/how-it-works', '/faq', '/about', '/contact', '/partners', ...priced];
     res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.map(u => `  <url><loc>${base}${u}</loc></url>`).join('\n')}\n</urlset>\n`);
   });
 

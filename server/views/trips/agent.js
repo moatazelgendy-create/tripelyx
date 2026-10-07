@@ -539,7 +539,7 @@ function card(id, m, { current, hunt = null, budget = null }) {
         <tr class="ag-receipt-final"><td>Now</td><td class="ag-num">${money(c.final)}</td></tr>
         ${c.keep !== null ? html`<tr class="ag-receipt-keep"><td>You keep of your ${money(c.max)}</td><td class="ag-num">${money(c.keep)}</td></tr>` : c.over ? html`<tr class="ag-receipt-over"><td>Over your ${money(c.max)}, which you approved</td><td class="ag-num">${money(c.over)}</td></tr>` : ''}
       </tbody></table>
-      <p class="tb-small tb-muted">Each line is one version's live price minus the one before it: sequential, nothing counted twice, no market “savings”.</p>
+      <p class="tb-small tb-muted">Each line is one version's priced total minus the one before it: sequential, nothing counted twice, no market “savings”.</p>
     </div>`;
     case 'variants': return variantsCard(id, c, current);
     case 'beat': return beatCard(id, c, current);
@@ -576,8 +576,8 @@ function card(id, m, { current, hunt = null, budget = null }) {
         <div><p class="tb-kicker">You are getting</p><dl>${c.getting.map(([k, v]) => html`<div><dt>${k}</dt><dd>${v}</dd></div>`)}</dl></div>
       </div>
       ${c.unmet.length ? html`<p class="ag-down">${icon('alert')} <span>Not as asked: ${c.unmet.join('; ')}.</span></p>` : html`<p class="ag-up">${icon('check')} <span>Everything you asked for is in this trip.</span></p>`}
-      <div class="ag-actions"><a class="btn btn-blue" href="${c.href}">Check the live price and book ${icon('arrow')}</a></div>
-      <p class="tb-small tb-muted">Nothing is charged here. The next page re-checks the live price, shows every term, and you confirm.</p>
+      <div class="ag-actions"><a class="btn btn-blue" href="${c.href}">Check the final price and book ${icon('arrow')}</a></div>
+      <p class="tb-small tb-muted">Nothing is charged here. The next page re-checks the price, shows every term, and you confirm.</p>
     </div>`;
     case 'relax': return html`<div class="ag-card ag-relax">
       ${c.closest ? html`<p class="tb-kicker">Closest, over budget</p>${tripLine(c.closest)}` : ''}
@@ -756,7 +756,7 @@ function canvasPanel(ctx, s, canvas, { hunt: huntIn } = {}) {
   if (!canvas) {
     const rows = askedFor(s, { maps: ctx.tripService.inv.maps });
     return html`<div id="live-canvas" data-live="canvas">${head}${missionPanel(ctx, s, { canvas, hunt: huntIn })}
-      ${running ? html`<p class="ag-empty">Building your trip. Each line fills in as suppliers return real data; the first strong trip lands here.</p>${draftRows(ctx, s)}` : html`<p class="ag-empty">${s.mission ? 'Nothing built yet. Give me the number, and where you fly from, and I do the rest.' : 'Nothing built yet. Tell me what you want your trip to do.'}</p>`}
+      ${running ? html`<p class="ag-empty">Building your trip. Each line fills in as prices come back; the first strong trip lands here.</p>${draftRows(ctx, s)}` : html`<p class="ag-empty">${s.mission ? 'Nothing built yet. Give me the number, and where you fly from, and I do the rest.' : 'Nothing built yet. Tell me what you want your trip to do.'}</p>`}
       ${rows.length && !running ? html`<dl class="ag-known">${rows.map(([k, v]) => html`<div><dt>${k}</dt><dd>${v}</dd></div>`)}</dl>` : ''}
     </div>`;
   }
@@ -849,7 +849,7 @@ function agentStartView(ctx, { user, booking = null }) {
         <p class="tb-muted">Tell me the budget, who is going, where you fly from, and anything that must be true. I do the searching, comparing and pricing. You decide.</p></div>
       ${composer(null)}
       <div class="ag-chips ag-examples">${EXAMPLES.map(e => html`<form method="post" action="/agent" class="ag-say"><input type="hidden" name="say" value="${e}"><button class="ag-chip" type="submit">${e}</button></form>`)}</div>
-      <p class="ag-foot tb-small tb-muted">Prices and terms come from suppliers, every total includes taxes and fees, and nothing is booked or charged until you confirm it yourself.</p>
+      <p class="ag-foot tb-small tb-muted">Prices and terms come from suppliers, every total includes taxes and fees, and nothing is booked or charged until you confirm it yourself.${ctx.tripService.demo ? ' Demo inventory in this preview.' : ''}</p>
     </div>
     <aside class="ag-canvas" id="canvas" aria-label="Your trip canvas"><div id="live-canvas"><div class="ag-canvas-head"><p class="tb-kicker">Your trip</p></div><p class="ag-empty">Your trip canvas fills in as we talk: flights, hotel, total, what you keep, and what is locked.</p>
       <ul class="tb-list tb-small"><li>Say what must be true: “only nonstop”, “don’t change the hotel”.</li><li>Negotiate: “make it $200 cheaper”, “spend $100 if it actually helps”.</li><li>Challenge: “I found this for $1,800, can you beat it?”</li></ul></div></aside>

@@ -20,7 +20,7 @@ function createTripIntegrations(config, { now = () => new Date(), overrides = {}
     maps: () => maps,
     weather: () => new mock.MockWeather(),
     flights: () => new mock.MockFlights({ maps, now }),
-    hotels: () => new mock.MockHotels({ now }),
+    hotels: () => new mock.MockHotels({ now, failureHook: config.appEnv !== 'production' }),
     activities: () => new mock.MockActivities(),
     transfers: () => new mock.MockTransfers(),
     guides: () => new mock.MockGuides({ now }),

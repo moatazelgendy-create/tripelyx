@@ -111,11 +111,8 @@ ${recent ? html`<section class="tb-section tb-section-tight" aria-label="Your un
       <div><p class="eyebrow">What one sentence gets you</p><h2 id="tb-example-title" class="section-title">“${exampleSentence}”</h2></div>
       ${demoBadge(ctx.tripService.demo, 'Demo inventory')}
     </div>
-    <div class="tb-example" data-example>
-      <ol class="tb-building" data-building aria-live="polite">
-        <li>Reading what you asked for…</li><li>Pricing the likeliest destinations first…</li><li>First strong match…</li><li>Checking every destination…</li><li>Deciding what’s worth your money…</li>
-      </ol>
-      <div class="tb-example-result" data-example-result>
+    <div class="tb-example">
+      <div class="tb-example-result">
         <p class="tb-example-head">Three answers. One budget. You choose, or keep talking.</p>
         <ul class="tb-example-grid">${example.picks.map(p => exampleCard(p, budget))}${example.picks.length < 3 && example.keepMoney && example.keepMoney.spare > 0 ? keepTile(example.keepMoney) : ''}</ul>
         <div class="tb-example-foot">From ${example.originCity} · ${plural(example.query.travelers, 'traveler')} · every price includes taxes, mandatory fees and our service fee. <form class="ag-say" method="post" action="/agent"><input type="hidden" name="say" value="${exampleSentence}"><button class="tb-linkbtn" type="submit">Say this to your agent ${icon('arrow')}</button></form> · <a href="/trips?${example.params}">See these trips ${icon('arrow')}</a></div>
@@ -145,7 +142,7 @@ ${recent ? html`<section class="tb-section tb-section-tight" aria-label="Your un
     <ul class="tb-inspo" aria-label="Budget inspiration">
       <li><a href="/trips-under-1000"><b>Trips under $1,000</b><span>Short city breaks and beach escapes</span></a></li>
       <li><a href="/trips-under-500?nights=2&style=city"><b>Weekend trips under $500</b><span>Two nights, one bag</span></a></li>
-      <li><a href="/trips-under-1500?style=beach&nights=5"><b>5-night beach trips under $1,500</b><span>Our most-built trip</span></a></li>
+      <li><a href="/trips-under-1500?style=beach&nights=5"><b>5-night beach trips under $1,500</b><span>Five nights near the sand</span></a></li>
       <li><a href="/trips-under-2000?region=international"><b>International trips under $2,000</b><span>Passport required</span></a></li>
       <li><a href="/trips-under-3000?style=all-inclusive"><b>All-inclusive trips under $3,000</b><span>Meals and drinks in the price</span></a></li>
     </ul>
@@ -214,7 +211,7 @@ ${recent ? html`<section class="tb-section tb-section-tight" aria-label="Your un
     <ul class="tb-promise-grid">
       <li>${icon('shield')}<b>The price you see is the price you pay.</b><span>Taxes, mandatory fees and our service fee are always in the total. Nothing is added at checkout.</span></li>
       <li>${icon('check')}<b>Under your budget means under your budget.</b><span>We never call a trip “within budget” if fees push it over, and we never hide an over-budget amount. Your maximum is a ceiling, not a target.</span></li>
-      <li>${icon('eye')}<b>No fake urgency, no invented facts.</b><span>No made-up “only 2 left”, no invented discounts, prices, ratings or savings. When the agent doesn’t know, it says “needs verification”.</span></li>
+      <li>${icon('eye')}<b>No fake urgency.</b><span>No made-up “only 2 left”, no invented discounts or savings. When the agent doesn’t know, it says “needs verification”.${ctx.tripService.demo ? ' In this preview the trips, prices and ratings themselves are demo examples, not real offers.' : ''}</span></li>
       <li>${icon('users')}<b>Nothing happens without you.</b><span>The agent never books, charges, cancels or changes a trip on its own. Every change is shown before and after, and you approve it.</span></li>
     </ul>
   </div>

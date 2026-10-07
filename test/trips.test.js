@@ -634,7 +634,12 @@ test('the full journey: account, search, customize, price check, quote, pay, My 
   assert.equal(b.components.length, 2 + b.trip.activities.length + (b.trip.transfer ? 1 : 0), 'flights, hotel, and one component per experience and transfer');
   assert.ok(b.components.every(x => x.status === 'confirmed' && x.confirmation));
   const bookingPage = await c.req(`/booking/${booking.ref}`);
-  assert.match(bookingPage.text, /Your trip is booked/);
+  // Demo inventory: the page never reads as a real reservation.
+  assert.match(bookingPage.text, /<h1>Demo booking complete<\/h1>/);
+  assert.doesNotMatch(bookingPage.text, /Your trip is booked/);
+  assert.match(bookingPage.text, /no airline, hotel or other supplier was contacted, so nothing is reserved/);
+  assert.match(bookingPage.text, /Demo confirmation <b class="ref">/);
+  assert.doesNotMatch(bookingPage.text, />Confirmation <b/);
   assert.match(bookingPage.text, new RegExp(`TRIP #${booking.ref}`));
   assert.match(bookingPage.text, /under your \$1,500 budget/);
 

@@ -58,7 +58,7 @@ say the service is in preview until `POLICIES_REVIEWED=true`, and live payments 
 
 ```
 server/trips/
-  demo-data/            invented origins, destinations, hotels, activities (labeled demo everywhere)
+  demo-data/            invented origins, destinations, hotels, activities (labeled demo; see below)
   integrations/         maps, weather, flights, hotels, activities, transfers, notifications
                         (types.d.ts = the interfaces; mock.js = demo; index.js = where real adapters register)
   spec.js               the shareable trip token (destination, dates, travelers, hotel, flight, extras)
@@ -291,10 +291,21 @@ deployments on `staging`.
 
 ## Demo data isolation
 
-- Demo inventory lives only in `server/providers/mock/demo-data/` and is served only by mock providers.
-- Demo bookings get `DEMO-` references and a "Demo inventory" label; non-production pages show an
-  environment banner; demo images are generated SVGs under `/media/demo/`, mounted only when demo
-  inventory is allowed.
+- Demo inventory lives only in `server/providers/mock/demo-data/` (the `/book` verticals) and
+  `server/trips/demo-data/` (the trip planner and the agent), and is served only by mock providers.
+- Every page says when what it shows is not real. Outside production a banner names the build; in
+  production a "Preview" notice is on every page whenever trips come from demo inventory or payments
+  are in test mode (`envBanner` in `server/app.js`).
+- Demo prices and bookings say "demo" where they appear: the review page ("priced from the demo
+  inventory; no real supplier was contacted"), checkout ("demo price … no supplier is holding
+  anything"), the booking page ("Demo booking complete", "Demo confirmation"), destination and landing
+  pages ("example" prices, `noindex`, left out of the sitemap). Ratings name their source. No saving is
+  claimed against a "typical" price, because no price history is behind it.
+- Demo inventory never shows scarcity, discounts or review counts ("only N left", "Selling fast",
+  "% off"): those appear only when a real provider states them.
+- Demo bookings get `DEMO-` references; demo images are generated SVGs under `/media/demo/`, mounted
+  only when demo inventory is allowed. The "Failhotel" failure hook (exercises a partial booking) is
+  off in production.
 - Production refuses mock providers unless `ALLOW_DEMO_INVENTORY=true`, and never with live payments.
 - Trip inventory follows the same rule: `TRIP_*_PROVIDER=mock` is refused where demo inventory is not
   allowed, so the planner simply switches off instead of serving invented trips.

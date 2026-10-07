@@ -81,7 +81,7 @@ function tripDiff(a, b, { date = x => x } = {}) {
     ['dest', 'Destination', `${a.dest.name}, ${a.dest.country}`, `${b.dest.name}, ${b.dest.country}`],
     ['dates', 'Dates', `${date(a.spec.depart)} – ${date(a.flight.return)}`, `${date(b.spec.depart)} – ${date(b.flight.return)}`],
     ['nights', 'Length', plural(a.spec.nights, 'night'), plural(b.spec.nights, 'night')],
-    ['hotel', 'Hotel', `${a.hotel.name} · ${a.hotel.stars}-star · ${a.hotel.rating}/5`, `${b.hotel.name} · ${b.hotel.stars}-star · ${b.hotel.rating}/5`],
+    ['hotel', 'Hotel', `${a.hotel.name} · ${a.hotel.stars}-star · ${a.hotel.rating}/5 (${a.hotel.ratingSource})`, `${b.hotel.name} · ${b.hotel.stars}-star · ${b.hotel.rating}/5 (${b.hotel.ratingSource})`],
     ['area', 'Location', `${a.hotel.area}${a.hotel.features.beachfront ? ' · beachfront' : ''}`, `${b.hotel.area}${b.hotel.features.beachfront ? ' · beachfront' : ''}`],
     ['meals', 'Meals', a.hotel.features.allInclusive ? 'All-inclusive' : a.hotel.features.breakfast ? 'Breakfast included' : 'Not included', b.hotel.features.allInclusive ? 'All-inclusive' : b.hotel.features.breakfast ? 'Breakfast included' : 'Not included'],
     ['flight', 'Flights', `${stopsText(a.flight)}, ${dur(a.flight.durationMinutes)} each way, ${a.flight.name} fare`, `${stopsText(b.flight)}, ${dur(b.flight.durationMinutes)} each way, ${b.flight.name} fare`],

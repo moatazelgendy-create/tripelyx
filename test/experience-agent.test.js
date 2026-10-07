@@ -429,7 +429,7 @@ test('the final check at "book it" reads the event-covering version the conversa
     for (const u of c.unmet) assert.doesNotMatch(u, ISO, u);
     const page = text(await (await fetch(`${app.base}/agent/${b.id}`, { headers: { cookie: `txv=${b.visitor}` } })).text());
     const at = page.lastIndexOf('You asked for');
-    return { c, page: page.slice(at, page.indexOf('Check the live price and book', at)) };
+    return { c, page: page.slice(at, page.indexOf('Check the final price and book', at)) };
   };
 
   // 1. The engine's rebuild: the version that covers the concert, under the maximum, proposed with its price; nothing applied.

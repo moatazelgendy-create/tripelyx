@@ -17,12 +17,13 @@
           return '<tr><td><code>' + c.number + '</code></td><td>' + c.result + '</td><td><button type="button" class="copy-btn" data-fill="' + c.number + '">Use</button></td></tr>';
         }).join('') +
         '</tbody></table></div></div></div>' +
+        // autocomplete="off": test mode accepts only the test cards, so a browser must never offer to fill in a saved real card here.
         '<div class="form test-widget">' +
-        field('card-name', 'Name on card', 'autocomplete="cc-name" maxlength="80"') +
-        field('card-number', 'Card number', 'inputmode="numeric" autocomplete="cc-number" maxlength="23" placeholder="4242 4242 4242 4242"') +
+        field('card-name', 'Name on card', 'autocomplete="off" maxlength="80"') +
+        field('card-number', 'Card number', 'inputmode="numeric" autocomplete="off" maxlength="23" placeholder="4242 4242 4242 4242"') +
         '<div class="form-row">' +
-        field('card-exp', 'Expiry (MM/YY)', 'inputmode="numeric" autocomplete="cc-exp" maxlength="7" placeholder="12/30"') +
-        field('card-cvc', 'Security code', 'inputmode="numeric" autocomplete="cc-csc" maxlength="4" placeholder="123"') +
+        field('card-exp', 'Expiry (MM/YY)', 'inputmode="numeric" autocomplete="off" maxlength="7" placeholder="12/30"') +
+        field('card-cvc', 'Security code', 'inputmode="numeric" autocomplete="off" maxlength="4" placeholder="123"') +
         '</div></div>';
       var num = el.querySelector('#card-number');
       var exp = el.querySelector('#card-exp');

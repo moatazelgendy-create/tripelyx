@@ -50,7 +50,7 @@ function factOf(line, cheap, against, c) {
   if ((m = /^(\d+) nights? instead of (\d+)$/.exec(line))) return s.nights === +m[1] && against.spec.nights === +m[2] && s.nights < against.spec.nights;
   if ((m = /^(\d+) stops?, (\d+)h (\d+)m each way$/.exec(line))) return f.stops === +m[1] && f.stops > 0 && f.durationMinutes === +m[2] * 60 + +m[3];
   if ((m = /^(\d+)h (\d+)m each way on the (.+) fare$/.exec(line))) return f.durationMinutes === +m[1] * 60 + +m[2] && f.name === m[3];
-  if ((m = /^(\d)-star hotel rated ([\d.]+)\/5 \((.+)\)$/.exec(line))) return h.stars === +m[1] && h.rating === +m[2] && h.name === m[3];
+  if ((m = /^(\d)-star hotel rated ([\d.]+)\/5 \((.+); (.+)\)$/.exec(line))) return h.stars === +m[1] && h.rating === +m[2] && h.name === m[3] && h.ratingSource === m[4];
   if ((m = /^not beachfront: (.+)$/.exec(line))) return !h.features.beachfront && h.area === m[1];
   if (line === 'breakfast only, not all-inclusive') return h.features.breakfast && !h.features.allInclusive;
   if (line === 'no meals included' || line === 'no breakfast included') return !h.features.breakfast && !h.features.allInclusive;

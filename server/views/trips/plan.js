@@ -332,11 +332,8 @@ function resultsView(ctx, { result, relax = null, originCity, user }) {
     <a class="tb-flex-opt${!q.allowOver ? ' is-on' : ''}" href="/trips?${searchParams({ ...q, allowOver: 0 })}" ${!q.allowOver ? raw('aria-current="true"') : ''}>${icon('lock')} Stay under my budget</a>
     <a class="tb-flex-opt${q.allowOver ? ' is-on' : ''}" href="/trips?${searchParams({ ...q, allowOver: 10 })}" ${q.allowOver ? raw('aria-current="true"') : ''}>${icon('trend')} I can spend up to 10% more</a>
   </div>
-  <div class="tb-building-wrap" data-results>
-    <ol class="tb-building tb-building-page" data-building aria-live="polite">
-      <li>Finding destinations within your budget…</li><li>Checking flight options…</li><li>Finding the best hotels…</li><li>Optimizing your ${dollars(q.budget)}…</li><li>Deciding what’s worth your money…</li>
-    </ol>
-    <div data-results-body>
+  <div>
+    <div>
       ${picks.length ? decisionBand(picks, q, cx, result.keepMoney, result) : ''}
       ${picks.length ? html`<div class="tb-cards">${picks.map((p, i) => tripCard(p, q, cx, { over: p.trip.total > q.budget, rank: i, vs: best.trip }))}${keepCard ? keepMoneyCard(result.keepMoney, best, q, cx) : ''}</div>` : ''}
       ${over.length ? html`<p class="tb-over-note">${icon('info')} Trips marked “over your ${q.keep ? 'booking budget' : 'budget'}” use the extra 10% you allowed${q.keep ? ', which would come out of what you protected' : ''}. Switch to “Stay under my budget” to hide them.</p>` : ''}

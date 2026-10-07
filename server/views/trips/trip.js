@@ -271,7 +271,7 @@ function tripView(ctx, { data, cx, user, saved, dreamGap, named = null, promo = 
       </nav>
       ${pxNote ? html`<p class="tb-mem-main is-missing tb-tip tb-tip-warn">${icon('alert')} <span>${pxNote}</span></p>` : ''}
       ${main && (main.protected || main.missing) ? mainLine(main, { token, cx, trip: t, here: 'trip' }) : ''}
-      <p class="tb-checked">${icon('check')} Price checked moments ago. We check it again before you pay, and nothing is charged until you confirm.</p>
+      <p class="tb-checked">${icon('check')} ${t.demo ? 'Priced from the demo inventory moments ago.' : 'Price checked moments ago.'} We check it again before you pay, and nothing is charged until you confirm.</p>
       ${promo ? html`<p class="tb-checked" data-promo="${promo.code}">${icon('check')} Promo code ${promo.code} comes with you from the review page: ${money(promo.off)} off, so ${money(promo.total)} with it. The prices on this page are before the code; it is applied again when you review.</p>` : promoError ? html`<p class="tb-checked">${icon('info')} ${promoError} The code is not carried on from here.</p>` : ''}
     </div>
   </header>
@@ -416,7 +416,7 @@ function reviewView(ctx, { data, cx, verify, user, promoError, promoCode, leak =
   const v = verdict(t, cx, data.scores);
   const reality = realityCheck(t, { weather });
   const REALITY_STATUS = { ok: 'Fine', 'heads-up': 'Heads-up', verify: 'Check before paying' };
-  const changes = verify.status !== 'same' && diff !== null && diff < 0 ? singleChanges(t, data.options, token, cx).filter(keepsProtected(cx)).filter(c => c.total <= budget).sort((a, b) => b.total - a.total).slice(0, 4) : [];
+  const changes = !['same', 'priced'].includes(verify.status) && diff !== null && diff < 0 ? singleChanges(t, data.options, token, cx).filter(keepsProtected(cx)).filter(c => c.total <= budget).sort((a, b) => b.total - a.total).slice(0, 4) : [];
   const plan = vacationPlan(t, cx, data.options);
   // A price rise with money protected for the destination: say where the increase comes from,
   // part by part, and never take it from the reserve without the traveler choosing that by name.
@@ -429,7 +429,8 @@ function reviewView(ctx, { data, cx, verify, user, promoError, promoCode, leak =
   if (cx.priority === 'hotel') said.push(['A 4-star or better hotel', t.hotel.stars >= 4]);
   said.push([plural(s.travelers, 'traveler'), true]);
   const statusBlock = {
-    same: html`<div class="alert alert-success tb-price-status" role="status">${icon('check')}<span><b>Great news — your price is still ${money(t.total)}.</b> Every supplier confirmed availability and price just now.</span></div>`,
+    priced: html`<div class="alert alert-success tb-price-status" role="status">${icon('check')}<span><b>Your price is ${money(t.total)}.</b> ${t.demo ? 'We priced it from the demo inventory just now; no real supplier was contacted.' : 'Every supplier confirmed availability and price just now.'}</span></div>`,
+    same: html`<div class="alert alert-success tb-price-status" role="status">${icon('check')}<span><b>Great news — your price is still ${money(t.total)}.</b> ${t.demo ? 'We re-priced it from the demo inventory just now; no real supplier was contacted.' : 'Every supplier confirmed availability and price just now.'}</span></div>`,
     cheaper: html`<div class="alert alert-success tb-price-status" role="status">${icon('trend')}<span><b>Good news — your trip dropped to ${money(t.total)}</b> (${money(verify.diff)} less than when you last looked).</span></div>`,
     higher: html`<div class="alert alert-warning tb-price-status" role="alert">${icon('alert')}<span><b>Your trip price changed by ${money(verify.diff)}</b> and is now ${money(t.total)}. We never charge a changed price without your approval: continue only if that’s fine, or change something below.</span></div>`,
   }[verify.status];
@@ -448,8 +449,8 @@ function reviewView(ctx, { data, cx, verify, user, promoError, promoCode, leak =
   const body = html`
 <div class="container tb-review">
   ${stepsBar(1)}
-  <div class="tb-checking" data-checking aria-live="polite"><span class="spinner" aria-hidden="true"></span> Checking your final price…</div>
-  <div data-checked>
+  <div>
+    ${t.demo ? html`<p class="tb-review-demo">${demoBadge(true, 'Demo inventory and prices')}</p>` : ''}
     ${statusBlock}
     ${verdictPanel(v, data.scores, { compact: true })}
     ${riseBlock}
@@ -481,7 +482,7 @@ function reviewView(ctx, { data, cx, verify, user, promoError, promoCode, leak =
         <section class="tb-panel" aria-labelledby="ready-title">
           <h2 id="ready-title">${icon('check')} Your trip is ready</h2>
           <ul class="tb-ready">
-            <li>${icon('check')} Price rechecked with every supplier</li>
+            <li>${icon('check')} ${t.demo ? 'Price rechecked against the demo inventory' : 'Price rechecked with every supplier'}</li>
             <li>${icon('check')} Dates: ${shortDate(s.depart)} – ${shortDate(t.flight.return)}</li>
             <li>${icon('check')} Travelers: ${s.travelers}</li>
             <li>${icon('check')} Hotel: ${t.hotel.name}</li>
