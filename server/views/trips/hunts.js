@@ -7,10 +7,26 @@ const { icon } = require('../icons');
 const { layout } = require('../layout');
 const { contextParams, STYLES } = require('../../trips/optimizer');
 const hunter = require('../../trips/hunter');
+const { monthClosed } = require('../../trips/hunts');
 const { money, plural, demoBadge } = require('./common');
 
 const SIGNATURE = ['Don’t watch prices. Let AI watch your money.', 'Tell us your max. We’ll wait for the right trip.', 'No spam. No fake deals. Just a reason to travel.'];
 const STEP = 5000; // the $50 step "find me something even better" moves by (the service's own)
+// The service's own length and hotel rules (server/trips/hunts.js validate and answer): a blank "up to"
+// is EXTRA_NIGHTS above the minimum but never above MAX_NIGHTS, the longest trip the inventory prices,
+// so the form says the cap rather than promising three more nights to a 13-night minimum; MAX_STARS is
+// the highest class it prices, above which "better hotel" is refused rather than announced.
+const MAX_NIGHTS = 14, EXTRA_NIGHTS = 3, MAX_STARS = 5;
+// What a check asks for, in the engine's own terms (hunter.windowDates, optimizer.candidateDates): fares
+// for every second day of an anytime window, every day of a chosen month, then the two cheapest dates
+// per destination and length priced in full. Never "every departure": half the days of an anytime
+// window are not asked, and a page may not imply a search that did not occur.
+const SEARCH_WORDS = 'asks the suppliers for fares on every second day of your window (every day of a chosen month), prices the two cheapest dates per destination and length in full';
+// A stopped hunt is never priced (HuntService.run, refresh and runDue all skip it; an answer changes
+// its rules but searches nothing), so its pages promise no check: the words below replace every
+// monitoring or re-check sentence while the status is not "hunting".
+const STOPPED_WORDS = 'This hunt is stopped: nothing is checked, on open or on schedule, until you resume it.';
+const ALL_STOPPED_WORDS = 'All your hunts are stopped: nothing is checked, on open or on schedule, until you resume one.';
 const STYLE_WORD = { beach: 'Beach', city: 'City', adventure: 'Adventure', romantic: 'Romantic', family: 'Family', 'all-inclusive': 'All-inclusive', surprise: 'Anywhere (surprise me)' };
 const WHO_WORD = { couple: 'A couple', solo: 'Just me', family: 'Family', friends: 'Friends' };
 const DEFAULT_NOTIFY = ['under', 'drop', 'extra-night', 'nonstop', 'quality', 'destination'];
@@ -73,11 +89,11 @@ function huntsListView(ctx, { hunts, user, monitoring, destName }) {
     <a class="btn btn-navy" href="/hunts/new">${icon('search')} ${hunts.length ? 'Start another hunt' : 'Start a hunt'}</a></header>
   ${hunts.length ? huntRows(hunts, { destName }) : html`<section class="hu-empty">
     <ul class="hu-signature">${SIGNATURE.slice(2).map(l => html`<li>${l}</li>`)}</ul>
-    <p>You set the ceiling and the rules. The hunt asks the suppliers about every departure in your window, prices the cheapest trips inside your rules in full, tries to beat its own best before showing it, and interrupts you only for a trip that meets your rules and is worth your attention.</p>
+    <p>You set the ceiling and the rules. The hunt ${SEARCH_WORDS}, tries to beat its own best before showing it, and interrupts you only for a trip that meets your rules and is worth your attention.</p>
     <p class="tb-small tb-muted">${monitoring}</p>
     <a class="btn btn-navy btn-lg" href="/hunts/new">Tell us your max ${icon('arrow')}</a>
   </section>`}
-  ${hunts.length ? html`<p class="hu-monitoring tb-small tb-muted">${monitoring}</p>` : ''}
+  ${hunts.length ? html`<p class="hu-monitoring tb-small tb-muted">${hunts.some(h => h.status === 'hunting') ? monitoring : ALL_STOPPED_WORDS}</p>` : ''}
   <p class="tb-small"><a href="/my-trips">Back to My Trips</a></p>
 </div>`;
   return layout({ title: 'Your hunts', active: 'my-trips', body, ctx, noindex: true });
@@ -106,11 +122,11 @@ function huntFormView(ctx, { values = {}, error = null, origins, months, saved =
     ['destination', 'A new destination enters my budget'],
   ];
   const nights = [];
-  for (let n = 2; n <= 14; n++) nights.push(n);
+  for (let n = 2; n <= MAX_NIGHTS; n++) nights.push(n);
   const body = html`
 <div class="container hu-page hu-form-page">
   <header class="tb-results-head"><div><p class="eyebrow">AI Savings Hunter</p><h1>${SIGNATURE[1]}</h1>
-    <p class="tb-results-sub">You set the ceiling and the rules. The hunt asks the suppliers about every departure in your window, prices the cheapest trips inside your rules in full, and says something only when one meets your rules and is worth your attention. Your number is a ceiling, not a target. ${demoBadge(ctx.tripService.demo, 'Demo inventory and prices')}</p></div></header>
+    <p class="tb-results-sub">You set the ceiling and the rules. The hunt ${SEARCH_WORDS}, and says something only when one meets your rules and is worth your attention. Your number is a ceiling, not a target. ${demoBadge(ctx.tripService.demo, 'Demo inventory and prices')}</p></div></header>
   ${error ? html`<div class="alert alert-error" role="alert">${icon('alert')}<span>${error}</span></div>` : ''}
   <form class="form hu-form" method="post" action="/hunts" novalidate>
     <section class="tb-panel"><h2>${icon('wallet')} Your travel money</h2>
@@ -131,7 +147,7 @@ function huntFormView(ctx, { values = {}, error = null, origins, months, saved =
       </div></div>
       <div class="form-row">
         <div class="field"><label for="hu-nights">At least</label><select id="hu-nights" name="nights">${nights.map(n => html`<option value="${n}"${sel('nights', '4', n)}>${plural(n, 'night')}</option>`)}</select></div>
-        <div class="field"><label for="hu-max">Up to</label><select id="hu-max" name="maxNights"><option value=""${sel('maxNights', '', '')}>3 more nights than the minimum</option>${nights.map(n => html`<option value="${n}"${sel('maxNights', '', n)}>${plural(n, 'night')}</option>`)}</select><p class="field-hint">Every length in between is priced.</p></div>
+        <div class="field"><label for="hu-max">Up to</label><select id="hu-max" name="maxNights"><option value=""${sel('maxNights', '', '')}>${EXTRA_NIGHTS} more nights than the minimum (never more than ${MAX_NIGHTS})</option>${nights.map(n => html`<option value="${n}"${sel('maxNights', '', n)}>${plural(n, 'night')}</option>`)}</select><p class="field-hint">Every length in between is priced.</p></div>
       </div>
       <div class="field"><label for="hu-style">Trip style</label><select id="hu-style" name="style">${STYLES.map(s => html`<option value="${s}"${sel('style', 'surprise', s)}>${STYLE_WORD[s] || s}</option>`)}</select></div>
     </section>
@@ -140,7 +156,7 @@ function huntFormView(ctx, { values = {}, error = null, origins, months, saved =
       <p class="tb-small tb-muted">A trip that breaks a rule is never shown, whatever it costs.</p>
       <div class="field"><span class="label">Flights</span><div class="hu-radios hu-radios-col" role="radiogroup" aria-label="Flights">
         <label><input type="radio" name="nonstop" value="any"${chk('nonstop', 'any', 'any')}> Any flights</label>
-        <label><input type="radio" name="nonstop" value="preferred"${chk('nonstop', 'any', 'preferred')}> Nonstop preferred: trips with a stop still count, and I hear when a nonstop one fits</label>
+        <label><input type="radio" name="nonstop" value="preferred"${chk('nonstop', 'any', 'preferred')}> Nonstop preferred: trips with a stop still count, and the nonstop win below tells me when one fits</label>
         <label><input type="radio" name="nonstop" value="hard"${chk('nonstop', 'any', 'hard')}> Nonstop only (a hard rule)</label>
       </div></div>
       <div class="form-row">
@@ -215,17 +231,26 @@ function previousRows(o, destName) {
   return rows;
 }
 
-function opportunityCard(o, hunt, { destName }) {
+function opportunityCard(o, hunt, { destName, improveWords, recheck }) {
   const respond = (fields, label, cls = 'btn btn-ghost') => html`<form method="post" action="/hunts/${hunt.id}/respond"><input type="hidden" name="opportunityId" value="${o.id}">${Object.entries(fields).map(([k, val]) => html`<input type="hidden" name="${k}" value="${val}">`)}<button class="${cls}" type="submit">${label}</button></form>`;
   const p = o.previous && isNum(o.previous.total) ? o.previous : null;
   const compare = p && p.token && p.token !== o.trip.token;
   const t = o.trip;
+  // What the "previous" column holds. For beat-saved the engine's previous is the customer's saved
+  // trip priced in this same run (hunter: prev = huntCard(saved.trip, saved.token)): a price now, so
+  // it is never called a record. Everything else is the trip on record: the same trip's recorded
+  // price, or the recorded best (stamped when the record carries its date).
+  const savedNow = o.kind === 'beat-saved';
+  const caption = savedNow ? 'Your saved trip, priced now, against this trip'
+    : p && p.token === t.token ? 'This trip as I recorded it, against its price now'
+      : `What I recorded${p && p.recordedAt ? ` on ${stamp(p.recordedAt)}` : ' before'}, against this trip now`;
+  const [prevLabel, nowLabel] = savedNow ? ['Saved trip (now)', 'This trip'] : ['Recorded', 'Now'];
   return html`<article class="hu-opp hu-opp-${o.kind} is-${o.status}" aria-labelledby="opp-${o.id}">
     <div class="hu-opp-head"><p class="tb-kicker">${headline(o, hunt)}</p><span class="hu-opp-status is-${o.status}">${OPP_STATUS[o.status] || o.status}</span></div>
     <h3 id="opp-${o.id}">${plural(t.nights, 'night')} in ${t.dest} for ${money(t.total)}</h3>
     <p class="hu-decision">${decisionBody(o, hunt)}</p>
     <p class="hu-trip-facts tb-small">${t.depart} to ${t.ret} · ${plural(t.travelers, 'traveler')} · ${stopsText(t.stops)} with ${t.airline}, ${t.fareName} fare · ${t.hotel.stars}-star ${t.hotel.name}${t.hotel.allInclusive ? ', all-inclusive' : t.hotel.breakfast ? ', breakfast included' : ''}${t.hotel.refundable ? ', refundable' : ''} · ${t.bags}${t.transfer ? ' · airport transfer' : ''}${t.activities ? ` · ${plural(t.activities, 'experience')}` : ''}</p>
-    ${p ? html`<table class="hu-prev"><caption>${p.token === t.token ? 'This trip as I recorded it' : `What I recorded${p.recordedAt ? ` on ${stamp(p.recordedAt)}` : ' before'}`}, against ${p.token === t.token ? 'its price' : 'this trip'} now</caption><thead><tr><th scope="col"></th><th scope="col">Recorded</th><th scope="col">Now</th></tr></thead>
+    ${p ? html`<table class="hu-prev"><caption>${caption}</caption><thead><tr><th scope="col"></th><th scope="col">${prevLabel}</th><th scope="col">${nowLabel}</th></tr></thead>
       <tbody>${previousRows(o, destName).map(([l, a, b]) => html`<tr><th scope="row">${l}</th><td>${a}</td><td>${b}</td></tr>`)}</tbody></table>
       ${isNum(p.totalNow) && p.totalNow !== p.total ? html`<p class="tb-small tb-muted">The trip I recorded is itself ${money(p.totalNow)} now.</p>` : ''}` : ''}
     ${o.why && o.why.length ? html`<ul class="hu-why">${o.why.map(w => html`<li>${w}</li>`)}</ul>` : ''}
@@ -239,13 +264,13 @@ function opportunityCard(o, hunt, { destName }) {
     <p class="hu-verified tb-small">${icon('clock')} Current price was verified at ${stamp(o.verifiedAt)}. ${MAY_CHANGE}</p>
     <div class="hu-opp-actions">
       <a class="btn btn-navy" href="${tripLink(t.token, hunt)}">${o.kind === 'extra-night' ? 'Take the extra night' : 'See trip'} ${icon('arrow')}</a>
-      ${compare ? html`<a class="btn btn-ghost" href="/compare?${contextParams({ budget: hunt.budget }, { t: [p.token, t.token], l: ['Recorded', 'Now'] })}">Compare</a>` : ''}
+      ${compare ? html`<a class="btn btn-ghost" href="/compare?${contextParams({ budget: hunt.budget }, { t: [p.token, t.token], l: savedNow ? ['Saved trip', 'This trip'] : ['Recorded', 'Now'] })}">Compare</a>` : ''}
       ${respond({ action: 'keep-waiting' }, 'Keep waiting')}
       <details class="hu-improve"><summary class="btn btn-ghost">Not good enough</summary>
         <div class="hu-improve-body">
-          <p>What should I improve? Each answer changes this hunt’s rules and re-checks.</p>
+          <p>What should I improve? Each answer changes this hunt’s rules; ${recheck}.</p>
           <div class="ag-chips">${IMPROVE.map(([what, label]) => respond({ action: 'improve', what }, label, 'ag-chip'))}</div>
-          <p class="tb-small tb-muted">Lower price looks under the next ${money(STEP)} step for the same quality. Better hotel raises the hotel minimum one class. More nights raises the minimum by one night. Nonstop makes nonstop a hard rule. Different destination rules out ${t.dest} for this hunt.</p>
+          <p class="tb-small tb-muted">${improveWords}</p>
           <form class="hu-reject" method="post" action="/hunts/${hunt.id}/respond"><input type="hidden" name="action" value="reject"><input type="hidden" name="opportunityId" value="${o.id}"><label for="rej-${o.id}">Or say it in your words</label><input id="rej-${o.id}" name="reason" type="text" maxlength="120" placeholder="too short"><button class="btn btn-ghost btn-sm" type="submit">Reject and learn</button></form>
         </div>
       </details>
@@ -253,10 +278,36 @@ function opportunityCard(o, hunt, { destName }) {
   </article>`;
 }
 
+// What each improve chip does to THIS hunt, with the service's own arithmetic (HuntService.answer):
+// the price target is the next step under the trip the hunt stands on, the hotel minimum goes one
+// class above what the search already requires and found (or is refused at the top), the nights
+// minimum goes one night above the trip found (not one above the old minimum), and the destination
+// ruled out is the found trip's, whichever card the chip sits on.
+function improveWords(hunt, best, target, destName) {
+  const floors = hunt.floors || {};
+  const haveStars = Math.max(hunt.rules.minStars || 0, floors.minStars || 0, best ? best.stars : 0);
+  const nights = Math.min(MAX_NIGHTS, (best ? best.nights : hunt.minNights) + 1);
+  return [
+    `Lower price sets this hunt to look for the same quality under ${money(target)}.`,
+    haveStars >= MAX_STARS ? `Better hotel has no higher class to ask for: ${MAX_STARS} stars is the highest we price.` : `Better hotel raises the hotel minimum to ${(haveStars || 3) + 1} stars.`,
+    nights <= hunt.minNights ? `More nights cannot go past the ${MAX_NIGHTS} nights we price.` : `More nights raises the minimum to ${nights}${hunt.maxNights < nights ? `, and the maximum to ${nights} to match` : ''}.`,
+    hunt.rules.flightStops === 'nonstop' && hunt.rules.flightRule === 'hard' ? 'Nonstop is already a hard rule.' : 'Nonstop makes nonstop a hard rule.',
+    best ? `Different destination rules out ${destName(best.dest)} for this hunt.` : 'Different destination needs a found trip to rule out.',
+  ].join(' ');
+}
+
 function huntView(ctx, { hunt, error = null, originCity, destName, rules, monitoring, acceptance }) {
   const best = hunt.baseline && hunt.baseline.best ? hunt.baseline.best : null;
   const ceiling = isNum(hunt.target) && hunt.target > 0 ? Math.min(hunt.budget, hunt.target) : hunt.budget;
   const target = nextStep(best ? best.total : ceiling);
+  const hunting = hunt.status === 'hunting';
+  // A chosen month with nothing left to price cannot be resumed (the service refuses it and a run
+  // stops the hunt on it), so that page offers a new hunt instead of a Resume that would be refused.
+  const closed = !hunting && hunt.dateMode === 'flexible' && !!hunt.month && monthClosed(hunt.month, ctx.tripService.now());
+  const stoppedWords = closed ? `This hunt is stopped: no departure in ${monthName(hunt.month)} is left to price, so nothing is checked. Start a new hunt for a later month.` : STOPPED_WORDS;
+  // Every sentence that says a change is followed by a check says when: now, once resumed, or never.
+  const recheck = hunting ? 'the hunt re-checks' : closed ? 'this hunt checks nothing more' : 'the hunt re-checks once you resume it';
+  const chips = improveWords(hunt, best, target, destName);
   const runs = [...hunt.runs].reverse().slice(0, 10);
   const lastRun = hunt.runs.length ? hunt.runs[hunt.runs.length - 1] : null;
   const opportunities = [...hunt.opportunities].reverse();
@@ -279,24 +330,24 @@ function huntView(ctx, { hunt, error = null, originCity, destName, rules, monito
       <div class="hu-fact"><dt>Last checked</dt><dd>${hunt.lastRunAt ? stamp(hunt.lastRunAt) : 'not yet'}</dd></div>
     </dl>
     ${isNum(hunt.target) && hunt.target > 0 && hunt.target < hunt.budget ? html`<p class="hu-target">Now looking under <b>${money(hunt.target)}</b> for the same quality${hunt.floors && (hunt.floors.minStars || hunt.floors.nonstop) ? ` (${[hunt.floors.minStars ? `at least ${hunt.floors.minStars} stars` : null, hunt.floors.nonstop ? 'nonstop flights' : null].filter(Boolean).join(' and ')})` : ''}. Your ${money(hunt.budget)} limit stands.</p>` : ''}
-    <p class="hu-acceptance">${acceptance}</p>
-    <p class="hu-monitoring tb-small tb-muted">${monitoring}</p>
+    ${hunting ? html`<p class="hu-acceptance">${acceptance}</p>` : ''}
+    <p class="hu-monitoring tb-small tb-muted">${hunting ? monitoring : stoppedWords}</p>
   </section>
 
   <section class="tb-panel hu-rules" aria-labelledby="hu-rules-title"><h2 id="hu-rules-title">${icon('sliders')} Your rules</h2>
     <ul class="tb-list">${rules.map(l => html`<li>${l}</li>`)}</ul>
     <p class="tb-small">Tell me when: ${notifyWords(hunt).join('; ') || 'nothing (this hunt stays quiet)'}. A saving worth an interruption: ${thresholdWords(hunt.threshold)}.</p>
-    <p class="tb-small tb-muted">The rules change only through your answers below; every change is written down under “What this hunt learned” and the hunt re-checks.</p>
+    <p class="tb-small tb-muted">The rules change only through your answers below; every change is written down under “What this hunt learned” and ${recheck}.</p>
   </section>
 
   <section class="hu-opps" aria-labelledby="hu-opps-title"><h2 id="hu-opps-title">Opportunities</h2>
-    ${opportunities.length ? opportunities.map(o => opportunityCard(o, hunt, { destName })) : html`<p class="hu-quiet">Nothing worth interrupting you for yet${lastRun && lastRun.silent ? html`: ${lastRun.silent}` : ''}.</p>`}
+    ${opportunities.length ? opportunities.map(o => opportunityCard(o, hunt, { destName, improveWords: chips, recheck })) : html`<p class="hu-quiet">Nothing worth interrupting you for yet${lastRun && lastRun.silent ? html`: ${lastRun.silent}` : ''}.</p>`}
   </section>
 
   <section class="hu-actions tb-panel" aria-labelledby="hu-actions-title"><h2 id="hu-actions-title">${icon('sparkle')} Change the hunt</h2>
     <div class="hu-action-row">
-      <div>${act({ action: 'harder' }, 'Find me something even better', 'btn btn-blue')}<p class="tb-small tb-muted">Looks for the same quality under ${money(target)}${best ? ` (keeping at least ${best.stars} stars${best.stops === 0 ? ' and nonstop flights' : ''})` : ''}.</p></div>
-      <div>${hunt.status === 'hunting' ? act({ action: 'stop' }, 'Stop') : act({ action: 'resume' }, 'Resume', 'btn btn-navy')}<p class="tb-small tb-muted">${hunt.status === 'hunting' ? 'Stops the checks. Your rules and what was found stay here.' : 'Starts the checks again under the rules above.'}</p></div>
+      <div>${act({ action: 'harder' }, 'Find me something even better', 'btn btn-blue')}<p class="tb-small tb-muted">${hunting ? 'Looks' : 'Sets this hunt to look'} for the same quality under ${money(target)}${best ? ` (keeping at least ${best.stars} stars${best.stops === 0 ? ' and nonstop flights' : ''})` : ''}${hunting ? '' : closed ? '; this hunt checks nothing more' : '; it looks once you resume it'}.</p></div>
+      <div>${hunting ? act({ action: 'stop' }, 'Stop') : closed ? html`<a class="btn btn-navy" href="/hunts/new?${new URLSearchParams({ budget: String(hunt.budget / 100), from: hunt.origin, when: 'flexible' })}">Start a new hunt</a>` : act({ action: 'resume' }, 'Resume', 'btn btn-navy')}<p class="tb-small tb-muted">${hunting ? 'Stops the checks. Your rules and what was found stay here.' : closed ? `Resuming is refused: no departure in ${monthName(hunt.month)} is left to price. A new hunt can name a later month.` : 'Starts the checks again under the rules above.'}</p></div>
     </div>
   </section>
 
@@ -312,4 +363,4 @@ function huntView(ctx, { hunt, error = null, originCity, destName, rules, monito
   return layout({ title: hunt.name, active: 'my-trips', body, ctx, noindex: true });
 }
 
-module.exports = { huntsListView, huntFormView, huntView, huntRows, headline, nextStep, stamp, SIGNATURE };
+module.exports = { huntsListView, huntFormView, huntView, huntRows, headline, nextStep, stamp, SIGNATURE, SEARCH_WORDS, STOPPED_WORDS, ALL_STOPPED_WORDS };

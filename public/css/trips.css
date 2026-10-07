@@ -360,6 +360,7 @@ a.tb-pill:hover { border-color: var(--blue-500); }
 .tb-dl-total dt, .tb-dl-total dd { font-weight: 700; color: var(--ink); }
 .tb-final-nums { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; background: var(--bg-soft); border-radius: var(--radius); padding: 16px 18px; margin-bottom: 18px; }
 .tb-final-nums > div:last-child b { color: #0c5e43; }
+.tb-final-nums small { display: block; color: var(--muted); font-size: 12.5px; margin-top: 2px; }
 .tb-ready { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; font-size: 15px; }
 .tb-ready li { display: flex; gap: 8px; align-items: center; }
 .tb-ready .icon { width: 17px; height: 17px; color: var(--success); flex: none; }
@@ -830,6 +831,58 @@ a.tb-pill:hover { border-color: var(--blue-500); }
 .tb-ready-wrap .is-miss .icon { color: var(--warning); }
 .tb-card-keep .tb-card-actions .btn { flex: 1 1 100%; text-align: center; }
 
+/* ---------- The Money Leak Hunter (tb-leak-): what you don't need to pay for ---------- */
+.tb-leak-head { margin-bottom: 24px; }
+.tb-leak-head h1 { font-size: 36px; margin-bottom: 6px; }
+.tb-leak-signature { font-weight: 700; color: var(--navy-800); font-size: 17px; margin: 0 0 8px; }
+.tb-leak-table { width: 100%; border-collapse: collapse; font-size: 15px; margin: 8px 0 12px; }
+.tb-leak-table th, .tb-leak-table td { text-align: left; padding: 8px 10px 8px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+.tb-leak-table th { font-size: 12.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.tb-leak-table td small { display: block; color: var(--muted); font-size: 13px; }
+.tb-leak-table .tb-leak-num { text-align: right; white-space: nowrap; }
+.tb-leak-table tfoot td { color: var(--muted); font-size: 14px; }
+.tb-leak-table tfoot .tb-leak-total td { color: var(--ink); font-weight: 700; font-size: 16px; border-bottom: 0; }
+.tb-leak-table tr.is-discount td, .tb-leak-table tr.is-on td { background: var(--bg-soft); }
+.tb-leak-table tr.is-optional td:nth-child(2) { color: var(--blue-500); font-weight: 600; }
+.tb-leak-list { list-style: none; padding: 0; margin: 10px 0 0; display: grid; gap: 10px; }
+.tb-leak-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px 16px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.tb-leak-item small { display: block; color: var(--muted); font-size: 13.5px; margin-top: 2px; }
+.tb-leak-amt { font-weight: 700; white-space: nowrap; }
+.tb-leak-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0 0; }
+/* A control names its version and its price, so on a narrow screen it wraps instead of pushing the page wider. */
+.tb-leak-actions .btn, .tb-leak-decide .btn, .tb-leak-foot .btn { white-space: normal; text-align: left; }
+.tb-leak-list .tb-leak-actions { margin: 0; }
+.tb-leak-rule { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 13.5px; }
+.tb-leak-rule .icon { width: 14px; height: 14px; }
+.tb-leak-nums.is-over > div:last-child b, .tb-leak-nums > div.is-over b { color: var(--danger); }
+.tb-leak-two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px 24px; }
+.tb-leak-block { background: var(--bg-soft); border-radius: var(--radius); padding: 14px 16px; }
+.tb-leak-block h3 { margin-top: 0; }
+.tb-leak-block.is-sacrifice { background: #fffaf0; }
+.tb-leak-say { font-size: 16.5px; font-weight: 600; color: var(--navy-800); margin: 6px 0 10px; }
+.tb-leak-decide { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 14px 0 6px; }
+.tb-leak-verdict { font-weight: 700; letter-spacing: .02em; }
+.tb-leak-verdict.is-worth { color: #0c5e43; }
+.tb-leak-verdict.is-keep { color: var(--muted); }
+.tb-leak-checks li { align-items: flex-start; }
+.tb-leak-checks .icon { margin-top: 3px; }
+.tb-leak-checks .is-found .icon { color: var(--warning); }
+.tb-leak-checks .is-na .icon { color: var(--muted); }
+.tb-leak-status { display: inline-block; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; margin-left: 4px; }
+.tb-leak-details { margin: 6px 0 14px; }
+.tb-leak-details > summary { cursor: pointer; font-weight: 600; }
+.tb-leak-review { margin-top: 8px; }
+.tb-leak-victory h2 { font-size: 24px; }
+.tb-leak-kept { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.tb-leak-kept li { background: #e3f3ea; color: #0c5e43; border-radius: 999px; padding: 4px 12px; font-size: 14px; font-weight: 600; }
+.tb-leak-kept.is-miss li { background: #fdecea; color: #8a2a1f; }
+.tb-leak-foot { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 8px 0 0; }
+@media (max-width: 640px) {
+  .tb-leak-list li, .tb-leak-two { grid-template-columns: minmax(0, 1fr); }
+  .tb-leak-steps, .tb-leak-bags { display: block; overflow-x: auto; } /* the step and bag tables scroll inside their panel on a phone */
+  .tb-leak-table th:nth-child(2), .tb-leak-breakdown td:nth-child(2) { display: none; }
+}
+
 /* ---- Trip Challenge ---- */
 .tb-chal-page .tb-results-head { margin-bottom: 20px; }
 .tb-chal-form { display: grid; gap: 18px; }
@@ -1200,6 +1253,7 @@ a.tb-pill:hover { border-color: var(--blue-500); }
 .ag-receipt-table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 6px; }
 .ag-receipt-table td { padding: 6px 0; border-top: 1px solid var(--line); }
 .ag-receipt-table .ag-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ag-receipt-table th + th, .ag-receipt-table td + td { padding-left: 10px; }
 .ag-receipt-table .is-save { color: #0c5e43; }
 .ag-receipt-table .is-add { color: var(--danger); }
 .ag-receipt-final td { font-weight: 700; border-top: 2px solid var(--ink); }
@@ -1366,3 +1420,25 @@ a.tb-pill:hover { border-color: var(--blue-500); }
   .hu-page .tb-results-head { flex-direction: column; align-items: flex-start; gap: 12px; }
   .hu-prev { display: block; overflow-x: auto; }
 }
+
+/* The money leak hunter's cards on the agent page: a status tag (scan statuses, verdicts, row kinds),
+   the scan list, the add-back list, the breakdown tag column and the chips row under the canvas.
+   Everything else reuses the proposal numbers, the receipt table and the contract columns. */
+.ag-tag { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; padding: 2px 7px; border-radius: 999px; background: var(--bg-soft); border: 1px solid var(--line); color: var(--muted); white-space: nowrap; vertical-align: middle; }
+.ag-tag.is-found, .ag-tag.is-optional { background: #fff3e0; border-color: #f5d7a8; color: #8a4b0f; }
+.ag-tag.is-ok, .ag-tag.is-worth, .ag-tag.is-discount { background: #e3f3ea; border-color: #bfe3cf; color: #0c5e43; }
+.ag-tag.is-keep, .ag-tag.is-mandatory { background: var(--sky-50); border-color: #d7e3f2; color: var(--navy-800); }
+.ag-scan-list { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 8px; }
+.ag-scan-list li { display: flex; gap: 10px; align-items: flex-start; font-size: 14px; line-height: 1.45; }
+.ag-scan-list li .ag-tag { flex: none; margin-top: 2px; min-width: 96px; text-align: center; }
+.ag-scan-list small { display: block; color: var(--muted); font-size: 13px; }
+.ag-scan-done { margin: 12px 0 0; }
+.ag-addback { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 8px; }
+.ag-addback li { display: flex; gap: 10px; align-items: center; justify-content: space-between; padding: 8px 10px; background: #fff; border-radius: 10px; font-size: 14px; }
+.ag-addback li > div { min-width: 0; }
+.ag-addback li small { display: block; color: var(--muted); font-size: 12.5px; }
+.ag-breakdown .ag-tag-cell { text-align: right; padding-right: 8px; }
+.ag-cut th { text-align: left; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); padding: 4px 0; font-weight: 700; }
+.ag-leak-chips { width: 100%; margin-top: 4px; }
+.ag-victory { margin: 0 0 14px; }
+.ag-saver-nums .is-over b { color: var(--danger); }

@@ -26,8 +26,11 @@ function newState({ id, visitor = null, userId = null, now = new Date() }) {
     bags: null, savingsLevel: null,
     locks: { hotel: false, flight: false, dates: false, nights: false, dest: false, budget: false },
     // What has been built: the current trip, the three options from the last build, a pending proposal
-    // the traveler has not approved, and the running or finished search job.
-    current: null, options: [], proposal: null, declinedCheaper: null, job: null, challenged: {}, challenger: null, compromises: [],
+    // the traveler has not approved, and the running or finished search job. `declinedLeak` is the
+    // optional cost the money leak check offered before paying and the traveler chose to keep (said
+    // once, never proposed twice); `leanOf` is the token the lean version on the canvas was stripped
+    // from, so "add back" prices items from that trip and nothing else.
+    current: null, options: [], proposal: null, declinedCheaper: null, declinedLeak: null, leanOf: null, job: null, challenged: {}, challenger: null, compromises: [],
     // A real decision the search is one answer away from (two priced trips, one trade), and the
     // priced departure windows on the table after "when can I go for less?"; both answered by letter.
     decision: null, decisionFacts: null, weeks: [],
@@ -147,9 +150,14 @@ function toQuery(s, { maps }) {
   };
 }
 
+// The context every engine and every trip link reads: only facts the traveler stated. A length they
+// stated or chose is one they asked for (an assumed length is not); the bag they said they travel
+// with, a destination they named and a date they fixed ride along too, so the review and leak pages
+// opened from the agent's links agree with the agent on what was said: a page never tells someone who
+// said "I check a bag" that nothing they told it asks for one, never lists a destination the platform
+// chose as one they kept, and never moves a date they fixed.
 function budgetContext(s, q) {
-  // A length the traveler stated or chose is one they asked for; an assumed length is not.
-  return { budget: q.budget, keep: q.keep || 0, allowOver: q.allowOver, style: q.style, priority: q.priority, nightsAsked: s.nightsStated || s.nights ? q.nights : null, rules: q.rules };
+  return { budget: q.budget, keep: q.keep || 0, allowOver: q.allowOver, style: q.style, priority: q.priority, nightsAsked: s.nightsStated || s.nights ? q.nights : null, rules: q.rules, bags: s.bags || null, dest: s.destination || null, dateMode: s.dateMode === 'exact' && s.depart ? 'exact' : null };
 }
 
 // The mission's rules in the three categories the traveler can read: what is locked (the agent never

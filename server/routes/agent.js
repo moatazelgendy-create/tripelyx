@@ -23,12 +23,17 @@ function agentRouter(ctx, { writeLimiter, computeLimiter, sameOrigin }) {
 
   r.use((req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
 
-  const owned = async (req, res) => {
+  // The conversation this request may read or speak into. One that belongs to an account is its
+  // owner's alone (agent.owns): another account on the same browser gets nothing, so nothing said here
+  // lands on the first account's watches or hunts, and the same browser after signing out is sent to
+  // sign in again (a page or a message; the live region, which a script polls, simply gets nothing).
+  const owned = async (req, res, { live = false } = {}) => {
     let s = await agent.load(req.params.id);
-    if (!agent.owns(s, { visitor: req.visitor, user: user(req) })) { send(res.status(404), notFoundView(ctx)); return null; }
-    // A conversation that belongs to an account is not reachable from another account on the same
-    // browser: nothing said here may land on the first account's watches or hunts.
-    if (req.user && s.userId && s.userId !== req.user.id) { send(res.status(404), notFoundView(ctx)); return null; }
+    if (!agent.owns(s, { visitor: req.visitor, user: user(req) })) {
+      if (s && s.userId && !req.user && req.visitor && s.visitor === req.visitor && !live) { res.redirect(303, `/signin?next=${encodeURIComponent(`/agent/${s.id}`)}`); return null; }
+      send(res.status(404), notFoundView(ctx));
+      return null;
+    }
     // A conversation started before signing in becomes the account's once its owner signs in, so a
     // watch set here lives on the account and the conversation survives a cleared cookie.
     if (req.user && !s.userId) s = await agent.withState(s.id, st => { st.userId = req.user.id; return st; });
@@ -64,6 +69,19 @@ function agentRouter(ctx, { writeLimiter, computeLimiter, sameOrigin }) {
     } catch (e) { if (e instanceof AppError) return null; throw e; }
   };
 
+  // The hunt this conversation follows, as the record is now: a stop, a resume, a rule change or a
+  // find made on its own page or by the timer reaches the canvas and the cards on the next load. The
+  // ref the conversation keeps is what the agent last saw, and stands in only when the record cannot
+  // be read here (no service, nobody signed in); a page read never writes it back.
+  const huntFor = async (req, s) => {
+    const ref = agent.huntRef(s);
+    if (!ref) return null;
+    if (ctx.hunts && req.user) {
+      try { const h = await ctx.hunts.get(req.user, ref.id); return { id: h.id, name: h.name, status: h.status, summary: ctx.hunts.summary(h), live: true }; } catch (e) { if (!(e instanceof AppError)) throw e; }
+    }
+    return ref;
+  };
+
   // A booking the conversation is about: the traveler's own (cookie or signed-in owner).
   const bookingFor = async (req, ref) => {
     if (!ref) return null;
@@ -88,10 +106,10 @@ function agentRouter(ctx, { writeLimiter, computeLimiter, sameOrigin }) {
       const mission = !!amount;
       const s = await agent.create({ visitor: req.visitor, userId: req.user ? req.user.id : null, booking, mission, mode: mission && req.body.mode === 'save' ? 'save' : null });
       const text = said(req.body) || (amount ? `$${Number(amount).toLocaleString('en-US')}` : req.body.mode === 'surprise' ? 'Surprise me: pick the best trip my money can buy.' : req.body.mode === 'challenge' ? 'I already found a trip. Can you beat it?' : '');
-      if (booking && !text) await agent.say(s.id, `What do I need to do next for trip ${booking.ref}?`);
+      if (booking && !text) await agent.say(s.id, `What do I need to do next for trip ${booking.ref}?`, { user: user(req) });
       else if (text) {
         await svc.track('agent_started', { visitor: req.visitor, userId: req.user && req.user.id, data: { length: text.length, booking: !!booking } });
-        await agent.say(s.id, text);
+        await agent.say(s.id, text, { user: user(req) });
       }
       res.redirect(303, `/agent/${s.id}`);
     } catch (e) { next(e); }
@@ -101,15 +119,15 @@ function agentRouter(ctx, { writeLimiter, computeLimiter, sameOrigin }) {
     try {
       const s = await owned(req, res);
       if (!s) return;
-      send(res, agentView(ctx, { s, canvas: await canvasFor(s), user: user(req) }));
+      send(res, agentView(ctx, { s, canvas: await canvasFor(s), hunt: await huntFor(req, s), user: user(req) }));
     } catch (e) { next(e); }
   });
 
   r.get('/agent/:id/live', async (req, res, next) => {
     try {
-      const s = await owned(req, res);
+      const s = await owned(req, res, { live: true });
       if (!s) return;
-      send(res, agentLive(ctx, { s, canvas: await canvasFor(s) }));
+      send(res, agentLive(ctx, { s, canvas: await canvasFor(s), hunt: await huntFor(req, s) }));
     } catch (e) { next(e); }
   });
 
@@ -121,7 +139,8 @@ function agentRouter(ctx, { writeLimiter, computeLimiter, sameOrigin }) {
       const text = said(req.body) || (amount ? `Don't spend more than $${Number(amount).toLocaleString('en-US')}` : '');
       if (text) {
         await svc.track('agent_said', { visitor: req.visitor, userId: req.user && req.user.id, data: { length: text.length } });
-        await agent.say(s.id, text);
+        // Spoken as the signed-in person this request belongs to: the account actions are theirs.
+        await agent.say(s.id, text, { user: user(req) });
       }
       res.redirect(303, `/agent/${s.id}`);
     } catch (e) { next(e); }

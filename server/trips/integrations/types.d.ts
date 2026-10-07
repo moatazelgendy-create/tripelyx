@@ -35,7 +35,7 @@ export interface FlightsProvider {
 
 export interface HotelOffer {
   id: string; name: string; stars: number; rating: number; ratingSource: string; area: string; demo: boolean; supplier: string;
-  features: Record<'breakfast' | 'pool' | 'beachfront' | 'adultsOnly' | 'allInclusive' | 'freeCancellation' | 'familyFriendly' | 'spa', boolean>;
+  features: Record<'breakfast' | 'pool' | 'beachfront' | 'adultsOnly' | 'allInclusive' | 'freeCancellation' | 'familyFriendly' | 'spa' | 'airportShuttle', boolean>;
   netNightly: number; typicalNetNightly: number; rooms: number; nights: number; checkIn: string; checkOut: string;
   taxPercent: number; resortFeePerNight: number; refundable: boolean; freeCancelHours: number; policy: string;
 }

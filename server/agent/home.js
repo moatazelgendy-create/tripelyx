@@ -3,6 +3,7 @@
 // facts and from cutoffs the suppliers state; nothing here is a countdown, a nudge or a guess, and
 // what only the traveler can check is marked as such.
 const { plural, longDate, money } = require('../views/trips/common');
+const leaks = require('../trips/leaks');
 
 const STATUS_WORDS = { confirmed: 'Confirmed', pending_payment: 'Awaiting payment', confirming: 'Confirming with suppliers', pending_supplier: 'Awaiting a supplier', partially_confirmed: 'Partly confirmed', cancelled: 'Cancelled', refunded: 'Refunded', failed: 'Failed' };
 
@@ -74,7 +75,16 @@ function bookingHome(b, { now = new Date(), preview = null, origin = null } = {}
     if (!(t.flight.checkedBagIncluded || spec.bags)) actions.push({ status: 'ready', text: `No checked bag is in the price (${t.flight.carryOn ? 'one carry-on' : 'a personal item'} per traveler is). Add one before you fly if you need it.` });
     if (!t.transfer) actions.push({ status: 'check', text: 'No airport transfer is in the price; the fare from the airport is not something we can quote (needs verification).' });
   }
-  return { ref: b.ref, cancelled, toGo, today, next, status, remaining, reservation, actions, paid, total: b.total, bookingHref: `/booking/${b.ref}` };
+  // The saver's victory: what the traveler gave as a maximum, what the trip cost, what they kept, and
+  // which of their stated asks the trip's facts meet (an unmet ask is listed, never hidden; an ask
+  // never stated is not listed). Only when the quote carried a maximum. The asks are read exactly as
+  // the quote stores them (`budget.asks`, with the rules nested or flat): the service writes a
+  // destination there only when the traveler named one, so nothing is synthesized here from the booked
+  // trip's own facts. The money the traveler protected (`budget.keep`) is part of what they gave: the
+  // engine says the whole number and the booking's share apart, as the booking page does.
+  const asks = (bud && bud.asks) || {};
+  const victory = bud && bud.budget && t.flight && t.hotel && t.hotel.features ? leaks.victory({ max: bud.budget, trip: t, asks: { ...asks, ...(asks.rules || {}) }, reserve: bud.keep || 0 }) : null;
+  return { ref: b.ref, cancelled, toGo, today, next, status, remaining, reservation, actions, paid, total: b.total, bookingHref: `/booking/${b.ref}`, victory };
 }
 
 module.exports = { bookingHome };

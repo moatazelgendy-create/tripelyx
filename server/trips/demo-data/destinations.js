@@ -3,7 +3,8 @@
 //
 // hotels:     [id, name, stars, demo rating (of 5), nightly rate per room, features, area, mandatory resort fee per room-night]
 //             features: B breakfast, P pool, F beachfront, A adults only, I all-inclusive, R free cancellation,
-//                       K family friendly, S spa
+//                       K family friendly, S spa, H airport shuttle (the hotel lists one; whether it is free,
+//                       scheduled and suits a flight's times needs verification, so it is never priced)
 // activities: [id, name, price per person, hours, kind]
 // climate:    tropical (warm all year), subtropical (warm Mar–Nov), mediterranean (warm May–Oct),
 //             temperate (warm Jun–Sep), desert (warm Mar–Nov, hot summers), cool (never warm)
@@ -16,7 +17,7 @@ const DESTINATIONS = [
     hotels: [
       ['cun-1', 'Playa Coral Inn', 3, 4.1, 104, 'BPR', 'Downtown, 10 min to the beach'],
       ['cun-2', 'Laguna Azul Resort', 4, 4.5, 172, 'BPFRS', 'Hotel Zone beachfront'],
-      ['cun-3', 'Costa Blanca All-Inclusive', 4, 4.4, 265, 'IPFKR', 'Hotel Zone beachfront'],
+      ['cun-3', 'Costa Blanca All-Inclusive', 4, 4.4, 265, 'IPFKRH', 'Hotel Zone beachfront'],
       ['cun-4', 'Mar de Luna Adults Resort', 5, 4.8, 390, 'IPFASR', 'Quiet north beach'],
     ],
     activities: [
@@ -65,7 +66,7 @@ const DESTINATIONS = [
     blurb: 'Palm-lined beaches and some of the Caribbean’s best all-inclusive value.',
     hotels: [
       ['puj-1', 'Bávaro Sol Hotel', 3, 4.0, 98, 'BPR', 'Bávaro, 5 min walk to the beach'],
-      ['puj-2', 'Coco Palma All-Inclusive', 4, 4.4, 215, 'IPFKR', 'Bávaro beachfront'],
+      ['puj-2', 'Coco Palma All-Inclusive', 4, 4.4, 215, 'IPFKRH', 'Bávaro beachfront'],
       ['puj-3', 'Arena Dorada Resort', 5, 4.7, 345, 'IPFSR', 'Cap Cana beachfront'],
     ],
     activities: [
@@ -129,7 +130,7 @@ const DESTINATIONS = [
     blurb: 'Waikīkī surf lessons, volcanic hikes and warm water all year.',
     hotels: [
       ['hnl-1', 'Kūhiō Garden Hotel', 3, 4.0, 168, 'PR', 'Waikīkī, 3 blocks to the beach', 30],
-      ['hnl-2', 'Waikīkī Shores Resort', 4, 4.5, 285, 'PFKR', 'Waikīkī beachfront', 45],
+      ['hnl-2', 'Waikīkī Shores Resort', 4, 4.5, 285, 'PFKRH', 'Waikīkī beachfront', 45],
       ['hnl-3', 'Diamond Head Grand', 5, 4.8, 470, 'BPFSR', 'Kapiʻolani beachfront', 50],
     ],
     activities: [
@@ -144,7 +145,7 @@ const DESTINATIONS = [
     climate: 'desert', peak: [3, 4, 10, 11], hotelTax: 13, transfer: 28, passport: false, scene: 'night',
     blurb: 'Shows, pools and big dinners, with the desert a short drive away.',
     hotels: [
-      ['las-1', 'Neon Row Hotel', 3, 3.9, 68, 'PR', 'Off-Strip, free shuttle', 35],
+      ['las-1', 'Neon Row Hotel', 3, 3.9, 68, 'PRH', 'Off-Strip, free shuttle', 35],
       ['las-2', 'Mirage Sands Resort', 4, 4.4, 145, 'PSR', 'Center Strip', 45],
       ['las-3', 'Sapphire Tower', 5, 4.7, 290, 'PSR', 'Center Strip, suites', 50],
     ],

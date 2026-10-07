@@ -13,41 +13,63 @@ const { huntsListView, huntFormView, huntView } = require('../views/trips/hunts'
 
 const send = (res, view) => res.type('html').send(String(view));
 const NONSTOP = { hard: ['nonstop', 'hard'], preferred: ['nonstop', 'preferred'] };
+// The form's fields in the customer's words, for the sentence that refuses a field sent twice.
+const FIELD_WORDS = { budget: 'the limit', from: 'the departure city', travelers: 'the travelers', who: 'who is going', when: 'the dates', month: 'the month', nights: 'the minimum nights', maxNights: 'the maximum nights', style: 'the style', nonstop: 'the flights rule', stars: 'the hotel stars', refundable: 'the cancellation rule', meals: 'the meals rule', bags: 'the bags rule', threshold: 'the saving worth an interruption', thresholdCustom: 'the saving worth an interruption', savingsLevel: 'the savings level', saved: 'the saved trip' };
 
-// Dollars as typed ("1,500", "$1,500.50") to cents; anything unreadable is NaN, which the service
-// refuses with its own sentence, so the customer sees why instead of a silently changed number.
+// Dollars as typed ("1,500", "$1,500.50") to cents; anything unreadable, a value that is not one
+// typed string included, is NaN, which the service refuses with its own sentence, so the customer
+// sees why instead of a silently changed number.
 function dollarsToCents(v) {
-  const s = str(v, 20).replace(/[,$\s]/g, '');
+  const s = typeof v === 'string' ? v.replace(/[,$\s]/g, '') : '';
   return /^\d+(\.\d{1,2})?$/.test(s) ? Math.round(Number(s) * 100) : NaN;
 }
 
+// One value per field, as typed. A field the browser sent twice (two radios with one name, a
+// crafted post) is unreadable: it is refused by name, never joined into a number the customer did
+// not type ("1" and "500" are not $1,500) and never quietly the default rule.
+function one(body, key, max) {
+  const v = body[key];
+  if (v === undefined || v === null) return '';
+  if (typeof v !== 'string') throw new AppError('invalid_hunt', `The form sent ${FIELD_WORDS[key] || key} more than once; send it again with one value.`, 422);
+  return str(v, max);
+}
+
 // The form's fields as the service expects them. Blank selects mean "no rule"; the beat-saved kind
-// applies only when a saved trip is chosen (the form says so beside the box).
+// applies only when a saved trip is chosen (the form says so beside the box). A value the form does
+// not offer (a flights rule other than hard or preferred, a cancellation answer that is not yes or
+// no) is handed to the service as sent, so it is refused in words rather than read as "no rule".
 function toInput(body) {
-  const savedToken = str(body.saved, 400) || null;
+  const savedToken = one(body, 'saved', 400) || null;
   const notify = [].concat(body.notify || []).filter(k => typeof k === 'string').map(k => k.slice(0, 20)).filter(k => k !== 'beat-saved' || savedToken);
-  const [flightStops, flightRule] = NONSTOP[str(body.nonstop, 10)] || [null, null];
-  const threshold = str(body.threshold, 10);
+  const nonstop = one(body, 'nonstop', 10);
+  const [flightStops, flightRule] = nonstop ? NONSTOP[nonstop] || [nonstop, null] : [null, null];
+  const threshold = one(body, 'threshold', 10);
   return {
-    budget: dollarsToCents(body.budget),
-    origin: str(body.from, 10).toUpperCase(),
-    travelers: str(body.travelers, 3) || undefined,
-    who: str(body.who, 10),
-    dateMode: str(body.when, 10) === 'flexible' ? 'flexible' : 'anytime',
-    month: str(body.month, 7),
-    minNights: str(body.nights, 3),
-    maxNights: str(body.maxNights, 3) || undefined,
-    style: str(body.style, 20) || 'surprise',
+    budget: dollarsToCents(one(body, 'budget', 20)),
+    origin: one(body, 'from', 10).toUpperCase(),
+    travelers: one(body, 'travelers', 3) || undefined,
+    who: one(body, 'who', 10),
+    dateMode: one(body, 'when', 10) === 'flexible' ? 'flexible' : 'anytime',
+    month: one(body, 'month', 7),
+    minNights: one(body, 'nights', 3),
+    maxNights: one(body, 'maxNights', 3) || undefined,
+    style: one(body, 'style', 20) || 'surprise',
     rules: {
       flightStops, flightRule,
-      minStars: str(body.stars, 2) || null, refundable: body.refundable ? true : null,
-      meals: str(body.meals, 20) || null, bags: str(body.bags, 10) || null,
+      minStars: one(body, 'stars', 2) || null, refundable: one(body, 'refundable', 10) || null,
+      meals: one(body, 'meals', 20) || null, bags: one(body, 'bags', 10) || null,
     },
     savedToken,
     notify,
-    threshold: threshold === 'custom' ? dollarsToCents(body.thresholdCustom) : threshold === 'recommend' || !threshold ? 'recommend' : threshold,
-    savingsLevel: str(body.savingsLevel, 12) || 'balanced',
+    threshold: threshold === 'custom' ? dollarsToCents(one(body, 'thresholdCustom', 20)) : threshold === 'recommend' || !threshold ? 'recommend' : threshold,
+    savingsLevel: one(body, 'savingsLevel', 12) || 'balanced',
   };
+}
+
+// The form prefilled from a query string or from a refused post, as sent: a field sent more than
+// once comes back blank (no value was read from it), the wins come back as ticked.
+function prefill(src) {
+  return Object.fromEntries(Object.entries(src || {}).map(([k, v]) => [k, k === 'notify' ? [].concat(v).filter(x => typeof x === 'string') : typeof v === 'string' ? v : '']));
 }
 
 // The next twelve months from now, for the window select.
@@ -80,7 +102,7 @@ function huntsRouter(ctx, { writeLimiter, computeLimiter, sameOrigin }) {
     }));
   };
   const huntPage = (hunt, { error = null } = {}) => huntView(ctx, {
-    hunt, error, originCity: originCity(hunt.origin), destName, rules: hunter.ruleLines(hunt, { maps }),
+    hunt, error, originCity: originCity(hunt.origin), destName, rules: hunter.ruleLines(hunts.recall(hunt), { maps }),
     monitoring: hunts.monitoringText(), acceptance: ACCEPTANCE, thresholds: hunter.THRESHOLDS,
   });
 
@@ -91,7 +113,7 @@ function huntsRouter(ctx, { writeLimiter, computeLimiter, sameOrigin }) {
   });
 
   r.get('/hunts/new', requireUser, async (req, res, next) => {
-    try { await formPage(req, res, { values: req.query }); } catch (e) { next(e); }
+    try { await formPage(req, res, { values: prefill(req.query) }); } catch (e) { next(e); }
   });
 
   r.post('/hunts', writeLimiter, sameOrigin, form, requireUser, compute, async (req, res, next) => {
@@ -102,7 +124,7 @@ function huntsRouter(ctx, { writeLimiter, computeLimiter, sameOrigin }) {
       res.redirect(303, `/hunts/${hunt.id}`);
     } catch (e) {
       // The form comes back as sent: an unticked set of wins stays unticked (the message says why).
-      if (e instanceof AppError && e.status === 422) return formPage(req, res, { values: { ...req.body, notify: [].concat(req.body.notify || []) }, error: e.message, status: 422 }).catch(next);
+      if (e instanceof AppError && e.status === 422) return formPage(req, res, { values: { ...prefill(req.body), notify: [].concat(req.body.notify || []).filter(k => typeof k === 'string') }, error: e.message, status: 422 }).catch(next);
       next(e);
     }
   });
@@ -131,4 +153,4 @@ function huntsRouter(ctx, { writeLimiter, computeLimiter, sameOrigin }) {
   return r;
 }
 
-module.exports = { huntsRouter, toInput, dollarsToCents, monthsFrom };
+module.exports = { huntsRouter, toInput, dollarsToCents, monthsFrom, prefill };

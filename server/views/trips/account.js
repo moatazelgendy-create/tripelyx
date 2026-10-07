@@ -4,7 +4,7 @@ const { icon } = require('../icons');
 const { layout } = require('../layout');
 const { contextParams } = require('../../trips/optimizer');
 const { money, dollars, longDate, shortDate, plural, statusPill, demoBadge } = require('./common');
-const { huntRows } = require('./hunts');
+const { huntRows, SEARCH_WORDS } = require('./hunts');
 
 function authView(ctx, { mode, error, errors = {}, values = {}, next = '' }) {
   const signin = mode === 'signin';
@@ -68,7 +68,7 @@ function savedRow(r, kind) {
 // here. `destName` turns a baseline's destination id into its name.
 function huntsSection(hunts, destName) {
   return html`<section aria-labelledby="hu-title"><h2 id="hu-title">Hunts</h2>
-    ${hunts.length ? huntRows(hunts, { destName }) : html`<p class="tb-muted">Tell the AI your max and it waits for the right trip: it asks the suppliers about every departure in your window, prices the cheapest trips inside your rules in full, and says something only when one is worth your attention. <a href="/hunts/new">Start a hunt</a>.</p>`}
+    ${hunts.length ? huntRows(hunts, { destName }) : html`<p class="tb-muted">Tell the AI your max and it waits for the right trip: it ${SEARCH_WORDS}, and says something only when one is worth your attention. <a href="/hunts/new">Start a hunt</a>.</p>`}
     <p class="tb-small"><a href="/hunts">${hunts.length ? 'All hunts' : 'About hunts'}</a>${hunts.length ? html` · <a href="/hunts/new">Start another hunt</a>` : ''}</p>
   </section>`;
 }

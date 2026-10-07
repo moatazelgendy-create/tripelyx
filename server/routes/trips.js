@@ -5,7 +5,7 @@ const { addDays, today, isIsoDate, daysBetween } = require('../lib/dates');
 const { str } = require('../lib/validate');
 const optimizer = require('../trips/optimizer');
 const { encodeSpec, decodeSpec } = require('../trips/spec');
-const { publicTrip } = require('../trips/pricing');
+const { publicTrip, requireTrip } = require('../trips/pricing');
 const { WATCH_DEFAULT_RULE } = require('../trips/service');
 const { homeView } = require('../views/trips/home');
 const { stepView, resultsView, STEPS } = require('../views/trips/plan');
@@ -17,6 +17,7 @@ const { priceView } = require('../views/trips/price');
 const { guideView } = require('../views/trips/guide');
 const { compareView } = require('../views/trips/compare');
 const { authView, myTripsView } = require('../views/trips/account');
+const { leaksView } = require('../views/trips/leaks');
 const pages = require('../views/trips/pages');
 const { notFoundView } = require('../views/errors');
 
@@ -51,6 +52,14 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
   };
   const originCity = id => { const o = svc.inv.maps.getOrigin(id); return o ? o.city : id; };
   const user = req => req.user || null;
+  // A promo code the trip context carries (one a review page verified, then kept on every link so a
+  // version opened from the leaks page lands on the total that page promised): its record while the
+  // rules still accept it; otherwise null, the code dropped from the links, and the reason kept so
+  // the page can say it rather than lose the code quietly.
+  const promoOf = async cx => {
+    if (!cx.promo) return { promo: null, promoError: null };
+    try { return { promo: await svc.promo(cx.promo), promoError: null }; } catch (e) { if (!(e instanceof AppError) || e.code !== 'invalid_promo') throw e; cx.promo = null; return { promo: null, promoError: e.message }; }
+  };
   const tracked = (req, type, data) => svc.track(type, { visitor: req.visitor, userId: req.user && req.user.id, data });
 
   r.use((req, res, next) => { res.setHeader('Cache-Control', 'no-cache'); next(); });
@@ -115,7 +124,13 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
       if (ask) return send(res, stepView(ctx, { step: ask, raw: req.query, query, origins: svc.inv.maps.listOrigins(), dream: dest }));
       await tracked(req, 'search_started', { budget: query.budget, dream: dest.id, origin: query.origin });
       const out = optimizer.dreamSearch(svc.inv, query, dest.id, { settings: await svc.settings(), now: new Date() });
-      const cx = { ...optimizer.budgetContext(query), searchParams: null };
+      // The context on this page's trip links carries only what the traveler said: the destination
+      // they named (so a booking can say it was kept), the date they must leave on (held on every
+      // page from here, never moved by a cut), and a length or a priority only when the query
+      // stated one. The dream's own defaults (5 nights, "the hotel matters") rank the search but are
+      // not written down as asks the traveler made.
+      const stated = k => typeof req.query[k] === 'string' && req.query[k] !== '';
+      const cx = { ...optimizer.budgetContext(query), searchParams: null, dest: dest.id, dateMode: query.dateMode === 'exact' ? 'exact' : null, nightsAsked: stated('nights') ? query.nights : undefined, priority: stated('prio') ? query.priority : 'price' };
       let closers = [];
       if (out.best && out.gap > 0) {
         const token = encodeSpec(out.best.trip.spec);
@@ -166,6 +181,12 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
       const cx = optimizer.parseContext(req.query);
       if (req.query.review === '1') return res.redirect(303, `/trip/${req.params.token}/review?${optimizer.contextParams(cx, { seen: req.query.seen })}`);
       const data = await svc.trip(req.params.token, cx);
+      // A promo code carried from a review page: this page prices before the code (the customizer
+      // compares versions before any code), says what the code takes off and the total with it, and
+      // its review link names that total as the one seen, so the review page says "still", not "dropped".
+      const { promo: p, promoError } = await promoOf(cx);
+      const coded = p ? await svc.price(data.trip.spec, { promo: p }) : null;
+      const promo = coded ? { code: p.code, total: coded.total, off: data.trip.total - coded.total } : null;
       await tracked(req, 'trip_selected', { dest: data.trip.dest.id, total: data.trip.total, budget: cx.budget });
       await svc.rememberTrip(user(req), data.token, cx.budget);
       let saved = null;
@@ -173,7 +194,7 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
         const [s, w] = await Promise.all([ctx.store.listRecords('saved', { userId: req.user.id, limit: 100 }), ctx.store.listRecords('watch', { userId: req.user.id, limit: 100 })]);
         saved = { saved: s.some(x => x.token === data.token), watch: w.some(x => x.token === data.token) };
       }
-      send(res, tripView(ctx, { data, cx, user: user(req), saved, named: ['high', 'low'].includes(req.query.named) ? req.query.named : null }));
+      send(res, tripView(ctx, { data, cx, user: user(req), saved, named: ['high', 'low'].includes(req.query.named) ? req.query.named : null, promo, promoError }));
     } catch (e) { next(e); }
   });
 
@@ -227,6 +248,32 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
     } catch (e) { next(e); }
   });
 
+  // The Money Leak page: what you don't need to pay for. Every number is a version of this trip
+  // priced in full by the engine; every control is a link to that version's token, so nothing is
+  // removed here and nothing optional is chosen for the traveler. With a promo code on the context
+  // (verified on the review page) every version is priced with it, and the code rides on every link
+  // out, so a clicked REMOVE lands on the total this page promised. `cut` is the amount to take out
+  // as typed, in dollars and cents, read as exactly that: a repeated key is its first value, never a
+  // joined number; more than two decimals, a word, zero, or an amount at or above the total runs no
+  // cut, and the page says which of those it was rather than cutting a different number quietly.
+  r.get('/trip/:token/leaks', compute, async (req, res, next) => {
+    try {
+      const cx = optimizer.parseContext(req.query);
+      const { promo, promoError } = await promoOf(cx);
+      const data = await svc.trip(req.params.token, cx);
+      if (promo) data.trip = requireTrip(await svc.price(data.trip.spec, { promo }));
+      const first = [].concat(req.query.cut ?? [])[0];
+      const cutTyped = typeof first === 'string' ? first.trim().slice(0, 40) : '';
+      const digits = cutTyped.replace(/[,$\s]/g, '');
+      const cents = /^\d{1,12}(\.\d{1,2})?$/.test(digits) ? Math.round(Number(digits) * 100) : null;
+      const cutProblem = !cutTyped ? null : cents === null ? 'unreadable' : cents === 0 ? 'zero' : cents >= data.trip.total ? 'over' : null;
+      const cut = cutProblem || cents === null ? null : cents;
+      const hunt = await svc.moneyLeaks(data.trip, cx, { cut, promo });
+      await tracked(req, 'leaks_viewed', { dest: data.trip.dest.id, total: data.trip.total, cut, leak: hunt.biggestLeak ? hunt.biggestLeak.kind : null });
+      send(res, leaksView(ctx, { data, cx, hunt, cutTyped, cutProblem, cutCents: cents, promo: promo ? promo.code : null, promoError, user: user(req) }));
+    } catch (e) { next(e); }
+  });
+
   // Side by side: two or three trips by token (the results page links all three).
   r.get('/compare', async (req, res, next) => {
     try {
@@ -250,23 +297,32 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
       const cx = optimizer.parseContext(req.query);
       const seen = Number(req.query.seen) || 0;
       let verify;
-      try { verify = await svc.verify(req.params.token, seen, { promoCode: req.query.promo }); } catch (e) { if (e.code !== 'invalid_promo') throw e; verify = await svc.verify(req.params.token, seen); verify.promoError = e.message; }
+      try { verify = await svc.verify(req.params.token, seen, { promoCode: cx.promo }); } catch (e) { if (e.code !== 'invalid_promo') throw e; verify = await svc.verify(req.params.token, seen); verify.promoError = e.message; }
       if (!verify.available) return send(res.status(410), unavailableView(ctx, { token: req.params.token, cx }));
+      // The verified code rides on every link out of this page (the money leak check's REMOVE, the
+      // leaks page, the trip page), so a version opened from here is priced with it; a code the rules
+      // refuse is said on the page and carried nowhere.
+      cx.promo = verify.promo ? verify.promo.code : null;
       // The page shows the verified price (promo included), which is exactly what the quote will check.
       const data = { ...(await svc.trip(req.params.token, cx)), trip: publicTrip(verify.trip) };
-      send(res, reviewView(ctx, { data, cx, verify, user: user(req), promoError: verify.promoError, promoCode: verify.promo ? verify.promo.code : '' }));
+      // The savings check and the money leak check run on the verified trip with its promo, so every
+      // version they price moves with the same code.
+      const leak = await svc.leakCheck(verify.trip, cx, { promo: verify.promo });
+      send(res, reviewView(ctx, { data, cx, verify, user: user(req), promoError: verify.promoError, promoCode: verify.promo ? verify.promo.code : '', leak }));
     } catch (e) { next(e); }
   });
 
   r.post('/trip/:token/quote', writeLimiter, sameOrigin, form, async (req, res, next) => {
     const cx = optimizer.parseContext(Object.fromEntries(new URLSearchParams(String(req.body.cx || ''))));
     try {
-      const quote = await svc.createQuote(req.params.token, { approvedTotal: Number(req.body.approvedTotal), budget: cx.budget, keep: cx.keep, allowOver: cx.allowOver, promoCode: req.body.promo, user: user(req) });
+      const quote = await svc.createQuote(req.params.token, { approvedTotal: Number(req.body.approvedTotal), budget: cx.budget, keep: cx.keep, allowOver: cx.allowOver, promoCode: req.body.promo, user: user(req), cx });
       await tracked(req, 'checkout_started', { dest: quote.trip.dest.id, total: quote.total });
       res.redirect(303, `/checkout/${quote.id}`);
     } catch (e) {
+      // Back to the review with the code as typed in the form (a cleared field clears it), so a
+      // changed price is read against the same code, never against the code dropped.
       if (e instanceof AppError && (e.code === 'price_changed' || e.code === 'invalid_promo')) {
-        return res.redirect(303, `/trip/${req.params.token}/review?${optimizer.contextParams(cx, { seen: req.body.approvedTotal, promo: e.code === 'invalid_promo' ? req.body.promo : undefined })}`);
+        return res.redirect(303, `/trip/${req.params.token}/review?${optimizer.contextParams(cx, { seen: req.body.approvedTotal, promo: typeof req.body.promo === 'string' && req.body.promo.trim() ? req.body.promo.trim().slice(0, 30) : undefined })}`);
       }
       if (e instanceof AppError && e.code === 'trip_unavailable') return send(res.status(410), unavailableView(ctx, { token: req.params.token, cx }));
       next(e);

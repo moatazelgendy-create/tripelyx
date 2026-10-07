@@ -10,6 +10,8 @@ const { money, dollars, longDate, shortDate, plural, joinAnd, cutoffText, hm, st
 const { budgetForm } = require('./home');
 const { vacationPlan, coveredBy, unpricedFor } = require('../../trips/vacation');
 const { tripCard } = require('./plan');
+const { victory } = require('../../trips/leaks');
+const { victoryPanel } = require('./leaks');
 
 function howItWorksView(ctx) {
   const body = html`
@@ -224,6 +226,11 @@ function tripBookingView(ctx, { booking: b, cancellationPreview: preview, paymen
   }[b.status] || b.status;
   const budget = b.budget && b.budget.budget;
   const plan = vacationPlan(t, { budget, keep: (b.budget && b.budget.keep) || 0 });
+  // The saver's victory screen: what the traveler gave as a maximum, what the trip costs, what they
+  // kept, and which stated asks the booked trip's facts meet (from the asks the quote kept; a
+  // booking without them lists no rules). Only with a maximum, and only while the booking stands.
+  const asks = (b.budget && b.budget.asks) || {};
+  const v = budget && !['failed', 'expired', 'cancelled', 'refund_pending', 'refunded'].includes(b.status) ? victory({ max: budget, trip: t, asks: { ...asks, ...(asks.rules || {}) }, reserve: (b.budget && b.budget.keep) || 0 }) : null;
   const body = html`
 <div class="container tb-command">
   ${ok ? stepsBar(3) : ''}
@@ -234,6 +241,7 @@ function tripBookingView(ctx, { booking: b, cancellationPreview: preview, paymen
     ${ok && days > 0 ? html`<p class="tb-countdown">${icon('calendar')} ${days === 1 ? 'Tomorrow!' : `${days} days to go`}</p>` : ''}
     ${b.demo ? html`<p class="demo-note">${icon('info')}Demo booking — test payment, no real supplier was contacted.</p>` : ''}
   </header>
+  ${v ? victoryPanel(v, { keep: (b.budget && b.budget.keep) || 0 }) : ''}
   ${notice ? html`<div class="alert alert-success mb-16" role="status">${icon('check')}<span>${notice}</span></div>` : ''}
   ${partial ? html`<div class="alert alert-warning mb-16" role="alert">${icon('alert')}<span><b>One part of your trip couldn’t be confirmed</b> (see below). Our team has been alerted and will contact you at ${b.traveler.email} with options or a refund for that part. The confirmed parts are safe. Nothing else is needed from you right now.</span></div>` : ''}
   ${b.status === 'failed' ? html`<div class="alert alert-error mb-16" role="alert">${icon('alert')}<span>The flights couldn’t be confirmed, so your payment of ${money(b.refundAmount || b.total)} has been refunded in full. <a href="/plan">Build another trip</a>.</span></div>` : ''}
@@ -254,7 +262,7 @@ function tripBookingView(ctx, { booking: b, cancellationPreview: preview, paymen
         ${recipe(t, budget)}
         ${b.payment ? html`<p class="secure-note">${icon('card')}Paid ${money(b.total)} with ${b.payment.brand} •••• ${b.payment.last4}${b.payment.mode === 'test' ? ' (test mode)' : ''}. Remaining balance: ${money(0)}.</p>` : ''}
         ${b.refundAmount ? html`<p class="secure-note">${icon('info')}Refund: ${money(b.refundAmount)}</p>` : ''}
-        ${budget && b.total <= budget ? html`<p class="tb-celebrate">${icon('sparkle')} Great choice. You came in <b>${money(budget - b.total)}</b> under your ${dollars(budget)}${plan && plan.keep ? ' booking' : ''} budget.</p>` : ''}
+        ${budget && b.total <= budget && !v ? html`<p class="tb-celebrate">${icon('sparkle')} You came in <b>${money(budget - b.total)}</b> under your ${dollars(budget)}${plan && plan.keep ? ' booking' : ''} budget.</p>` : ''}
         ${plan && plan.keep ? html`<p class="tb-vac-after">${icon('lock')}<span>${afterWords(plan)}</span></p>` : ''}
       </section>
       ${coversPanel(b, t)}

@@ -234,6 +234,9 @@ test('honesty: no win with unknowns, the contract names what is not as asked, an
     if (s.proposal) await agent.say(s0.id, 'keep it');
     await agent.say(s0.id, 'Book it');
     s = await agent.load(s0.id);
+    // The checks before paying (the savings check, then the money leak check) may each put one version
+    // on the table first; kept, "book it" reaches the contract. Which ones fire depends on the day's trip.
+    for (let i = 0; i < 2 && s.proposal; i++) { await agent.say(s0.id, 'keep it'); await agent.say(s0.id, 'Book it'); s = await agent.load(s0.id); }
     const c = last(s).card;
     assert.equal(c.kind, 'contract');
     assert.match(c.href, /^\/trip\/.+\/review\?/);
@@ -295,20 +298,22 @@ test('pages: the homepage leads with the agent, a conversation has a page, a liv
     // Buttons say things: a cheaper ask, then the booking contract with its review link.
     r = await c.req(page, { method: 'POST', form: { say: 'Make it cheaper' } });
     assert.equal(r.status, 303);
-    // "Make it cheaper" may leave a proposal waiting (a cheaper version to take or keep), and the savings
-    // check before the contract may find the same trip cheaper: booking waits for those answers, so the
-    // traveler keeps the trip and asks again; a kept version is never proposed twice.
+    // "Make it cheaper" may leave a proposal waiting (a cheaper version to take or keep), the savings
+    // check before the contract may find the same trip cheaper, and the money leak check may find one
+    // optional cost nothing stated asks for: booking waits for those answers, so the traveler keeps the
+    // trip and asks again; a kept version is never proposed twice.
     let booked;
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 4; i++) {
       r = await c.req(page, { method: 'POST', form: { say: 'Book it' } });
       assert.equal(r.status, 303);
       booked = await c.req(page);
       if (/ag-contract/.test(booked.text)) break;
-      assert.match(text(booked.text), /There is a proposal waiting\. Take it or keep your trip first|Savings check before you pay: .*then say (?:"|&quot;)book it(?:"|&quot;) again\./);
+      assert.match(text(booked.text), /There is a proposal waiting\. Take it or keep your trip first|(?:Savings check|Money leak check) before you pay: .*then say (?:"|&quot;)book it(?:"|&quot;) again\./);
       assert.equal((await c.req(page, { method: 'POST', form: { say: 'Keep what I have' } })).status, 303);
     }
     assert.match(booked.text, /ag-contract/);
-    assert.ok((text(booked.text).match(/then say (?:"|&quot;)book it(?:"|&quot;) again\./g) || []).length <= 1, 'a declined savings-check proposal is not made again');
+    assert.ok((text(booked.text).match(/Take it, or keep what you have; then say (?:"|&quot;)book it(?:"|&quot;) again\./g) || []).length <= 1, 'a declined savings-check proposal is not made again');
+    assert.ok((text(booked.text).match(/Remove it, or keep it; then say (?:"|&quot;)book it(?:"|&quot;) again\./g) || []).length <= 1, 'a kept money leak is not proposed again');
     assert.match(booked.text, /href="\/trip\/[^"]+\/review\?[^"]*seen=\d+"/);
     // Another visitor cannot read it; a bad id is not found.
     const other = await fetch(app.base + page, { redirect: 'manual' });
@@ -529,11 +534,25 @@ test('a savings-check version the traveler keeps off is said once and never prop
     assert.doesNotMatch((await c.req(page)).text, /ag-contract/, 'the decision comes before the contract');
     assert.equal((await c.req(page, { method: 'POST', form: { say: 'Keep what I have' } })).status, 303);
     assert.equal((await c.req(page, { method: 'POST', form: { say: 'Book it' } })).status, 303);
-    const booked = await c.req(page);
+    let booked = await c.req(page);
     t = text(booked.text);
-    assert.match(booked.text, /ag-contract/, 'the contract follows the kept trip');
-    assert.equal((t.match(/then say (?:"|&quot;)book it(?:"|&quot;) again\./g) || []).length, 1, 'the kept version is not proposed a second time');
     assert.match(t, /Savings check before you pay: the cheaper version I found \(\$[\d,.]+\) is the one you chose not to take, so your trip stands at \$[\d,.]+\./);
+    // The money leak check runs after the kept savings check; when the day's trip carries an optional
+    // cost nothing stated asks for, that one version is offered once (the savings-check version is not
+    // offered again with it), kept, and "book it" then reaches the contract.
+    if (/MONEY LEAK CHECK COMPLETE\. I found one more optional \$[\d,.]+ you can remove: .*Remove it, or keep it; then say (?:"|&quot;)book it(?:"|&quot;) again\./.test(t)) {
+      assert.doesNotMatch(booked.text, /ag-contract/, 'the leak decision comes before the contract');
+      assert.equal((await c.req(page, { method: 'POST', form: { say: 'Keep it' } })).status, 303);
+      assert.equal((await c.req(page, { method: 'POST', form: { say: 'Book it' } })).status, 303);
+      booked = await c.req(page);
+      t = text(booked.text);
+      // The scan's own sentence again, verbatim and led by MONEY LEAK CHECK COMPLETE, with the kept item said after it.
+      assert.match(t, /MONEY LEAK CHECK COMPLETE\. I found one more optional \$[\d,.]+ you can remove: .+\. That is the one you chose to keep, so your trip stands at \$[\d,.]+\./);
+    }
+    assert.match(booked.text, /ag-contract/, 'the contract follows the kept trip');
+    assert.equal((t.match(/Take it, or keep what you have; then say (?:"|&quot;)book it(?:"|&quot;) again\./g) || []).length, 1, 'the kept version is not proposed a second time');
+    assert.ok((t.match(/Remove it, or keep it; then say (?:"|&quot;)book it(?:"|&quot;) again\./g) || []).length <= 1, 'a kept leak is not proposed a second time');
+    assert.match(t, /Savings check before you pay: the cheaper version I found \(\$[\d,.]+\) is the one you chose not to take, so your trip stands at \$[\d,.]+\. MONEY LEAK CHECK COMPLETE\. /);
     const after = await app.agent.load(page.split('/').pop());
     assert.equal(after.declinedCheaper, other.token);
     assert.equal(after.current.token, s.current.token, 'the trip is unchanged');
@@ -541,6 +560,49 @@ test('a savings-check version the traveler keeps off is said once and never prop
     savemax.savingsCheck = real;
     await app.close();
   }
+});
+
+test('a conversation that belongs to an account is its owner’s alone: the same browser after signing out is sent to sign in (the live region gets nothing), nothing it says creates or changes a hunt on the account, and the owner signed in again carries on', async () => {
+  const app = await startApp();
+  try {
+    const c = client(app.base);
+    const creds = { name: 'Ada Lovelace', email: 'owner@example.com', password: 'correct horse battery' };
+    assert.equal((await c.req('/signup', { method: 'POST', form: { ...creds, next: '/my-trips' } })).status, 303);
+    const start = await c.req('/agent', { method: 'POST', form: { budget: '1,500', mode: 'save' } });
+    assert.equal(start.status, 303);
+    const page = start.location, id = page.split('/').pop();
+    assert.equal((await c.req(page, { method: 'POST', form: { say: 'JFK' } })).status, 303);
+    await app.agent.jobs.drain();
+    const before = await app.agent.load(id);
+    assert.ok(before.userId && before.current);
+    assert.equal((await c.req('/signout', { method: 'POST', form: {} })).status, 303);
+    assert.ok(!c.jar.txs && c.jar.txv, 'signed out, same browser');
+    const get = await c.req(page);
+    assert.equal(get.status, 303);
+    assert.equal(get.location, `/signin?next=${encodeURIComponent(page)}`);
+    assert.equal((await c.req(`${page}/live`)).status, 404, 'the polled region gets nothing, never a sign-in page to inject');
+    const post = await c.req(page, { method: 'POST', form: { say: 'Hunt for a better deal' } });
+    assert.equal(post.status, 303);
+    assert.match(post.location, /^\/signin\?next=/);
+    await app.agent.jobs.drain();
+    assert.equal((await app.ctx.store.listRecords('hunt', { limit: 10 })).length, 0, 'nothing is created on the account by a signed-out browser');
+    assert.equal((await app.agent.load(id)).messages.length, before.messages.length, 'nothing was said into the conversation');
+    // The owner, signed in again, carries on; what they say now acts on their account.
+    assert.equal((await c.req('/signin', { method: 'POST', form: { email: creds.email, password: creds.password, next: page } })).status, 303);
+    assert.equal((await c.req(page)).status, 200);
+    assert.equal((await c.req(page, { method: 'POST', form: { say: 'Hunt for a better deal' } })).status, 303);
+    await app.agent.jobs.drain();
+    const hunts = await app.ctx.store.listRecords('hunt', { limit: 10 });
+    assert.equal(hunts.length, 1);
+    assert.equal(hunts[0].userId, before.userId);
+    // Signed out again, the hunt's rules cannot be moved from here.
+    assert.equal((await c.req('/signout', { method: 'POST', form: {} })).status, 303);
+    assert.equal((await c.req(page, { method: 'POST', form: { say: 'Not good enough' } })).status, 303);
+    assert.equal((await c.req(page, { method: 'POST', form: { say: 'Nonstop' } })).status, 303);
+    const h = await app.ctx.store.getRecord('hunt', hunts[0].id);
+    assert.equal(h.rules.flightStops, null, 'the hunt’s rules are untouched');
+    assert.equal(h.learned.length, 0);
+  } finally { await app.close(); }
 });
 
 test('a conversation that belongs to one account is not reachable from another account on the same browser', async () => {

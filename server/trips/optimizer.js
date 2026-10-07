@@ -37,6 +37,7 @@ function memoInventory(inv) {
 }
 
 function int(v, def, min, max) {
+  if (Array.isArray(v)) return def; // a repeated key (b=100&b=200) is no number: never a joined one
   const n = Number(String(v ?? '').replace(/[,$\s]/g, ''));
   if (!Number.isFinite(n) || v === '' || v === undefined || v === null) return def;
   return Math.min(max, Math.max(min, Math.round(n)));
@@ -126,23 +127,38 @@ function searchParams(q, extra = {}) {
 
 // The budget context a trip page carries so its numbers can be read against the traveler's budget.
 function budgetContext(q) {
-  return { budget: q.budget, keep: q.keep || 0, allowOver: q.allowOver, style: q.style, priority: q.priority, nightsAsked: q.nights };
+  return { budget: q.budget, keep: q.keep || 0, allowOver: q.allowOver, style: q.style, priority: q.priority, nightsAsked: q.nights, rules: q.rules || null };
 }
 
 // The same context carried on trip page links (?b=1500&k=300&ov=10&style=beach&prio=hotel&nights=5).
 // `b` is the booking budget the trip is read against; `k` is the money the traveler protects for
-// the destination, so the whole vacation budget is b + k.
+// the destination, so the whole vacation budget is b + k. The standing rules (ns=1, stars=4, ...)
+// ride along too, so a trip link keeps what the traveler said must hold: the money leak hunter and
+// the quote read them from here, and a rule is never dropped between pages. Beyond those it carries
+// `dm=exact` (a date the traveler said they must leave on, so no page moves it), `bg` (the bag they
+// said they travel with: checked, carry-on or personal; '1' means checked), `dest` (a destination
+// they named, so a booking can say it was kept; absent when the platform chose it) and `promo` (a
+// code the review page verified, so every version opened from it is priced with the same code). A
+// repeated key (b=100&b=200) is read as its first value, never joined into one number that would
+// then ride on every link and into the quote's asks.
+const BAGS = ['personal', 'carry-on', 'checked'];
 function parseContext(raw = {}) {
-  const b = int(raw.b, null, 100, 1000000);
+  const r = Object.fromEntries(Object.entries(raw || {}).map(([k, v]) => [k, Array.isArray(v) ? v[0] : v]));
+  const b = int(r.b, null, 100, 1000000);
   return {
-    budget: b ? b * 100 : null, keep: b ? int(raw.k, 0, 0, 1000000) * 100 : 0, allowOver: raw.ov === '10' ? 10 : 0,
-    style: STYLES.includes(raw.style) ? raw.style : 'surprise', priority: PRIORITIES.includes(raw.prio) ? raw.prio : 'price',
-    nightsAsked: int(raw.nights, null, 2, 14) || undefined, searchParams: typeof raw.s === 'string' ? raw.s.slice(0, 400) : null,
+    budget: b ? b * 100 : null, keep: b ? int(r.k, 0, 0, 1000000) * 100 : 0, allowOver: r.ov === '10' ? 10 : 0,
+    style: STYLES.includes(r.style) ? r.style : 'surprise', priority: PRIORITIES.includes(r.prio) ? r.prio : 'price',
+    nightsAsked: int(r.nights, null, 2, 14) || undefined, searchParams: typeof r.s === 'string' ? r.s.slice(0, 400) : null,
+    rules: parseRules(r),
+    dateMode: r.dm === 'exact' ? 'exact' : null,
+    bags: r.bg === '1' ? 'checked' : BAGS.includes(r.bg) ? r.bg : null,
+    dest: typeof r.dest === 'string' && /^[a-z0-9-]{1,40}$/i.test(r.dest) ? r.dest : null,
+    promo: typeof r.promo === 'string' && r.promo.trim() ? r.promo.trim().slice(0, 30) : null,
   };
 }
 
 function contextParams(ctx, extra = {}) {
-  const p = { b: ctx.budget ? Math.round(ctx.budget / 100) : undefined, k: ctx.budget && ctx.keep ? Math.round(ctx.keep / 100) : undefined, ov: ctx.allowOver ? '10' : undefined, style: ctx.style && ctx.style !== 'surprise' ? ctx.style : undefined, prio: ctx.priority && ctx.priority !== 'price' ? ctx.priority : undefined, nights: ctx.nightsAsked, s: ctx.searchParams || undefined, ...extra };
+  const p = { b: ctx.budget ? Math.round(ctx.budget / 100) : undefined, k: ctx.budget && ctx.keep ? Math.round(ctx.keep / 100) : undefined, ov: ctx.allowOver ? '10' : undefined, style: ctx.style && ctx.style !== 'surprise' ? ctx.style : undefined, prio: ctx.priority && ctx.priority !== 'price' ? ctx.priority : undefined, nights: ctx.nightsAsked, s: ctx.searchParams || undefined, ...rulesParams(ctx.rules), dm: ctx.dateMode === 'exact' ? 'exact' : undefined, bg: BAGS.includes(ctx.bags) ? ctx.bags : undefined, dest: ctx.dest || undefined, promo: ctx.promo || undefined, ...extra };
   // A list (the customizer's experiences) is repeated, one parameter per item, so the route reads it
   // back as a list; an empty list stays as one empty parameter, which means "none". Joined with commas
   // it would reach the token as a single name and the token would not decode.

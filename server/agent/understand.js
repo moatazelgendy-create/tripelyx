@@ -134,8 +134,11 @@ function extractUpdates(text, { maps, now = new Date() }) {
   if (has(lower, /\b(don'?t care where|anywhere|wherever|surprise me|pick (?:the|a) (?:best|place|destination)|somewhere new|you choose|up to you|no preference on (?:the )?destination)\b/)) { u.destination = null; u.anywhere = true; u.style = u.style || 'surprise'; ack.push('anywhere'); }
   if (has(lower, /\b(abroad|international|overseas|outside the (?:us|usa|country))\b/)) { u.region = 'international'; ack.push('somewhere international'); }
 
-  // How long.
-  const nightsM = lower.match(/\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten|a)\s*-?\s*nights?\b/);
+  // How long. "5 nights is not enough, make it 7 nights" names two lengths: the one asked for follows
+  // the asking words; otherwise the first length named is the one meant.
+  // "One night less" and "a night longer" are a change of one night (the extend and shorten asks), not a length.
+  const NIGHTS = /(\d+|one|two|three|four|five|six|seven|eight|nine|ten|a)\s*-?\s*nights?\b(?!\s+(?:less|fewer|shorter|longer|more|earlier|later)\b)/;
+  const nightsM = lower.match(new RegExp(`\\b(?:make (?:it|that|this)|change (?:it |that |this )?to|switch to|rather|instead)\\s+${NIGHTS.source}`)) || lower.match(new RegExp(`\\b${NIGHTS.source}`));
   const daysM = lower.match(/\b(\d+|two|three|four|five|six|seven|eight|nine|ten)\s*-?\s*days?\b/);
   if (nightsM) { u.nights = Math.max(2, Math.min(14, num(nightsM[1]))); ack.push(`${u.nights} nights`); }
   else if (has(lower, /\b(a|one|1) week\b/)) { u.nights = 7; ack.push('7 nights'); }
@@ -217,6 +220,23 @@ function extractUpdates(text, { maps, now = new Date() }) {
   return { updates: u, ack };
 }
 
+// What the data cannot compare, by the engine's own keys (leaks.notAvailable, plus its seat and parking
+// lines): the agent answers each with that line, never with a checkout or a cheaper version, since no
+// saving can be claimed or denied from what nothing prices. The intent is the union; the router reads
+// the keys asked.
+const NOT_COMPARED = [
+  ['channel', /\bbook(?:ing|ed)?\b[^.?!]{0,40}\b(?:separately|directly|elsewhere|myself|ourselves|on (?:my|our) own|on (?:another|a different|some other) (?:site|website|app)|somewhere else|straight with the (?:hotel|airline))|\bdirect(?:ly)? (?:with|from|through) the (?:hotel|airline)\b|\b(?:another|a different|some other) (?:site|website|booking site)\b|\bbooking channels?\b/],
+  ['package', /\bpackage\b[^.?!]{0,30}\bseparate(?:ly)?\b|\bseparate(?:ly)?\b[^.?!]{0,30}\bpackage\b|\bas a package or\b|\bbundl(?:e|ed|ing) (?:vs\.?|versus|or|instead of)\b/],
+  ['oneway', /\bone[- ]way (?:fares?|tickets?|flights?)\b|\btwo one[- ]ways?\b/],
+  ['split', /\bsplit (?:the |my |our )?stay\b|\btwo (?:different )?hotels\b/],
+  ['credit', /\b(?:airline|loyalty|rewards?|credit[- ]card|hotel|my|our) (?:points|miles)\b|\bpoints or miles\b|\bfrequent[- ]flyer\b|\bloyalty (?:program|credits?|points|number)\b/],
+  ['promo', /\bpromo codes?\b|\bcoupons?\b|\bdiscount codes?\b|\bvouchers?\b/],
+  ['currency', /\bin (?:euros?|pounds|yen|pesos|cad|gbp|eur|canadian dollars|mexican pesos)\b|\bexchange rates?\b|\bcurrenc(?:y|ies)\b/],
+  ['seat', /\bseat (?:selection )?fees?\b|\bseat selection\b|\bpay(?:ing)? (?:for|extra for) (?:a |our |my )?seats?\b|\bchoose (?:my|our|a) seats?\b/],
+  ['parking', /\bparking\b/],
+];
+const NOT_COMPARED_RE = new RegExp(NOT_COMPARED.map(([, re]) => re.source).join('|'));
+
 // What the traveler wants done. Several can apply; the router handles them in a sensible order.
 const INTENTS = [
   ['restart', /\b(start over|start again|reset|from scratch|new trip|clear everything)\b/],
@@ -232,8 +252,17 @@ const INTENTS = [
   ['breakpoints', /\b(upgrades? worth (?:considering|it|the money)|where does (?:the )?money (?:start|begin)|what (?:does|would) (?:more|extra) money (?:buy|get)|price breakpoints?|breakpoints?|what (?:can|could) i get for (?:a bit|a little) more)\b/],
   ['whenLess', /\b(when can i go for less|when (?:is|would) it (?:be )?cheaper|cheaper (?:time|month|week|date|dates) to go|when should i (?:go|book) (?:to pay less|for less|to save)|cheapest (?:strong )?week|which week is cheapest|when is it cheapest|other weeks)\b/],
   ['receipt', /\b(how (?:did|have) you (?:keep|kept) (?:my|the) (?:cost|price) down|savings receipt|show (?:me )?(?:the |my )?savings|what did (?:you|we) save|how much (?:did|have) (?:i|we) save[d]?|where did the savings come from)\b/],
+  // What the data cannot compare: booking each part elsewhere or direct, a package against separate
+  // rates, one-way fares, a split stay, points and miles, promo codes, another currency, seat fees,
+  // parking. Each gets the engine's own "not in our data" line (leaks.notAvailable, seatFees,
+  // hotelFees), never the checkout a bare "book" would start and never a cheaper version a bare
+  // "cheaper" would chase, since no saving is claimed or denied from what nothing prices.
+  ['notCompared', NOT_COMPARED_RE],
   ['book', /\b(book (?:it|this|that|the trip|now)?|buy|purchase|reserve it|check ?out|pay(?: now)?|let'?s go with (?:it|this)|i'?ll take (?:it|this|the trip)|take (?:this|that|your) (?:trip|pick)|verify (?:&|and) book)\b/],
-  ['approve', /^(?:yes|yep|yeah|yup|ok(?:ay)?|sure|fine|do it|do it anyway|anyway|go ahead|go over|take it|take it anyway|accept|agreed|please do|sounds good|switch|switch to (?:the )?better(?: option)?|take (?:the )?(?:upgrade|cheaper|cheapest|challenger|better|new|proposal|one stop|one-stop|our pick|save more|first|lowest|recommended)(?: \w+)*|use (?:it|that)|a|b|c|option a|option b|option c)[.!]?$/i],
+  // The last group names a version (the lean version, a removal of "it" or of $N, the free savings,
+  // the trade-off version, the cut): the agent applies such words only to a pending proposal of that
+  // kind (agent.js namedApproval), never to whatever happens to be on the table.
+  ['approve', /^(?:yes|yep|yeah|yup|ok(?:ay)?|sure|fine|do it|do it anyway|anyway|go ahead|go over|take it|take it anyway|accept|agreed|please do|sounds good|switch|switch to (?:the )?better(?: option)?|take (?:the )?(?:upgrade|cheaper|cheapest|challenger|better|new|proposal|one stop|one-stop|our pick|save more|first|lowest|recommended)(?: \w+)*|use (?:it|that)|a|b|c|option a|option b|option c|remove it|remove \$?[\d,]+(?:\.\d{1,2})?|take it out|strip it|take the lean(?: version)?|take the free savings|take the trade-?off version|take the cut(?: version)?)[.!]?$/i],
   ['decline', /^(?:no|nope|nah|keep (?:current|it|mine|everything|what i have|my (?:trip|deal|hotel|money)|the (?:current|old|first)(?: one)?)|don'?t|leave it|stay|never mind|no thanks|keep the \$?[\d,]+)[.!]?$/i],
   ['stopSaves', /\b(what (?:does|would) (?:one|a) (?:stop|connection|layover) save|show me what (?:one|a) (?:stop|connection) saves|how much (?:does|would|do) (?:a|one) (?:stop|connection|layover) save|one stop saves?)\b/],
   ['catch', /\b(what'?s the catch|what is the catch|downside|trade-?offs?|what am i giving up|anything wrong|what'?s wrong with)\b/],
@@ -249,10 +278,35 @@ const INTENTS = [
   ['shorten', /\b((?:one|1|a) (?:less|fewer) night|(?:one|1|a) night (?:less|fewer|shorter)|shorter|cut (?:a|one) night|drop (?:a|one) night|reduce to \d+ nights)\b/],
   ['watch', /\b(watch (?:for|this|the price|it|my trip|this trip|the trip)|set (?:up )?a watch|price watch|alert me|notify me|tell me when|let me know when)\b/],
   // Hunt mode: "I can wait. Only come back when my money can do something better." The chip on the
-  // saver canvas says "Hunt for a better deal"; "hunt for it" restarts a stopped hunt.
-  ['hunt', /\b(hunt for (?:a |the |something|a better|it)|hunt mode|find me something worth booking|i can wait|keep looking for me|watch my money|let (?:the )?ai watch my money|wait for the right trip)\b/],
-  ['notGoodEnough', /\b(not good enough|not enough|that's not it)\b/],
+  // saver canvas says "Hunt for a better deal"; "hunt for it" restarts a stopped hunt. A hunt is a
+  // standing instruction on the account, so it is asked for in the hunt's own words: "I can wait" is
+  // one only as the whole message or followed by the canvas line's words, never inside a sentence
+  // about dates ("I can wait until December"), which is about the trip.
+  ['hunt', /\b(hunt for (?:a |the |something|a better|it)|hunt mode|find me something worth booking|keep looking for me|watch my money|let (?:the )?ai watch my money|wait for the right trip)\b|^\s*i can wait[.!]*\s*$|\bi can wait\b[^a-z]{0,8}(?:only come back|for the right trip)\b/],
+  // The answer to a hunt's find, and only that: "not enough" inside a sentence that changes the trip
+  // ("5 nights is not enough, make it 7") is that change, not this.
+  ['notGoodEnough', /^\s*(?:no[,.]?\s+)?(?:that'?s |this is |it'?s |it is |still )?(?:not good enough|not enough|that'?s not it)[.!]*\s*$/],
   ['stopHunt', /\b(stop (?:the )?hunt(?:ing)?|cancel (?:the )?hunt)\b/],
+  // The money leak hunter: not "is there a cheaper trip" but "what am I paying for that I may not
+  // need". These sit before cheaper/better/build so a leak question is never read as a price cut or a
+  // rebuild; the router answers each from leaks.js, and nothing is removed until the traveler says so.
+  // "Every dollar" is the breakdown only when it is the dollars of this price ("every dollar of it",
+  // "where every dollar goes"); "make it cheaper, every dollar counts" asks for a cheaper version.
+  ['paying', /what am i paying for|break (?:it|the price|this) down|where (?:does|is) (?:my|the) money go(?:ing)?|every dollar of (?:this|it|the price|the trip)|where (?:does )?every dollar go(?:es)?\b/],
+  ['strip', /strip it down|lean version|take the lean\b|bare[- ]bones|strip (?:this|it|the trip)/],
+  ['addBack', /add back what(?:'s| is) worth it|what(?:'s| is) worth adding back|add back/],
+  ['removeOne', /remove one thing|take one thing (?:out|off)/],
+  ['biggestLeak', /biggest (?:money )?leak|where am i wasting|what am i wasting|biggest waste/],
+  // The chip under the biggest-leak card, in the card's own words only (leaks.showWords): "show me
+  // the version without it", "the like-for-like version", "the version leaving <date>"; a label the
+  // card itself carries ("show me the Basic fare: checked bag version") is matched in understand()
+  // against the card on the canvas. Every other "show me the <X> version" keeps its meaning (cheaper,
+  // nonstop, 4-star, all-inclusive, a length), so a rule in it is never dropped on the floor.
+  ['leakVersion', /^\s*show me the (?:version without it|like-for-like version|version leaving \d{4}-\d{2}-\d{2})[.!]?\s*$/],
+  ['leakScan', /money leak (?:check|scan)|leak (?:check|scan)|am i paying for (?:anything|something) i don'?t need|anything i don'?t need|what don'?t i need/],
+  ['cutInOrder', /cut \$?[\d,]+ in order|trim \$?[\d,]+|cut (?:it )?in order|without touching the vacation/],
+  ['freeSavings', /free savings|savings without sacrifice|no[- ]compromise savings|take the free savings|take the trade-?off version/],
+  ['scorecard', /savings (?:scorecard|check)|my savings check|scorecard/],
   ['elsewhere', /\b(another country|somewhere else|different (?:place|destination|country|city)|try (?:another|a different|somewhere)|change the destination|not (?:cancun|there|that place)|anywhere else)\b/],
   ['easier', /\b(easier|simpler|less hassle|less travel|shorter travel|more convenient|easy trip|make this easier)\b/],
   ['cheaper', /\b(cheaper|too expensive|too much|less money|lower(?: the)? price|bring (?:it|the price) down|save me|save (?:another|an extra|a further) \$?[\d,]+|cut the price|reduce the price|take \$?[\d,]+ back|find \$?[\d,]+|under budget|spend less|more affordable)\b/],
@@ -297,8 +351,21 @@ function understand(text, state, { maps, now = new Date() } = {}) {
   const lower = clean.toLowerCase().replace(/[\u2018\u2019]/g, "'");
   const { updates, ack } = extractUpdates(clean, { maps, now });
   const intents = INTENTS.filter(([, re]) => re.test(lower)).map(([k]) => k);
-  // "Not good enough" is an answer to a hunt's find; without a hunt on the conversation it is not an intent.
-  if (intents.includes('notGoodEnough') && !(state && (state.hunt || (state.mission && state.mission.hunt)))) intents.splice(intents.indexOf('notGoodEnough'), 1);
+  // A sentence that changes the trip (a date, a month, open dates, the limit, the length) is about
+  // the trip on the canvas, whatever else it says: nothing standing is created on the account from
+  // it, so the hunt intent is dropped and the change is built as before. ("Not good enough" without
+  // a hunt stays an intent: the agent says there is no hunt, rather than that it did not understand.)
+  if (intents.includes('hunt') && ['depart', 'month', 'dateMode', 'budget', 'nights'].some(k => k in updates)) intents.splice(intents.indexOf('hunt'), 1);
+  const drop = k => { const i = intents.indexOf(k); if (i >= 0) intents.splice(i, 1); };
+  // A question about what the data cannot compare carries "book", "cheaper" or "somewhere else" in
+  // it; none of those is what it asks, so they go, and only the honest answer is routed. A quote
+  // from another site to beat is a challenge, not this question.
+  if (intents.includes('notCompared')) { if (intents.includes('challenge')) drop('notCompared'); else for (const k of ['book', 'cheaper', 'better', 'elsewhere', 'build']) drop(k); }
+  // "Show me the <alternative> version" is the biggest-leak card's chip when the words carry the
+  // alternative that card shows; the card is the one on the canvas, so the label is read from it,
+  // never guessed from the words.
+  const leakCard = state && Array.isArray(state.messages) ? [...state.messages].reverse().map(m => m && m.card).find(c => c && c.kind === 'leak') : null;
+  if (!intents.includes('leakVersion') && leakCard && leakCard.alternativeLabel && /^\s*show me the .+ version[.!]?\s*$/.test(lower) && lower.includes(String(leakCard.alternativeLabel).toLowerCase())) intents.push('leakVersion');
   // An answer to the question the agent just asked, read in that light.
   const pending = state && state.pending;
   if (pending === 'budgetType') {
@@ -364,6 +431,38 @@ function understand(text, state, { maps, now = new Date() } = {}) {
     else if (/\b(any (?:drop|change|time it(?:'s| is) cheaper)|gets? cheaper|becomes cheaper|goes down at all|same trip (?:gets|becomes|is) cheaper)\b/.test(lower)) updates.watchRule = { kind: 'any-drop' };
     delete updates.budget; delete updates.competitorTotal;
   }
+  // The money leak chips carry an item's name ("Add back Sunset sail", "Show me the Palm Resort
+  // version"): the words name a priced item, never a fact about the trip, so nothing in them may
+  // become a style, a rule or a destination, and the message is that one ask and nothing else.
+  if ((intents.includes('addBack') && /^\s*add back\b/.test(lower)) || intents.includes('leakVersion')) {
+    const only = /^\s*add back\b/.test(lower) ? 'addBack' : 'leakVersion';
+    for (const k of Object.keys(updates)) delete updates[k];
+    ack.length = 0; intents.length = 0; intents.push(only);
+  }
+  // "Remove $148" names the saving of a removal on the table, never a budget.
+  if (intents.includes('approve') && /^\s*remove \$?[\d,]/.test(lower)) { delete updates.budget; delete updates.budgetPer; ack.length = 0; }
+  // "Cut $200 in order" names an amount to take out, in dollars; it is never a budget or a price cut
+  // the decision layer should chase. No amount in the words means the flow asks for one or cuts to
+  // the ceiling; nothing is inferred.
+  // The amount is the number after "cut" or "trim", never the first number in the sentence ("I have
+  // 2 people, cut $200 in order" cuts $200).
+  if (intents.includes('cutInOrder')) {
+    const m = lower.match(/\b(?:cut|trim)\s+\$?\s*([\d,]+(?:\.\d{1,2})?)(k\b)?/);
+    updates.cutBy = m && num(m[1]) > 0 ? Math.round(num(m[1]) * (m[2] ? 1000 : 1) * 100) : null;
+    delete updates.budget; delete updates.budgetPer; delete updates.cheaperBy; delete updates.moreBy;
+    ack.length = 0;
+  }
+  // The answer to "how much do you want to cut?" is an amount to cut, in cents, and nothing else: it
+  // never becomes the budget, and the cut flow is what it answers.
+  if (pending === 'cutBy') {
+    const m = lower.match(/^\s*(?:cut |trim |take (?:out |off )?)?\$?\s*([\d,]+(?:\.\d{1,2})?)\s*(k\b)?\s*(?:dollars|bucks|off|out)?\s*[.!]?\s*$/);
+    if (m && num(m[1]) > 0) {
+      updates.cutBy = Math.round(num(m[1]) * (m[2] ? 1000 : 1) * 100);
+      delete updates.budget; delete updates.budgetPer; delete updates.cheaperBy; delete updates.moreBy;
+      if (!intents.includes('cutInOrder')) intents.push('cutInOrder');
+      ack.length = 0;
+    }
+  }
   // A bare number answers whatever was asked.
   if (/^\s*\$?\s*[\d,]+k?\s*$/.test(lower) && !pending && !updates.budget) { const v = num(lower.match(/([\d,]+)/)[1]) * (/k/i.test(lower) ? 1000 : 1); if (v >= 100) { updates.budget = v * 100; updates.budgetPer = 'total'; } }
 
@@ -373,4 +472,4 @@ function understand(text, state, { maps, now = new Date() } = {}) {
   return { text: clean, updates, intents, ack, unknown };
 }
 
-module.exports = { understand, extractUpdates, theirsFrom, parseDate, destinationIn, originIn, INTENTS, DEST_ALIASES };
+module.exports = { understand, extractUpdates, theirsFrom, parseDate, destinationIn, originIn, INTENTS, NOT_COMPARED, DEST_ALIASES };

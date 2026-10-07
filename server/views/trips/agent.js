@@ -9,6 +9,7 @@ const { money, dollars, longDate, plural, demoBadge, hiddenParams, fitBadge } = 
 const { askedFor, bookingBudget, vacationBudget, missionRules, LOCK_KEYS, LOCK_LABEL } = require('../../agent/state');
 const { COMMANDS } = require('../../agent/agent');
 const optimizer = require('../../trips/optimizer');
+const { showWords } = require('../../trips/leaks');
 
 const EXAMPLES = [
   'Build me the best beach trip under $1,500.',
@@ -158,16 +159,19 @@ function weeksCard(id, c, current) {
 // The hunt on the conversation, compact: the persistent card's facts from the record (my travel money,
 // status, the best current opportunity, what it keeps), the receipt when a decision was made, and the
 // answers. Keep waiting is always there and never pressured; Not good enough asks what to improve;
-// See trip opens the priced trip. Nothing here is urgent, scarce or predicted.
-function huntCard(id, c) {
+// See trip opens the priced trip. Nothing here is urgent, scarce or predicted. The numbers are the
+// check the card was said with (stamped); the status and the answers follow the record as it is now
+// (`live`, read by the route), so a hunt stopped from its own page is not offered "keep waiting" here.
+function huntCard(id, c, { live = null } = {}) {
   const h = c.hunt, best = h.best, o = h.opportunity;
-  const hunting = h.status === 'hunting';
+  const status = live && live.id === h.id ? live.status : h.status;
+  const hunting = status === 'hunting';
   return html`<div class="ag-card ag-hunt">
     <div class="ag-canvas-head"><p class="tb-kicker">My travel money · ${h.name}</p><span class="hu-status is-${hunting ? 'hunting' : 'stopped'}">${hunting ? 'HUNTING' : 'STOPPED'}</span></div>
     <div class="ag-saver-nums">
       <div><span>My travel money</span><b>${money(h.budget)}</b><small>a ceiling, not a target</small></div>
-      <div><span>Best current opportunity</span><b>${best ? money(best.total) : '—'}</b><small>${best ? `${plural(best.nights, 'night')} in ${best.dest}${best.recorded ? ', as last checked' : ''}` : 'nothing qualifies yet'}</small></div>
-      <div class="${best ? 'is-keep' : ''}"><span>Potential money kept</span><b>${best ? money(h.kept) : '—'}</b><small>${best ? 'limit minus the verified total' : ''}</small></div>
+      <div><span>Best current opportunity</span><b>${best ? money(best.total) : '—'}</b><small>${best ? `${plural(best.nights, 'night')} in ${best.dest}${h.checked ? `, as checked ${h.checked}` : best.recorded ? ', as last checked' : ''}` : h.underRules && h.checked ? `nothing qualifies, as checked ${h.checked}` : 'not checked under these rules yet'}</small></div>
+      <div class="${best ? 'is-keep' : ''}"><span>Potential money kept</span><b>${best ? money(h.kept) : '—'}</b><small>${best ? 'limit minus the total that check verified' : ''}</small></div>
     </div>
     ${o && o.receipt ? html`<details class="ag-lines"><summary>Why you’re seeing this</summary>
       <div class="ag-contract-cols"><div><p class="tb-kicker">Your rules</p><ul class="tb-list tb-small">${(o.receipt.rules || []).map(l => html`<li>${l}</li>`)}</ul></div><div><p class="tb-kicker">Found</p><ul class="tb-list tb-small">${(o.receipt.found || []).map(l => html`<li>${l}</li>`)}</ul></div></div>
@@ -181,11 +185,99 @@ function huntCard(id, c) {
   </div>`;
 }
 
-function card(id, m, { current }) {
+// ---- the money leak hunter's cards -------------------------------------------------------------
+// Every number on these cards is leaks.js's (a priced version of the trip); every button says
+// something to the agent, and nothing is removed or preselected on the page itself.
+const KIND_WORD = { core: 'Flights and stay', mandatory: 'Mandatory', optional: 'Optional', discount: 'Discount' };
+function breakdownCard(c) {
+  return html`<div class="ag-card ag-breakdown">
+    <p class="tb-kicker">What you're paying for · ${money(c.total)} in all</p>
+    <table class="ag-receipt-table"><tbody>
+      ${c.rows.map(r => html`<tr><td>${r.label}${r.note ? html` <small class="tb-muted">· ${r.note}</small>` : ''}</td><td class="ag-tag-cell"><span class="ag-tag is-${r.kind}">${KIND_WORD[r.kind]}</span></td><td class="ag-num">${r.amount < 0 ? '−' : ''}${money(Math.abs(r.amount))}</td></tr>`)}
+      <tr class="ag-receipt-final"><td>Flights and stay</td><td></td><td class="ag-num">${money(c.coreTotal)}</td></tr>
+      <tr><td>Taxes, mandatory fees and the service fee</td><td></td><td class="ag-num">${money(c.mandatoryTotal)}</td></tr>
+      <tr><td>Optional extras</td><td></td><td class="ag-num">${money(c.optionalTotal)}</td></tr>
+      <tr class="ag-receipt-final"><td>Total, everything included</td><td></td><td class="ag-num">${money(c.total)}</td></tr>
+    </tbody></table>
+    <p class="tb-small tb-muted">No mystery line items: every row is in the total, and nothing is added later.</p>
+  </div>`;
+}
+// Each item priced back alone onto the lean version, with the verdict from what the traveler said.
+function addBackList(id, items, { chips }) {
+  return html`<ul class="ag-addback">${items.map(a => html`<li><div><b>+${money(a.cost)}</b> ${a.label} <span class="ag-tag is-${a.verdict}">${a.verdict === 'worth' ? 'Worth considering' : `I'd keep the ${money(a.cost)}`}</span><small>${a.why}</small></div>${chips ? sayForm(id, `Add back ${a.label}`, 'Add back', 'btn btn-ghost btn-sm') : ''}</li>`)}</ul>`;
+}
+function leanCard(id, c) {
+  return html`<div class="ag-card ag-lean">
+    <p class="tb-kicker">Strip it down</p>
+    <div class="ag-proposal-nums"><div><span>Current</span><b>${money(c.current.total)}</b></div><div><span>Lean</span><b>${money(c.lean.total)}</b></div><div><span>Difference</span><b class="${c.difference > 0 ? 'is-save' : ''}">${money(c.difference)}</b></div></div>
+    ${c.givesUp.length ? html`<p class="ag-down">${icon('minus')} <span>What you give up: ${c.givesUp.join('; ')}</span></p>` : html`<p class="ag-same">${icon('info')} <span>Nothing optional is in this price: it is already the lean version.</span></p>`}
+    <p class="ag-same">${icon('check')} <span>Kept: ${c.kept.join('; ')}</span></p>
+    ${c.notKept && c.notKept.length ? html`<p class="ag-down">${icon('alert')} <span>Not met by this trip: ${c.notKept.join('; ')}</span></p>` : ''}
+    ${c.difference > 0 ? html`<p class="tb-small"><b>Customer decides.</b></p><div class="ag-actions">${sayForm(id, 'Take the lean version', `Take the lean version (${money(c.lean.total)})`, 'btn btn-navy btn-sm')}${sayForm(id, 'Keep what I have', 'Keep what I have')}</div>` : ''}
+    ${c.addBack && c.addBack.length ? html`<p class="tb-kicker">Add back what's worth it</p>${addBackList(id, c.addBack, { chips: true })}<p class="tb-small tb-muted">Each is priced alone onto the lean version; the verdict comes from what you told me, never from our margin.</p>` : ''}
+  </div>`;
+}
+function leakCard(id, c) {
+  return html`<div class="ag-card ag-leak">
+    <p class="tb-kicker">Biggest avoidable cost</p>
+    <p><b>${c.label}</b></p>
+    <div class="ag-proposal-nums"><div><span>Current</span><b>${money(c.current)}</b></div><div><span>${c.alternativeLabel}</span><b>${money(c.alternative)}</b></div><div><span>Potential difference</span><b class="is-save">${money(c.difference)}</b></div></div>
+    ${c.tradeoff ? html`<p class="ag-down">${icon('minus')} <span>It changes: ${c.tradeoff}</span></p>` : ''}
+    ${c.differs && c.differs.length ? html`<p class="ag-same">${icon('info')} <span>${c.tradeoff ? 'It also differs' : 'No trade-off by the facts; what differs'}: ${c.differs.join('; ')}</span></p>` : c.tradeoff ? '' : html`<p class="ag-up">${icon('check')} <span>Nothing else changes: no trade-off by the facts.</span></p>`}
+    ${c.note ? html`<p class="tb-small">${c.note}</p>` : ''}
+    <div class="ag-actions">${sayForm(id, `Show me ${showWords(c)}`, `Show me ${showWords(c)}`, 'btn btn-navy btn-sm')}</div>
+    <p class="tb-small tb-muted">Nothing comes out until you take that version.</p>
+  </div>`;
+}
+const SCAN_WORD = { ok: 'OK', found: 'Found', na: 'Not compared' };
+function scanCard(id, c) {
+  return html`<div class="ag-card ag-scan">
+    <p class="tb-kicker">Money leak check</p>
+    <ul class="ag-scan-list">${c.checks.map(k => html`<li class="is-${k.status}"><span class="ag-tag is-${k.status}">${SCAN_WORD[k.status]}</span><div><b>${k.label}</b><small>${k.text}</small></div></li>`)}</ul>
+    <p class="ag-scan-done"><b>${c.text}</b></p>
+    ${c.found && !c.kept ? html`<div class="ag-actions">${sayForm(id, 'Remove it', `Remove ${money(c.found.amount)}`, 'btn btn-navy btn-sm')}${sayForm(id, 'Keep it', 'Keep it')}</div>` : c.found ? html`<p class="tb-small tb-muted">You chose to keep it, so it is not proposed again.</p>` : ''}
+  </div>`;
+}
+function cutCard(c) {
+  return html`<div class="ag-card ag-cut">
+    <p class="tb-kicker">Cut it in order · target ${money(c.target)} · ${c.reached ? 'reached' : 'not reached'}</p>
+    ${c.steps.length ? html`<table class="ag-receipt-table"><thead><tr><th>Stage</th><th>What changed</th><th class="ag-num">Saving</th><th class="ag-num">Running total</th></tr></thead><tbody>${c.steps.map(st => html`<tr><td>${st.stageLabel}</td><td>${st.label}${st.givesUp.filter(g => !st.label.includes(g)).length ? html` <small class="tb-muted">· gives up ${st.givesUp.filter(g => !st.label.includes(g)).join('; ')}</small>` : ''}</td><td class="ag-num is-save">−${money(st.saving)}</td><td class="ag-num">${money(st.after)}</td></tr>`)}</tbody></table>` : html`<p class="tb-small">No step was taken.</p>`}
+    ${c.skipped.length ? html`<details class="ag-lines"><summary>Not touched (${c.skipped.length})</summary><ul>${c.skipped.map(k => html`<li><span>${k.stageLabel}</span><small class="tb-muted">${k.why}</small></li>`)}</ul></details>` : ''}
+    <p class="tb-small tb-muted">The order is fixed: ${c.order.join(' → ')}. Rules and locks are never relaxed.</p>
+  </div>`;
+}
+function freeCard(id, c) {
+  return html`<div class="ag-card ag-free">
+    <div class="ag-contract-cols">
+      <div><p class="tb-kicker">Free savings · nothing given up</p>${c.free ? html`<b class="ag-howlow-num">${money(c.free.total)}</b><small class="tb-muted">${money(-c.free.delta)} less than now</small>${c.free.differs && c.free.differs.length ? html`<p class="ag-same">${icon('info')} <span>Differs: ${c.free.differs.join('; ')}</span></p>` : ''}<ul class="tb-list tb-small">${c.free.same.map(x => html`<li>${x}</li>`)}</ul><div class="ag-actions">${sayForm(id, 'Take the free savings', 'Take the free savings', 'btn btn-navy btn-sm')}</div>` : html`<p class="tb-small tb-muted">None priced: no version of this trip is cheaper with nothing given up, by the facts.</p>`}</div>
+      <div><p class="tb-kicker">Trade-off savings · something given up</p>${c.sacrifice ? html`<b class="ag-howlow-num">${money(c.sacrifice.total)}</b><small class="tb-muted">${money(-c.sacrifice.delta)} less than now</small><p class="ag-down">${icon('minus')} <span>But: ${c.sacrifice.but.join('; ')}</span></p><div class="ag-actions">${sayForm(id, 'Take the trade-off version', 'Take the trade-off version')}</div>` : html`<p class="tb-small tb-muted">None priced below ${c.free ? 'the free version' : 'what you have'}.</p>`}</div>
+    </div>
+    <p class="tb-small tb-muted">Two separate things, never one number: a free saving gives nothing up by the facts; a trade-off saving says what it costs you.</p>
+  </div>`;
+}
+const SCORE_TOTALS = ['max', 'current', 'notUsed', 'over'];
+function scorecardCard(c) {
+  return html`<div class="ag-card ag-scorecard">
+    <p class="tb-kicker">Your savings check</p>
+    <table class="ag-receipt-table"><tbody>${c.lines.map(l => html`<tr class="${SCORE_TOTALS.includes(l.key) ? 'ag-receipt-final' : ''}"><td>${l.label}</td><td class="ag-num ${l.key === 'over' ? 'is-add' : SCORE_TOTALS.includes(l.key) ? '' : l.amount >= 0 ? 'is-save' : 'is-add'}">${money(l.amount)}</td></tr>`)}</tbody></table>
+    ${c.note ? html`<p class="tb-small tb-muted">${c.note}</p>` : ''}
+  </div>`;
+}
+const LEAK_CHIPS = ['What am I paying for?', 'Strip it down', 'Find my biggest leak', 'Money leak check'];
+
+function card(id, m, { current, hunt = null }) {
   const c = m.card;
   if (!c) return '';
   switch (c.kind) {
-    case 'hunt': return huntCard(id, c);
+    case 'breakdown': return breakdownCard(c);
+    case 'lean': return leanCard(id, c);
+    case 'addback': return html`<div class="ag-card ag-lean"><p class="tb-kicker">${c.onLean ? 'Add back what\'s worth it' : 'What each optional item is worth'}</p>${addBackList(id, c.items, { chips: !!c.onLean })}${c.onLean ? '' : html`<div class="ag-actions">${sayForm(id, 'Strip it down', 'Strip it down', 'btn btn-ghost btn-sm')}</div>`}</div>`;
+    case 'leak': return leakCard(id, c);
+    case 'scan': return scanCard(id, c);
+    case 'cut': return cutCard(c);
+    case 'free': return freeCard(id, c);
+    case 'scorecard': return scorecardCard(c);
+    case 'hunt': return huntCard(id, c, { live: hunt });
     case 'ask': return html`<div class="ag-actions">${c.options.map(o => sayForm(id, o.say, o.label, 'btn btn-ghost btn-sm'))}</div>`;
     case 'trip': return html`<div class="ag-card${c.over ? ' is-over' : ''}">${c.label ? html`<p class="tb-kicker">${c.label}</p>` : ''}${tripLine(c.trip)}${c.first ? html`<p class="ag-still">${icon('search')} <span>This is currently the trip to beat. Still checking whether I can get you more vacation or better quality without spending more.</span></p>` : ''}<div class="ag-actions">${c.first ? html`${sayForm(id, 'I like this one', 'I like this', 'btn btn-navy btn-sm')}${sayForm(id, 'Keep building', 'Keep building')}` : ''}<a class="text-link" href="/trip/${c.trip.token}">Full trip page ${icon('arrow')}</a></div></div>`;
     case 'options': return html`${optionsCard(id, c, current)}${c.final ? html`<div class="ag-actions">${sayForm(id, 'Book it', 'Verify & book', 'btn btn-blue btn-sm')}${sayForm(id, 'Challenge it again', 'Challenge it again')}</div>` : ''}`;
@@ -279,13 +371,20 @@ function progress(job, { mission = null } = {}) {
   return html`<div class="ag-progress-wrap">${mission ? html`<p class="ag-progress-head">Your ${money(mission)} is building…</p>` : ''}<ol class="ag-progress" aria-live="polite" aria-label="Search progress">${job.steps.map(s => html`<li class="is-${s.status}"><span class="ag-step-dot"></span><span class="ag-step-text"><b>${s.label}</b>${s.detail ? html`<small>${s.detail}</small>` : ''}</span>${s.ms !== null && s.status !== 'pending' ? html`<span class="ag-step-ms">${secs(s.ms)}</span>` : ''}</li>`)}</ol>${feed(job, { open: true })}</div>`;
 }
 
-function chat(ctx, s, { canvas }) {
+// The hunt the page shows: the record as the route read it now (`hunt`, with its live status and
+// summary), else what the conversation last saw of it. A stopped hunt is no "Hunting" status and no
+// link in the hunt's place; the chip to start (or resume) one comes back.
+const huntOf = (s, hunt) => (hunt !== undefined ? hunt : (s.mission ? s.mission.hunt : s.hunt) || null);
+const huntingOf = (s, hunt) => { const h = huntOf(s, hunt); return h && h.status !== 'stopped' ? h : null; };
+
+function chat(ctx, s, { canvas, hunt }) {
   const running = !!(s.job && s.job.status === 'running');
   const current = s.current;
+  const live = huntOf(s, hunt);
   return html`<div id="live-chat" data-live="chat" data-running="${running ? '1' : '0'}">
     <ol class="ag-messages">
       ${s.messages.length ? '' : html`<li class="ag-msg is-agent"><div class="ag-bubble"><p>What do you want your trip to do? Tell me the budget, who is going, where you fly from, and anything that must be true. I search, compare and negotiate; you decide.</p></div></li>`}
-      ${s.messages.map(m => html`<li class="ag-msg is-${m.role}"><div class="ag-bubble"><p>${m.text}</p>${m.role === 'agent' ? card(s.id, m, { current }) : ''}</div></li>`)}
+      ${s.messages.map(m => html`<li class="ag-msg is-${m.role}"><div class="ag-bubble"><p>${m.text}</p>${m.role === 'agent' ? card(s.id, m, { current, hunt: live }) : ''}</div></li>`)}
     </ol>
     ${progress(s.job, { mission: s.mission ? bookingBudget(s) : null })}
   </div>`;
@@ -303,6 +402,12 @@ function homePanel(ctx, s, home) {
       <div><dt>Remaining trip money</dt><dd><b>${home.remaining.title}</b><small>${home.remaining.detail}</small></dd></div>
       <div class="ag-home-wide"><dt>Next reservation</dt><dd><b>${home.reservation.title}</b><small>${home.reservation.detail}</small></dd></div>
     </dl>
+    ${home.victory ? html`<div class="ag-victory">
+      <p class="tb-kicker">Your savings</p>
+      <div class="ag-saver-nums"><div><span>You gave us</span><b>${money(home.victory.gave)}</b><small>${home.victory.reserve ? `as your maximum: ${money(home.victory.forBooking)} for the booking, ${money(home.victory.reserve)} protected` : 'as your maximum'}</small></div><div><span>Your trip</span><b>${money(home.victory.trip)}</b><small>everything included</small></div>${home.victory.kept !== null ? html`<div class="is-keep"><span>You kept</span><b>${money(home.victory.kept)}</b><small>${home.victory.reserve ? `of the booking's ${money(home.victory.forBooking)}; the ${money(home.victory.reserve)} you protected is untouched` : 'max minus the booked total'}</small></div>` : html`<div class="is-over"><span>You went over by</span><b>${money(home.victory.over)}</b><small>${home.victory.reserve ? `the booking's ${money(home.victory.forBooking)}, which you approved` : 'which you approved'}</small></div>`}</div>
+      ${home.victory.kept !== null && home.victory.keptRules.length ? html`<p class="tb-small"><b>And you kept:</b> ${home.victory.keptRules.join(' · ')}</p>` : ''}
+      ${home.victory.notKept.length ? html`<p class="ag-down">${icon('alert')} <span>Not kept: ${home.victory.notKept.join('; ')}</span></p>` : ''}
+    </div>` : ''}
     <p class="tb-kicker">Important actions</p>
     ${home.actions.length ? html`<ul class="ag-home-actions">${home.actions.map(a => html`<li>${dot(a.status)}<span>${a.text}</span></li>`)}</ul>` : html`<p class="tb-small tb-muted">Nothing is due from you.</p>`}
     <div class="ag-chips ag-home-asks">${AFTER_BOOKING.map(c => sayForm(s.id, c, c, 'ag-chip'))}</div>
@@ -312,14 +417,17 @@ function homePanel(ctx, s, home) {
 
 // The mission on the canvas: what the agent is building, its status, and what it is optimizing
 // (hard rules, preferences, what it is free to change), from the conversation's facts.
-function missionPanel(ctx, s, { canvas }) {
+function missionPanel(ctx, s, { canvas, hunt: huntIn }) {
   if (!s.mission) return '';
   const booking = bookingBudget(s);
   const running = !!(s.job && s.job.status === 'running');
   const o = s.origin ? ctx.tripService.inv.maps.getOrigin(s.origin) : null;
-  // A hunt on the account: the mission's status is the hunt's, by name, while it hunts.
-  const hunt = s.mission.hunt && s.mission.hunt.status !== 'stopped' ? s.mission.hunt : null;
-  const status = hunt ? `Hunting: ${hunt.name}` : running ? 'Building…' : s.proposal ? 'One decision away' : s.mission.strategies && s.mission.strategies.length && !s.mission.signal ? `${plural(s.mission.strategies.length, 'way')} built, waiting for which feels like you` : canvas ? 'A trip to beat is on the canvas' : s.pending === 'origin' ? 'Waiting for where you fly from' : 'Waiting for the budget';
+  // A hunt on the account: the mission's status is the hunt's, by name, while it hunts, with what it
+  // found that nobody has seen yet; but a search running here or a decision waiting on the canvas
+  // comes first, since that is what the traveler is being asked about now.
+  const hunt = huntingOf(s, huntIn);
+  const fresh = hunt && hunt.summary && hunt.summary.newOpportunities ? ` · ${plural(hunt.summary.newOpportunities, 'new find')}` : '';
+  const status = running ? 'Building…' : s.proposal ? 'One decision away' : hunt ? `Hunting: ${hunt.name}${fresh}` : s.mission.strategies && s.mission.strategies.length && !s.mission.signal ? `${plural(s.mission.strategies.length, 'way')} built, waiting for which feels like you` : canvas ? 'A trip to beat is on the canvas' : s.pending === 'origin' ? 'Waiting for where you fly from' : 'Waiting for the budget';
   const rules = missionRules(s, { maps: ctx.tripService.inv.maps });
   return html`<div class="ag-mission">
     <div class="ag-mission-head"><div><p class="tb-kicker">Your mission</p><b>Build the best vacation${booking ? ` for ${money(booking)}` : ''}</b></div><span class="ag-mission-status${running ? ' is-running' : ''}">${status}</span></div>
@@ -366,7 +474,7 @@ function budgetSlider(s, booking) {
   </form>`;
 }
 
-function canvasPanel(ctx, s, canvas) {
+function canvasPanel(ctx, s, canvas, { hunt: huntIn } = {}) {
   if (canvas && canvas.home) return homePanel(ctx, s, canvas.home);
   const booking = bookingBudget(s), vacation = vacationBudget(s);
   const locks = LOCK_KEYS.filter(k => s.locks[k]);
@@ -374,18 +482,18 @@ function canvasPanel(ctx, s, canvas) {
   const running = !!(s.job && s.job.status === 'running');
   const saver = !!(s.mission && s.mission.mode === 'save');
   // Hunt mode on the saver's canvas: the chip starts a hunt; once one hunts, its name links to it.
-  const hunt = s.mission && s.mission.hunt && s.mission.hunt.status !== 'stopped' ? s.mission.hunt : null;
+  const hunt = s.mission ? huntingOf(s, huntIn) : null;
   const head = html`<div class="ag-canvas-head"><p class="tb-kicker">${saver && canvas ? 'You told us your max. We found your minimum.' : 'Your trip'}</p>${demoBadge(ctx.tripService.demo, 'Demo inventory')}</div>`;
   if (!canvas) {
     const rows = askedFor(s, { maps: ctx.tripService.inv.maps });
-    return html`<div id="live-canvas" data-live="canvas">${head}${missionPanel(ctx, s, { canvas })}
+    return html`<div id="live-canvas" data-live="canvas">${head}${missionPanel(ctx, s, { canvas, hunt: huntIn })}
       ${running ? html`<p class="ag-empty">Building your trip. Each line fills in as suppliers return real data; the first strong trip lands here.</p>${draftRows(ctx, s)}` : html`<p class="ag-empty">${s.mission ? 'Nothing built yet. Give me the number, and where you fly from, and I do the rest.' : 'Nothing built yet. Tell me what you want your trip to do.'}</p>`}
       ${rows.length && !running ? html`<dl class="ag-known">${rows.map(([k, v]) => html`<div><dt>${k}</dt><dd>${v}</dd></div>`)}</dl>` : ''}
     </div>`;
   }
   const t = canvas.trip;
   const cx = optimizer.contextParams(canvas.ctx);
-  return html`<div id="live-canvas" data-live="canvas">${head}${missionPanel(ctx, s, { canvas })}
+  return html`<div id="live-canvas" data-live="canvas">${head}${missionPanel(ctx, s, { canvas, hunt: huntIn })}
     <div class="ag-canvas-nums">
       <div><span>Budget${s.budgetType === 'vacation' ? ' for the trip' : ''}</span><b>${booking ? money(booking) : '—'}</b><small>${booking ? 'a ceiling, not a target' : 'not set'}</small></div>
       <div><span>Total, everything included</span><b>${money(t.total)}</b><small>${running ? 'current winner · still searching' : `${money(t.perTraveler)} per traveler`}</small></div>
@@ -405,6 +513,7 @@ function canvasPanel(ctx, s, canvas) {
       <details class="ag-change"><summary class="btn btn-ghost btn-sm">Change something</summary><div class="ag-chips">${(saver ? ['Give me one more night', 'One night less', 'Show me what one stop saves', 'Try another country', 'Upgrades worth considering', 'Make this easier'] : ['Give me one more night', 'One night less', 'Only nonstop', 'Try another country', 'Show me what one stop saves', 'Make this easier']).map(c => sayForm(s.id, c, c, 'ag-chip'))}<a class="ag-chip" href="/trip/${canvas.token}?${cx}#customize">Pick a different hotel or flight</a></div></details>
       ${saver ? html`<details class="ag-change"><summary class="btn btn-ghost btn-sm">Never cut below</summary><div class="ag-chips">${[['Only nonstop', 'Never a connection'], ['Refundable only', 'Never a non-refundable hotel'], ['3-star or better', 'Never below 3-star'], ['4-star or better', 'Never below 4-star'], ['Carry-on only', 'I pack carry-on only'], ['I check a bag', 'I check a bag'], ['Aggressive savings', 'Aggressive: every trade-off said'], ['Balanced savings', 'Balanced']].map(([say, label]) => sayForm(s.id, say, label, 'ag-chip'))}</div><p class="tb-small tb-muted">Each is a rule the search keeps; only rules the suppliers' data can check are offered.</p></details>` : ''}
       ${saver && !hunt ? html`<p class="ag-canvas-hunt tb-small tb-muted">Hunt mode: “I can wait. Only come back when my money can do something better.” A hunt keeps these rules on your account and says something only when a trip meets them.</p>` : ''}
+      <div class="ag-chips ag-leak-chips" aria-label="What you don't need to pay for">${LEAK_CHIPS.map(c => sayForm(s.id, c, c, 'ag-chip'))}</div>
       ${sayForm(s.id, locks.length ? 'Unlock everything' : 'Lock everything', locks.length ? 'Unlock' : 'Lock this', 'btn btn-ghost btn-sm')}
       ${running ? '' : sayForm(s.id, 'Watch this trip', 'Watch this trip', 'btn btn-ghost btn-sm', html`${icon('eye')} `)}
       ${sayForm(s.id, 'Book it', 'Book', 'btn btn-blue btn-sm')}
@@ -424,8 +533,8 @@ function stickyBar(s, canvas) {
 }
 
 // The two live regions, swapped in place by /js/agent.js while a job runs.
-function agentLive(ctx, { s, canvas }) {
-  return html`${chat(ctx, s, { canvas })}${canvasPanel(ctx, s, canvas)}`;
+function agentLive(ctx, { s, canvas, hunt }) {
+  return html`${chat(ctx, s, { canvas, hunt })}${canvasPanel(ctx, s, canvas, { hunt })}`;
 }
 
 function composer(s, { autofocus = true } = {}) {
@@ -438,18 +547,20 @@ function composer(s, { autofocus = true } = {}) {
   </form>`;
 }
 
-function agentView(ctx, { s, canvas, user, originCity }) {
+// `hunt` is the hunt record as the route read it (live status and summary), or undefined to show what
+// the conversation last saw; a page rendered without the route (tests, previews) reads the latter.
+function agentView(ctx, { s, canvas, user, originCity, hunt }) {
   const running = !!(s.job && s.job.status === 'running');
   const body = html`
 <section class="ag-page" aria-label="Your travel agent">
   <div class="container ag-layout">
     <div class="ag-chat">
       <div class="ag-chat-head"><p class="tb-kicker">Your travel agent</p><h1>${s.mission && bookingBudget(s) ? `Your ${money(bookingBudget(s))} mission.` : 'Tell me what you want your trip to do.'}</h1></div>
-      <div class="ag-live-chat">${chat(ctx, s, { canvas })}</div>
+      <div class="ag-live-chat">${chat(ctx, s, { canvas, hunt })}</div>
       ${composer(s)}
       <p class="ag-foot tb-small tb-muted">I only quote prices and terms the suppliers return, every total includes taxes and fees, and I never book or charge anything: you confirm every change and the booking yourself.${ctx.tripService.demo ? ' Demo inventory in this preview.' : ''}</p>
     </div>
-    <aside class="ag-canvas" id="canvas" aria-label="Your trip canvas">${canvasPanel(ctx, s, canvas)}</aside>
+    <aside class="ag-canvas" id="canvas" aria-label="Your trip canvas">${canvasPanel(ctx, s, canvas, { hunt })}</aside>
   </div>
 </section>
 ${stickyBar(s, canvas)}`;

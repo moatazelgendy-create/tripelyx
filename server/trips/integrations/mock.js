@@ -9,7 +9,7 @@ const { addDays, daysBetween, today } = require('../../lib/dates');
 
 const usd = n => Math.round(n * 100);
 const DEMO_AIRLINES = ['Skylark Air', 'Coral Wing Airways', 'Bluewater Air', 'Atlas Ridge Airways'];
-const FEATURE = { B: 'breakfast', P: 'pool', F: 'beachfront', A: 'adultsOnly', I: 'allInclusive', R: 'freeCancellation', K: 'familyFriendly', S: 'spa' };
+const FEATURE = { B: 'breakfast', P: 'pool', F: 'beachfront', A: 'adultsOnly', I: 'allInclusive', R: 'freeCancellation', K: 'familyFriendly', S: 'spa', H: 'airportShuttle' };
 
 function jitter(key, spread) {
   return 1 - spread + ((hash32(key) % 1000) / 1000) * spread * 2;

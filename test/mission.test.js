@@ -25,7 +25,8 @@ const client = base => {
 const last = s => s.messages[s.messages.length - 1];
 const said = s => s.messages.filter(m => m.role === 'agent').map(m => m.text).join(' | ');
 const cards = (s, kind) => s.messages.filter(m => m.card && m.card.kind === kind).map(m => m.card);
-const ask = (agent, id) => async t => { await agent.say(id, t); await agent.jobs.drain(); return agent.load(id); };
+// `user` is who the request is signed in as: an account action (a hunt, a watch) is taken as them.
+const ask = (agent, id, user = null) => async t => { await agent.say(id, t, { user }); await agent.jobs.drain(); return agent.load(id); };
 
 test('one number: the mission is accepted, only the origin is asked, three ways fit the ceiling, and the answer steers this trip without being saved', async () => {
   const app = await startApp();
@@ -404,7 +405,7 @@ test('watch this trip: a watch on the account with the rule the traveler named, 
     assert.equal((await app.ctx.store.listRecords('watch', { limit: 10 })).length, 0, 'nothing is stored for an anonymous visitor');
     const u = { id: 'u-watch', email: 'watch@example.com' };
     const w0 = await agent.create({ visitor: 'v-watch', userId: u.id });
-    const say = ask(agent, w0.id);
+    const say = ask(agent, w0.id, u);
     let w = await say('I have $2,000, two of us from JFK, 5 nights, beach. Booking budget.');
     assert.ok(w.current);
     w = await say('Tell me when it drops $50');
@@ -501,8 +502,12 @@ test('when can I go for less: today\'s prices for the same trip on every other d
 const { HuntService } = require('../server/trips/hunts');
 const { createNotifier } = require('../server/trips/integrations/notifications');
 const hunter = require('../server/trips/hunter');
+const optimizer = require('../server/trips/optimizer');
+const agentState = require('../server/agent/state');
+const { addDays, today } = require('../server/lib/dates');
 const { agentView } = require('../server/views/trips/agent');
 const { quietLog } = require('./helpers');
+const stampOf = iso => `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
 // Words no hunt sentence may carry: no urgency, no scarcity, no predictions.
 const PRESSURE = /\b(hurry|limited|selling out|last chance|act now|almost gone|don[’']t miss|only \d+ left|ending soon|book now|still available|prices? (?:will|may) (?:rise|go up)|countdown|typically|usually|predict)\b/i;
 
@@ -538,11 +543,16 @@ test('hunt mode: anonymous is sent to sign in and nothing is stored; the signed-
     // exactly what runs later and what the first check found.
     const u = { id: 'u-hunt' };
     const s0 = await agent.create({ visitor: 'v-hunt', userId: u.id, mission: true, mode: 'save' });
-    const say = ask(agent, s0.id);
+    const say = ask(agent, s0.id, u);
     await say('$1,500');
     let s = await say('JFK');
     assert.ok(s.current, 'the saver has a trip on the canvas');
     const saved = s.current.token;
+    // Without the account's owner on the request (a browser that signed out), nothing is created on
+    // the account, whatever id the conversation stores.
+    s = await ask(agent, s0.id)('Hunt for a better deal');
+    assert.match(said(s).split(' | ').pop(), /^A hunt lives on your account, so only you, signed in, can start the hunt from here\./);
+    assert.equal((await store.listRecords('hunt', { userId: u.id, limit: 10 })).length, 0);
     s = await say('Hunt for a better deal');
     const recs = await store.listRecords('hunt', { userId: u.id, limit: 10 });
     assert.equal(recs.length, 1);
@@ -558,17 +568,35 @@ test('hunt mode: anonymous is sent to sign in and nothing is stored; the signed-
     assert.equal(h.status, 'hunting');
     assert.equal(h.runs.length, 1);
     assert.equal(h.runs[0].reason, 'created');
-    assert.deepEqual(s.mission.hunt, { id: h.id, name: h.name, status: 'hunting' });
+    assert.equal(s.mission.hunt.id, h.id); assert.equal(s.mission.hunt.name, h.name); assert.equal(s.mission.hunt.status, 'hunting');
+    assert.equal(s.mission.hunt.input.budget, h.budget, 'the ref keeps the input the hunt was started from, so a later ask can say what changed here since');
     const line = said(s).split(' | ').pop();
-    assert.ok(line.startsWith(`${HuntService.ACCEPTANCE} ${agent.hunts.monitoringText()}`), line);
+    // The monitoring sentence is the service's own, with where a find appears said for the
+    // conversation: on the hunt page and in My Trips, never "here" (nothing posts into this chat).
+    assert.ok(line.startsWith(`${HuntService.ACCEPTANCE} ${agent.huntMonitoring()}`), line);
+    assert.equal(agent.huntMonitoring(), agent.hunts.monitoringText().replace('What it finds appears here and in My Trips', 'What it finds appears on the hunt page and in My Trips'));
+    assert.ok(line.includes('What it finds appears on the hunt page and in My Trips'), line);
+    assert.ok(!line.includes('appears here'), line);
     assert.match(line, /re-checks your hunts/);
     assert.ok(!PRESSURE.test(line), line);
+    // The threshold is said, never only chosen; so is the range of lengths when none was named, and
+    // an open length keeps the extra-night win.
+    assert.equal(s.nights, null);
+    assert.ok(h.minNights < h.maxNights);
+    assert.ok(line.includes(`I look at ${h.minNights} to ${h.maxNights} nights, since no length was named.`), line);
+    assert.ok(h.notify.includes('extra-night'));
+    assert.ok(line.includes('I interrupt you for wins of $100 or more; say "tell me about $50 wins" to change it.'), line);
     const card = last(s).card;
     assert.equal(card.kind, 'hunt');
     assert.equal(card.hunt.id, h.id);
     assert.equal(card.hunt.budget, 150000);
     assert.equal(card.hunt.status, 'hunting');
-    if (card.hunt.best) assert.equal(card.hunt.kept, 150000 - card.hunt.best.total, 'kept is the limit minus the verified total');
+    assert.equal(card.hunt.checked, stampOf(h.lastRunAt), 'the card says when the check it shows was');
+    if (card.hunt.best) {
+      assert.equal(card.hunt.best.token, h.baseline.best.token);
+      assert.equal(card.hunt.best.total, h.baseline.best.total, 'the total the check verified, never a re-price');
+      assert.equal(card.hunt.kept, 150000 - card.hunt.best.total, 'kept is the limit minus the verified total');
+    }
     if (card.hunt.opportunity) {
       const o = card.hunt.opportunity;
       assert.ok(o.trip.total <= 150000, 'inside the ceiling');
@@ -620,6 +648,508 @@ test('hunt mode: anonymous is sent to sign in and nothing is stored; the signed-
     const outbox = (await store.listRecords('outbox', { limit: 50 })).filter(o => o.ref === h.id);
     assert.equal(outbox.length, h3.opportunities.length);
     for (const o of outbox) { assert.ok(!PRESSURE.test(`${o.subject} ${o.body}`), o.subject); assert.match(o.body, /This currently meets the rules you gave me/); }
+  } finally { await app.close(); }
+});
+
+test('hunt mode carries every hard rule the mission panel lists: the destination with beachfront and an included transfer, international only, a country left out, a stated and locked length as the exact length (no extra-night win), what matters most; a lock a hunt cannot keep is asked about, never dropped in silence', async () => {
+  const app = await startApp();
+  try {
+    const agent = app.agent, store = app.ctx.store, maps = app.ctx.tripService.inv.maps;
+    const start = async (userId, first, before = []) => {
+      const s0 = await agent.create({ visitor: `v-${userId}`, userId, mission: true, mode: 'save' });
+      const say = ask(agent, s0.id, { id: userId });
+      let s = await say(first);
+      if (s.pending === 'origin') s = await say('JFK');
+      for (const b of before) s = await say(b);
+      return { s, say };
+    };
+    const huntOf = async userId => (await store.listRecords('hunt', { userId, limit: 10 }))[0];
+    const priced = async token => (await app.ctx.tripService.trip(token, {})).trip;
+
+    // A destination, a beachfront hotel and an airport transfer: the hunt searches Cancun alone, and
+    // every trip it stands on or tells of keeps both rules, as its rule lines say.
+    let { s, say } = await start('u-rules-1', '$2,500 to Cancun, beachfront hotel with airport transfer');
+    assert.equal(s.destination, 'cancun'); assert.equal(s.hotelRules.beachfront, true); assert.equal(s.transfer, true);
+    s = await say('Hunt for a better deal');
+    let h = await huntOf('u-rules-1');
+    assert.equal(h.dest, 'cancun');
+    assert.equal(h.rules.beachfront, true); assert.equal(h.rules.transfer, true);
+    assert.equal(h.name, '$2,500 Cancun Hunt');
+    const lines = hunter.ruleLines(h, { maps });
+    for (const l of ['Destination: Cancun', 'Hotel: beachfront', 'Airport transfer: included']) assert.ok(lines.includes(l), l);
+    assert.ok(h.runs[0].destinations <= 1, 'one destination was searched');
+    for (const x of [h.baseline.best, ...h.baseline.byDest, ...h.opportunities.map(o => o.trip)].filter(Boolean)) {
+      const t = await priced(x.token);
+      assert.equal(t.dest.id, 'cancun'); assert.equal(!!t.hotel.features.beachfront, true); assert.equal(!!t.transfer, true);
+    }
+    for (const o of h.opportunities) assert.ok(o.receipt.rules.includes('Hotel: beachfront') && o.receipt.rules.includes('Destination: Cancun'));
+    assert.ok(said(s).split(' | ').pop().includes(`I look at ${h.minNights} to ${h.maxNights} nights, since no length was named.`));
+
+    // A stated and locked length is the hunt's exact length (no range said, no extra-night win), and
+    // what matters most steers the pick as it does on the canvas.
+    ({ s, say } = await start('u-rules-2', '$2,500, 7 nights, nice hotel', ['Lock the nights']));
+    assert.equal(s.nights, 7); assert.equal(s.locks.nights, true); assert.equal(s.priority, 'hotel');
+    s = await say('Hunt for a better deal');
+    h = await huntOf('u-rules-2');
+    assert.equal(h.minNights, 7); assert.equal(h.maxNights, 7);
+    assert.ok(!h.notify.includes('extra-night'), 'a fixed length asks for no extra night');
+    assert.equal(h.priority, 'hotel');
+    assert.ok(hunter.ruleLines(h, { maps }).includes('Matters most: the hotel'));
+    assert.doesNotMatch(said(s).split(' | ').pop(), /I look at \d+ to \d+ nights/);
+    if (h.baseline.best) assert.equal(h.baseline.best.nights, 7);
+
+    // International only: nothing in the origin's country is priced, let alone told.
+    ({ s, say } = await start('u-rules-3', '$2,500 somewhere international, 4-star'));
+    assert.equal(s.region, 'international');
+    s = await say('Hunt for a better deal');
+    h = await huntOf('u-rules-3');
+    assert.equal(h.region, 'international'); assert.equal(h.rules.minStars, 4);
+    assert.ok(hunter.ruleLines(h, { maps }).includes('Destinations: international only'));
+    for (const x of [h.baseline.best, ...h.baseline.byDest, ...h.baseline.overByDest].filter(Boolean)) assert.ok(!optimizer.sameCountry(maps.getDestination(x.dest).country, 'United States'), x.dest);
+    assert.ok(h.runs[0].destinations < maps.listDestinations().length);
+
+    // "Try another country": that country is left out as the destinations the inventory has there.
+    ({ s, say } = await start('u-rules-4', '$2,500 to Cancun'));
+    s = await say('Try another country');
+    assert.equal(s.notCountry, 'Mexico'); assert.equal(s.destination, null);
+    s = await say('Hunt for a better deal');
+    h = await huntOf('u-rules-4');
+    assert.deepEqual([...h.excludeDests].sort(), maps.listDestinations().filter(d => optimizer.sameCountry(d.country, 'Mexico')).map(d => d.id).sort());
+    assert.equal(h.dest, null);
+    for (const x of [h.baseline.best, ...h.baseline.byDest].filter(Boolean)) assert.ok(!optimizer.sameCountry(maps.getDestination(x.dest).country, 'Mexico'));
+
+    // A lock a hunt cannot keep: one question, nothing created until the answer, the answer said back
+    // with the hunt, the canvas keeping its lock, and the question not asked twice once answered yes.
+    ({ s, say } = await start('u-rules-5', '$2,500', ['Don’t change the hotel']));
+    assert.equal(s.locks.hotel, true);
+    s = await say('Hunt for a better deal');
+    assert.equal(s.pending, 'huntWithout');
+    assert.equal(await huntOf('u-rules-5'), undefined, 'nothing is created before the answer');
+    assert.match(said(s).split(' | ').pop(), /so it cannot keep the hotel you locked\. Hunt without it \(the canvas keeps your lock\), or not now\?$/);
+    assert.deepEqual(last(s).card.options.map(o => o.label), ['Hunt without it', 'Not now']);
+    s = await say('Not now');
+    assert.equal(await huntOf('u-rules-5'), undefined);
+    assert.equal(said(s).split(' | ').pop(), 'No hunt started. Your locks stand and the canvas is as it was.');
+    s = await say('Hunt for a better deal');
+    assert.equal(s.pending, 'huntWithout', 'asked again; a no is not remembered as a yes');
+    s = await say('Hunt without it');
+    h = await huntOf('u-rules-5');
+    assert.ok(h, 'created on the traveler\'s word');
+    assert.equal(s.locks.hotel, true, 'the canvas keeps the lock');
+    assert.ok(said(s).split(' | ').pop().includes('Hunting without the hotel you locked, as you said; the canvas keeps it.'));
+    s = await say('Hunt for a better deal');
+    assert.equal(s.pending, null, 'the lock the traveler let the hunt go without is not asked about twice');
+    assert.match(said(s).split(' | ').pop(), /is already hunting under these rules\. This site re-checks/);
+    assert.equal((await store.listRecords('hunt', { userId: 'u-rules-5', limit: 10 })).length, 1);
+    for (const m of s.messages.filter(x => x.role === 'agent')) assert.ok(!PRESSURE.test(m.text), m.text);
+  } finally { await app.close(); }
+});
+
+test('hunt mode never duplicates a hunt in silence: a changed limit or a new hard rule is said and asked about; "leave it" leaves both, "keep both" says the first keeps running and where to stop it, "add it" moves the rule on the hunt itself, "replace it" stops the hunt this conversation follows and says so', async () => {
+  const app = await startApp();
+  try {
+    const agent = app.agent, store = app.ctx.store;
+    const u = { id: 'u-differs' };
+    const s0 = await agent.create({ visitor: 'v-differs', userId: u.id, mission: true, mode: 'save' });
+    const say = ask(agent, s0.id, u);
+    const hunts = () => store.listRecords('hunt', { userId: u.id, limit: 10 });
+    await say('$1,500');
+    let s = await say('JFK');
+    assert.ok(s.current);
+    s = await say('Hunt for a better deal');
+    const first = (await hunts())[0];
+    assert.equal(first.budget, 150000);
+    // A new limit: no second hunt; the difference is said in both values and one question is asked.
+    s = await say('$2,000');
+    s = await say('Hunt for a better deal');
+    assert.equal(s.pending, 'huntDiffers');
+    assert.equal((await hunts()).length, 1, 'no second hunt in silence');
+    let line = said(s).split(' | ').pop();
+    assert.ok(line.startsWith(`${first.name} is hunting with the rules it was started with, and this conversation has changed since: `), line);
+    assert.ok(line.includes('the limit ($1,500 then, $2,000 now)'), line);
+    assert.deepEqual(last(s).card.options.map(o => o.label), ['Replace it', 'Keep both', 'Leave it']);
+    s = await say('Leave it');
+    assert.equal((await hunts()).length, 1);
+    assert.equal(s.mission.hunt.id, first.id);
+    assert.match(said(s).split(' | ').pop(), /^Left as it is: .* keeps hunting under the rules it was started with, and this conversation keeps its own\.$/);
+    // Keep both: the second hunt is created, the first keeps running, and that is said with where to stop it.
+    s = await say('Hunt for a better deal');
+    assert.equal(s.pending, 'huntDiffers', 'the rules still differ, so it is asked again');
+    s = await say('Keep both');
+    let all = await hunts();
+    assert.equal(all.length, 2);
+    const second = all.find(h => h.id !== first.id);
+    assert.equal(second.budget, 200000);
+    assert.equal((await store.getRecord('hunt', first.id)).status, 'hunting');
+    assert.equal(s.mission.hunt.id, second.id);
+    line = said(s).split(' | ').pop();
+    assert.ok(line.includes(`${first.name} keeps running too; this conversation now follows ${second.name}, and the other is stopped from its page or from My Trips.`), line);
+    // A new hard rule: the hunt lacks it, so "already hunting under its rules" is never said; the rule
+    // can be added to the hunt as it is (the service's own nonstop answer), and then it is.
+    const canvasBefore = s.current.token;
+    s = await say('Only nonstop');
+    assert.equal(s.flightStops, 'nonstop'); assert.equal(s.flightRule, 'hard');
+    const canvasMoved = s.current.token !== canvasBefore;
+    s = await say('Hunt for a better deal');
+    assert.equal(s.pending, 'huntDiffers');
+    assert.equal((await hunts()).length, 2);
+    line = said(s).split(' | ').pop();
+    assert.ok(line.includes('nonstop (not a rule then, a hard rule now)'), line);
+    if (canvasMoved) assert.ok(line.includes('the trip to beat (the trip on the canvas changed since)'), line);
+    assert.doesNotMatch(line, /already hunting under/);
+    assert.deepEqual(last(s).card.options.map(o => o.label), ['Add it to the hunt', 'Replace it', 'Keep both', 'Leave it']);
+    s = await say('Add it to the hunt');
+    const h2 = await store.getRecord('hunt', second.id);
+    assert.deepEqual([h2.rules.flightStops, h2.rules.flightRule], ['nonstop', 'hard']);
+    assert.equal(h2.learned[h2.learned.length - 1].text, 'Nonstop flights are now a hard rule');
+    assert.equal(h2.runs[h2.runs.length - 1].reason, 'updated');
+    assert.equal((await hunts()).length, 2);
+    assert.ok(said(s).split(' | ').pop().startsWith('Nonstop flights are now a hard rule. '));
+    s = await say('Hunt for a better deal');
+    if (canvasMoved) { assert.equal(s.pending, 'huntDiffers'); assert.ok(said(s).split(' | ').pop().includes('the trip to beat')); s = await say('Leave it'); }
+    else { assert.equal(s.pending, null); assert.ok(said(s).split(' | ').pop().startsWith(`${second.name} is already hunting under these rules. This site re-checks`)); }
+    assert.equal((await hunts()).length, 2);
+    // Replace: the hunt this conversation follows is stopped and the new one says so; the first, an
+    // instruction this conversation stopped following, is untouched.
+    s = await say('$2,500');
+    s = await say('Hunt for a better deal');
+    assert.equal(s.pending, 'huntDiffers');
+    s = await say('Replace it');
+    all = await hunts();
+    assert.equal(all.length, 3);
+    const third = all.find(h => h.budget === 250000);
+    assert.ok(third && third.status === 'hunting');
+    assert.equal((await store.getRecord('hunt', second.id)).status, 'stopped');
+    assert.equal((await store.getRecord('hunt', first.id)).status, 'hunting');
+    assert.equal(s.mission.hunt.id, third.id);
+    line = said(s).split(' | ').pop();
+    assert.ok(line.includes(`${second.name} is stopped; this hunt replaces it, and what it learned stays on its page.`), line);
+    assert.deepEqual([third.rules.flightStops, third.rules.flightRule], ['nonstop', 'hard'], 'the replacement carries the rules on the canvas');
+    for (const m of s.messages.filter(x => x.role === 'agent')) assert.ok(!PRESSURE.test(m.text), m.text);
+  } finally { await app.close(); }
+});
+
+test('hunt mode: the saving worth an interruption is said with the hunt, and "tell me about $N wins" moves it: before the hunt it is kept for it (nothing saved to the account), on the hunt it is the record’s own answer, re-checked against the same record; the amount is never read as a budget, and a refusal is the service’s sentence', async () => {
+  const app = await startApp();
+  try {
+    const agent = app.agent, store = app.ctx.store;
+    const u = { id: 'u-thr' };
+    const s0 = await agent.create({ visitor: 'v-thr', userId: u.id, mission: true, mode: 'save' });
+    const say = ask(agent, s0.id, u);
+    const hunts = () => store.listRecords('hunt', { userId: u.id, limit: 10 });
+    await say('$1,500');
+    let s = await say('JFK');
+    s = await say('Tell me about $50 wins');
+    assert.equal(s.huntThreshold, 5000);
+    assert.equal(agentState.bookingBudget(s), 150000, 'the amount is the threshold, not a budget');
+    assert.equal(said(s).split(' | ').pop(), 'Noted for this conversation: once a hunt starts, I interrupt you for wins of $50 or more. Nothing is saved to your account by this.');
+    assert.equal((await hunts()).length, 0);
+    s = await say('Hunt for a better deal');
+    let h = (await hunts())[0];
+    assert.equal(h.threshold, 5000);
+    assert.ok(said(s).split(' | ').pop().includes('I interrupt you for wins of $50 or more; say "tell me about $100 wins" to change it.'));
+    const before = h.baseline;
+    s = await say('Tell me about $200 wins');
+    h = await store.getRecord('hunt', h.id);
+    assert.equal(h.threshold, 20000);
+    assert.equal(agentState.bookingBudget(s), 150000);
+    assert.equal(h.learned[h.learned.length - 1].text, 'Now interrupting for wins of $200 or more');
+    assert.equal(h.runs[h.runs.length - 1].reason, 'updated', 'the hunt checks again under the new threshold');
+    assert.ok(h.baseline, 'the record stays comparable: a threshold is about when to speak, not what qualifies');
+    if (before && before.best && h.baseline.best) assert.equal(h.baseline.best.token, before.best.token, 'the trip on record is still the trip on record');
+    assert.ok(said(s).split(' | ').pop().startsWith('Now interrupting for wins of $200 or more. '));
+    s = await say('Hunt for a better deal');
+    assert.equal(s.pending, null, 'the threshold the hunt now has is the one this conversation holds: nothing differs');
+    assert.match(said(s).split(' | ').pop(), /is already hunting under these rules/);
+    assert.equal((await hunts()).length, 1);
+    s = await say('Tell me about $2,000 wins');
+    assert.equal((await store.getRecord('hunt', h.id)).threshold, 20000, 'refused, unchanged');
+    assert.equal(said(s).split(' | ').pop(), 'The saving that is worth an interruption must be between $0.01 and your $1,500 limit.');
+  } finally { await app.close(); }
+});
+
+test('hunt mode: the conversation’s hunt card is the record as the service’s own check verified it, never a live re-price with no judgement: inside the refresh limit an answer runs nothing and the card is stamped with the check it shows; months later "keep waiting" re-checks the hunt (said), the departed trip is said gone, and the card stands on the new best', async () => {
+  let clock = new Date(); clock.setUTCHours(9, 0, 0, 0);
+  const app = await startApp({}, { now: () => new Date(clock) });
+  try {
+    const agent = app.agent, store = app.ctx.store;
+    const u = { id: 'u-card' };
+    const s0 = await agent.create({ visitor: 'v-card', userId: u.id, mission: true, mode: 'save' });
+    const say = ask(agent, s0.id, u);
+    await say('$1,500');
+    let s = await say('JFK');
+    s = await say('Hunt for a better deal');
+    const h = (await store.listRecords('hunt', { userId: u.id, limit: 10 }))[0];
+    if (!h.baseline.best) return; // nothing qualifies today: nothing recorded to stand on
+    const recorded = h.baseline.best;
+    clock = new Date(clock.getTime() + 5 * 60000);
+    s = await say('Not good enough');
+    s = await say('Keep waiting');
+    let card = last(s).card;
+    assert.equal((await store.getRecord('hunt', h.id)).runs.length, h.runs.length, 'no check inside the limit');
+    assert.doesNotMatch(said(s).split(' | ').pop(), /checked it again/);
+    assert.equal(card.hunt.best.token, recorded.token);
+    assert.equal(card.hunt.best.total, recorded.total, 'the total the check verified, not a price looked up now');
+    assert.equal(card.hunt.best.recorded, true);
+    assert.equal(card.hunt.kept, h.budget - recorded.total);
+    assert.equal(card.hunt.checked, stampOf(h.lastRunAt));
+    // Long after the recorded departure: the card comes from a real check, which says the recorded
+    // trip left the window and what the hunt stands on now, stamped with that check.
+    const depart = decodeSpec(recorded.token).depart;
+    clock = new Date(Date.parse(`${depart}T09:00:00Z`) + 40 * 86400000);
+    s = await say('Not good enough');
+    s = await say('Keep waiting');
+    const h2 = await store.getRecord('hunt', h.id);
+    assert.equal(h2.runs.length, h.runs.length + 1);
+    assert.equal(h2.runs[h2.runs.length - 1].reason, 'opened');
+    card = last(s).card;
+    const line = said(s).split(' | ').pop();
+    assert.match(line, /^Kept as it is\. The rules stand and I say nothing until one of them is met\. I checked it again just now/);
+    assert.ok(line.includes(`trip I found before has left the window: it left on ${depart}`), line);
+    if (h2.baseline.best) {
+      assert.equal(card.hunt.best.token, h2.baseline.best.token);
+      assert.equal(card.hunt.best.total, h2.baseline.best.total);
+      assert.ok(decodeSpec(card.hunt.best.token).depart >= addDays(today(clock), 3), 'the card never stands on a departed trip');
+      assert.ok(card.hunt.best.total <= h2.budget);
+      assert.equal(card.hunt.kept, h2.budget - h2.baseline.best.total);
+      assert.notEqual(card.hunt.best.token, recorded.token);
+    } else assert.equal(card.hunt.best, null);
+    assert.equal(card.hunt.checked, stampOf(h2.lastRunAt));
+    const view = text(String(agentView(app.ctx, { s, canvas: null, user: u })));
+    assert.ok(view.includes(`as checked ${card.hunt.checked}`), 'the page says which check the number is from');
+    assert.doesNotMatch(view, /limit minus the verified total/, 'no hunt card calls a recorded total verified now');
+    assert.ok(!PRESSURE.test(line), line);
+  } finally { await app.close(); }
+});
+
+test('hunt mode: an exactly stated date becomes the hunt’s month, named in words; "start over" says the hunt keeps running (or stays stopped) on the account and where to stop or resume it, and the record is untouched', async () => {
+  const app = await startApp();
+  try {
+    const agent = app.agent, store = app.ctx.store;
+    const monthName = m => new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${m}-01T00:00:00Z`));
+    const u = { id: 'u-restart' };
+    const s0 = await agent.create({ visitor: 'v-restart', userId: u.id, mission: true, mode: 'save' });
+    const say = ask(agent, s0.id, u);
+    // A date far enough out that its month has departures left to price whatever today is.
+    const depart = addDays(today(), 45);
+    let s = await say(`$2,000 leaving ${depart}`);
+    if (s.pending === 'origin') s = await say('JFK');
+    assert.equal(s.dateMode, 'exact'); assert.equal(s.depart, depart);
+    s = await say('Hunt for a better deal');
+    const h = (await store.listRecords('hunt', { userId: u.id, limit: 10 }))[0];
+    assert.equal(h.month, depart.slice(0, 7));
+    const line = said(s).split(' | ').pop();
+    assert.ok(line.includes(`A hunt searches a window, not one date, so it looks at ${monthName(h.month)}.`), line);
+    assert.ok(!line.includes(`looks at ${h.month}`), 'never the raw month');
+    s = await say('Start over');
+    assert.equal(s.mission, null); assert.equal(s.hunt, null);
+    assert.equal((await store.getRecord('hunt', h.id)).status, 'hunting', 'a standing instruction is never stopped without the customer’s word');
+    assert.equal(said(s), `Fresh start. ${h.name} keeps running on your account, untouched by this: stop it from its page or from My Trips. What do you want your trip to do?`);
+    assert.deepEqual(last(s).card, { kind: 'link', href: `/hunts/${h.id}`, label: `${h.name}: stop or resume it there` });
+    // A stopped hunt is said as stopped, with where to resume it.
+    const v = { id: 'u-restart-2' };
+    const t0 = await agent.create({ visitor: 'v-restart-2', userId: v.id, mission: true, mode: 'save' });
+    const tell = ask(agent, t0.id, v);
+    await tell('$1,500');
+    let t = await tell('JFK');
+    t = await tell('Hunt for a better deal');
+    const g = (await store.listRecords('hunt', { userId: v.id, limit: 10 }))[0];
+    t = await tell('Stop hunting');
+    t = await tell('Start over');
+    assert.equal((await store.getRecord('hunt', g.id)).status, 'stopped');
+    assert.equal(said(t), `Fresh start. ${g.name} stays stopped on your account: resume it from its page or from My Trips. What do you want your trip to do?`);
+  } finally { await app.close(); }
+});
+
+test('hunt mode: "what should I improve?" takes only its own answers (a chip, or a few words naming one of the five and nothing else); a canvas sentence or chip goes to the canvas with the hunt untouched and the lapse said in one line; "not enough" inside a trip change is that change, rebuilt; "I can wait until December" is a date, never a hunt; "not good enough" without a hunt is told so', async () => {
+  const app = await startApp();
+  try {
+    const agent = app.agent, store = app.ctx.store;
+    const LEFT = 'Left the hunt as it is; that was not one of its answers, so I take it as being about the trip on the canvas.';
+    const lines = s => said(s).split(' | ');
+    const u = { id: 'u-improve' };
+    const s0 = await agent.create({ visitor: 'v-improve', userId: u.id, mission: true, mode: 'save' });
+    const say = ask(agent, s0.id, u);
+    await say('$1,500');
+    let s = await say('JFK');
+    assert.ok(s.current, 'the saver has a trip on the canvas');
+    // No hunt yet: the dedicated answer, never "I did not understand that".
+    s = await say('Not good enough');
+    assert.equal(lines(s).pop(), 'There is no hunt on this conversation yet. Say "hunt for a better deal" and I start one with your rules.');
+    assert.equal(s.pending, null);
+    s = await say('Hunt for a better deal');
+    const h = (await store.listRecords('hunt', { userId: u.id, limit: 10 }))[0];
+    assert.ok(h && h.status === 'hunting');
+    const rulesOf = async () => { const r = await store.getRecord('hunt', h.id); return { minNights: r.minNights, maxNights: r.maxNights, minStars: r.rules.minStars, target: r.target, excludeDests: r.excludeDests, flightStops: r.rules.flightStops, learned: r.learned.length, runs: r.runs.length }; };
+
+    // Canvas sentences and the saver's own chips while the question is pending: the hunt's rules stand
+    // exactly as they were, the lapse is said in one line, and the words do on the canvas what they
+    // always do. ("One night less" is a change of one night, never a two-night length; "try another
+    // country" leaves the country out on the canvas, the chip under the composer, not the hunt's rule.)
+    for (const [words, check] of [
+      ['Lock the hotel', st => { assert.equal(st.locks.hotel, true); assert.match(lines(st).pop(), /^Locked: Hotel\./); }],
+      ['Keep my money', st => assert.equal(lines(st).pop(), LEFT)],
+      ['Why this hotel?', st => assert.doesNotMatch(lines(st).pop(), /Hotel minimum raised/)],
+      ['One night less', st => { assert.equal(st.nights, null, 'one night less is not a length'); assert.doesNotMatch(lines(st).pop(), /Minimum nights raised/); }],
+      ['Make it $200 cheaper', st => assert.doesNotMatch(lines(st).pop(), /Now looking under/)],
+      ['Try another country', st => { assert.ok(st.notCountry, 'the country is left out on the canvas'); assert.doesNotMatch(said(st), /ruled out for this hunt/); }],
+    ]) {
+      const before = await rulesOf();
+      s = await say('Not good enough');
+      assert.equal(s.pending, 'improve');
+      const asked = lines(s).length;
+      s = await say(words);
+      assert.deepEqual(await rulesOf(), before, `"${words}" never moves a hunt rule`);
+      assert.equal(s.pending === 'improve', false, 'the question lapsed');
+      const after = lines(s).slice(asked);
+      assert.equal(after[0], LEFT, `the lapse is the first thing said: ${after.join(' | ')}`);
+      assert.equal(after.filter(l => l === LEFT).length, 1, 'said once');
+      check(s);
+    }
+    assert.equal(s.hotelRules.minStars, null, 'no answer about the hunt touched the canvas rules');
+
+    // Real answers: a chip, or a few words naming exactly one of the five with no other ask in them.
+    let before = await rulesOf();
+    s = await say('Not good enough');
+    s = await say('direct');
+    let r = await store.getRecord('hunt', h.id);
+    assert.equal(r.rules.flightStops, 'nonstop'); assert.equal(r.rules.flightRule, 'hard');
+    assert.equal(r.learned[r.learned.length - 1].text, 'Nonstop flights are now a hard rule');
+    assert.equal(r.runs.length, before.runs + 1, 're-checked under the new rule');
+    assert.ok(lines(s).pop().startsWith('Nonstop flights are now a hard rule. '), lines(s).pop());
+    assert.equal(s.flightStops, null, 'the canvas keeps its own rules');
+    before = await rulesOf();
+    const bestBefore = (await store.getRecord('hunt', h.id)).baseline.best;
+    s = await say('Not good enough');
+    s = await say('more nights');
+    r = await store.getRecord('hunt', h.id);
+    assert.equal(r.minNights, Math.min(14, (bestBefore ? bestBefore.nights : before.minNights) + 1), 'one night more than the found trip, the record’s own rule');
+    assert.ok(r.learned[r.learned.length - 1].text.startsWith(`Minimum nights raised to ${r.minNights}`));
+    assert.equal(s.nights, null);
+    before = await rulesOf();
+    s = await say('Not good enough');
+    s = await say('Lower price');
+    r = await store.getRecord('hunt', h.id);
+    assert.ok(r.target !== null && r.target < h.budget, 'the chip moves the price target');
+    assert.match(r.learned[r.learned.length - 1].text, /^Now looking under /);
+    assert.equal(r.runs.length, before.runs + 1);
+    assert.ok(!said(s).includes(`${LEFT} | ${LEFT}`), 'the lapse line is never doubled');
+
+    // "5 nights is not enough, make it 7 nights" with a hunt on the conversation: the length asked for
+    // is applied and the canvas rebuilt to it; the hunt is not asked about and not changed.
+    before = await rulesOf();
+    const spokenBefore = lines(s).length;
+    s = await say('5 nights is not enough, make it 7 nights');
+    assert.equal(s.nights, 7);
+    assert.ok(s.current && decodeSpec(s.current.token).nights === 7, 'the canvas trip is the rebuilt 7-night trip');
+    assert.ok(s.job && s.job.status !== 'running');
+    assert.notEqual(s.pending, 'improve');
+    const spokenAfter = lines(s).slice(spokenBefore);
+    assert.ok(!spokenAfter.some(l => l.startsWith('What should I improve?')), `no hunt question was asked: ${spokenAfter.join(' | ')}`);
+    assert.equal(spokenAfter[0], 'Got it: 7 nights.', spokenAfter.join(' | '));
+    assert.deepEqual(await rulesOf(), before, 'the hunt is untouched by a change to the trip');
+
+    // A sentence about dates that happens to say "I can wait" is about the trip: the month is applied
+    // and nothing standing is created on the account. "I can wait" on its own is the hunt's own words.
+    const w = { id: 'u-wait' };
+    const w0 = await agent.create({ visitor: 'v-wait', userId: w.id, mission: true, mode: 'save' });
+    const tell = ask(agent, w0.id, w);
+    await tell('$1,500');
+    let t = await tell('JFK');
+    const t0 = today(agent.now());
+    const december = [t0.slice(0, 4), String(Number(t0.slice(0, 4)) + 1)].map(y => `${y}-12`).find(m => m > t0.slice(0, 7));
+    t = await tell('I can wait until December if it is cheaper then');
+    assert.equal((await store.listRecords('hunt', { userId: w.id, limit: 10 })).length, 0, 'no hunt from a sentence about dates');
+    assert.equal(t.mission.hunt, undefined);
+    assert.equal(t.month, december); assert.equal(t.dateMode, 'flexible');
+    assert.ok(!said(t).includes(HuntService.ACCEPTANCE), said(t));
+    t = await tell('I can wait.');
+    assert.equal((await store.listRecords('hunt', { userId: w.id, limit: 10 })).length, 1, '"I can wait" alone starts the hunt');
+    assert.equal((await store.listRecords('hunt', { userId: w.id, limit: 10 }))[0].month, december, 'the hunt carries the month the conversation holds');
+    // Anonymous, in one breath with the budget and a month: built, not sent to sign in for a hunt.
+    const a0 = await agent.create({ visitor: 'v-anon-wait' });
+    const anon = ask(agent, a0.id);
+    const a = await anon('I have $2,000 from JFK, two of us, and I can wait for a good week in March');
+    assert.doesNotMatch(said(a), /A hunt lives on your account/);
+    assert.ok(a.current, 'the trip is built from the sentence');
+    assert.equal(a.dateMode, 'flexible'); assert.match(a.month, /-03$/);
+  } finally { await app.close(); }
+});
+
+test('hunt mode: the canvas shows the hunt as the record is now, never as the conversation last saw it: a stop made on the hunt page takes "Hunting" off the status, brings the chip back and marks the card stopped with no "keep waiting"; a resume there brings it back; a search running here and an open decision come before the hunt in the status', async () => {
+  const app = await startApp();
+  try {
+    const agent = app.agent, store = app.ctx.store;
+    const c = client(app.base);
+    const creds = { name: 'Ada Lovelace', email: 'hunter@example.com', password: 'correct horse battery' };
+    assert.equal((await c.req('/signup', { method: 'POST', form: { ...creds, next: '/my-trips' } })).status, 303);
+    const start = await c.req('/agent', { method: 'POST', form: { budget: '1,500', mode: 'save' } });
+    const page = start.headers.get('location'), id = page.split('/').pop();
+    await c.req(page, { method: 'POST', form: { say: 'JFK' } });
+    await agent.jobs.drain();
+    await c.req(page, { method: 'POST', form: { say: 'Hunt for a better deal' } });
+    await agent.jobs.drain();
+    let s = await agent.load(id);
+    const user = { id: s.userId };
+    const h = (await store.listRecords('hunt', { userId: s.userId, limit: 10 }))[0];
+    assert.ok(h && h.status === 'hunting');
+    // The canvas region alone: the chat above it carries the traveler's own "Hunt for a better deal".
+    const canvasOf = html => text(html.slice(html.indexOf('id="live-canvas"')));
+    const view = async () => { const html = (await c.req(page)).text; return { canvas: canvasOf(html), all: text(html) }; };
+    const status = t => (t.match(/Build the best vacation for \$[\d,]+ (.*?) Budget/) || ['', ''])[1];
+    const badge = t => (t.match(/My travel money · [^·]*? (HUNTING|STOPPED)/) || ['', ''])[1];
+    if (s.proposal) { await c.req(page, { method: 'POST', form: { say: 'Keep what I have' } }); s = await agent.load(id); }
+    assert.equal(s.proposal, null);
+    let t = await view();
+    assert.equal(status(t.canvas), `Hunting: ${h.name}`);
+    assert.equal(badge(t.all), 'HUNTING');
+    assert.ok(t.canvas.includes(`Hunting: ${h.name}`) && !t.canvas.includes('Hunt for a better deal'), 'the chip is the link to the hunt');
+    assert.ok(t.all.includes('Keep waiting'));
+    // Stopped from its own page (the hunt route's own answer): the conversation's ref is what the agent
+    // last saw, but the page reads the record.
+    await app.hunts.respond(user, h.id, 'stop');
+    assert.equal((await agent.load(id)).mission.hunt.status, 'hunting', 'a page read never writes the conversation');
+    t = await view();
+    assert.notEqual(status(t.canvas), `Hunting: ${h.name}`);
+    assert.ok(!/Hunting: /.test(t.canvas), 'a stopped hunt is not the status');
+    assert.ok(t.canvas.includes('Hunt for a better deal'), 'the chip to start (resume) a hunt is back');
+    assert.equal(badge(t.all), 'STOPPED');
+    assert.ok(!t.all.includes('Keep waiting'), 'no answer is offered on a hunt that is not hunting');
+    const live = (await c.req(`${page}/live`)).text;
+    assert.equal(badge(text(live)), 'STOPPED');
+    assert.ok(!/Hunting: /.test(canvasOf(live)));
+    await app.hunts.respond(user, h.id, 'resume');
+    t = await view();
+    assert.equal(status(t.canvas), `Hunting: ${h.name}`);
+    assert.equal(badge(t.all), 'HUNTING');
+    // A rebuild running here comes first in the status, then the hunt again once it is done.
+    let reached, release, held = false;
+    const atGate = new Promise(r => { reached = r; });
+    const gate = new Promise(r => { release = r; });
+    const breathe = agent.breathe;
+    agent.breathe = async () => { if (held) return; held = true; reached(); await gate; };
+    await c.req(page, { method: 'POST', form: { say: '7 nights' } });
+    await atGate;
+    s = await agent.load(id);
+    assert.equal(s.job.status, 'running');
+    t = await view();
+    assert.equal(status(t.canvas), 'Building…');
+    release();
+    agent.breathe = breathe;
+    await agent.jobs.drain();
+    s = await agent.load(id);
+    if (s.proposal) { await c.req(page, { method: 'POST', form: { say: 'Keep what I have' } }); s = await agent.load(id); }
+    t = await view();
+    assert.equal(status(t.canvas), `Hunting: ${h.name}`);
+    // An open decision comes before the hunt too (when today's prices give one to make).
+    await c.req(page, { method: 'POST', form: { say: 'How low can you go?' } });
+    s = await agent.load(id);
+    if (!s.proposal) { await c.req(page, { method: 'POST', form: { say: 'Find $50' } }); s = await agent.load(id); }
+    if (s.proposal) {
+      t = await view();
+      assert.equal(status(t.canvas), 'One decision away');
+      assert.ok(t.canvas.includes(`Hunting: ${h.name}`), 'the hunt is still linked from the canvas');
+    }
   } finally { await app.close(); }
 });
 

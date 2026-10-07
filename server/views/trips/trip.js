@@ -9,6 +9,7 @@ const { money, dollars, shortDate, longDate, plural, joinAnd, cutoffText, termsF
 const { cutoffs, isOpen, fullRefundApplies, FULL_REFUND_MIN_DAYS } = require('../../trips/deadlines');
 const { daysBetween, today } = require('../../lib/dates');
 const { vacationPlan } = require('../../trips/vacation');
+const { savingsCheckPanel, leakCheckPanel, breakdownDetails } = require('./leaks');
 
 const cap = s => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 
@@ -207,7 +208,7 @@ function confidenceQuestions(t) {
   return html`<section class="tb-faq-inline" aria-labelledby="cq-title"><h2 id="cq-title">Simple answers before you book</h2>${qa.map(([q, a]) => html`<details><summary>${q}</summary><p>${a}</p></details>`)}</section>`;
 }
 
-function tripView(ctx, { data, cx, user, saved, dreamGap, named = null }) {
+function tripView(ctx, { data, cx, user, saved, dreamGap, named = null, promo = null, promoError = null }) {
   const { trip: t, token, scores, why, options, origin, weather } = data;
   const s = t.spec;
   const budget = cx.budget;
@@ -220,7 +221,9 @@ function tripView(ctx, { data, cx, user, saved, dreamGap, named = null }) {
   const timeAlts = time ? timeAlternatives(t, options) : [];
   const pto = { weekdays: weekdaysAway(s.depart, s.nights), alts: ptoAlternatives(t, options) };
   const unlock = budgetUnlocks(changes, diff);
-  const reviewUrl = `/trip/${token}/review?${contextParams(cx, { seen: t.total })}`;
+  // A promo code carried from a review page prices there, not here (every option on this page is
+  // compared before any code), so the review link names the total with the code as the one seen.
+  const reviewUrl = `/trip/${token}/review?${contextParams(cx, { seen: promo ? promo.total : t.total })}`;
   const tos = tradeoffs(t, cx);
   const plan = vacationPlan(t, cx, options);
   const body = html`
@@ -246,8 +249,12 @@ function tripView(ctx, { data, cx, user, saved, dreamGap, named = null }) {
         <a class="btn btn-ghost btn-sm" href="#protect">${icon('lock')} Protect the magic</a>
         <a class="btn btn-ghost btn-sm" href="#customize">${icon('sliders')} Change one thing</a>
         ${cx.searchParams ? html`<a class="btn btn-ghost btn-sm" href="/trips?${cx.searchParams}">${icon('layers')} Compare my trips</a>` : ''}
+        <a class="btn btn-ghost btn-sm" href="/trip/${token}/leaks?${contextParams(cx)}#paying">${icon('wallet')} What am I paying for?</a>
+        <a class="btn btn-ghost btn-sm" href="/trip/${token}/leaks?${contextParams(cx)}#lean">${icon('minus')} Strip it down</a>
+        <a class="btn btn-ghost btn-sm" href="/trip/${token}/leaks?${contextParams(cx)}#leak">${icon('search')} Find my biggest money leak</a>
       </nav>
       <p class="tb-checked">${icon('check')} Price checked moments ago. We check it again before you pay, and nothing is charged until you confirm.</p>
+      ${promo ? html`<p class="tb-checked" data-promo="${promo.code}">${icon('check')} Promo code ${promo.code} comes with you from the review page: ${money(promo.off)} off, so ${money(promo.total)} with it. The prices on this page are before the code; it is applied again when you review.</p>` : promoError ? html`<p class="tb-checked">${icon('info')} ${promoError} The code is not carried on from here.</p>` : ''}
     </div>
   </header>
 
@@ -379,7 +386,9 @@ function decideToday(ctx, t, token, cx, user) {
   </section>`;
 }
 
-function reviewView(ctx, { data, cx, verify, user, promoError, promoCode }) {
+// `leak` is the route's savings check and money leak check on the verified trip (service.leakCheck);
+// a caller without it gets the page as before.
+function reviewView(ctx, { data, cx, verify, user, promoError, promoCode, leak = null }) {
   const { trip: t, token, origin, weather } = data;
   const s = t.spec;
   const budget = cx.budget;
@@ -444,6 +453,7 @@ function reviewView(ctx, { data, cx, verify, user, promoError, promoCode }) {
             : `Not as planned. The booking is ${money(t.total - budget)} over your ${dollars(budget)} booking budget, so it takes ${money(plan.raid)} of the ${money(plan.keep)} you protected${plan.over ? ` and ${money(plan.over)} beyond your whole ${money(plan.vacation)}` : ''}. You would arrive with ${money(plan.arrive)}. Only you can decide that; nothing happens without the button below.`}</span></p></div>`
           : budget ? html`<div class="tb-final-nums"><div><span>Your original budget</span><b>${money(budget)}</b></div><div><span>Final price</span><b>${money(t.total)}</b></div><div class="${diff < 0 ? 'is-over' : ''}"><span>${diff < 0 ? 'Over budget' : 'You keep'}</span><b>${money(Math.abs(diff))}</b></div></div>` : html`<div class="tb-final-nums"><div><span>Final price</span><b>${money(t.total)}</b></div></div>`}
         ${recipe(t, budget)}
+        ${leak ? breakdownDetails(leak.breakdown) : ''}
       </section>
       <aside>
         <section class="tb-panel" aria-labelledby="ready-title">
@@ -474,6 +484,7 @@ function reviewView(ctx, { data, cx, verify, user, promoError, promoCode }) {
         </section>
       </aside>
     </div>
+    ${leak ? html`<div class="tb-leak-review">${savingsCheckPanel(leak.scorecard, { keep: cx.keep || 0 })}${leakCheckPanel(leak.scan, { token, cx })}</div>` : ''}
     <form class="tb-confirm" method="post" action="/trip/${token}/quote">
       <input type="hidden" name="cx" value="${contextParams(cx)}">
       <input type="hidden" name="approvedTotal" value="${t.total}">

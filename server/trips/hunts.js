@@ -5,9 +5,14 @@
 // notification per opportunity. It never prices anything itself: every search is hunter.runHunt over
 // the inventory, so every number here is a priced fact or arithmetic on one. It says nothing when a
 // run found nothing worth saying, and never implies a search happened when it did not.
+//
+// One record, one writer at a time: every run and every answer waits for whatever is in flight on
+// that hunt and then reads the record again before it changes or saves anything, so a sweep never
+// writes a copy it listed minutes ago over a rule the customer just set, a Stop they just gave, or a
+// check that really happened. A sweep is one at a time as well, and judges "due" on the fresh record.
 const { AppError } = require('../lib/errors');
 const { id: makeId } = require('../lib/ids');
-const { today } = require('../lib/dates');
+const { today, addDays } = require('../lib/dates');
 const { format: fmtMoney } = require('../lib/money');
 const optimizer = require('./optimizer');
 const { decodeSpec } = require('./spec');
@@ -20,22 +25,57 @@ const SAVINGS_LEVELS = ['balanced', 'aggressive'];
 const MEALS = ['all-inclusive', 'breakfast'];
 const BAGS = ['personal', 'carry-on', 'checked'];
 const IMPROVEMENTS = ['price', 'hotel', 'nights', 'nonstop', 'destination'];
-const ACTIONS = ['keep-waiting', 'seen', 'improve', 'reject', 'harder', 'taken', 'stop', 'resume'];
+const ACTIONS = ['keep-waiting', 'seen', 'improve', 'reject', 'harder', 'taken', 'stop', 'resume', 'threshold'];
 // Thresholds the pages offer; the engine owns the list, with a fallback while it is being built.
 const THRESHOLDS = Array.isArray(hunter.THRESHOLDS) ? hunter.THRESHOLDS : [5000, 10000, 20000];
 const STYLE_WORD = { beach: 'Beach', city: 'City', adventure: 'Adventure', romantic: 'Romantic', family: 'Family', 'all-inclusive': 'All-Inclusive', surprise: 'Anywhere' };
 const MAX_RUNS = 30;
 // Opportunities are the customer's history; the record is still a single JSON document, so the
-// oldest fall off once there are this many.
+// oldest fall off the page once there are this many. What they told and what the customer refused
+// is kept in `remembered` (the kind, the status and the few facts of the trip the engine reads
+// back: never trimmed), so a trip the customer said no to does not come back as the best once a
+// hundred later finds pushed the refusal off the page, and nothing is told twice because the record
+// forgot it.
 const MAX_OPPORTUNITIES = 100;
 const STEP = 5000; // the $50 step "find me something even better" moves by
 const MIN_BUDGET = 10000, MAX_BUDGET = 5000000;
+const MAX_STARS = 5; // the highest hotel class the inventory prices
+// Opening a hunt re-checks it only when the last check is older than this; the monitoring sentence
+// is built from the same number, so what the page says and what runs cannot drift apart.
+const REFRESH_MAX_AGE_MINUTES = 10;
+// The engine asks the suppliers about departures from a week out (hunter.windowDates); a month whose
+// last day is nearer than that has nothing left to price, which is why validate refuses it and a run
+// ends a hunt whose month got there.
+const EARLIEST_DEPARTURE_DAYS = 7;
+// The store lists newest first, with no filter and no cursor: a sweep asks for this many and, when
+// the page comes back full, asks again for twice as many until it is short, so every hunt is seen.
+const SWEEP_PAGE = 1000;
 
 const ACCEPTANCE = 'Got it. I won’t contact you just because something is cheap. I’ll contact you when I find a trip that meets your rules and looks worth considering.';
 
 const money = c => fmtMoney(c, 'USD');
 const invalid = message => new AppError('invalid_hunt', message, 422);
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+const monthWords = m => new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${m}-01T00:00:00Z`));
+// Milliseconds since the hunt's last check; a hunt that never ran is infinitely old.
+const ageOf = (hunt, now) => (hunt.lastRunAt ? now.getTime() - Date.parse(hunt.lastRunAt) : Infinity);
+// True when no departure in the month can be priced any more: its last day is nearer than the
+// earliest date the engine asks about. (The service asks the engine itself when it says which dates
+// it would ask for; this is the same rule, for an engine that does not.)
+function monthClosed(month, now) {
+  const [y, m] = month.split('-').map(Number);
+  const lastDay = addDays(`${m === 12 ? y + 1 : y}-${String(m === 12 ? 1 : m + 1).padStart(2, '0')}-01`, -1);
+  return lastDay < addDays(today(now), EARLIEST_DEPARTURE_DAYS);
+}
+const monthClosedWords = month => `${monthWords(month)} has no departure left to price (the hunt asks about dates at least a week out)`;
+
+// What is kept of an opportunity that fell off the page: the kind and status (told, refused), and
+// the facts of the trip the engine reads back (its token and total for "already told", and what a
+// rejected package is called in the rule line).
+function remember(o) {
+  const t = o.trip;
+  return { kind: o.kind, status: o.status, trip: { token: t.token, total: t.total, nights: t.nights, dest: t.dest, hotel: { name: t.hotel && t.hotel.name }, fareName: t.fareName } };
+}
 
 function intIn(v, min, max, message) {
   const n = typeof v === 'string' && v.trim() !== '' ? Number(v) : v;
@@ -47,11 +87,11 @@ function oneOf(v, list, message, { nullable = false } = {}) {
   if (!list.includes(v)) throw invalid(message);
   return v;
 }
-function boolOrNull(v) {
+function boolOrNull(v, what = 'Refundable') {
   if (v === undefined || v === null || v === '') return null;
   if (v === true || v === 'true' || v === '1' || v === 1 || v === 'on') return true;
   if (v === false || v === 'false' || v === '0' || v === 0 || v === 'off') return false;
-  throw invalid('Refundable must be yes or no.');
+  throw invalid(`${what} must be yes or no.`);
 }
 
 // How long the interval is, in words a customer reads: "6 hours", "1 hour", "90 minutes".
@@ -59,6 +99,16 @@ function intervalWords(minutes) {
   if (minutes % 60 === 0) return plural(minutes / 60, 'hour');
   return plural(minutes, 'minute');
 }
+
+// The rule a rejection reason names, flight words before length words so "shorter flight" is about
+// the flight; the length words are tied to the trip so "short" alone never moves the nights.
+const REASON_RULES = [
+  [/\b(travel|flights?|layovers?|stops?|connections?|nonstop|direct)\b/i, 'nonstop', 'flights'],
+  [/\b(too short|short(er)? (trip|stay|holiday|vacation|break)|longer|more nights|more days|not long enough)\b/i, 'nights', 'nights'],
+  [/expensive|price|cheap|cost|money/i, 'price', 'price'],
+  [/\b(hotels?|stars?|rooms?|resorts?)\b/i, 'hotel', 'hotel'],
+  [/\b(place|destination|where|somewhere|elsewhere|anywhere|country|city)\b/i, 'destination', 'destination'],
+];
 
 class HuntService {
   constructor({ store, inventory, settings, notifier, now = () => new Date(), log = console, config, engine = hunter }) {
@@ -71,14 +121,23 @@ class HuntService {
     this.config = config;
     this.engine = engine;
     this.timer = null;
-    // One run per hunt at a time: a scheduled sweep and a customer opening the page must not both
-    // append the same opportunity.
+    // One operation per hunt at a time (a run or an answer), keyed by hunt id: see exclusive().
     this.inFlight = new Map();
+    // The one sweep in progress, so a timer tick that fires during a sweep joins it instead of
+    // starting a second one over the same hunts.
+    this.sweep = null;
   }
 
   get intervalMinutes() {
     const n = this.config && this.config.trips ? Number(this.config.trips.huntIntervalMinutes) : 0;
     return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+
+  // Whether a month has a departure left that the engine would ask the suppliers about: the engine's
+  // own list of dates when it gives one, else the same week-out rule.
+  monthClosed(month, now) {
+    if (typeof this.engine.windowDates === 'function') return this.engine.windowDates({ dateMode: 'flexible', month }, now).length === 0;
+    return monthClosed(month, now);
   }
 
   // ---- validation ------------------------------------------------------------------------------
@@ -97,12 +156,23 @@ class HuntService {
       month = String(input.month || '').trim();
       if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw invalid('Pick a month as YYYY-MM.');
       if (month < today(now).slice(0, 7)) throw invalid('That month has passed; pick the current month or a later one.');
+      // A hunt that could never ask a supplier anything is not a hunt: refused with the reason.
+      if (this.monthClosed(month, now)) throw invalid(`${monthClosedWords(month)}; pick a later month.`);
     }
     const minNights = intIn(input.minNights, 2, 14, 'Minimum nights must be between 2 and 14.');
     const maxNights = input.maxNights === undefined || input.maxNights === null || input.maxNights === ''
       ? Math.min(minNights + 3, 14)
       : intIn(input.maxNights, minNights, 14, `Maximum nights must be between ${minNights} and 14.`);
     const style = oneOf(input.style || 'surprise', optimizer.STYLES, 'Pick a trip style.');
+    // What matters most steers the pick among qualifying trips (the optimizer's own weighting), as it
+    // does on the canvas the hunt was started from; it never relaxes a rule.
+    const priority = oneOf(input.priority, optimizer.PRIORITIES, 'What matters most is hotel, flights, longer, activities or price.', { nullable: true });
+    // A destination the customer named ("to Cancun"), or international only: the search is that narrow,
+    // so a hunt started from a conversation keeps the place the customer asked for instead of
+    // quietly widening to anywhere. Both are carried as stated, never inferred from a trip.
+    const dest = input.dest === undefined || input.dest === null || input.dest === '' ? null : String(input.dest).trim();
+    if (dest && !this.inv.maps.getDestination(dest)) throw invalid(`"${dest}" is not a destination we offer.`);
+    const region = oneOf(input.region, ['international'], 'The region is international or open.', { nullable: true });
 
     const r = input.rules || {};
     const flightStops = oneOf(r.flightStops, ['nonstop'], 'Flights are either nonstop or open.', { nullable: true });
@@ -110,14 +180,21 @@ class HuntService {
     // that breaks what the customer said, and a preference must be asked for by name.
     const flightRule = flightStops ? oneOf(r.flightRule || 'hard', ['hard', 'preferred'], 'A nonstop rule is either hard or preferred.') : null;
     const minStars = r.minStars === undefined || r.minStars === null || r.minStars === '' ? null : intIn(r.minStars, 2, 5, 'Hotel stars must be between 2 and 5.');
+    // Beachfront and an included transfer are hard rules the conversation can hold (the optimizer
+    // filters on both); they are written on the record only when on, so a hunt stored before they
+    // existed reads exactly as it did.
+    const beachfront = boolOrNull(r.beachfront, 'Beachfront');
+    const transfer = boolOrNull(r.transfer, 'Airport transfer');
     const rules = {
       flightStops, flightRule, minStars, refundable: boolOrNull(r.refundable),
       meals: oneOf(r.meals, MEALS, 'Meals are all-inclusive, breakfast or open.', { nullable: true }),
       bags: oneOf(r.bags, BAGS, 'Bags are personal, carry-on or checked.', { nullable: true }),
+      ...(beachfront ? { beachfront: true } : {}), ...(transfer ? { transfer: true } : {}),
     };
 
     const excludeDests = [...new Set((Array.isArray(input.excludeDests) ? input.excludeDests : []).map(d => String(d).trim()).filter(Boolean))];
     for (const d of excludeDests) if (!this.inv.maps.getDestination(d)) throw invalid(`"${d}" is not a destination we offer.`);
+    if (dest && excludeDests.includes(dest)) throw invalid('The destination to hunt cannot also be left out.');
 
     let savedToken = input.savedToken ? String(input.savedToken) : null;
     if (savedToken) { try { decodeSpec(savedToken); } catch { throw invalid('The saved trip to beat could not be read.'); } }
@@ -138,8 +215,9 @@ class HuntService {
     const savingsLevel = oneOf(input.savingsLevel || 'balanced', SAVINGS_LEVELS, 'Savings are balanced or aggressive.');
 
     let name = String(input.name || '').trim().slice(0, 80);
-    if (!name) name = `${money(budget)} ${STYLE_WORD[style] || style} Hunt`;
-    return { name, budget, origin, travelers, who, dateMode, month, minNights, maxNights, style, rules, excludeDests, savedToken, notify, threshold, savingsLevel };
+    // Named from its money, its place and its style: "$2,500 Cancun Hunt", "$3,000 Beach Hunt".
+    if (!name) name = `${money(budget)} ${dest ? `${this.inv.maps.getDestination(dest).name} ` : ''}${dest && style === 'surprise' ? '' : `${STYLE_WORD[style] || style} `}Hunt`;
+    return { name, budget, origin, travelers, who, dateMode, month, minNights, maxNights, style, priority, dest, region, rules, excludeDests, savedToken, notify, threshold, savingsLevel };
   }
 
   // ---- create / list / get ---------------------------------------------------------------------
@@ -148,7 +226,7 @@ class HuntService {
     const at = this.now().toISOString();
     const hunt = {
       id: makeId('hnt'), userId: user.id, ...this.validate(input), status: 'hunting', target: null, floors: { minStars: null, nonstop: false },
-      baseline: null, runs: [], opportunities: [], learned: [], lastRunAt: null, lastMeaningfulAt: null, createdAt: at, updatedAt: at,
+      baseline: null, runs: [], opportunities: [], remembered: [], learned: [], lastRunAt: null, lastMeaningfulAt: null, createdAt: at, updatedAt: at,
     };
     await this.save(hunt);
     // A hunt exists only once its first search has run: if that fails, nothing is left behind to
@@ -186,30 +264,74 @@ class HuntService {
     return hunt;
   }
 
-  // ---- running ---------------------------------------------------------------------------------
-  async run(hunt, { reason = 'manual' } = {}) {
-    const pending = this.inFlight.get(hunt.id);
-    if (pending) await pending.catch(() => {});
-    const p = this.runNow(hunt, reason);
-    this.inFlight.set(hunt.id, p);
-    try { return await p; } finally { if (this.inFlight.get(hunt.id) === p) this.inFlight.delete(hunt.id); }
+  // The hunt with its whole memory: the opportunities on the page plus the compact record of the
+  // ones that fell off it. This is what the engine judges against (what was told, what was refused)
+  // and what the rule lines are read from, so a rejection the page no longer shows still holds.
+  recall(hunt) {
+    return { ...hunt, opportunities: [...(Array.isArray(hunt.remembered) ? hunt.remembered : []), ...hunt.opportunities] };
   }
 
-  async runNow(hunt, reason) {
+  // The customer's hunt as it is once nothing is in flight on it: what an answer or a page open
+  // reads, so it never acts on a copy a run is about to replace.
+  async settled(user, id) {
+    const hunt = await this.get(user, id);
+    while (this.inFlight.has(hunt.id)) await this.inFlight.get(hunt.id).catch(() => {});
+    return this.get(user, hunt.id);
+  }
+
+  // ---- running ---------------------------------------------------------------------------------
+  // One operation on a hunt at a time, in this process: whoever comes second waits until nothing is
+  // pending any more (not just for the one promise it saw), then does its own read-modify-write.
+  async exclusive(id, work) {
+    while (this.inFlight.has(id)) await this.inFlight.get(id).catch(() => {});
+    const p = work();
+    this.inFlight.set(id, p);
+    try { return await p; } finally { if (this.inFlight.get(id) === p) this.inFlight.delete(id); }
+  }
+
+  // Run a hunt (by id; the caller's copy is never the one priced). `due`, when given, is judged on
+  // the record as it is when the run's turn comes: a sweep or a page open that waited for another
+  // run finds the hunt already checked and runs nothing, so one check is never two.
+  async run(hunt, { reason = 'manual', due = null } = {}) {
+    return this.exclusive(hunt.id, () => this.runNow(hunt.id, reason, due));
+  }
+
+  async runNow(id, reason, due) {
+    const hunt = await this.store.getRecord('hunt', id);
+    const skip = why => ({ hunt, result: null, skipped: why });
+    if (!hunt) return skip('gone');
+    // A hunt that is not hunting is never priced and never saved back as hunting, whoever asks.
+    if (hunt.status !== 'hunting') return skip('not hunting');
+    if (due && !due(hunt)) return skip('not due');
     const now = this.now();
     const at = now.toISOString();
+    if (hunt.dateMode === 'flexible' && this.monthClosed(hunt.month, now)) {
+      // Nothing in the month can be priced any more, so there is nothing left to hunt: the hunt
+      // stops and says why, instead of logging a check that asked no supplier anything, forever.
+      hunt.status = 'stopped';
+      hunt.learned.push({ at, text: `${monthClosedWords(hunt.month)}, so the hunt stopped` });
+      hunt.updatedAt = at;
+      await this.save(hunt);
+      this.log.info(`[hunts] "${hunt.name}" (${hunt.id}) stopped: no departure in ${monthWords(hunt.month)} is left to price`);
+      return skip('month closed');
+    }
     const settings = await this.settings();
-    const result = this.engine.runHunt(this.inv, hunt, settings, { now, previous: hunt.baseline });
+    const result = this.engine.runHunt(this.inv, this.recall(hunt), settings, { now, previous: hunt.baseline });
     const added = [];
     for (const o of result.opportunities || []) {
       const opp = { ...o, id: makeId('opp'), status: 'new', notified: false };
       hunt.opportunities.push(opp);
       added.push(opp);
     }
-    if (hunt.opportunities.length > MAX_OPPORTUNITIES) hunt.opportunities.splice(0, hunt.opportunities.length - MAX_OPPORTUNITIES);
+    if (hunt.opportunities.length > MAX_OPPORTUNITIES) {
+      const gone = hunt.opportunities.splice(0, hunt.opportunities.length - MAX_OPPORTUNITIES);
+      hunt.remembered = [...(Array.isArray(hunt.remembered) ? hunt.remembered : []), ...gone.filter(o => o.trip && o.trip.token).map(remember)];
+    }
     // The baseline is what the next run is judged against: only what this run actually priced.
     const best = result.best ? { token: result.best.token, total: result.best.total, nights: result.best.nights, stops: result.best.stops, stars: result.best.stars, dest: result.best.dest } : null;
-    hunt.baseline = { at, best, closest: result.closest || null, byDest: result.byDest || [], nonstop: result.nonstop || null };
+    // `overByDest` is the cheapest package priced per destination that stayed over the ceiling: the only
+    // thing that can later earn "your money just unlocked <destination>", because it is a recorded price.
+    hunt.baseline = { at, best, closest: result.closest || null, byDest: result.byDest || [], nonstop: result.nonstop || null, overByDest: Array.isArray(result.overByDest) ? result.overByDest : [] };
     const checked = result.checked || {};
     hunt.runs.push({ at, reason, destinations: checked.destinations || 0, considered: checked.considered || 0, eligible: checked.eligible || 0, bestTotal: best ? best.total : null, opportunities: added.length, silent: added.length ? null : (result.silent || null) });
     if (hunt.runs.length > MAX_RUNS) hunt.runs.splice(0, hunt.runs.length - MAX_RUNS);
@@ -245,28 +367,43 @@ class HuntService {
   }
 
   // Opening a hunt re-checks it only when the last check is older than maxAge; otherwise the stored
-  // facts stand as they are and no search is implied.
-  async refresh(user, id, { maxAgeMinutes = 10 } = {}) {
-    let hunt = await this.get(user, id);
-    const pending = this.inFlight.get(hunt.id);
-    if (pending) { await pending.catch(() => {}); hunt = await this.get(user, id); }
-    if (hunt.status !== 'hunting') return hunt;
-    const age = hunt.lastRunAt ? this.now().getTime() - Date.parse(hunt.lastRunAt) : Infinity;
-    if (age <= maxAgeMinutes * 60000) return hunt;
-    return (await this.run(hunt, { reason: 'opened' })).hunt;
+  // facts stand as they are and no search is implied. The age is judged again on the fresh record
+  // when the run's turn comes, so two opens at once are one check.
+  async refresh(user, id, { maxAgeMinutes = REFRESH_MAX_AGE_MINUTES } = {}) {
+    const stale = h => ageOf(h, this.now()) > maxAgeMinutes * 60000;
+    const hunt = await this.settled(user, id);
+    if (hunt.status !== 'hunting' || !stale(hunt)) return hunt;
+    return (await this.run(hunt, { reason: 'opened', due: stale })).hunt;
   }
 
-  // Every hunting hunt, of every customer, whose last check is older than the interval.
-  async runDue({ now = this.now() } = {}) {
+  // Every hunt that is hunting, of every customer. The store lists newest first with no status
+  // filter and no cursor, and nothing deletes a stopped hunt, so the page grows until it is short:
+  // every record is seen, however many stopped ones are newer than a hunting one.
+  async hunting() {
+    for (let limit = SWEEP_PAGE; ; limit *= 2) {
+      const page = await this.store.listRecords('hunt', { limit });
+      if (page.length < limit) return page.filter(h => h.status === 'hunting');
+    }
+  }
+
+  // Every hunting hunt whose last check is older than the interval, oldest check first. One sweep at
+  // a time: a tick that fires while the last sweep is still going joins it. Each hunt is judged due
+  // again on its fresh record when its turn comes, so one the customer answered on, stopped, or
+  // opened meanwhile is left as they left it.
+  runDue({ now = this.now() } = {}) {
+    if (!this.sweep) this.sweep = this.sweepNow(now).finally(() => { this.sweep = null; });
+    return this.sweep;
+  }
+
+  async sweepNow(now) {
     const minutes = this.intervalMinutes;
-    const hunts = await this.store.listRecords('hunt', { limit: 1000 });
+    const due = h => ageOf(h, now) >= minutes * 60000;
+    const hunts = (await this.hunting()).filter(due).sort((a, b) => ((a.lastRunAt || '') < (b.lastRunAt || '') ? -1 : (a.lastRunAt || '') > (b.lastRunAt || '') ? 1 : 0));
     let ran = 0, found = 0;
     for (const hunt of hunts) {
-      if (hunt.status !== 'hunting') continue;
-      const age = hunt.lastRunAt ? now.getTime() - Date.parse(hunt.lastRunAt) : Infinity;
-      if (age < minutes * 60000) continue;
       try {
-        const { result } = await this.run(hunt, { reason: 'scheduled' });
+        const { result } = await this.run(hunt, { reason: 'scheduled', due });
+        if (!result) continue;
         ran += 1;
         const n = (result.opportunities || []).length;
         found += n;
@@ -289,13 +426,27 @@ class HuntService {
   }
 
   // ---- the customer answers --------------------------------------------------------------------
+  // The answer is applied to the record as it is once nothing is in flight on it, and saved under
+  // the same turn, so a run never writes over it and it never writes over a run.
   async respond(user, id, action, payload = {}) {
-    const hunt = await this.get(user, id);
+    const found = await this.get(user, id);
     if (!ACTIONS.includes(action)) throw invalid('That is not something a hunt can do.');
-    const at = this.now().toISOString();
+    const { hunt, rulesChanged } = await this.exclusive(found.id, () => this.answer(user, found.id, action, payload));
+    // A rule change is always followed by a real check under the new rules (the result returned is
+    // that search, never an older one), unless the hunt is not hunting, when nothing searches.
+    if (rulesChanged && hunt.status === 'hunting') return this.run(hunt, { reason: 'updated' });
+    return { hunt, result: null };
+  }
+
+  async answer(user, id, action, payload) {
+    const hunt = await this.get(user, id);
+    const now = this.now();
+    const at = now.toISOString();
     const learn = text => hunt.learned.push({ at, text });
     const best = hunt.baseline && hunt.baseline.best ? hunt.baseline.best : null;
     let rulesChanged = false;
+    // A rule about when to speak, not about what qualifies: the record stays comparable.
+    let keepBaseline = false;
     const markNew = status => { for (const o of hunt.opportunities) if (o.status === 'new') o.status = status; };
 
     const improve = (what, suffix = '') => {
@@ -316,9 +467,12 @@ class HuntService {
           break;
         }
         case 'hotel': {
-          const base = best ? best.stars : (hunt.rules.minStars || 3);
-          const stars = Math.min(5, base + 1);
-          if (hunt.rules.minStars === stars) throw invalid(`The hotel minimum is already ${stars} stars.`);
+          // One class above what the search already requires (the rule, or the floor a target set)
+          // and what it found: a raise the found trip already meets would change nothing the search
+          // uses, so it is refused in plain words rather than announced.
+          const have = Math.max(hunt.rules.minStars || 0, (hunt.floors && hunt.floors.minStars) || 0, best ? best.stars : 0);
+          if (have >= MAX_STARS) throw invalid(best && best.stars >= MAX_STARS ? `The trip I found has a ${MAX_STARS}-star hotel, the highest class we price; there is no higher class to ask for.` : `The hotel minimum is already ${MAX_STARS} stars, the highest class we price.`);
+          const stars = (have || 3) + 1;
           hunt.rules.minStars = stars;
           learn(`Hotel minimum raised to ${stars} stars${suffix}`);
           break;
@@ -326,9 +480,11 @@ class HuntService {
         case 'nights': {
           const nights = Math.min(14, (best ? best.nights : hunt.minNights) + 1);
           if (nights <= hunt.minNights) throw invalid('The hunt already asks for the longest trip we price, 14 nights.');
+          // A fixed-length hunt's "up to" has to follow the minimum; when it does, that is said too.
+          const maxMoved = hunt.maxNights < nights;
           hunt.minNights = nights;
-          hunt.maxNights = Math.max(hunt.maxNights, hunt.minNights);
-          learn(`Minimum nights raised to ${hunt.minNights}${suffix}`);
+          if (maxMoved) hunt.maxNights = nights;
+          learn(`Minimum nights raised to ${nights}${suffix}${maxMoved ? `, and the maximum to ${nights} to match` : ''}`);
           break;
         }
         case 'nonstop': {
@@ -367,16 +523,21 @@ class HuntService {
         improve('price');
         break;
       case 'reject': {
+        // The "no" is recorded whatever the reason does: a trip the customer refused stays refused
+        // even when the rule the reason names cannot move, and the line says why nothing moved.
         const reason = String(payload.reason || '').trim().slice(0, 120);
         const target = payload.opportunityId ? hunt.opportunities.find(o => o.id === payload.opportunityId) : null;
         if (target) target.status = 'rejected'; else markNew('rejected');
-        const what = /short|longer|more nights/i.test(reason) ? 'nights'
-          : /expensive|price|cheap|cost|money/i.test(reason) ? 'price'
-            : /hotel|star|room|resort/i.test(reason) ? 'hotel'
-              : /travel|stop|layover|flight|connection/i.test(reason) ? 'nonstop'
-                : /place|destination|where|somewhere|country|city/i.test(reason) ? 'destination' : null;
-        if (what) improve(what, ` after '${reason}'`);
-        else learn(reason ? `Rejected: '${reason}'; the rules stand until you say what to change` : 'Rejected; the rules stand until you say what to change');
+        const named = REASON_RULES.filter(([re]) => re.test(reason));
+        const stands = 'the rules stand until you say what to change';
+        if (!reason) learn(`Rejected; ${stands}`);
+        else if (named.length === 1) {
+          try { improve(named[0][1], ` after '${reason}'`); } catch (e) {
+            if (!(e instanceof AppError)) throw e;
+            learn(`Rejected: '${reason}'; ${e.message} The rules stand until you say what to change`);
+          }
+        } else if (named.length > 1) learn(`Rejected: '${reason}'; it names more than one rule (${named.map(n => n[2]).join(' and ')}), so ${stands}`);
+        else learn(`Rejected: '${reason}'; ${stands}`);
         break;
       }
       case 'taken': {
@@ -386,34 +547,54 @@ class HuntService {
         learn(`Marked the ${opp.trip.dest} trip at ${money(opp.trip.total)} as taken`);
         break;
       }
+      case 'threshold': {
+        // "Tell me about $50 wins": the saving worth an interruption, said back in the same words. The
+        // search is the same, so the trip on record is still the trip on record; the re-check judges
+        // against it, and a drop that was under the old threshold can now be told.
+        const t = intIn(payload.threshold, 1, hunt.budget, `The saving that is worth an interruption must be between $0.01 and your ${money(hunt.budget)} limit.`);
+        if (t === hunt.threshold) throw invalid(`The hunt already interrupts you for wins of ${money(t)} or more.`);
+        hunt.threshold = t;
+        learn(`Now interrupting for wins of ${money(t)} or more`);
+        rulesChanged = true;
+        keepBaseline = true;
+        break;
+      }
       case 'stop':
         if (hunt.status !== 'stopped') { hunt.status = 'stopped'; learn('Hunt stopped'); }
         break;
       case 'resume':
-        if (hunt.status !== 'hunting') { hunt.status = 'hunting'; learn('Hunt resumed'); }
+        if (hunt.status !== 'hunting') {
+          // A month with nothing left to price cannot be hunted again; a new hunt can name a later one.
+          if (hunt.dateMode === 'flexible' && this.monthClosed(hunt.month, now)) throw invalid(`${monthClosedWords(hunt.month)}; start a new hunt for a later month.`);
+          hunt.status = 'hunting';
+          learn('Hunt resumed');
+        }
         break;
       default: break;
     }
     hunt.updatedAt = at;
-    if (rulesChanged) {
+    if (rulesChanged && !keepBaseline) {
       // The recorded baseline was measured under the old rules, so it is not a comparable previous
       // search: the next run starts fresh and says what it found (or why nothing qualifies) rather
       // than inventing a drop or a breakthrough against rules the customer no longer has.
       hunt.baseline = null;
     }
     await this.save(hunt);
-    if (rulesChanged && hunt.status === 'hunting') return this.run(hunt, { reason: 'updated' });
-    return { hunt, result: null };
+    return { hunt, rulesChanged };
   }
 
   // ---- words -----------------------------------------------------------------------------------
+  // Exactly what runs: the timer while a hunt is hunting, and a page open whose last check is older
+  // than refresh()'s own limit; nothing else, and nothing when nothing meaningful happened.
   monitoringText() {
     const n = this.intervalMinutes;
-    if (n > 0) return `This site re-checks your hunts about every ${intervalWords(n)} while it is running and each time you open them. What it finds appears here and in My Trips, and by email once notifications are connected. It says nothing when nothing meaningful happened.`;
-    return 'This site re-checks your hunts each time you open them; nothing runs in between. What it finds appears here and in My Trips, and by email once notifications are connected.';
+    const open = `when you open one if its last check is more than ${intervalWords(REFRESH_MAX_AGE_MINUTES)} old`;
+    if (n > 0) return `This site re-checks your hunts about every ${intervalWords(n)} while they run, and ${open}. What it finds appears here and in My Trips, and by email once notifications are connected. It says nothing when nothing meaningful happened.`;
+    return `This site re-checks your hunts only ${open}; nothing runs in between. What it finds appears here and in My Trips, and by email once notifications are connected.`;
   }
 }
 
 HuntService.ACCEPTANCE = ACCEPTANCE;
+HuntService.REFRESH_MAX_AGE_MINUTES = REFRESH_MAX_AGE_MINUTES;
 
-module.exports = { HuntService, ACCEPTANCE, NOTIFY_KINDS, THRESHOLDS, WHO, DATE_MODES, SAVINGS_LEVELS, IMPROVEMENTS, ACTIONS, MEALS, BAGS, intervalWords };
+module.exports = { HuntService, ACCEPTANCE, NOTIFY_KINDS, THRESHOLDS, WHO, DATE_MODES, SAVINGS_LEVELS, IMPROVEMENTS, ACTIONS, MEALS, BAGS, REFRESH_MAX_AGE_MINUTES, MAX_OPPORTUNITIES, intervalWords, monthClosed };

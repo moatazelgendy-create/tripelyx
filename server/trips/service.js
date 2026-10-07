@@ -10,6 +10,9 @@ const { encodeSpec, decodeSpec } = require('./spec');
 const { priceTrip, publicTrip, requireTrip, DEFAULT_SETTINGS } = require('./pricing');
 const optimizer = require('./optimizer');
 const decision = require('./decision');
+const leaks = require('./leaks');
+const { whyNot } = require('./savemax');
+const { classifyChanges } = require('./facts');
 const { cutoffs, isOpen, nextCutoff } = require('./deadlines');
 
 const FUNNEL = ['home_visit', 'budget_entered', 'search_started', 'results_viewed', 'trip_selected', 'checkout_started', 'payment_attempted', 'booking_confirmed'];
@@ -30,6 +33,27 @@ const WATCH_MAX_AMOUNT = 100000000; // $1,000,000, the same ceiling as "name you
 
 // The rule as stored: validated and nothing else. Anything outside the three kinds, or an amount
 // that is not a positive whole number of cents, is refused rather than guessed at.
+// What the traveler asked for, kept on the quote for the booking page's victory screen: the nights
+// (only when the link carried a stated length), the style and what matters most (only when stated,
+// not the planner's defaults), the standing rules (kept both as `rules` and flattened, so a reader
+// of either shape finds them) and the destination only when the traveler named one: `dest` on the
+// context (the dream flow, the agent) or the search's own `dest` / a single `ds`. A destination the
+// platform chose is never written down as something the traveler asked for and "kept": the booked
+// trip's own facts are not asks. Nothing here is inferred; an ask that was never stated is absent.
+function destAsked(cx, maps) {
+  const p = cx || {};
+  const s = p.searchParams ? new URLSearchParams(p.searchParams) : null;
+  const ds = s && typeof s.get('ds') === 'string' ? s.get('ds').split(',').filter(Boolean) : [];
+  const id = p.dest || (s && s.get('dest')) || (ds.length === 1 ? ds[0] : null);
+  if (!id) return null;
+  const d = maps && maps.getDestination(String(id));
+  return d ? d.name : null;
+}
+function quoteAsks(cx, t, maps) {
+  const p = cx || {}, rules = p.rules || null;
+  return { nightsAsked: p.nightsAsked || null, style: p.style && p.style !== 'surprise' ? p.style : null, priority: p.priority && p.priority !== 'price' ? p.priority : null, rules, dest: destAsked(cx, maps), ...(rules || {}) };
+}
+
 function watchRule(input) {
   if (input === undefined || input === null) return { ...WATCH_DEFAULT_RULE };
   const kind = input && typeof input === 'object' ? input.kind : input;
@@ -216,7 +240,64 @@ class TripService {
     return { available: true, trip: t, promo, status: diff === 0 ? 'same' : diff < 0 ? 'cheaper' : 'higher', diff: Math.abs(diff) };
   }
 
-  async createQuote(token, { approvedTotal, budget, keep, allowOver, promoCode, user }) {
+  // ---- the money leak hunter ----
+  // Only facts the traveler stated reach the engine as preferences: the trip context's style and
+  // what matters most (null when they are the planner's defaults, since a default was not said), the
+  // nights asked, the bag they said they travel with (`bg` on the link; null when nothing was said,
+  // so a page never claims "nothing you told me asks for a checked bag" to someone who said they
+  // check one), the standing rules, and the party from the spec. A page carries no hotel or flight
+  // locks; the dates are held when the traveler stated an exact date, on the context itself
+  // (`dm=exact`: the dream flow's "I have to be there on") or in the search it came from
+  // (`when=exact`), and the hold reaches the engine both as `dateMode` and as `locks.dates`, so no
+  // page moves a date the traveler fixed. The promo is the one the page carries, so every priced
+  // version moves with it and no saving is a promo's shadow.
+  datesHeld(cx) {
+    if (!cx) return false;
+    if (cx.dateMode === 'exact') return true;
+    const s = cx.searchParams ? new URLSearchParams(cx.searchParams) : null;
+    return !!(s && s.get('when') === 'exact');
+  }
+  leakOptions(trip, cx, promo = null) {
+    const p = cx || {};
+    return { now: this.now(), locks: this.datesHeld(cx) ? { dates: true } : {}, promo, prefs: { style: p.style && p.style !== 'surprise' ? p.style : null, priority: p.priority && p.priority !== 'price' ? p.priority : null, who: trip.spec.who, bags: p.bags || null, rules: p.rules || null, nightsAsked: p.nightsAsked || null } };
+  }
+  leakContext(cx) {
+    return { ...(cx || {}), dateMode: this.datesHeld(cx) ? 'exact' : null };
+  }
+  // Everything the Money Leak page shows, each part the engine's own data (its words live in `text`).
+  // `cut` is the amount to take out, in cents, for the cut-in-order walk; null skips it. The biggest
+  // leak also carries `givesUp`: the facts' trade-offs between the trip and that version, in words.
+  async moneyLeaks(trip, cx, { cut = null, promo = null } = {}) {
+    const settings = await this.settings(), inv = this.inv, o = this.leakOptions(trip, cx, promo), lctx = this.leakContext(cx);
+    const lean = leaks.lean(inv, trip, settings, lctx, o);
+    const big = leaks.biggestLeak(inv, trip, settings, lctx, o);
+    // The facts' trade-off rows between the trip and the leak's version, in savemax's words; a row
+    // those words do not cover is still named, so "nothing given up" is never said over a row.
+    const alt = big ? requireTrip(priceTrip(inv, decodeSpec(big.token), settings, { promo })) : null;
+    const rows = alt ? classifyChanges(trip, alt).tradeoffs : [], words = alt ? whyNot(alt, trip, lctx) : [];
+    const givesUp = words.length || !rows.length ? words : rows.map(r => `${r.label}: ${r.b}`);
+    return {
+      breakdown: leaks.breakdown(trip, o), extras: leaks.optionalExtras(inv, trip, settings, lctx, o), lean,
+      addBack: leaks.addBack(inv, lean.lean.trip, lean.removed, settings, lctx, o), removeOne: leaks.removeOne(inv, trip, settings, lctx, o),
+      biggestLeak: big ? { ...big, givesUp } : null, freeSavings: leaks.freeSavings(inv, trip, settings, lctx, o),
+      // Why each optional item stays, when the engine says it (so a transfer kept for "you land late"
+      // is never called "one you asked for"); null on an engine without it.
+      whyKept: typeof leaks.whyKept === 'function' ? leaks.whyKept(inv, trip, settings, lctx, o) : null,
+      cut: cut ? leaks.cutInOrder(inv, trip, settings, lctx, Math.max(0, trip.total - cut), o) : null,
+      hotelFees: leaks.hotelFees(trip), bags: leaks.bagConfigs(inv, trip, settings, lctx, o), seats: leaks.seatFees(trip), meals: leaks.mealCheck(inv, trip, settings, lctx, o),
+      nights: leaks.nightChecks(inv, trip, settings, lctx, o), duplicates: leaks.duplicates(inv, trip, settings, o), car: leaks.carCheck(trip), notAvailable: leaks.notAvailable(trip),
+    };
+  }
+  // The review page's two checks before the quote: the savings check (the max, the trip, what is not
+  // used; no history on a page) and the money leak check, plus the breakdown for "what am I paying for?".
+  async leakCheck(trip, cx, { promo = null } = {}) {
+    const settings = await this.settings(), o = this.leakOptions(trip, cx, promo), lctx = this.leakContext(cx);
+    return { scorecard: leaks.scorecard({ max: (cx && cx.budget) || null, trip, history: [] }, this.inv, settings), scan: leaks.finalScan(this.inv, trip, settings, lctx, o), breakdown: leaks.breakdown(trip, o) };
+  }
+
+  // `cx` is the trip-page context the review carried: what the traveler asked for travels onto the
+  // quote as `budget.asks`, so the booking page can say which asks the booked trip's facts meet.
+  async createQuote(token, { approvedTotal, budget, keep, allowOver, promoCode, user, cx = null }) {
     const v = await this.verify(token, approvedTotal, { promoCode });
     if (!v.available) throw new AppError('trip_unavailable', 'Part of this trip is no longer available. Please rebuild it.', 410);
     if (v.status !== 'same') throw new AppError('price_changed', `Your trip price changed to ${money(v.trip.total)}. Please review it before continuing.`, 409, { newTotal: v.trip.total });
@@ -252,7 +333,7 @@ class TripService {
         activities: t.activities.map(a => ({ id: a.id, amount: a.pricePerPerson * t.spec.travelers })),
         transfer: sum(['transfer']), service: sum(['service']), discount: -sum(['promo']),
       },
-      budget: { budget: budget || null, keep: budget && keep ? keep : 0, allowOver: allowOver || 0 },
+      budget: { budget: budget || null, keep: budget && keep ? keep : 0, allowOver: allowOver || 0, asks: quoteAsks(cx, t, this.inv.maps) },
       promoCode: v.promo ? v.promo.code : null,
       internal: t.internal,
       userId: user ? user.id : null,
