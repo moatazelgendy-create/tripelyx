@@ -4,7 +4,7 @@ const { AppError } = require('../lib/errors');
 const { addDays, today, isIsoDate, daysBetween } = require('../lib/dates');
 const { str } = require('../lib/validate');
 const optimizer = require('../trips/optimizer');
-const { encodeSpec, decodeSpec } = require('../trips/spec');
+const { encodeSpec } = require('../trips/spec');
 const { publicTrip, requireTrip } = require('../trips/pricing');
 const { WATCH_DEFAULT_RULE } = require('../trips/service');
 const { homeView } = require('../views/trips/home');
@@ -20,10 +20,13 @@ const { authView, myTripsView } = require('../views/trips/account');
 const { leaksView } = require('../views/trips/leaks');
 const { memoriesView } = require('../views/trips/memories');
 const pages = require('../views/trips/pages');
-const { notFoundView } = require('../views/errors');
+const { notFoundView, linkGoneView } = require('../views/errors');
 
 const send = (res, view) => res.type('html').send(String(view));
-const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+// Accents are dropped first, so Reykjavík is /trips-to-reykjavik. The old form (accents turned into
+// dashes, /trips-to-reykjav-k) still answers with a permanent redirect.
+const slug = s => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+const oldSlug = s => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 const SAMPLE_ORIGIN = 'NYC';
 
 // Browsers send Sec-Fetch-Site on form posts; a cross-site post to a state-changing page is refused.
@@ -207,7 +210,11 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
       const was = typeof req.query.pxwas === 'string' && main.protected ? data.trip.activityOptions.find(a => a.id === req.query.pxwas && a.id !== main.main.id) || null : null;
       const switched = was ? { from: was, to: main.main } : null;
       send(res, tripView(ctx, { data, cx, user: user(req), saved, named: ['high', 'low'].includes(req.query.named) ? req.query.named : null, promo, promoError, main, pxNote, switched }));
-    } catch (e) { next(e); }
+    } catch (e) {
+      // A part no supplier offers any more: rebuild around the same search, as the review page does.
+      if (e instanceof AppError && e.code === 'trip_unavailable') return send(res.status(410), unavailableView(ctx, { token: req.params.token, cx: optimizer.parseContext(req.query) }));
+      next(e);
+    }
   });
 
   r.get('/trip/:token/change', (req, res, next) => {
@@ -332,7 +339,9 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
       for (const tok of tokens) {
         try { items.push({ ...(await svc.trip(tok, cx)), label: wanted.get(tok) || null }); } catch (e) { if (!(e instanceof AppError)) throw e; }
       }
-      if (items.length < 2) return send(res.status(410), unavailableView(ctx, { token: tokens[0], cx }));
+      // One trip still opens: show it. None: the link is gone, said plainly with a way forward.
+      if (items.length === 1) return res.redirect(303, `/trip/${items[0].token}?${optimizer.contextParams(cx)}`);
+      if (!items.length) return send(res.status(410), linkGoneView(ctx));
       send(res, compareView(ctx, { items, cx, mode: 'compare', all: req.query.all === '1' }));
     } catch (e) { next(e); }
   });
@@ -402,20 +411,11 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
     } catch (e) { next(e); }
   });
 
-  r.get('/api/trips/:token/price', async (req, res, next) => {
-    try {
-      const t = await svc.price(decodeSpec(req.params.token));
-      if (!t) throw new AppError('trip_unavailable', 'Part of this trip is no longer available.', 410);
-      res.setHeader('Cache-Control', 'no-store');
-      const p = publicTrip(t);
-      res.json({ token: encodeSpec(t.spec), total: p.total, perTraveler: p.perTraveler, perNight: p.perNight, lines: p.lines, demo: p.demo });
-    } catch (e) { next(e); }
-  });
-
   // ---- accounts ----
   r.get('/signin', (req, res) => send(res, authView(ctx, { mode: 'signin', next: str(req.query.next, 300) })));
   r.get('/signup', (req, res) => send(res, authView(ctx, { mode: 'signup', next: str(req.query.next, 300) })));
-  const safeNext = n => (typeof n === 'string' && /^\/(?!\/)/.test(n) ? n.slice(0, 300) : '/my-trips');
+  // Only a path on this site: "//host" and "/\\host" are other sites to a browser, so any backslash is refused.
+  const safeNext = n => (typeof n === 'string' && /^\/(?![\/\\])/.test(n) && !n.includes('\\') ? n.slice(0, 300) : '/my-trips');
   r.post('/signin', writeLimiter, sameOrigin, form, async (req, res, next) => {
     try {
       const u = await accounts.authenticate(req.body);
@@ -522,7 +522,10 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
   });
   r.get('/trips-to-:slug', (req, res, next) => {
     const d = svc.inv.maps.listDestinations().find(x => slug(x.name) === req.params.slug);
-    if (!d) return send(res.status(404), notFoundView(ctx));
+    if (!d) {
+      const moved = svc.inv.maps.listDestinations().find(x => oldSlug(x.name) === req.params.slug);
+      return moved ? res.redirect(301, `/trips-to-${slug(moved.name)}`) : send(res.status(404), notFoundView(ctx));
+    }
     landing(req, res, next, { title: `Trips to ${d.name}`, eyebrow: `${d.name}, ${d.country}`, lead: `${d.blurb} Tell us your budget and we’ll build the complete trip: flights, hotel and experiences, with every tax and fee in the price.`, intro: `Complete ${d.name} trips priced in full.`, canonical: `/trips-to-${req.params.slug}`, budget: 3000, raw: { dest: d.id, b: '3000' }, moreLinks: [[`/dream?dest=${d.id}&b=1500&from=${SAMPLE_ORIGIN}`, `${d.name} for $1,500?`, 'See how close we can get'], ['/destinations', 'All destinations', 'Where else your budget can go']] });
   });
   r.get('/beach-vacations', (req, res, next) => landing(req, res, next, { title: 'Beach vacations by budget', eyebrow: 'Beach', lead: 'Tell us what you want to spend and we’ll find the beach trip that fits: flights, a hotel on or near the sand, and the extras, priced in full.', intro: 'The three best beach trips for $1,500.', canonical: '/beach-vacations', budget: 1500, raw: { style: 'beach' }, moreLinks: [['/trips-under-1000', 'Trips under $1,000', ''], ['/trips-under-2000', 'Trips under $2,000', '']] }));
@@ -536,7 +539,7 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
     landing(req, res, next, { title: `Trips under $${n.toLocaleString('en-US')}`, eyebrow: 'Budget inspiration', lead: `Complete trips (flights, hotel and more) for under $${n.toLocaleString('en-US')}, taxes and fees included. Change the budget to see what else is possible.`, intro: `What $${n.toLocaleString('en-US')} really buys${raw.style ? ` for a ${raw.style} trip` : ''}.`, canonical: `/trips-under-${n}`, budget: n, raw, moreLinks: [500, 1000, 1500, 2000, 3000, 5000].filter(x => x !== n).slice(0, 3).map(x => [`/trips-under-${x}`, `Trips under $${x.toLocaleString('en-US')}`, '']) });
   });
 
-  r.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nDisallow: /trip/\nDisallow: /trips\nDisallow: /compare\nDisallow: /plan\nDisallow: /checkout/\nDisallow: /booking/\nDisallow: /admin\nDisallow: /my-trips\n${config.publicBaseUrl ? `Sitemap: ${config.publicBaseUrl}/sitemap.xml\n` : ''}`));
+  r.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nDisallow: /trip/\nDisallow: /trips?\nDisallow: /trips$\nDisallow: /compare\nDisallow: /plan\nDisallow: /checkout/\nDisallow: /booking/\nDisallow: /admin\nDisallow: /my-trips\n${config.publicBaseUrl ? `Sitemap: ${config.publicBaseUrl}/sitemap.xml\n` : ''}`));
   r.get('/sitemap.xml', (req, res) => {
     const base = config.publicBaseUrl || '';
     const urls = ['/', '/how-it-works', '/faq', '/destinations', '/beach-vacations', '/about', '/contact', ...[500, 1000, 1500, 2000, 3000, 5000].map(n => `/trips-under-${n}`), ...svc.inv.maps.listDestinations().map(d => `/trips-to-${slug(d.name)}`)];

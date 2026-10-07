@@ -563,7 +563,9 @@ class AgentService {
     } catch (e) {
       if (!(e instanceof AppError)) throw e;
       s.current = null;
-      this.speak(s, 'Part of the trip on your canvas is no longer available from the suppliers, so I cleared it. Say "build it again" and I will rebuild from what you told me.');
+      this.speak(s, e.code === 'trip_expired'
+        ? 'The dates of the trip on your canvas have passed, so I cleared it. Say "build it again" and I will rebuild from what you told me.'
+        : 'Part of the trip on your canvas is no longer available from the suppliers, so I cleared it. Say "build it again" and I will rebuild from what you told me.');
       return null;
     }
   }

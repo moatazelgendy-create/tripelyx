@@ -357,7 +357,7 @@ const DESTINATIONS = [
   {
     id: 'reykjavik', name: 'Reykjavík', country: 'Iceland', airport: 'KEF', lat: 63.98, lon: -22.61,
     regions: ['europe', 'international'], styles: ['adventure', 'romantic'],
-    climate: 'cool', peak: [6, 7, 8, 12], hotelTax: 11, transfer: 60, passport: true, scene: 'mountain',
+    climate: 'cool', peak: [6, 7, 8, 12], hotelTax: 11, transfer: 60, passport: true, scene: 'sea',
     nonstopFrom: ['JFK', 'EWR', 'BOS', 'ORD', 'SEA', 'DEN', 'SFO', 'MIA', 'DFW'],
     blurb: 'Glaciers, geothermal lagoons and, in winter, the northern lights.',
     hotels: [
@@ -374,7 +374,7 @@ const DESTINATIONS = [
   {
     id: 'tokyo', name: 'Tokyo', country: 'Japan', airport: 'HND', lat: 35.55, lon: 139.78,
     regions: ['asia', 'international'], styles: ['city', 'adventure', 'nightlife'],
-    climate: 'temperate', peak: [3, 4, 10, 11], hotelTax: 10, transfer: 45, passport: true, scene: 'temple',
+    climate: 'temperate', peak: [3, 4, 10, 11], hotelTax: 10, transfer: 45, passport: true, scene: 'city',
     nonstopFrom: ['SFO', 'LAX', 'SEA', 'JFK', 'ORD', 'DFW', 'IAH', 'ATL', 'BOS', 'DEN'],
     blurb: 'Neon nights, quiet shrines and the best food city on the planet.',
     hotels: [
@@ -411,7 +411,7 @@ const DESTINATIONS = [
   {
     id: 'bangkok', name: 'Bangkok', country: 'Thailand', airport: 'BKK', lat: 13.69, lon: 100.75,
     regions: ['asia', 'international'], styles: ['city', 'nightlife', 'adventure'],
-    climate: 'tropical', peak: [11, 12, 1, 2], hotelTax: 17, transfer: 25, passport: true, scene: 'temple',
+    climate: 'tropical', peak: [11, 12, 1, 2], hotelTax: 17, transfer: 25, passport: true, scene: 'city',
     blurb: 'Golden temples, river ferries and street food until late.',
     hotels: [
       ['bkk-1', 'Riverside Lane Hotel', 3, 4.2, 52, 'BPR', 'Riverside'],

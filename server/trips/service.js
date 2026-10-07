@@ -191,6 +191,8 @@ class TripService {
 
   async trip(token, ctx = {}) {
     const spec = decodeSpec(token);
+    // A link to a trip whose dates have passed is no longer a trip anyone can book.
+    if (spec.depart < today(this.now())) throw new AppError('trip_expired', 'This trip link is no longer available: its dates have passed.', 410);
     const t = requireTrip(await this.price(spec));
     const scores = optimizer.scoreTrip(t, ctx);
     return {
@@ -254,7 +256,8 @@ class TripService {
   async verify(token, seen, { promoCode } = {}) {
     const promo = await this.promo(promoCode);
     const spec = decodeSpec(token);
-    if (spec.depart < today(this.now())) return { available: false }; // a trip that has already left cannot be quoted
+    // A trip whose dates have passed cannot be quoted, and is not "unavailable from a supplier" either.
+    if (spec.depart < today(this.now())) throw new AppError('trip_expired', 'This trip link is no longer available: its dates have passed.', 410);
     const t = await this.price(spec, { promo });
     if (!t) return { available: false };
     const diff = Number.isFinite(seen) && seen > 0 ? t.total - seen : 0;

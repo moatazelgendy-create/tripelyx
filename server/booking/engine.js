@@ -23,6 +23,9 @@ function partySize(query) {
   return query.guests || query.passengers || query.participants || 1;
 }
 
+// A booking in one of these states never took the traveler's money for good, so its quote may book again.
+const REBOOKABLE = ['pending_payment', 'expired', 'failed', 'cancelled'];
+
 class BookingEngine {
   constructor({ registry, store, payments, config, now = () => new Date(), log = console }) {
     // Providers that aren't one of the eight verticals (the trip package provider) register here.
@@ -164,8 +167,21 @@ class BookingEngine {
     return { ...q, expired: new Date(q.expiresAt) < this.now() };
   }
 
+  // One quote buys one trip. Once a booking made from a quote has been paid for, the quote cannot book
+  // again: a checkout link reopened after paying would otherwise sell the same trip twice.
+  async bookedFrom(quote, { except = null } = {}) {
+    for (const ref of quote.bookingRefs || []) {
+      if (ref === except) continue;
+      const b = await this.store.getBookingByRef(ref);
+      if (b && !REBOOKABLE.includes(b.status)) return b;
+    }
+    return null;
+  }
+
   async createBooking({ quoteId, traveler: rawTraveler, userId = null }) {
     const quote = await this.getQuote(quoteId);
+    const prior = await this.bookedFrom(quote);
+    if (prior) throw new AppError('already_booked', `This trip is already booked (Trip ID ${prior.ref}). Nothing more was charged.`, 409, { ref: prior.ref });
     if (quote.expired) throw new AppError('quote_expired', 'This price has expired. Please go back and choose again.', 410);
     const traveler = validateTraveler(rawTraveler);
     const accessToken = crypto.randomBytes(24).toString('base64url');
@@ -198,6 +214,8 @@ class BookingEngine {
     });
     booking.paymentIntentId = intent.id;
     await this.store.createBooking(booking);
+    const { expired, ...stored } = quote;
+    await this.store.saveQuote({ ...stored, bookingRefs: [...(quote.bookingRefs || []), booking.ref] });
     return { booking: this.publicBooking(booking), accessToken, payment: this.payments.clientConfig() };
   }
 
@@ -249,6 +267,8 @@ class BookingEngine {
     let b = await this.authorize(ref, auth);
     if (b.status === 'expired') throw new AppError('payment_window_expired', 'The time to pay for this booking ran out. Please book again.', 410);
     if (b.status !== 'pending_payment') throw new AppError('not_awaiting_payment', 'This booking has already been paid or closed.', 409);
+    const twin = b.quote && b.quote.id ? await this.bookedFrom(await this.getQuote(b.quote.id).catch(() => ({})), { except: b.ref }) : null;
+    if (twin) throw new AppError('already_booked', `This trip is already booked (Trip ID ${twin.ref}). Nothing was charged.`, 409, { ref: twin.ref });
 
     // Re-check availability and the supplier price immediately before charging. A changed price is
     // never charged: the traveler goes back to approve it.

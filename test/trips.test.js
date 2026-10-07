@@ -469,7 +469,7 @@ test('money and time: weekdays are a second budget, never a claim about anyone�
   const c = client(app.base);
   const none = await c.req(`/trips?${new URLSearchParams({ ...QUERY, b: '300' })}`);
   assert.equal(none.status, 200);
-  assert.match(none.text, /couldn’t build a trip that meets all your rules for \$300/);
+  assert.match(none.text, /couldn’t build a trip under your current rules for \$300/);
   // Every single-rule change is answered once: offered with its real price under "One rule away"
   // or named as not enough alone; the remaining links change the search in other ways.
   for (const offer of ['Change dates', 'Increase budget', 'Ask a trip specialist']) assert.match(none.text, new RegExp(offer));
@@ -1072,8 +1072,8 @@ test('deciding today and after: dated cutoffs shared by the pages and the refund
   }
   if (soonTrip.flight.refundable) assert.ok(soonItems.some(i => i.cutoff && !isOpen(i, soonNow)), 'the refundable fare closes 7 days out, so five days out it has passed');
   assert.doesNotMatch(soon.text, /the 24-hour rule applies|Free to cancel before/);
-  // A trip that has already left cannot be quoted.
-  assert.equal((await app.tripService.verify(encodeSpec({ ...soonSpec, depart: addDays(today(), -1) }), 0)).available, false);
+  // A trip that has already left cannot be quoted: its link says so instead of "unavailable".
+  await assert.rejects(app.tripService.verify(encodeSpec({ ...soonSpec, depart: addDays(today(), -1) }), 0), e => e.code === 'trip_expired' && e.status === 410);
 
   // After booking: what the booking covers, what it leaves out, what we never price; the full-refund
   // window dated 24 hours after booking; then each part's cutoff, the same ones the refund follows.

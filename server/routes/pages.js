@@ -34,6 +34,9 @@ function pagesRouter(ctx, { writeLimiter }) {
     const trip = typeof req.query.trip === 'string' && /^[A-Za-z0-9~._-]{3,400}$/.test(req.query.trip) ? req.query.trip : null;
     send(res, contactView(ctx, { trip }));
   });
+  // Addresses people type or other sites use for pages that live elsewhere here.
+  const ALIASES = { '/help': '/faq', '/support': '/contact', '/terms': '/legal/terms', '/privacy': '/legal/privacy', '/cookies': '/legal/cookies', '/refunds': '/legal/refunds', '/cancellation': '/legal/cancellation', ...(ctx.trips ? { '/login': '/signin', '/register': '/signup', '/account': '/my-trips' } : {}) };
+  for (const [from, to] of Object.entries(ALIASES)) r.get(from, (req, res) => res.redirect(301, to));
   r.get('/how-it-works', (req, res) => send(res, howItWorksView(ctx)));
   r.get('/faq', (req, res) => send(res, faqView(ctx)));
   r.get('/legal/:key', (req, res) => {
@@ -108,12 +111,15 @@ function pagesRouter(ctx, { writeLimiter }) {
     try {
       const quote = await engine.getQuote(req.params.quoteId);
       res.setHeader('Cache-Control', 'no-store');
+      const booked = await engine.bookedFrom(quote);
+      if (booked) throw new AppError('already_booked', `This trip is already booked (Trip ID ${booked.ref}). Nothing more was charged.`, 409, { ref: booked.ref });
       const view = quote.vertical === 'trips' ? tripCheckoutView : checkoutView;
       send(res, view(ctx, { quote, paymentConfig: ctx.payments.clientConfig() }));
     } catch (err) { next(err); }
   });
 
-  r.get('/manage', (req, res) => send(res, manageView(ctx)));
+  // ?ref= prefills the reference (from an "already booked" page or a booking link opened on another device).
+  r.get('/manage', (req, res) => send(res, manageView(ctx, { ref: /^[A-Z0-9-]{4,20}$/i.test(String(req.query.ref || '')) ? String(req.query.ref).toUpperCase() : '' })));
   r.post('/manage', writeLimiter, form, async (req, res, next) => {
     const ref = String(req.body.ref || '').trim().toUpperCase();
     const email = String(req.body.email || '').trim();
@@ -157,7 +163,7 @@ function pagesRouter(ctx, { writeLimiter }) {
       }
       send(res, bookingView(ctx, { ...data, notice }));
     } catch (err) {
-      if (err instanceof AppError && err.code === 'booking_not_found') return send(res.status(404), manageView(ctx, { ref: String(req.params.ref).toUpperCase().slice(0, 20) }));
+      if (err instanceof AppError && err.code === 'booking_not_found') return send(res.status(404), manageView(ctx, { ref: String(req.params.ref).toUpperCase().slice(0, 20), notice: 'To open this booking here, enter the email you booked with.' }));
       next(err);
     }
   });

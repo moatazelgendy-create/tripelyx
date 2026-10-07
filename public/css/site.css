@@ -400,7 +400,8 @@ a.card:hover { transform: translateY(-3px); box-shadow: var(--shadow); }
 
 /* Not found */
 .notfound { text-align: center; padding: 120px 0; }
-.notfound h1 { font-size: 64px; }
+.notfound h1 { font-size: clamp(32px, 6vw, 56px); text-wrap: balance; max-width: 900px; margin: 0 auto; }
+.notfound-actions { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; }
 
 /* Reveal-on-scroll micro-interaction (progressive: content is visible without JS). */
 .js .reveal { opacity: 0; transform: translateY(18px); transition: opacity .7s var(--ease), transform .7s var(--ease); }

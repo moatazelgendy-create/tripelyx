@@ -441,14 +441,15 @@ function bookingView(ctx, { booking: b, cancellationPreview: preview, payment, n
   return layout({ title: `Booking ${b.ref}`, body, ctx, scripts: ['/js/book.js'] });
 }
 
-function manageView(ctx, { error, ref = '', email = '' } = {}) {
+function manageView(ctx, { error, notice = null, ref = '', email = '' } = {}) {
   const body = html`
 <div class="container">
   <div class="confirm-hero"><div class="confirm-badge is-warn">${icon('search')}</div><h1>Manage your booking</h1><p>Enter your booking reference and the email you booked with.</p></div>
   <form class="form-card form confirm-card" method="post" action="/manage">
     ${error ? html`<div class="alert alert-error" role="alert">${icon('alert')}<span>${error}</span></div>` : ''}
+    ${notice && !error ? html`<div class="alert alert-info" role="status">${icon('info')}<span>${notice}</span></div>` : ''}
     <div class="form-row">
-      <div class="field"><label for="m-ref">Booking reference</label><input id="m-ref" name="ref" value="${ref}" required maxlength="20" autocomplete="off" placeholder="TX-XXXXXXXX"></div>
+      <div class="field"><label for="m-ref">Booking reference</label><input id="m-ref" name="ref" value="${ref}" required maxlength="20" autocomplete="off" placeholder="Your Trip ID"></div>
       <div class="field"><label for="m-email">Email</label><input id="m-email" name="email" type="email" value="${email}" required maxlength="120" autocomplete="email"></div>
     </div>
     <button class="btn btn-navy btn-lg" type="submit">Find booking ${icon('arrow')}</button>

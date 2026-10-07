@@ -260,7 +260,7 @@ class HuntService {
 
   async get(user, id) {
     const hunt = user && user.id ? await this.store.getRecord('hunt', String(id || '').slice(0, 60)) : null;
-    if (!hunt || hunt.userId !== user.id) throw new AppError('not_found', 'This hunt could not be found.', 404);
+    if (!hunt || hunt.userId !== user.id) throw new AppError('hunt_not_found', 'This hunt could not be found.', 404);
     return hunt;
   }
 
