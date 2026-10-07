@@ -26,6 +26,9 @@ function agentRouter(ctx, { writeLimiter, computeLimiter, sameOrigin }) {
   const owned = async (req, res) => {
     let s = await agent.load(req.params.id);
     if (!agent.owns(s, { visitor: req.visitor, user: user(req) })) { send(res.status(404), notFoundView(ctx)); return null; }
+    // A conversation that belongs to an account is not reachable from another account on the same
+    // browser: nothing said here may land on the first account's watches or hunts.
+    if (req.user && s.userId && s.userId !== req.user.id) { send(res.status(404), notFoundView(ctx)); return null; }
     // A conversation started before signing in becomes the account's once its owner signs in, so a
     // watch set here lives on the account and the conversation survives a cleared cookie.
     if (req.user && !s.userId) s = await agent.withState(s.id, st => { st.userId = req.user.id; return st; });

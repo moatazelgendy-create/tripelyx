@@ -149,6 +149,7 @@ test('a signed-up traveler watches a trip under each rule through the route; My 
   for (const form of [
     { kind: 'watch', rule: 'magic' }, { kind: 'watch', rule: 'under' }, { kind: 'watch', rule: 'under', amount: '' }, { kind: 'watch', rule: 'under', amount: '0' },
     { kind: 'watch', rule: 'under', amount: '-5' }, { kind: 'watch', rule: 'under', amount: 'abc' }, { kind: 'watch', rule: 'drop', amount: '12.345' }, { kind: 'watch', rule: 'drop', amount: '0' },
+    [['kind', 'watch'], ['rule', 'drop'], ['amount', '50'], ['amount', '60']], // a repeated field is not an amount, and never the default
   ]) {
     const r = await post(form);
     assert.equal(r.status, 422, JSON.stringify(form));

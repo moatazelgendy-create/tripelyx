@@ -245,8 +245,16 @@ function plan(inventory, q, { settings, now = new Date(), nightsOpen = false, ex
     key: k, label: LABELS[k], trip: chosen[k].trip, token: chosen[k].token, total: chosen[k].total, keep: q.budget - chosen[k].total, match: chosen[k].match,
     why: facts(chosen[k].trip, q.budget).concat(k === 'keep' && keepNote ? [keepNote] : []), differs: [],
   }));
-  for (const s of strategies) s.differs = strategies.filter(o => o !== s).map(o => `${o.label}: ${list(differences(s.trip, o.trip).all)}; ${fmt(Math.abs(s.total - o.total))} ${s.total > o.total ? 'more' : 'less'}`);
+  describeDiffers(strategies);
   return { ...base, strategies, dropped, pick: choosePick(strategies, q) };
+}
+
+// How each way differs from the others on the same table, in words and dollars, from the trips
+// themselves. Recomputed whenever the set changes, so a card never compares a way with one it
+// replaced.
+function describeDiffers(strategies) {
+  for (const s of strategies) s.differs = strategies.filter(o => o !== s).map(o => `${o.label}: ${list(differences(s.trip, o.trip).all)}; ${fmt(Math.abs(s.total - o.total))} ${s.total > o.total ? 'more' : 'less'}`);
+  return strategies;
 }
 
 function threeWays(inv, q, opts = {}) {
@@ -495,4 +503,4 @@ function budgetShift(inventory, q, current, newBudget, { settings, now = new Dat
   return { strategies, note };
 }
 
-module.exports = { threeWays, pushDirection, differentSet, mixTrips, mixable, budgetShift, differences, stepUp, crossesLock, shapeKey, LABELS, KEEP_SHARE };
+module.exports = { threeWays, pushDirection, differentSet, mixTrips, mixable, budgetShift, differences, describeDiffers, stepUp, crossesLock, shapeKey, LABELS, KEEP_SHARE };

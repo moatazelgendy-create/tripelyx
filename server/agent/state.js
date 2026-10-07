@@ -30,7 +30,7 @@ function newState({ id, visitor = null, userId = null, now = new Date() }) {
     current: null, options: [], proposal: null, declinedCheaper: null, job: null, challenged: {}, challenger: null, compromises: [],
     // A real decision the search is one answer away from (two priced trips, one trade), and the
     // priced departure windows on the table after "when can I go for less?"; both answered by letter.
-    decision: null, weeks: [],
+    decision: null, decisionFacts: null, weeks: [],
     // The mission, when the conversation started from one number: the three ways built for it, what
     // the traveler reacted to, the direction they chose (a signal for this trip only, never saved
     // without permission) and the variants pushed in that direction.

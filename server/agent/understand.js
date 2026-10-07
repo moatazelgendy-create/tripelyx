@@ -248,6 +248,11 @@ const INTENTS = [
   ['extend', /\b(extend|stay (?:a|one) (?:day|night) longer|add (?:a|one|1) (?:more )?night|(?:one|1|an extra|another) more night|give me (?:one|1|a) more night)\b/],
   ['shorten', /\b((?:one|1|a) (?:less|fewer) night|(?:one|1|a) night (?:less|fewer|shorter)|shorter|cut (?:a|one) night|drop (?:a|one) night|reduce to \d+ nights)\b/],
   ['watch', /\b(watch (?:for|this|the price|it|my trip|this trip|the trip)|set (?:up )?a watch|price watch|alert me|notify me|tell me when|let me know when)\b/],
+  // Hunt mode: "I can wait. Only come back when my money can do something better." The chip on the
+  // saver canvas says "Hunt for a better deal"; "hunt for it" restarts a stopped hunt.
+  ['hunt', /\b(hunt for (?:a |the |something|a better|it)|hunt mode|find me something worth booking|i can wait|keep looking for me|watch my money|let (?:the )?ai watch my money|wait for the right trip)\b/],
+  ['notGoodEnough', /\b(not good enough|not enough|that's not it)\b/],
+  ['stopHunt', /\b(stop (?:the )?hunt(?:ing)?|cancel (?:the )?hunt)\b/],
   ['elsewhere', /\b(another country|somewhere else|different (?:place|destination|country|city)|try (?:another|a different|somewhere)|change the destination|not (?:cancun|there|that place)|anywhere else)\b/],
   ['easier', /\b(easier|simpler|less hassle|less travel|shorter travel|more convenient|easy trip|make this easier)\b/],
   ['cheaper', /\b(cheaper|too expensive|too much|less money|lower(?: the)? price|bring (?:it|the price) down|save me|save (?:another|an extra|a further) \$?[\d,]+|cut the price|reduce the price|take \$?[\d,]+ back|find \$?[\d,]+|under budget|spend less|more affordable)\b/],
@@ -292,6 +297,8 @@ function understand(text, state, { maps, now = new Date() } = {}) {
   const lower = clean.toLowerCase().replace(/[\u2018\u2019]/g, "'");
   const { updates, ack } = extractUpdates(clean, { maps, now });
   const intents = INTENTS.filter(([, re]) => re.test(lower)).map(([k]) => k);
+  // "Not good enough" is an answer to a hunt's find; without a hunt on the conversation it is not an intent.
+  if (intents.includes('notGoodEnough') && !(state && (state.hunt || (state.mission && state.mission.hunt)))) intents.splice(intents.indexOf('notGoodEnough'), 1);
   // An answer to the question the agent just asked, read in that light.
   const pending = state && state.pending;
   if (pending === 'budgetType') {
@@ -349,9 +356,10 @@ function understand(text, state, { maps, now = new Date() } = {}) {
   // The rule a watch is asked with, from the words only: a drop of at least $N, any drop, or a total
   // at or under $N. No rule in the words means the agent states its default; nothing is inferred.
   if (intents.includes('watch')) {
-    const drop = lower.match(/\b(?:drops?|falls?|goes down|cheaper)\b[^$\d]{0,20}\$?\s*([\d,]+)/) || lower.match(/\$\s*([\d,]+)\s*(?:drop|less|cheaper|off)\b/);
-    const under = lower.match(/\b(?:at or under|under|below|at or below|reaches|hits)\s*\$?\s*([\d,]{3,})\b/);
-    if (under && !drop) updates.watchRule = { kind: 'under', amount: num(under[1]) * 100 };
+    // "drops below $1,200", "falls to $1,200", "cheaper than $1,200" name a total, not a drop of that size.
+    const under = lower.match(/\b(?:at or under|under|below|at or below|reaches|hits|less than|cheaper than|(?:drops?|falls?|goes down|gets? down|comes down|is|gets?)\s+(?:to|under|below))\s*\$?\s*([\d,]{3,})\b/);
+    const drop = under ? null : (lower.match(/\b(?:drops?|falls?|goes down|cheaper)\b(?:\s+by)?\s*\$?\s*([\d,]+)/) || lower.match(/\$\s*([\d,]+)\s*(?:drop|less|cheaper|off)\b/));
+    if (under) updates.watchRule = { kind: 'under', amount: num(under[1]) * 100 };
     else if (drop && num(drop[1]) >= 1) updates.watchRule = { kind: 'drop', amount: num(drop[1]) * 100 };
     else if (/\b(any (?:drop|change|time it(?:'s| is) cheaper)|gets? cheaper|becomes cheaper|goes down at all|same trip (?:gets|becomes|is) cheaper)\b/.test(lower)) updates.watchRule = { kind: 'any-drop' };
     delete updates.budget; delete updates.competitorTotal;

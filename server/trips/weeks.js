@@ -53,8 +53,8 @@ function windowDates(trip, ctx = {}, { now = new Date(), locks = {}, dates = nul
 // ---- the cheapest strong week -----------------------------------------------------------------
 // On each date the trip's own hotel is priced when the supplier has it then; when it does not, the
 // hotels the traveler's party, style and rules allow of the same star class or better (hotelChanged).
-// The fares are the ones the supplier returns for that date inside the traveler's rules, the trip's
-// own fare first (by id, else by fare name) so a tie goes to it. Each hotel × fare is priced in full
+// The fare is the trip's own (by id, else by fare name) wherever the supplier offers it, like for
+// like; only on a date without it do the fares inside the traveler's rules stand in (flightChanged). Each hotel × fare is priced in full
 // and the date keeps its cheapest STRONG version: decision.verdict grades it great or good with the
 // budget taken out, and it carries no compromise of weight 2 or more that the current trip does not
 // already carry. A trip the verdict itself grades below good sets the standard instead (`standard`
@@ -87,10 +87,17 @@ function cheapestWeeks(inventory, trip, settings, ctx = {}, { now = new Date(), 
   outer: for (const depart of list) {
     const hotelsOn = inv.hotels.search({ destId: s.dest, checkIn: depart, nights: s.nights, rooms });
     const own = hotelsOn.find(h => h.id === s.hotel) || null;
-    const hotels = own ? [own] : hotelsOn.filter(h => h.stars >= trip.hotel.stars && hotelAllowed(h, { who: s.who, style: ctx.style }) && rulesAllowHotel(h, ctx.rules)).sort((a, b) => a.stars - b.stars);
     const flightsOn = inv.flights.search({ from: s.from, destId: s.dest, depart, nights: s.nights, travelers: s.travelers });
     const ownFlight = flightsOn.find(f => f.id === s.flight) || flightsOn.find(f => f.name === trip.flight.name) || null;
-    const flights = flightsOn.filter(f => f === ownFlight || rulesAllowFlight(f, ctx.rules)).sort((a, b) => (b === ownFlight) - (a === ownFlight));
+    // Like for like: a locked hotel or locked flights the supplier does not offer that day are never
+    // swapped for another; the date is recorded as not offered, and the words say so.
+    const lockOut = locks && locks.hotel && !own ? 'your locked hotel is not offered that week' : locks && locks.flight && !ownFlight ? 'your locked flights are not offered that week' : null;
+    if (lockOut) { searched++; weak.push({ depart, total: null, reason: lockOut, kind: 'lock', grade: null }); continue; }
+    const hotels = own ? [own] : hotelsOn.filter(h => h.stars >= trip.hotel.stars && hotelAllowed(h, { who: s.who, style: ctx.style }) && rulesAllowHotel(h, ctx.rules)).sort((a, b) => a.stars - b.stars);
+    // The trip's own fare is the only one priced on a date the supplier offers it (by id, else by fare
+    // name), so a week is never "cheaper" because of a different fare; other fares inside the rules
+    // stand in only when it is not offered that day, and the swap is flagged (flightChanged).
+    const flights = ownFlight ? [ownFlight] : flightsOn.filter(f => rulesAllowFlight(f, ctx.rules));
     let keep = null, cheapest = null, nearest = null;
     for (const h of hotels) for (const f of flights) {
       if (priced >= limit) { truncated = true; break outer; }
@@ -147,11 +154,11 @@ function windowWords(out, { fmtDate = d => d } = {}) {
       const lo = Math.min(...others.map(w => w.total)), hi = Math.max(...others.map(w => w.total));
       const amounts = lo === hi ? fmt(lo) : `${fmt(lo)}–${fmt(hi)}`;
       compared = out.month
-        ? `Compared with the ${others.length} other ${monthName(out.month)} ${plural(others.length, 'window').replace(/^\d+ /, '')} I priced for this trip: ${amounts}`
-        : `Compared with the ${others.length} other ${plural(others.length, 'window').replace(/^\d+ /, '')} I priced for this trip between ${fmtDate(out.span.from)} and ${fmtDate(out.span.to)}: ${amounts}`;
+        ? `Compared with the ${others.length} other ${monthName(out.month)} ${plural(others.length, 'window').replace(/^\d+ /, '')} I priced and would recommend for this trip: ${amounts}`
+        : `Compared with the ${others.length} other ${plural(others.length, 'window').replace(/^\d+ /, '')} I priced and would recommend for this trip between ${fmtDate(out.span.from)} and ${fmtDate(out.span.to)}: ${amounts}`;
     }
   }
   return { headline, compared, honesty: HONESTY, partial: out && out.truncated ? PARTIAL : null };
 }
 
-module.exports = { cheapestWeeks, windowWords, windowDates, LABEL, COMPARABLE_LABEL, HONESTY, PARTIAL, MAX_PRICED };
+module.exports = { cheapestWeeks, windowWords, windowDates, monthName, LABEL, COMPARABLE_LABEL, HONESTY, PARTIAL, MAX_PRICED };

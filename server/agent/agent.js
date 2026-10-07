@@ -17,6 +17,8 @@ const challenge = require('../trips/challenge');
 const strategies = require('../trips/strategies');
 const savemax = require('../trips/savemax');
 const weeks = require('../trips/weeks');
+const hunter = require('../trips/hunter');
+const { HuntService } = require('../trips/hunts');
 const { classifyChanges, lineDiff } = require('../trips/facts');
 const { encodeSpec, decodeSpec } = require('../trips/spec');
 const { priceTrip } = require('../trips/pricing');
@@ -35,6 +37,11 @@ const MATERIAL_SAVING = 2500; // $25: a better option must be at least this much
 const DECISION_BAND = 5000;   // $50: two priced trips this close that trade exactly one thing for another are one decision, the traveler's
 const DECISION_PRIORITY = { length: 'longer', flights: 'flights', stay: 'hotel' }; // the extras set no priority
 const WATCH_DEFAULT = { kind: 'drop', amount: 10000 };
+// A hunt's threshold from the conversation: aggressive savers hear of $50 wins, balanced ones of $100.
+const HUNT_THRESHOLD = { balanced: 10000, aggressive: 5000 };
+// "Not good enough": the five things a hunt can be asked to improve, as chips and as words.
+const IMPROVE_CHIPS = [['Lower price', 'price'], ['Better hotel', 'hotel'], ['More nights', 'nights'], ['Nonstop', 'nonstop'], ['Different destination', 'destination']];
+const IMPROVE_WORDS = [['nonstop', /\b(nonstop|non-stop|non stop|direct)\b/], ['nights', /\b(nights?|longer|short)\b/], ['hotel', /\b(hotel|stars?|resort|room)\b/], ['destination', /\b(destination|somewhere else|different place|elsewhere|another (?:place|country|city))\b/], ['price', /\b(price|cheaper|cheap|cost|less|lower|expensive|money)\b/]];
 const sentences = arr => (arr.length ? ` ${arr.map(x => x.replace(/\.?$/, '.')).join(' ')}` : '');
 
 const THEIRS_ORDER = ['taxes', 'stars', 'meals', 'flight', 'cancel', 'bags', 'transfer', 'dates'];
@@ -60,6 +67,9 @@ const COMMANDS = ['Make it $200 cheaper', 'Don’t change the hotel', 'Give me o
 const flightWords = f => `${f.stops ? `${f.stops}-stop` : 'nonstop'} ${/nonstop/i.test(f.name) ? '' : `${f.name} `}flights, ${hm(f.durationMinutes)} each way`;
 const hotelWords = h => `${h.name} (${h.stars}-star${h.features.beachfront ? ', beachfront' : ''}${h.features.allInclusive ? ', all-inclusive' : h.features.breakfast ? ', breakfast included' : ''})`;
 const changeWords = rows => rows.map(r => `${r.label.toLowerCase()}: ${r.a} → ${r.b}`);
+// What a priced departure window changes besides its dates (the fare, the flights, the hotel, the
+// bags, the cancellation terms), from the pricer's own comparison; empty when it is the same trip.
+const windowChanges = w => (w && w.changes ? changeWords([...w.changes.tradeoffs, ...w.changes.neutral, ...w.changes.improvements].filter(r => !['dates', 'time'].includes(r.key))) : []);
 
 function tripCard(t, token, ctx = {}) {
   const sc = optimizer.scoreTrip(t, ctx);
@@ -74,11 +84,14 @@ function tripCard(t, token, ctx = {}) {
 }
 
 class AgentService {
-  constructor({ tripService, store, now = () => new Date(), log = console }) {
+  constructor({ tripService, store, now = () => new Date(), log = console, hunts = null }) {
     this.svc = tripService;
     this.store = store;
     this.now = now;
     this.log = log;
+    // The Savings Hunter (server/trips/hunts.js): hunts live on the account and run outside this
+    // conversation. Without it the agent says so instead of pretending to hunt.
+    this.hunts = hunts;
     this.jobs = new JobRunner({ log });
     this.breathe = breathe; // how a job yields between phases; tests hold a job here to look at it mid-search
     this.chains = new Map();
@@ -152,7 +165,7 @@ class AgentService {
     s.pending = null;
     // A menu (compromises, breakpoints, a decision, priced weeks) is answered on the next turn or not at all.
     const option = pending === 'options' ? (u.updates.option || (s.decision ? this.decisionByWords(s, text) : null)) : null;
-    if (!option) { if (s.compromises && s.compromises.length) s.compromises = []; if (s.breakpoints && s.breakpoints.length) s.breakpoints = []; s.decision = null; s.weeks = []; }
+    if (!option) { if (s.compromises && s.compromises.length) s.compromises = []; if (s.breakpoints && s.breakpoints.length) s.breakpoints = []; s.decision = null; s.decisionFacts = null; s.weeks = []; }
 
     if (intents.has('restart')) return this.restart(s);
     if (intents.has('stop') && !intents.has('keepLooking')) {
@@ -168,6 +181,9 @@ class AgentService {
     }
     if (intents.has('remember')) { await this.rememberDefaults(s); return this.afterTurn(s); }
     if (intents.has('forget')) { await this.forgetDefaults(s, /\bforget\b/.test(text.toLowerCase())); return this.afterTurn(s); }
+    // The answer to "what should I improve?" changes the hunt's rules, never the trip on the canvas:
+    // a bare "Nonstop" here is about the hunt, so it is read before the trip object is touched.
+    if (pending === 'improve' && this.huntRef(s)) { if (await this.improveFlow(s, text)) return this.afterTurn(s); }
 
     // Answers to what I asked, approvals and declines come first: they are about the thing on the table.
     if (option) { await this.chooseOption(s, option); return this.afterTurn(s); }
@@ -201,7 +217,12 @@ class AgentService {
     const cur = s.current ? await this.currentTrip(s) : null;
     for (const k of ['next', 'cancelInfo', 'afford', 'car', 'flightChange']) if (!handled && intents.has(k)) { this.generalAnswer(s, k, cur); handled = true; }
     if (handled) return this.afterTurn(s);
-    if (intents.has('watch')) { await this.watchFlow(s, u, cur); handled = true; }
+    // Hunt mode comes before the trip's own asks: "hunt for a better deal" carries the word "better"
+    // but asks for a hunt, not a dearer version of the trip.
+    if (intents.has('hunt')) { await this.huntFlow(s, u, cur); handled = true; }
+    else if (intents.has('stopHunt')) { await this.stopHuntFlow(s); handled = true; }
+    else if (intents.has('notGoodEnough')) { await this.notGoodEnoughFlow(s); handled = true; }
+    else if (intents.has('watch')) { await this.watchFlow(s, u, cur); handled = true; }
     else if (intents.has('ways') && s.mission) {
       const next = await this.waysFlow(s, u, cur);
       if (next !== 'continue') handled = true;
@@ -280,6 +301,7 @@ class AgentService {
     const fresh = state.newState({ id: s.id, visitor: s.visitor, userId: s.userId, now: this.now() });
     this.jobs.cancel(s.id);
     for (const k of Object.keys(fresh)) s[k] = fresh[k];
+    s.hunt = null; // the hunt itself stays on the account; this conversation just stops referring to it
     this.speak(s, 'Fresh start. What do you want your trip to do?');
     return s;
   }
@@ -313,7 +335,7 @@ class AgentService {
     s.assumed = assumed;
     s.proposal = null;
     s.options = [];
-    s.decision = null;
+    s.decision = null; s.decisionFacts = null;
     s.weeks = [];
     // A rebuild from a changed definition (other travelers, another month) starts a new receipt: the
     // lines of the old one would attribute the change to a price move of the same trip.
@@ -416,7 +438,7 @@ class AgentService {
 
     // Deep: every destination, every combination inside the rules.
     const all = this.maps.listDestinations().filter(d => !(settings.disabledDestinations || []).includes(d.id)).length;
-    await this.patch(id, s => { if (!mine(s)) return; setStep(s.job, 'deep', 'running', snapshot.mission ? (fastWays && fastWays.strategies.length ? `Trying to beat the three ways: checking all ${plural(all, 'destination')} we serve from ${this.maps.getOrigin(q.origin).city}` : `Checking all ${plural(all, 'destination')} we serve from ${this.maps.getOrigin(q.origin).city}, then building three ways to use ${money(q.budget)}`) : `Checking all ${plural(all, 'destination')} we serve from ${this.maps.getOrigin(q.origin).city}`, now()); });
+    await this.patch(id, s => { if (!mine(s)) return; setStep(s.job, 'deep', 'running', snapshot.mission ? (fastWays && fastWays.strategies.length ? `Trying to beat the ${fastWays.strategies.length === 3 ? 'three ways' : plural(fastWays.strategies.length, 'way')}: checking every destination we serve from ${this.maps.getOrigin(q.origin).city}` : `Checking every destination we serve from ${this.maps.getOrigin(q.origin).city}, then building three ways to use ${money(q.budget)}`) : `Checking every destination we serve from ${this.maps.getOrigin(q.origin).city}`, now()); });
     await this.breathe();
     if (job.cancelled) return;
     const deep = optimizer.search(this.inv, q, { settings, now: now() });
@@ -559,7 +581,12 @@ class AgentService {
       s.weeks = [];
       const budget = state.bookingBudget(s);
       const sameDates = s.current && decodeSpec(s.current.token).depart === w.depart;
-      return this.applyProposal(s, { kind: 'dates', token: w.token, total: w.total, delta: s.current ? w.total - s.current.total : 0, label: sameDates ? 'Cheaper version, same dates' : `Leaving ${longDate(w.depart)}`, over: !!(budget && w.total > budget) });
+      const over = !!(budget && w.total > budget);
+      const p = { kind: 'dates', token: w.token, total: w.total, delta: s.current ? w.total - s.current.total : 0, label: sameDates ? 'Cheaper version, same dates' : `Leaving ${longDate(w.depart)}`, over };
+      // A week over the ceiling is never applied by letter: like every other path over the number,
+      // it is a proposal that waits for "go over".
+      if (over && !s.overApproved) { this.propose(s, p, `${p.label} is ${money(w.total)}, ${money(w.total - budget)} over your ${money(budget)} ceiling. Say "go over" to take it anyway, or "keep" to stay on your dates.`); return true; }
+      return this.applyProposal(s, p);
     }
     if (typeof kind === 'string' && /^[A-E]$/.test(kind) && s.breakpoints && s.breakpoints.length) {
       const b = s.breakpoints.find(x => x.letter === kind);
@@ -670,7 +697,7 @@ class AgentService {
     else if (locks.flight) cands.push({ key: 'flight', label: 'Change the flights', ctx, locks: { ...locks, flight: false } });
     if (rules.minStars) cands.push({ key: 'stars', label: `Allow a hotel under ${rules.minStars} stars`, ctx: { ...ctx, rules: { ...rules, minStars: 0 } }, locks });
     if (locks.hotel) cands.push({ key: 'hotel', label: 'Change the hotel', ctx, locks: { ...locks, hotel: false } });
-    if (locks.dates) cands.push({ key: 'dates', label: s.locks.dates ? 'Move the dates by a day or two' : `Move the ${s.depart} departure by a day or two`, ctx, locks: { ...locks, dates: false } });
+    if (locks.dates) cands.push({ key: 'dates', label: s.locks.dates ? 'Unlock the dates and move to the cheapest I find' : `Move the ${s.depart} departure to the cheapest date I find`, ctx, locks: { ...locks, dates: false } });
     if (locks.nights && !locks.dates) cands.push({ key: 'nights', label: 'Fewer nights', ctx, locks: { ...locks, nights: false } });
     const out = [];
     for (const c of cands) {
@@ -970,10 +997,12 @@ class AgentService {
   }
 
   // ---- the mission: three ways, the traveler's reaction, the direction pushed ------------------------
-  stopLine(deep, q, options) {
+  // `chosen` names the decision the traveler took over the trip the search would have picked: the
+  // counts are then said against that pick, and the canvas is called theirs, not the strongest found.
+  stopLine(deep, q, options, { chosen = null } = {}) {
     const o = this.maps.getOrigin(q.origin);
     const up = options.find(x => x.kind === 'upgrade');
-    return `I'd stop here. I checked all ${plural(deep.destinations, 'destination')} we serve from ${o ? o.city : q.origin}: ${deep.considered} complete packages, every hotel and flight combination suppliers returned inside your rules${q.dateMode === 'anytime' ? ', on the departure dates they offered' : q.dateMode === 'flexible' ? ` in ${q.month}` : ' on your dates'}. ${deep.cheaperThanPick ? `${plural(deep.cheaperThanPick, 'cheaper package')} fit your budget; each gives something up against this one.` : 'Nothing cheaper fit your rules.'} ${up ? `One upgrade is worth it: +${money(up.upgrade.delta)} buys ${up.upgrade.gets}; it is in your options.` : 'The dearer ones don\'t improve what matters enough to pay for.'} This is the strongest option I found for your current rules.`;
+    return `I'd stop here. I checked all ${plural(deep.destinations, 'destination')} we serve from ${o ? o.city : q.origin}: ${deep.considered} complete packages, every hotel and flight combination suppliers returned inside your rules${q.dateMode === 'anytime' ? ', on the departure dates they offered' : q.dateMode === 'flexible' ? ` in ${q.month}` : ' on your dates'}. ${deep.cheaperThanPick ? `${plural(deep.cheaperThanPick, 'cheaper package')} fit your budget; each gives something up against ${chosen ? 'the one I would have picked' : 'this one'}.` : 'Nothing cheaper fit your rules.'} ${up ? `One upgrade is worth it: +${money(up.upgrade.delta)} buys ${up.upgrade.gets}; it is in your options.` : 'The dearer ones don\'t improve what matters enough to pay for.'} ${chosen ? `You chose ${chosen} over the one I would have picked, so that is the trip on your canvas; nothing else I checked changes it.` : 'This is the strongest option I found for your current rules.'}`;
   }
 
   async waysFlow(s, u, cur) {
@@ -1302,25 +1331,30 @@ class AgentService {
     const out = weeks.cheapestWeeks(this.inv, cur.trip, settings, ctx, { now: this.now(), locks });
     const w = weeks.windowWords(out, { fmtDate: longDate });
     const t = cur.trip;
-    // Every priced window but the trip itself; a cheaper version on the same dates is a window too.
+    // "Strong" only against a trip that is strong itself; a weaker trip is compared like for like.
+    const std = out.standard === 'strong' ? 'strong' : 'comparable';
+    // Every priced window but the trip itself.
     const others = out.windows.filter(x => x.token !== cur.token).slice(0, 5);
     const budget = state.bookingBudget(s);
     const partial = out.truncated ? ' Not every date could be priced in this pass.' : '';
-    const why = out.weak && out.weak.length ? (out.weak[0].kind === 'grade' ? `the same trip grades only "${out.weak[0].reason}" that week` : out.weak[0].reason) : '';
-    const weak = out.weak && out.weak.length ? ` ${plural(out.weak.length, 'other window')} I priced would mean a version I don't recommend (for example ${why}), so they are not offered.` : '';
-    if (!out.cheapest) { this.speak(s, `No other departure date I can search prices this trip as one I'd recommend; ${longDate(t.spec.depart)} at ${money(t.total)} stands.${weak}${partial} Today's prices only; nothing predicted.`); return; }
+    const weakAll = out.weak || [];
+    const lockOut = weakAll.filter(x => x.kind === 'lock'), weakOther = weakAll.filter(x => x.kind !== 'lock');
+    const why = weakOther.length ? (weakOther[0].kind === 'grade' ? `the same trip grades only "${weakOther[0].reason}" that week` : weakOther[0].reason) : '';
+    const weak = `${weakOther.length ? ` ${plural(weakOther.length, 'other window')} I priced would mean a version I don't recommend (for example ${why}), so they are not offered.` : ''}${lockOut.length ? ` ${plural(lockOut.length, 'other date')} would need a change you locked (${lockOut[0].reason}), so they are not offered.` : ''}`;
+    if (!out.windows.length) { this.speak(s, `No other departure date I can search prices this trip as one I'd recommend; ${longDate(t.spec.depart)} at ${money(t.total)} stands.${weak}${partial} Today's prices only; nothing predicted.`); return; }
     s.weeks = others.map((x, i) => ({ letter: 'ABCDE'[i], token: x.token, total: x.total, depart: x.depart }));
-    const changedWords = x => joinAnd([x.flightChanged && 'different flights', x.hotelChanged && 'a different hotel of the same class'].filter(Boolean));
-    const card = { kind: 'weeks', current: { depart: t.spec.depart, ret: t.flight.return, total: t.total }, windows: others.map((x, i) => ({ letter: 'ABCDE'[i], depart: x.depart, ret: x.ret, total: x.total, delta: x.delta, sameDates: x.depart === t.spec.depart, hotelChanged: !!x.hotelChanged, flightChanged: !!x.flightChanged, over: !!(budget && x.total > budget), token: x.token })), range: out.range, priced: out.priced, datesSearched: out.datesSearched, truncated: !!out.truncated, honesty: w.honesty, month: ctx.month };
-    const c = out.cheapest;
-    if (c.depart === t.spec.depart || !others.length) {
-      const sameDates = c.token !== cur.token && c.total < t.total ? ` The cheapest version on those dates is ${money(c.total)} with ${changedWords(c)} (yours is ${money(t.total)}); it is ${others.findIndex(x => x.token === c.token) >= 0 ? `Option ${'ABCDE'[others.findIndex(x => x.token === c.token)]}` : 'listed'} below.` : '';
-      this.speak(s, `Your dates are already the cheapest strong week I priced for this trip: ${longDate(c.depart)} – ${longDate(c.ret)}.${sameDates}${w.compared ? ` ${w.compared}.` : ''}${others.some(x => x.depart !== t.spec.depart) ? ' The next-cheapest windows are below if a different week suits you better.' : ''}${weak}${partial} ${w.honesty}`, others.length ? card : null);
+    const card = { kind: 'weeks', standard: std, current: { depart: t.spec.depart, ret: t.flight.return, total: t.total }, windows: others.map((x, i) => ({ letter: 'ABCDE'[i], depart: x.depart, ret: x.ret, total: x.total, delta: x.delta, sameDates: x.depart === t.spec.depart, hotelChanged: !!x.hotelChanged, flightChanged: !!x.flightChanged, changed: joinAnd(windowChanges(x)) || null, over: !!(budget && x.total > budget), token: x.token })), range: out.range, priced: out.priced, datesSearched: out.datesSearched, truncated: !!out.truncated, honesty: w.honesty, month: ctx.month };
+    // `cheaper` is a window strictly cheaper than the trip in hand; a dearer week is never "the
+    // cheapest week I found", and the trip's own dates are the answer when nothing beats them.
+    const c = out.cheaper;
+    if (!c) {
+      this.speak(s, `Your dates are already the cheapest ${std} week I priced for this trip: ${longDate(t.spec.depart)} – ${longDate(t.flight.return)} at ${money(t.total)}.${w.compared ? ` ${w.compared}.` : ''}${others.length ? ' The other windows are below if a different week suits you better; each says what it changes besides the date.' : ''}${weak}${partial} ${w.honesty}`, others.length ? card : null);
       if (others.length) s.pending = 'options';
       return;
     }
     s.pending = 'options';
-    this.speak(s, `Today's prices, not a forecast: the cheapest strong week I priced for this trip is ${w.headline}, ${money(t.total - c.total)} less than ${longDate(t.spec.depart)} at ${money(t.total)}.${w.compared ? ` ${w.compared}.` : ''}${c.hotelChanged ? ' That week the hotel is a different one of the same class, said on the card.' : ''}${weak}${partial} Pick a letter to move to that week, or keep your dates. ${w.honesty}`, card);
+    const differs = joinAnd(windowChanges(c));
+    this.speak(s, `Today's prices, not a forecast: the cheapest ${std} week I priced for this trip is ${w.headline}, ${money(t.total - c.total)} less than ${longDate(t.spec.depart)} at ${money(t.total)}.${differs ? ` That week is not identical: ${differs}; the card says so.` : ' Same hotel, same fare.'}${w.compared ? ` ${w.compared}.` : ''}${weak}${partial} Pick a letter to move to that week, or keep your dates. ${w.honesty}`, card);
   }
 
   // "Watch this trip": a real watch on the traveler's account with the rule they named, or the stated
@@ -1334,6 +1368,143 @@ class AgentService {
     let rec;
     try { rec = await this.svc.watchTrip({ id: s.userId }, target.token, { budget: state.bookingBudget(s), rule }); } catch (e) { if (e instanceof AppError) { this.speak(s, e.message); return; } throw e; }
     this.speak(s, `Watching it. ${rec.ruleText}. I re-price it each time you open My Trips and say something only when that rule is met${u.updates.watchRule ? '' : '; say "tell me when it drops $50" or "when it is under $1,200" for a different rule'}. No other nudges, ever.${this.svc.demo ? ' Email alerts arrive once notifications are connected.' : ''}`, { kind: 'link', href: '/my-trips', label: 'Your watches in My Trips' });
+  }
+
+  // ---- hunt mode: "I can wait. Only come back when my money can do something better." ----------------
+  // A hunt is a record on the account (server/trips/hunts.js) that the service re-runs on its own; the
+  // conversation only refers to it by id and name, on the mission when there is one (so the canvas can
+  // show it) and on the conversation itself otherwise. Every number spoken here is the record's.
+  huntRef(s) { return (s.mission ? s.mission.hunt : s.hunt) || null; }
+  setHuntRef(s, hunt) {
+    const ref = hunt ? { id: hunt.id, name: hunt.name, status: hunt.status } : null;
+    if (s.mission) s.mission.hunt = ref; else s.hunt = ref;
+    return ref;
+  }
+  huntUser(s) { return { id: s.userId }; }
+
+  // The hunt's rules from the trip object: only what the traveler stated, with the same stated
+  // defaults the search uses (two travelers, three nights when nothing was built). A hunt searches a
+  // window, never one date, so an exactly stated departure becomes its month, and that is said.
+  huntInput(s, cur) {
+    const travelers = s.travelers || (s.who ? optimizer.WHO_DEFAULT[s.who] : 2);
+    const who = s.who || (travelers === 1 ? 'solo' : travelers === 2 ? 'couple' : 'friends');
+    const month = s.dateMode === 'flexible' && s.month ? s.month : s.dateMode === 'exact' && s.depart ? s.depart.slice(0, 7) : null;
+    return {
+      budget: state.bookingBudget(s), origin: s.origin, travelers, who, dateMode: month ? 'flexible' : 'anytime', month,
+      minNights: s.nights || (cur ? cur.trip.spec.nights : 3), style: s.style || 'surprise',
+      rules: {
+        flightStops: s.flightStops === 'nonstop' ? 'nonstop' : null, flightRule: s.flightStops === 'nonstop' ? (s.flightRule === 'hard' ? 'hard' : 'preferred') : null,
+        minStars: s.hotelRules.minStars || null, refundable: s.refundable ? true : null,
+        meals: s.hotelRules.allInclusive ? 'all-inclusive' : s.hotelRules.breakfast ? 'breakfast' : null, bags: s.bags || null,
+      },
+      savedToken: s.current ? s.current.token : null,
+      threshold: HUNT_THRESHOLD[s.savingsLevel] || HUNT_THRESHOLD.balanced,
+      savingsLevel: s.savingsLevel || 'balanced',
+    };
+  }
+
+  // The compact card: the persistent card's facts from the record (the limit, the status, the best
+  // current opportunity as this run verified it or re-priced now, what it keeps) and the newest decision.
+  async huntCardFor(hunt, { opportunity = null } = {}) {
+    const b = hunt.baseline && hunt.baseline.best ? hunt.baseline.best : null;
+    let best = null;
+    if (b && opportunity && opportunity.trip.token === b.token) best = opportunity.trip;
+    else if (b) {
+      const t = await this.priceToken(b.token);
+      const d = this.maps.getDestination(b.dest);
+      // Re-priced now when the suppliers still return it; otherwise the facts as the run recorded them.
+      best = t ? hunter.huntCard(t, b.token) : { token: b.token, total: b.total, nights: b.nights, dest: d ? d.name : b.dest, destId: b.dest, stops: b.stops, hotel: { stars: b.stars }, recorded: true };
+    }
+    return { kind: 'hunt', hunt: { id: hunt.id, name: hunt.name, budget: hunt.budget, status: hunt.status, best, kept: best ? hunt.budget - best.total : null, opportunity } };
+  }
+
+  // "Hunt for a better deal": a hunt on the account with this conversation's rules, run once now, and
+  // only the words that are true of what runs later. Anonymous travelers sign in first; nothing is
+  // stored for them. A hunt this conversation already has is confirmed or resumed, never duplicated.
+  async huntFlow(s, u, cur) {
+    if (!s.userId) { this.speak(s, 'A hunt lives on your account, so it keeps checking after this conversation. Sign in (this conversation stays yours) and say "hunt for a better deal" again.', { kind: 'link', href: `/signin?next=${encodeURIComponent(`/agent/${s.id}`)}`, label: 'Sign in to start the hunt' }); return; }
+    if (!this.hunts) { this.speak(s, 'Hunting needs the hunt service, which is not running here.'); return; }
+    const ref = this.huntRef(s);
+    const budget = state.bookingBudget(s);
+    if (ref) {
+      let hunt = null;
+      try { hunt = await this.hunts.get(this.huntUser(s), ref.id); } catch (e) { if (!(e instanceof AppError)) throw e; this.setHuntRef(s, null); }
+      if (hunt && hunt.budget === budget && hunt.origin === s.origin) {
+        if (hunt.status === 'hunting') { this.speak(s, `${hunt.name} is already hunting under its rules. ${this.hunts.monitoringText()}`, await this.huntCardFor(hunt)); return; }
+        const { hunt: resumed } = await this.hunts.respond(this.huntUser(s), hunt.id, 'resume');
+        this.setHuntRef(s, resumed);
+        this.speak(s, `${resumed.name} is hunting again under the rules it had. ${this.hunts.monitoringText()}`, await this.huntCardFor(resumed));
+        return;
+      }
+    }
+    const ask = state.nextQuestion(s);
+    if (ask) {
+      s.pending = ask.key;
+      const options = ask.origins ? this.maps.listOrigins().map(o => ({ label: `${o.city} (${o.airports[0].code})`, say: o.airports[0].code })) : null;
+      this.speak(s, `To hunt I need one thing first. ${ask.text} Then say "hunt for a better deal".`, options ? { kind: 'ask', options } : null);
+      return;
+    }
+    const input = this.huntInput(s, cur);
+    let hunt;
+    try { hunt = await this.hunts.create(this.huntUser(s), input); } catch (e) { if (e instanceof AppError) { this.speak(s, e.message); return; } throw e; }
+    this.setHuntRef(s, hunt);
+    const run = hunt.runs[hunt.runs.length - 1];
+    const opp = hunt.opportunities.length ? hunt.opportunities[hunt.opportunities.length - 1] : null;
+    const windowNote = s.dateMode === 'exact' && s.depart ? ` A hunt searches a window, not one date, so it looks at ${hunt.month}.` : '';
+    const first = opp ? hunter.decisionText(opp, hunt) : `The first check priced ${plural(run.considered, 'complete package')} across ${plural(run.destinations, 'destination')} and found nothing worth interrupting you for: ${run.silent}.`;
+    this.speak(s, `${HuntService.ACCEPTANCE} ${this.hunts.monitoringText()}${windowNote} ${first}`, await this.huntCardFor(hunt, { opportunity: opp }));
+  }
+
+  // "Not good enough": what should the hunt improve? Five answers, each moving one rule of the hunt.
+  async notGoodEnoughFlow(s) {
+    const ref = this.huntRef(s);
+    if (!this.hunts || !ref) { this.speak(s, 'There is no hunt on this conversation yet. Say "hunt for a better deal" and I start one with your rules.'); return; }
+    s.pending = 'improve';
+    this.speak(s, 'What should I improve? Each answer changes one rule of the hunt and re-checks; the rest stays as you set it.', { kind: 'ask', options: IMPROVE_CHIPS.map(([label]) => ({ label, say: label })) });
+  }
+
+  // The answer: one rule of the hunt moves, in the record's own words, and the hunt checks again now.
+  // "Keep waiting" (or any no) leaves the rules alone. Anything else was not an answer to this question.
+  async improveFlow(s, text) {
+    const lower = text.toLowerCase().trim().replace(/[.!]+$/, '');
+    const ref = this.huntRef(s);
+    if (/^(?:keep waiting|never mind|nothing|leave it|no|no thanks)$/.test(lower)) {
+      let out;
+      try { out = await this.hunts.respond(this.huntUser(s), ref.id, 'keep-waiting'); } catch (e) { if (!(e instanceof AppError)) throw e; if (e.status === 404) this.setHuntRef(s, null); this.speak(s, e.message); return true; }
+      this.setHuntRef(s, out.hunt);
+      this.speak(s, 'Kept as it is. The rules stand and I say nothing until one of them is met.', await this.huntCardFor(out.hunt));
+      return true;
+    }
+    const chip = IMPROVE_CHIPS.find(([label]) => label.toLowerCase() === lower);
+    const what = chip ? chip[1] : (IMPROVE_WORDS.find(([, re]) => re.test(lower)) || [null])[0];
+    if (!what) return false;
+    let out;
+    try { out = await this.hunts.respond(this.huntUser(s), ref.id, 'improve', { what }); } catch (e) { if (!(e instanceof AppError)) throw e; if (e.status === 404) this.setHuntRef(s, null); this.speak(s, e.message); return true; }
+    await this.huntUpdated(s, out);
+    return true;
+  }
+
+  // After a rule moved: what changed, in the words the record keeps, then what the re-check found or
+  // why it stayed quiet, with the card. A stopped hunt is not re-run, and that is said rather than implied.
+  async huntUpdated(s, { hunt, result }) {
+    this.setHuntRef(s, hunt);
+    const learned = hunt.learned.length ? hunt.learned[hunt.learned.length - 1].text : 'Nothing changed';
+    const added = result ? (result.opportunities || []).length : 0;
+    const opp = added ? hunt.opportunities[hunt.opportunities.length - 1] : null;
+    const text = !result ? `${learned}. The hunt is stopped, so I did not check again; say "hunt for it" to start it again.`
+      : opp ? `${learned}. ${hunter.decisionText(opp, hunt)}`
+        : `${learned}. I checked again with the new rule: ${result.silent}.`;
+    this.speak(s, text, await this.huntCardFor(hunt, { opportunity: opp }));
+  }
+
+  // "Stop hunting": the hunt stops; its rules and what it found stay on the account.
+  async stopHuntFlow(s) {
+    const ref = this.huntRef(s);
+    if (!this.hunts || !ref) { this.speak(s, 'There is no hunt on this conversation to stop.'); return; }
+    let out;
+    try { out = await this.hunts.respond(this.huntUser(s), ref.id, 'stop'); } catch (e) { if (!(e instanceof AppError)) throw e; if (e.status === 404) this.setHuntRef(s, null); this.speak(s, e.message); return; }
+    this.setHuntRef(s, out.hunt);
+    this.speak(s, 'Stopped. Nothing runs for this hunt any more; say "hunt for it" to start again.', await this.huntCardFor(out.hunt));
   }
 
   // ---- the mission: three ways fast, every destination tries to beat them ----------------------------
@@ -1365,7 +1536,8 @@ class AgentService {
   materiallyBetter(a, b) {
     if (encodeSpec(a.trip.spec) === encodeSpec(b.trip.spec)) return false;
     const ch = classifyChanges(a.trip, b.trip);
-    return (a.trip.total - b.trip.total >= MATERIAL_SAVING && ch.tradeoffs.length === 0) || (b.match >= a.match + 5 && b.trip.total <= a.trip.total);
+    if (ch.tradeoffs.length) return false; // a replacement never gives anything up, whatever it saves or scores
+    return a.trip.total - b.trip.total >= MATERIAL_SAVING || (b.match >= a.match + 5 && b.trip.total <= a.trip.total);
   }
 
   // The three ways on the table: from the likeliest destinations (stage 'fast', while the rest is
@@ -1390,7 +1562,7 @@ class AgentService {
     s.job.feed.push(`${stage === 'fast' ? `Built ${plural(m.strategies.length, 'way')} to use ${money(q.budget)} from ${joinAnd(names)}` : `Built ${plural(m.strategies.length, 'way')} to use ${money(q.budget)}`}${ways.dropped.length ? `; ${ways.dropped.map(d => `${d.key}: ${d.reason}`).join('; ')}` : ''}`);
     const n = m.strategies.length;
     const pickWords = m.pick && champion ? ` I'd start with ${champion.card.dest}: ${joinAnd(m.pick.reasons.map(r => r.charAt(0).toLowerCase() + r.slice(1)))}.` : '';
-    const next = stage === 'fast' ? ` I'm now checking all ${plural(all, 'destination')} and replace one of these only if something materially better turns up; I'll say so.` : '';
+    const next = stage === 'fast' ? ' I\'m now checking every destination we serve from here and replace one of these only if something materially better turns up; I\'ll say so.' : '';
     const where = stage === 'fast' ? ` from the likeliest destinations (${joinAnd(names)})` : '';
     const card = n ? this.waysCard(s, m, q) : null;
     if (saver) this.speak(s, n ? `You gave me ${money(q.budget)}. I don't think you need to spend it: ${champion.card.summary} comes to ${money(champion.total)} with every tax and fee, and you keep ${money(q.budget - champion.total)}.${sentences(ways.dropped.map(d => d.reason))}${n > 1 ? ` ${n === 3 ? 'Three ways' : 'Two ways'} to use the number${where} are below; which feels more like you? Or say "find $100", "how low can you go?" or "same trip for less".` : ' Say "find $100", "how low can you go?" or "same trip for less".'}${next}` : `Nothing I built fits ${money(q.budget)} as a trip I'd recommend; here is what fits.`, card);
@@ -1416,24 +1588,46 @@ class AgentService {
     for (const b of beaten) m.strategies[b.i] = this.wayEntry(b.w, ctx);
     for (const w of added) m.strategies.push(this.wayEntry(w, ctx));
     m.strategies.sort((a, b) => ['more', 'keep', 'special'].indexOf(a.key) - ['more', 'keep', 'special'].indexOf(b.key));
+    // How each way differs from the others is recomputed for the set now on the table, so the card
+    // never compares a way with one it replaced or states a delta against a trip that is not shown.
+    const wayFor = key => (beaten.find(b => b.w.key === key) || {}).w || added.find(w => w.key === key) || fastWays.strategies.find(w => w.key === key) || null;
+    const shown = m.strategies.map(e => wayFor(e.key)).filter(Boolean);
+    strategies.describeDiffers(shown);
+    for (const e of m.strategies) { const w = shown.find(x => x.key === e.key); if (w) e.differs = w.differs; }
     m.shown = [...m.shown, ...[...beaten.map(b => b.w), ...added].map(w => this.shownEntry(w))];
     if (ways.pick && m.strategies.some(w => w.key === ways.pick.key) && (!m.pick || beaten.some(b => b.w.key === m.pick.key) || added.some(w => w.key === ways.pick.key))) m.pick = this.saver(s) && m.strategies.some(w => w.key === 'keep') ? m.pick : ways.pick;
     const champion = m.pick ? m.strategies.find(w => w.key === m.pick.key) : m.strategies[0];
-    if (!m.chosen && champion) s.current = { token: champion.token, total: champion.total, since: now.toISOString() };
+    // The canvas follows the champion only while it still shows an untouched way from the first pass.
+    // A version the traveler applied meanwhile, or a decision still open, is never swapped under them:
+    // a new champion is then a proposal, like a way they chose by number.
+    const fastTokens = new Set(fastWays.strategies.map(w => w.token));
+    const untouched = !s.current || (fastTokens.has(s.current.token) && !s.proposal);
+    if (!m.chosen && champion && untouched) s.current = { token: champion.token, total: champion.total, since: now.toISOString() };
+    else if (!m.chosen && champion && s.current && champion.token !== s.current.token && (beaten.length || added.length)) {
+      const old = fastWays.strategies.find(w => w.key === champion.key) || fastWays.strategies[0];
+      if (old && old.token !== champion.token && !s.proposal) proposals.push({ old, w: wayFor(champion.key), applied: true });
+      else s.job.feed.push(`The set changed, but your canvas keeps the version you applied (${money(s.current.total)})`);
+    }
     s.job.best = champion ? champion.card : null;
     s.job.bestAtMs = Date.parse(now.toISOString()) - Date.parse(s.job.startedAt);
     s.job.improved = beaten.length > 0;
     s.job.feed.push(`Checked all ${plural(deep.destinations, 'destination')}: ${deep.considered} complete packages, ${deep.eligible} inside your rules and budget; ${beaten.length ? `${beaten.length} of the ${fastWays.strategies.length} ways replaced by something materially better` : `nothing beat the ${fastWays.strategies.length === 1 ? 'way' : 'ways'} from the first pass`}${added.length ? `; ${plural(added.length, 'way')} added` : ''}`);
     const same = (a, b) => { const ch = classifyChanges(a, b); const moved = new Set([...ch.improvements, ...ch.tradeoffs, ...ch.neutral].map(r => r.key)); return ['nights', 'flight', 'hotel', 'meals', 'area', 'transfer'].filter(k => !moved.has(k)).map(k => this.shortFact({ key: k, label: k, a: '', b: '' }, 'b', b)); };
+    const givenUp = ch => (ch.tradeoffs.length ? `Given up: ${joinAnd(changeWords(ch.tradeoffs))}.` : 'Nothing given up.');
     for (const b of beaten) {
       const ch = classifyChanges(b.old.trip, b.w.trip);
       const delta = b.w.total - b.old.total;
-      this.speak(s, `I found something that beats Option ${b.n} (${b.old.label}): ${b.w.trip.dest.name}${b.w.trip.dest.id !== b.old.trip.dest.id ? ` instead of ${b.old.trip.dest.name}` : ''}, ${delta < 0 ? `${money(-delta)} less` : delta > 0 ? `${money(delta)} more` : 'the same price'}${ch.improvements.length ? `; better: ${joinAnd(changeWords(ch.improvements))}` : ''}. Nothing given up. It replaces Option ${b.n}.`, { kind: 'beat', n: b.n, label: b.old.label, before: b.old.trip ? tripCard(b.old.trip, b.old.token, ctx) : null, after: m.strategies[b.i].card, same: same(b.old.trip, b.w.trip), better: changeWords(ch.improvements), neutral: changeWords(ch.neutral), delta });
+      const n = m.strategies.findIndex(x => x.key === b.w.key) + 1;
+      const entry = m.strategies.find(x => x.key === b.w.key);
+      this.speak(s, `I found something that beats Option ${n} (${b.old.label}): ${b.w.trip.dest.name}${b.w.trip.dest.id !== b.old.trip.dest.id ? ` instead of ${b.old.trip.dest.name}` : ''}, ${delta < 0 ? `${money(-delta)} less` : delta > 0 ? `${money(delta)} more` : 'the same price'}${ch.improvements.length ? `; better: ${joinAnd(changeWords(ch.improvements))}` : ''}. ${givenUp(ch)} It replaces Option ${n}.`, { kind: 'beat', n, label: b.old.label, before: b.old.trip ? tripCard(b.old.trip, b.old.token, ctx) : null, after: entry.card, same: same(b.old.trip, b.w.trip), better: changeWords(ch.improvements), neutral: changeWords(ch.neutral), delta });
     }
     for (const p of proposals) {
       if (s.proposal) { s.job.feed.push(`A materially better ${p.w.label} exists (${p.w.trip.dest.name}, ${money(p.w.total)}); a decision is already open, so it waits`); continue; }
       const ch = classifyChanges(p.old.trip, p.w.trip);
-      this.propose(s, { kind: 'switch', token: p.w.token, total: p.w.total, delta: p.w.total - p.old.total, from: s.current ? s.current.token : p.old.token, label: 'Better version of your pick', improvements: changeWords(ch.improvements), tradeoffs: changeWords(ch.tradeoffs), neutral: changeWords(ch.neutral), over: p.w.total > q.budget, nights: p.w.trip.spec.nights }, `Every destination checked: I found something that beats the ${p.old.label} you chose: ${p.w.trip.dest.name}, ${money(p.w.total)}${p.w.total < p.old.total ? `, ${money(p.old.total - p.w.total)} less` : ''}${ch.improvements.length ? `; better: ${joinAnd(changeWords(ch.improvements))}` : ''}. Nothing given up. Switch, or keep what you chose.`);
+      const text = p.applied
+        ? `Every destination checked: the strongest way is now ${p.w.trip.dest.name} at ${money(p.w.total)}${p.w.total < p.old.total ? `, ${money(p.old.total - p.w.total)} less than the ${p.old.label} it replaces` : ''}. You changed your trip meanwhile, so your canvas stays as you made it (${money(s.current.total)}). Switch, or keep what you have.`
+        : `Every destination checked: I found something that beats the ${p.old.label} you chose: ${p.w.trip.dest.name}, ${money(p.w.total)}${p.w.total < p.old.total ? `, ${money(p.old.total - p.w.total)} less` : ''}${ch.improvements.length ? `; better: ${joinAnd(changeWords(ch.improvements))}` : ''}. ${givenUp(ch)} Switch, or keep what you chose.`;
+      this.propose(s, { kind: 'switch', token: p.w.token, total: p.w.total, delta: s.current ? p.w.total - s.current.total : p.w.total - p.old.total, from: s.current ? s.current.token : p.old.token, label: p.applied ? 'Strongest way after every destination' : 'Better version of your pick', improvements: changeWords(ch.improvements), tradeoffs: changeWords(ch.tradeoffs), neutral: changeWords(ch.neutral), over: p.w.total > q.budget, nights: p.w.trip.spec.nights }, text);
     }
     const o = this.maps.getOrigin(q.origin);
     const stop = `I'd stop here. I checked all ${plural(deep.destinations, 'destination')} we serve from ${o ? o.city : q.origin}: ${deep.considered} complete packages, every hotel and flight combination suppliers returned inside your rules${q.dateMode === 'anytime' ? ', on the departure dates they offered' : q.dateMode === 'flexible' ? ` in ${q.month}` : ' on your dates'}.`;
@@ -1496,7 +1690,8 @@ class AgentService {
     const a = { letter: 'A', token: encodeSpec(best.trip.spec), total: best.trip.total, label: label(best.trip, 'a'), priority: DECISION_PRIORITY[down] || null, matters: matters[down] };
     const b = { letter: 'B', token: encodeSpec(c.trip.spec), total: c.trip.total, label: `${label(c.trip, 'b')}${when}`, priority: DECISION_PRIORITY[up] || null, matters: matters[up] };
     s.decision = [a, b];
-    s.decision.facts = { deep: { destinations: deep.destinations, considered: deep.considered, cheaperThanPick: deep.cheaperThanPick }, q: { origin: q.origin, dateMode: q.dateMode, month: q.month } };
+    // Kept on the state itself, not on the array: a property on the array is lost in JSON (Postgres).
+    s.decisionFacts = { deep: { destinations: deep.destinations, considered: deep.considered, cheaperThanPick: deep.cheaperThanPick }, q: { origin: q.origin, dateMode: q.dateMode, month: q.month }, pick: a.token };
     s.pending = 'options';
     const diff = Math.abs(c.trip.total - best.trip.total);
     this.speak(s, `I'm one decision away. For ${diff ? `almost the same total (${money(best.trip.total)} against ${money(c.trip.total)})` : `the same total, ${money(best.trip.total)}`} in ${best.trip.dest.name} I can give you A: ${a.label}, or B: ${b.label}. Which matters more?`, { kind: 'decision', options: [a, b].map(x => ({ letter: x.letter, label: x.label, total: x.total })), trip: tripCard(best.trip, a.token, ctx) });
@@ -1511,14 +1706,14 @@ class AgentService {
 
   async decide(s, letter) {
     const d = s.decision.find(x => x.letter === letter);
-    const facts = s.decision.facts || null;
-    s.decision = null;
+    const facts = s.decisionFacts || null;
+    s.decision = null; s.decisionFacts = null;
     if (!d) { this.speak(s, 'That choice is not on the table any more.'); return true; }
     if (d.priority) s.priority = d.priority;
     const matters = d.matters || { longer: 'more nights', flights: 'the flights', hotel: 'the hotel' }[d.priority] || 'that';
     if (s.current && s.current.token === d.token) this.speak(s, `${d.label} it is: ${matters} matters more, and I keep that in mind for this trip (not saved unless you ask). It stays on your canvas at ${money(d.total)}.`);
     else { this.speak(s, `${d.label} it is: ${matters} matters more, and I keep that in mind for this trip (not saved unless you ask).`); await this.applyProposal(s, { kind: 'decision', token: d.token, total: d.total, delta: s.current ? d.total - s.current.total : 0, label: d.label, over: false }); }
-    if (facts) this.speak(s, this.stopLine(facts.deep, facts.q, s.options), this.finalCard(s));
+    if (facts) this.speak(s, this.stopLine(facts.deep, facts.q, s.options, { chosen: d.token !== facts.pick ? d.label : null }), this.finalCard(s));
     return true;
   }
 
@@ -1531,18 +1726,19 @@ class AgentService {
   flexibleWeek(s, best, q, ctx, settings) {
     let out;
     try { out = weeks.cheapestWeeks(this.inv, best.trip, settings, { ...ctx, month: q.month, dateMode: 'flexible' }, { now: this.now(), locks: state.effectiveLocks(s) }); } catch (e) { this.log.error('[agent weeks]', e); return; }
-    if (!out || !out.cheapest) return;
+    if (!out || !out.windows.length) return;
     const w = weeks.windowWords(out, { fmtDate: longDate });
-    const monthWord = longDate(`${q.month}-01`).replace(/^\d+ /, '').replace(/ \d+$/, '');
-    const c = out.cheapest, cur = best.trip;
-    s.job.feed.push(`Cheapest strong week in ${monthWord}: ${w.headline}${out.range && out.range.count > 1 ? `; the ${plural(out.range.count, 'window')} priced run ${money(out.range.min)} to ${money(out.range.max)}` : ''}`);
-    const isCurrent = c.depart === cur.spec.depart;
-    const sameTrip = encodeSpec(cur.spec) === c.token;
+    const monthWord = weeks.monthName(q.month);
+    const std = out.standard === 'strong' ? 'strong' : 'comparable';
+    const cur = best.trip;
+    // The cheapest week is the trip's own dates unless a window is strictly cheaper (out.cheaper).
+    const isCurrent = !out.cheaper;
+    const c = out.cheaper || { depart: cur.spec.depart, ret: cur.flight.return || out.current.ret, total: cur.total };
+    s.job.feed.push(`Cheapest ${std} week in ${monthWord}: ${isCurrent ? `your dates, ${longDate(c.depart)} – ${longDate(c.ret)} at ${money(c.total)}` : w.headline}${out.range && out.range.count > 1 ? `; the ${plural(out.range.count, 'window')} priced run ${money(out.range.min)} to ${money(out.range.max)}` : ''}`);
     const budget = state.bookingBudget(s);
     const others = out.windows.filter(x => x.token !== encodeSpec(cur.spec)).slice(0, 5);
-    const sameDates = isCurrent && !sameTrip && c.total < cur.total ? ` The cheapest version on those dates is ${money(c.total)} with ${joinAnd([c.flightChanged && 'different flights', c.hotelChanged && 'a different hotel of the same class'].filter(Boolean))}; yours is ${money(cur.total)}.` : '';
-    this.speak(s, `${isCurrent ? 'Your dates are also the cheapest strong week I priced for it' : 'Cheapest strong week I found for this trip'} in ${monthWord}: ${isCurrent ? `${longDate(c.depart)} – ${longDate(c.ret)}` : w.headline}.${sameDates}${w.compared ? ` ${w.compared}.` : ''} ${w.honesty}`, { kind: 'weeks', current: { depart: cur.spec.depart, ret: cur.flight.return, total: cur.total }, windows: others.map(x => ({ depart: x.depart, ret: x.ret, total: x.total, delta: x.delta, sameDates: x.depart === cur.spec.depart, hotelChanged: !!x.hotelChanged, flightChanged: !!x.flightChanged, over: !!(budget && x.total > budget), token: x.token })), range: out.range, priced: out.priced, datesSearched: out.datesSearched, truncated: !!out.truncated, honesty: w.honesty, month: q.month, compact: true });
-    if (!isCurrent && cur.total - c.total >= MATERIAL_SAVING && !c.changes.tradeoffs.length && !s.proposal) this.propose(s, { kind: 'dates', token: c.token, total: c.total, delta: c.total - cur.total, label: `Leaving ${longDate(c.depart)}`, improvements: changeWords(c.changes.improvements), tradeoffs: [], neutral: changeWords(c.changes.neutral), over: false }, `That week is ${money(cur.total - c.total)} less with nothing given up. Take it, or keep ${longDate(cur.spec.depart)}.`);
+    const differs = isCurrent ? '' : joinAnd(windowChanges(c));
+    this.speak(s, `${isCurrent ? `Your dates are also the cheapest ${std} week I priced for it` : `Cheapest ${std} week I found for this trip`} in ${monthWord}: ${isCurrent ? `${longDate(c.depart)} – ${longDate(c.ret)}` : w.headline}.${differs ? ` That week is not identical: ${differs}; the card says so.` : ''}${w.compared ? ` ${w.compared}.` : ''} ${w.honesty}`, { kind: 'weeks', standard: std, current: { depart: cur.spec.depart, ret: cur.flight.return, total: cur.total }, windows: others.map(x => ({ depart: x.depart, ret: x.ret, total: x.total, delta: x.delta, sameDates: x.depart === cur.spec.depart, hotelChanged: !!x.hotelChanged, flightChanged: !!x.flightChanged, changed: joinAnd(windowChanges(x)) || null, over: !!(budget && x.total > budget), token: x.token })), range: out.range, priced: out.priced, datesSearched: out.datesSearched, truncated: !!out.truncated, honesty: w.honesty, month: q.month, compact: true });
   }
 
   // ---- after booking: the same agent, answering from the booking's facts ------------------------

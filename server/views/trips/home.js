@@ -72,7 +72,7 @@ function homeView(ctx, { example, levels, dreamDestinations, origins, user, rece
         <a class="btn btn-ghost-light" href="#tb-ways-title">I already know where I want to go</a>
         <a class="btn btn-ghost-light" href="/challenge">I already found a trip</a>
       </div>
-      <p class="tb-budget-hint ag-hero-save">Save me the most: tell us your max, and we'll try not to use it. You see your max, what we built it for, and what you keep.</p>
+      <p class="tb-budget-hint ag-hero-save">Save me the most: tell us your max, and we'll try not to use it. You see your max, what we built it for, and what you keep. <a class="hu-hero-wait" href="/hunts/new">I can wait: let the AI hunt for it</a></p>
     </form>
     <details class="ag-hero-say">
       <summary>Or say it in your own words</summary>

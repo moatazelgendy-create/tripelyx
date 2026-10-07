@@ -542,3 +542,23 @@ test('a savings-check version the traveler keeps off is said once and never prop
     await app.close();
   }
 });
+
+test('a conversation that belongs to one account is not reachable from another account on the same browser', async () => {
+  const app = await startApp();
+  try {
+    const c = client(app.base);
+    const signUp = email => c.req('/signup', { method: 'POST', form: { name: 'Ada Lovelace', email, password: 'correct horse battery', next: '/my-trips' } });
+    assert.equal((await signUp('first@example.com')).status, 303);
+    const start = await c.req('/agent', { method: 'POST', form: { say: 'I have $2,000, two of us from JFK, 5 nights, beach. Booking budget.' } });
+    assert.equal(start.status, 303);
+    const page = start.location;
+    assert.equal((await c.req(page)).status, 200);
+    // The same browser, another account: the first account's conversation (and anything a watch or a
+    // hunt would put on it) is out of reach.
+    assert.equal((await c.req('/signout', { method: 'POST', form: {} })).status, 303);
+    assert.equal((await signUp('second@example.com')).status, 303);
+    assert.equal((await c.req(page)).status, 404);
+    assert.equal((await c.req(page, { method: 'POST', form: { say: 'Watch this trip' } })).status, 404);
+    assert.equal((await app.ctx.store.listRecords('watch', { limit: 10 })).length, 0);
+  } finally { await app.close(); }
+});

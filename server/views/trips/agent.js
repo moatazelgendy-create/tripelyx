@@ -148,10 +148,36 @@ function weeksCard(id, c, current) {
     <p class="tb-kicker">${c.compact ? 'Cheapest strong week' : 'When can you go for less?'} · today's prices, not a forecast</p>
     <ol class="ag-weeks-list">
       <li class="is-current"><span class="ag-week-dates">${longDate(c.current.depart)} – ${longDate(c.current.ret)}</span><b>${money(c.current.total)}</b><small>on your canvas</small></li>
-      ${c.windows.map(w => html`<li class="${w.over ? 'is-over' : ''}">${w.letter ? html`<span class="ag-way-num">${w.letter}</span>` : ''}<span class="ag-week-dates">${longDate(w.depart)} – ${longDate(w.ret)}</span><b>${money(w.total)}</b><small class="${w.delta < 0 ? 'is-save' : w.delta > 0 ? 'is-add' : ''}">${sign(w.delta)}${w.sameDates ? ' · your dates' : ''}${w.hotelChanged ? ' · different hotel, same class' : ''}${w.flightChanged ? ' · different flights' : ''}${w.over ? ' · over your ceiling' : ''}</small>${w.letter ? sayForm(id, `Option ${w.letter}`, w.sameDates ? 'Take this version' : `Leave ${longDate(w.depart)}`, 'btn btn-ghost btn-sm') : ''}</li>`)}
+      ${c.windows.map(w => html`<li class="${w.over ? 'is-over' : ''}">${w.letter ? html`<span class="ag-way-num">${w.letter}</span>` : ''}<span class="ag-week-dates">${longDate(w.depart)} – ${longDate(w.ret)}</span><b>${money(w.total)}</b><small class="${w.delta < 0 ? 'is-save' : w.delta > 0 ? 'is-add' : ''}">${sign(w.delta)}${w.sameDates ? ' · your dates' : ''}${w.changed ? ` · ${w.changed}` : `${w.hotelChanged ? ' · different hotel, same class' : ''}${w.flightChanged ? ' · different flights' : ''}`}${w.over ? ' · over your ceiling' : ''}</small>${w.letter ? sayForm(id, `Option ${w.letter}`, w.sameDates ? 'Take this version' : `Leave ${longDate(w.depart)}`, 'btn btn-ghost btn-sm') : ''}</li>`)}
     </ol>
     <p class="tb-small tb-muted">${c.range && c.range.count > 1 ? `The ${plural(c.range.count, 'window')} priced run ${money(c.range.min)} to ${money(c.range.max)}. ` : ''}${plural(c.datesSearched, 'departure date')} priced in full${c.truncated ? '; the pass was cut off before every date was priced' : ''}. ${c.honesty || ''}</p>
     ${c.compact ? '' : html`<div class="ag-actions">${sayForm(id, 'Keep my dates', 'Keep my dates', 'btn btn-navy btn-sm')}</div>`}
+  </div>`;
+}
+
+// The hunt on the conversation, compact: the persistent card's facts from the record (my travel money,
+// status, the best current opportunity, what it keeps), the receipt when a decision was made, and the
+// answers. Keep waiting is always there and never pressured; Not good enough asks what to improve;
+// See trip opens the priced trip. Nothing here is urgent, scarce or predicted.
+function huntCard(id, c) {
+  const h = c.hunt, best = h.best, o = h.opportunity;
+  const hunting = h.status === 'hunting';
+  return html`<div class="ag-card ag-hunt">
+    <div class="ag-canvas-head"><p class="tb-kicker">My travel money · ${h.name}</p><span class="hu-status is-${hunting ? 'hunting' : 'stopped'}">${hunting ? 'HUNTING' : 'STOPPED'}</span></div>
+    <div class="ag-saver-nums">
+      <div><span>My travel money</span><b>${money(h.budget)}</b><small>a ceiling, not a target</small></div>
+      <div><span>Best current opportunity</span><b>${best ? money(best.total) : '—'}</b><small>${best ? `${plural(best.nights, 'night')} in ${best.dest}${best.recorded ? ', as last checked' : ''}` : 'nothing qualifies yet'}</small></div>
+      <div class="${best ? 'is-keep' : ''}"><span>Potential money kept</span><b>${best ? money(h.kept) : '—'}</b><small>${best ? 'limit minus the verified total' : ''}</small></div>
+    </div>
+    ${o && o.receipt ? html`<details class="ag-lines"><summary>Why you’re seeing this</summary>
+      <div class="ag-contract-cols"><div><p class="tb-kicker">Your rules</p><ul class="tb-list tb-small">${(o.receipt.rules || []).map(l => html`<li>${l}</li>`)}</ul></div><div><p class="tb-kicker">Found</p><ul class="tb-list tb-small">${(o.receipt.found || []).map(l => html`<li>${l}</li>`)}</ul></div></div>
+      <p class="tb-small"><b>Why I interrupted you:</b> ${o.receipt.why}</p></details>` : ''}
+    <div class="ag-actions">
+      ${best ? html`<a class="btn btn-navy btn-sm" href="/trip/${best.token}?${optimizer.contextParams({ budget: h.budget })}">See trip ${icon('arrow')}</a>` : ''}
+      ${hunting ? html`<form method="post" action="/hunts/${h.id}/respond" class="ag-say"><input type="hidden" name="action" value="keep-waiting"><button class="btn btn-ghost btn-sm" type="submit">Keep waiting</button></form>` : ''}
+      ${hunting && best ? sayForm(id, 'Not good enough', 'Not good enough') : ''}
+      <a class="text-link" href="/hunts/${h.id}">The hunt: every check and what it learned ${icon('arrow')}</a>
+    </div>
   </div>`;
 }
 
@@ -159,6 +185,7 @@ function card(id, m, { current }) {
   const c = m.card;
   if (!c) return '';
   switch (c.kind) {
+    case 'hunt': return huntCard(id, c);
     case 'ask': return html`<div class="ag-actions">${c.options.map(o => sayForm(id, o.say, o.label, 'btn btn-ghost btn-sm'))}</div>`;
     case 'trip': return html`<div class="ag-card${c.over ? ' is-over' : ''}">${c.label ? html`<p class="tb-kicker">${c.label}</p>` : ''}${tripLine(c.trip)}${c.first ? html`<p class="ag-still">${icon('search')} <span>This is currently the trip to beat. Still checking whether I can get you more vacation or better quality without spending more.</span></p>` : ''}<div class="ag-actions">${c.first ? html`${sayForm(id, 'I like this one', 'I like this', 'btn btn-navy btn-sm')}${sayForm(id, 'Keep building', 'Keep building')}` : ''}<a class="text-link" href="/trip/${c.trip.token}">Full trip page ${icon('arrow')}</a></div></div>`;
     case 'options': return html`${optionsCard(id, c, current)}${c.final ? html`<div class="ag-actions">${sayForm(id, 'Book it', 'Verify & book', 'btn btn-blue btn-sm')}${sayForm(id, 'Challenge it again', 'Challenge it again')}</div>` : ''}`;
@@ -290,7 +317,9 @@ function missionPanel(ctx, s, { canvas }) {
   const booking = bookingBudget(s);
   const running = !!(s.job && s.job.status === 'running');
   const o = s.origin ? ctx.tripService.inv.maps.getOrigin(s.origin) : null;
-  const status = running ? 'Building…' : s.proposal ? 'One decision away' : s.mission.strategies && s.mission.strategies.length && !s.mission.signal ? `${plural(s.mission.strategies.length, 'way')} built, waiting for which feels like you` : canvas ? 'A trip to beat is on the canvas' : s.pending === 'origin' ? 'Waiting for where you fly from' : 'Waiting for the budget';
+  // A hunt on the account: the mission's status is the hunt's, by name, while it hunts.
+  const hunt = s.mission.hunt && s.mission.hunt.status !== 'stopped' ? s.mission.hunt : null;
+  const status = hunt ? `Hunting: ${hunt.name}` : running ? 'Building…' : s.proposal ? 'One decision away' : s.mission.strategies && s.mission.strategies.length && !s.mission.signal ? `${plural(s.mission.strategies.length, 'way')} built, waiting for which feels like you` : canvas ? 'A trip to beat is on the canvas' : s.pending === 'origin' ? 'Waiting for where you fly from' : 'Waiting for the budget';
   const rules = missionRules(s, { maps: ctx.tripService.inv.maps });
   return html`<div class="ag-mission">
     <div class="ag-mission-head"><div><p class="tb-kicker">Your mission</p><b>Build the best vacation${booking ? ` for ${money(booking)}` : ''}</b></div><span class="ag-mission-status${running ? ' is-running' : ''}">${status}</span></div>
@@ -344,6 +373,8 @@ function canvasPanel(ctx, s, canvas) {
   const lock = k => (s.locks[k] ? html`<span class="ag-lock" title="Locked">${icon('lock')}</span>` : '');
   const running = !!(s.job && s.job.status === 'running');
   const saver = !!(s.mission && s.mission.mode === 'save');
+  // Hunt mode on the saver's canvas: the chip starts a hunt; once one hunts, its name links to it.
+  const hunt = s.mission && s.mission.hunt && s.mission.hunt.status !== 'stopped' ? s.mission.hunt : null;
   const head = html`<div class="ag-canvas-head"><p class="tb-kicker">${saver && canvas ? 'You told us your max. We found your minimum.' : 'Your trip'}</p>${demoBadge(ctx.tripService.demo, 'Demo inventory')}</div>`;
   if (!canvas) {
     const rows = askedFor(s, { maps: ctx.tripService.inv.maps });
@@ -370,9 +401,10 @@ function canvasPanel(ctx, s, canvas) {
     ${locks.length ? html`<p class="ag-canvas-locks">${icon('lock')} Locked: ${locks.map(k => LOCK_LABEL[k]).join(', ')}</p>` : ''}
     ${canvas.receipt && canvas.receipt.lines.length ? html`<details class="ag-receipt-wrap"><summary>How we kept your cost down (${canvas.receipt.lines.length})</summary><table class="ag-receipt-table"><tbody><tr><td>Started at</td><td class="ag-num">${money(canvas.receipt.original)}</td></tr>${canvas.receipt.lines.map(l => html`<tr><td>${l.label}</td><td class="ag-num ${l.delta <= 0 ? 'is-save' : 'is-add'}">${l.delta <= 0 ? '−' : '+'}${money(Math.abs(l.delta))}</td></tr>`)}<tr class="ag-receipt-final"><td>Now</td><td class="ag-num">${money(canvas.receipt.final)}</td></tr>${canvas.receipt.keep !== null ? html`<tr class="ag-receipt-keep"><td>You keep</td><td class="ag-num">${money(canvas.receipt.keep)}</td></tr>` : ''}</tbody></table></details>` : ''}
     <div class="ag-canvas-actions">
-      ${saver ? html`${sayForm(s.id, 'Find $100', 'Find $100', 'btn btn-ghost btn-sm')}${sayForm(s.id, 'How low can you go?', 'How low can you go?', 'btn btn-ghost btn-sm')}${sayForm(s.id, 'Same trip for less', 'Same trip for less', 'btn btn-ghost btn-sm')}${sayForm(s.id, 'Get me more for this money', 'More for this money', 'btn btn-ghost btn-sm')}` : html`${sayForm(s.id, 'Make it cheaper', 'Make it cheaper', 'btn btn-ghost btn-sm')}${sayForm(s.id, 'Make it better', 'Make it better', 'btn btn-ghost btn-sm')}`}
+      ${saver ? html`${sayForm(s.id, 'Find $100', 'Find $100', 'btn btn-ghost btn-sm')}${sayForm(s.id, 'How low can you go?', 'How low can you go?', 'btn btn-ghost btn-sm')}${sayForm(s.id, 'Same trip for less', 'Same trip for less', 'btn btn-ghost btn-sm')}${sayForm(s.id, 'Get me more for this money', 'More for this money', 'btn btn-ghost btn-sm')}${hunt ? html`<a class="btn btn-ghost btn-sm" href="/hunts/${hunt.id}">${icon('search')} Hunting: ${hunt.name}</a>` : sayForm(s.id, 'Hunt for a better deal', 'Hunt for a better deal', 'btn btn-ghost btn-sm', html`${icon('search')} `)}` : html`${sayForm(s.id, 'Make it cheaper', 'Make it cheaper', 'btn btn-ghost btn-sm')}${sayForm(s.id, 'Make it better', 'Make it better', 'btn btn-ghost btn-sm')}`}
       <details class="ag-change"><summary class="btn btn-ghost btn-sm">Change something</summary><div class="ag-chips">${(saver ? ['Give me one more night', 'One night less', 'Show me what one stop saves', 'Try another country', 'Upgrades worth considering', 'Make this easier'] : ['Give me one more night', 'One night less', 'Only nonstop', 'Try another country', 'Show me what one stop saves', 'Make this easier']).map(c => sayForm(s.id, c, c, 'ag-chip'))}<a class="ag-chip" href="/trip/${canvas.token}?${cx}#customize">Pick a different hotel or flight</a></div></details>
       ${saver ? html`<details class="ag-change"><summary class="btn btn-ghost btn-sm">Never cut below</summary><div class="ag-chips">${[['Only nonstop', 'Never a connection'], ['Refundable only', 'Never a non-refundable hotel'], ['3-star or better', 'Never below 3-star'], ['4-star or better', 'Never below 4-star'], ['Carry-on only', 'I pack carry-on only'], ['I check a bag', 'I check a bag'], ['Aggressive savings', 'Aggressive: every trade-off said'], ['Balanced savings', 'Balanced']].map(([say, label]) => sayForm(s.id, say, label, 'ag-chip'))}</div><p class="tb-small tb-muted">Each is a rule the search keeps; only rules the suppliers' data can check are offered.</p></details>` : ''}
+      ${saver && !hunt ? html`<p class="ag-canvas-hunt tb-small tb-muted">Hunt mode: “I can wait. Only come back when my money can do something better.” A hunt keeps these rules on your account and says something only when a trip meets them.</p>` : ''}
       ${sayForm(s.id, locks.length ? 'Unlock everything' : 'Lock everything', locks.length ? 'Unlock' : 'Lock this', 'btn btn-ghost btn-sm')}
       ${running ? '' : sayForm(s.id, 'Watch this trip', 'Watch this trip', 'btn btn-ghost btn-sm', html`${icon('eye')} `)}
       ${sayForm(s.id, 'Book it', 'Book', 'btn btn-blue btn-sm')}

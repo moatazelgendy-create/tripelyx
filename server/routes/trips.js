@@ -275,15 +275,17 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
 
   // Save a trip, or watch its price under a rule: `rule` is 'drop', 'any-drop' or 'under' and `amount`
   // is dollars as typed, turned into cents here. A drop with the amount left blank is the $100 default
-  // the form names; no rule at all means the same default; anything else unreadable is a 422.
+  // the form names; no rule at all means the same default; anything else unreadable (a repeated
+  // field included) is a 422, never the default.
   r.post('/trip/:token/save', writeLimiter, sameOrigin, form, requireUser, async (req, res, next) => {
     try {
       const cx = optimizer.parseContext(req.query);
       const kind = req.body.kind === 'watch' ? 'watch' : 'saved';
       let rule;
       if (kind === 'watch' && req.body.rule !== undefined) {
-        const typed = (typeof req.body.amount === 'string' ? req.body.amount : '').replace(/[,$\s]/g, '');
-        const cents = /^\d+(\.\d{1,2})?$/.test(typed) ? Math.round(Number(typed) * 100) : NaN;
+        const raw = req.body.amount;
+        const typed = raw === undefined ? '' : typeof raw === 'string' ? raw.replace(/[,$\s]/g, '') : null;
+        const cents = typed !== null && /^\d+(\.\d{1,2})?$/.test(typed) ? Math.round(Number(typed) * 100) : NaN;
         rule = { kind: String(req.body.rule), amount: req.body.rule === 'drop' && typed === '' ? WATCH_DEFAULT_RULE.amount : cents };
       }
       await svc.saveTrip(req.user, req.params.token, { kind, budget: cx.budget, rule });
@@ -334,9 +336,11 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
       const t = today();
       const bookings = (await ctx.store.listBookings({ userId: req.user.id, limit: 200 })).filter(b => b.vertical === 'trips' && b.status !== 'expired');
       const pub = bookings.map(b => ctx.engine.publicBooking(b));
-      const [saved, watches, recent, lastSearch] = await Promise.all([svc.listSaved(req.user, 'saved'), svc.listSaved(req.user, 'watch'), svc.recentTrip(req.user), ctx.store.getRecord('last_search', req.user.id)]);
+      // Hunts are listed from their stored facts (no search runs here); the list is empty without the hunter.
+      const [saved, watches, recent, lastSearch, hunts] = await Promise.all([svc.listSaved(req.user, 'saved'), svc.listSaved(req.user, 'watch'), svc.recentTrip(req.user), ctx.store.getRecord('last_search', req.user.id), ctx.hunts ? ctx.hunts.list(req.user) : []]);
       send(res, myTripsView(ctx, {
-        user: req.user, upcoming: pub.filter(b => b.startDate >= t), past: pub.filter(b => b.startDate < t), saved, watches, recent, lastSearch,
+        user: req.user, upcoming: pub.filter(b => b.startDate >= t), past: pub.filter(b => b.startDate < t), saved, watches, recent, lastSearch, hunts,
+        destName: id => { const d = svc.inv.maps.getDestination(id); return d ? d.name : id; },
         notice: req.query.saved ? 'Saved. We’ll show price changes here.' : null,
       }));
     } catch (e) { next(e); }

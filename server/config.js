@@ -11,6 +11,14 @@ function bool(value, fallback) {
   return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
 }
 
+// A whole number of at least zero, or the fallback when unset; anything else fails at boot.
+function int(value, fallback, name) {
+  if (value === undefined || value === '') return fallback;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0) throw new Error(`${name} must be a whole number of 0 or more (got "${value}")`);
+  return n;
+}
+
 function databaseUrlFromParts(env) {
   if (!env.DATABASE_HOST) return null;
   if (!env.DATABASE_NAME || !env.DATABASE_USER || !env.DATABASE_PASSWORD) {
@@ -92,6 +100,9 @@ function loadConfig(env = process.env) {
     },
     // Signed-in accounts with these emails can open the admin control center (/admin).
     adminEmails: String(env.ADMIN_EMAILS || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean),
+    // How often the Savings Hunter re-runs every active hunt while the site runs (hunts also run when
+    // opened). 0 turns the scheduler off: hunts then run only when opened, and the pages say so.
+    huntIntervalMinutes: int(env.HUNT_INTERVAL_MINUTES, 360, 'HUNT_INTERVAL_MINUTES'),
   };
 
   return {

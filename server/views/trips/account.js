@@ -4,6 +4,7 @@ const { icon } = require('../icons');
 const { layout } = require('../layout');
 const { contextParams } = require('../../trips/optimizer');
 const { money, dollars, longDate, shortDate, plural, statusPill, demoBadge } = require('./common');
+const { huntRows } = require('./hunts');
 
 function authView(ctx, { mode, error, errors = {}, values = {}, next = '' }) {
   const signin = mode === 'signin';
@@ -63,7 +64,16 @@ function savedRow(r, kind) {
   </li>`;
 }
 
-function myTripsView(ctx, { user, upcoming, past, saved, watches, recent, lastSearch, notice }) {
+// The Hunts section: each hunt's stored facts (server/trips/hunts.js list summary), nothing searched
+// here. `destName` turns a baseline's destination id into its name.
+function huntsSection(hunts, destName) {
+  return html`<section aria-labelledby="hu-title"><h2 id="hu-title">Hunts</h2>
+    ${hunts.length ? huntRows(hunts, { destName }) : html`<p class="tb-muted">Tell the AI your max and it waits for the right trip: it asks the suppliers about every departure in your window, prices the cheapest trips inside your rules in full, and says something only when one is worth your attention. <a href="/hunts/new">Start a hunt</a>.</p>`}
+    <p class="tb-small"><a href="/hunts">${hunts.length ? 'All hunts' : 'About hunts'}</a>${hunts.length ? html` · <a href="/hunts/new">Start another hunt</a>` : ''}</p>
+  </section>`;
+}
+
+function myTripsView(ctx, { user, upcoming, past, saved, watches, recent, lastSearch, notice, hunts = [], destName = id => id }) {
   const body = html`
 <div class="container tb-mytrips">
   <header class="tb-results-head"><div><p class="eyebrow">My Trips</p><h1>Welcome back, ${user.name.split(' ')[0]}.</h1>
@@ -74,6 +84,7 @@ function myTripsView(ctx, { user, upcoming, past, saved, watches, recent, lastSe
   <section aria-labelledby="up-title"><h2 id="up-title">Upcoming trips</h2>${upcoming.length ? html`<ul class="tb-mytrip-list">${upcoming.map(tripRow)}</ul>` : html`<p class="empty-state tb-empty">${icon('compass')} No upcoming trips yet. <a href="/plan">Build one from your budget</a>.</p>`}</section>
   <section aria-labelledby="sv-title"><h2 id="sv-title">Saved trips</h2>${saved.length ? html`<ul class="tb-mytrip-list">${saved.map(r => savedRow(r, 'saved'))}</ul>` : html`<p class="tb-muted">Save a trip from its page to come back to it later.</p>`}</section>
   <section aria-labelledby="w-title"><h2 id="w-title">Price watches</h2>${watches.length ? html`<ul class="tb-mytrip-list">${watches.map(r => savedRow(r, 'watch'))}</ul>` : html`<p class="tb-muted">Watch a trip and we’ll show you here when its price changes${ctx.tripService.demo ? ' (email alerts arrive once notifications are connected)' : ''}.</p>`}</section>
+  ${huntsSection(hunts, destName)}
   <section aria-labelledby="past-title"><h2 id="past-title">Past trips</h2>${past.length ? html`<ul class="tb-mytrip-list">${past.map(tripRow)}</ul>` : html`<p class="tb-muted">Nothing here yet.</p>`}</section>
 </div>`;
   return layout({ title: 'My Trips', active: 'my-trips', body, ctx, noindex: true });

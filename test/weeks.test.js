@@ -50,7 +50,7 @@ function versionsOn(i, t, depart, c = ctx) {
   const hotels = own ? [own] : hs.filter(h => h.stars >= t.hotel.stars && optimizer.hotelAllowed(h, { who: s.who, style: c.style }) && optimizer.rulesAllowHotel(h, c.rules));
   const fs = i.flights.search({ from: s.from, destId: s.dest, depart, nights: s.nights, travelers: s.travelers });
   const ownF = fs.find(f => f.id === s.flight) || fs.find(f => f.name === t.flight.name) || null;
-  const flights = fs.filter(f => f === ownF || optimizer.rulesAllowFlight(f, c.rules));
+  const flights = ownF ? [ownF] : fs.filter(f => optimizer.rulesAllowFlight(f, c.rules));
   const out = [];
   for (const h of hotels) for (const f of flights) { const p = price(i, { ...s, depart, hotel: h.id, flight: f.id }); if (p) out.push(p); }
   return out;
@@ -125,19 +125,40 @@ test('every window is a priced package of the same trip, strong, sorted, with th
   }
 });
 
-test('the trip\'s own hotel and fare are kept on every date where the supplier has them; a tie goes to them', () => {
+test('like for like: the trip\'s own hotel and own fare are the only ones priced on a date the supplier offers them', () => {
   const out = weeks.cheapestWeeks(inv, trip, settings, ctx, { now });
+  assert.ok(out.windows.length > 1);
   for (const w of out.windows) {
     assert.equal(w.hotelChanged, false, 'the demo has the hotel every day, so it is never swapped');
     assert.equal(w.trip.spec.hotel, trip.spec.hotel);
-    if (!w.flightChanged) assert.equal(w.trip.spec.flight, trip.spec.flight);
-    else assert.notEqual(w.trip.spec.flight, trip.spec.flight);
-    // A different fare is only ever chosen when it is strictly cheaper than the own fare's version.
-    if (w.flightChanged) {
-      const ownVersion = price(inv, { ...trip.spec, depart: w.depart });
-      assert.ok(!ownVersion || !isStrong(trip, ownVersion) || w.total < ownVersion.total, 'own fare preferred on a tie');
-    }
+    const offered = inv.flights.search({ from: trip.spec.from, destId: trip.spec.dest, depart: w.depart, nights: trip.spec.nights, travelers: trip.spec.travelers });
+    const ownF = offered.find(f => f.id === trip.spec.flight) || offered.find(f => f.name === trip.flight.name) || null;
+    // A different fare never makes a week "cheaper": it stands in only when the own fare is not offered that day.
+    if (ownF) { assert.equal(w.flightChanged, false); assert.equal(w.trip.spec.flight, ownF.id); } else assert.equal(w.flightChanged, true);
   }
+  // Without the trip's own fare on other dates, allowed fares stand in and the swap is flagged.
+  const noFare = { ...inv, flights: { ...inv.flights, search: q => { const fs = inv.flights.search(q); return q.depart === trip.spec.depart ? fs : fs.filter(f => f.id !== trip.spec.flight && f.name !== trip.flight.name); } } };
+  const swapped = weeks.cheapestWeeks(noFare, trip, settings, ctx, { now });
+  for (const w of swapped.windows) {
+    if (w.depart === trip.spec.depart) { assert.equal(w.flightChanged, false); continue; }
+    assert.equal(w.flightChanged, true);
+    assert.notEqual(w.trip.spec.flight, trip.spec.flight);
+    assert.ok(optimizer.rulesAllowFlight(w.trip.flight, ctx.rules));
+  }
+});
+
+test('a locked hotel or locked flights the supplier does not offer that week are never swapped: the date is not offered, with the reason', () => {
+  const noHotel = { ...inv, hotels: { ...inv.hotels, search: q => { const hs = inv.hotels.search(q); return q.checkIn === trip.spec.depart ? hs : hs.filter(h => h.id !== trip.spec.hotel); } } };
+  const out = weeks.cheapestWeeks(noHotel, trip, settings, ctx, { now, locks: { hotel: true } });
+  assert.ok(out.windows.every(w => w.depart === trip.spec.depart && w.trip.spec.hotel === trip.spec.hotel), 'only the trip\'s own date, at its own hotel');
+  const locked = out.weak.filter(w => w.kind === 'lock');
+  assert.ok(locked.length >= 1);
+  for (const w of locked) { assert.equal(w.total, null); assert.match(w.reason, /locked hotel is not offered/); assert.notEqual(w.depart, trip.spec.depart); }
+  assert.equal(out.windows.length + out.weak.length, out.datesSearched);
+  const noFare = { ...inv, flights: { ...inv.flights, search: q => { const fs = inv.flights.search(q); return q.depart === trip.spec.depart ? fs : fs.filter(f => f.id !== trip.spec.flight && f.name !== trip.flight.name); } } };
+  const out2 = weeks.cheapestWeeks(noFare, trip, settings, ctx, { now, locks: { flight: true } });
+  assert.ok(out2.windows.every(w => w.depart === trip.spec.depart));
+  assert.ok(out2.weak.some(w => w.kind === 'lock' && /locked flights/.test(w.reason)));
 });
 
 test('a named month: every day of it from a week out, nothing outside it, and the month carried for the words', () => {
@@ -236,8 +257,11 @@ test('truncation: a tiny limit cuts the pass off and says so; the ordinary pass 
   assert.deepEqual(some.dates, [first]);
   for (const w of [...some.windows, ...some.weak]) assert.equal(w.depart, first);
   for (const w of some.windows) checkWindow(w, trip);
-  // A partly priced date is dropped rather than offered as "cheapest strong" when it was not established.
-  const part = weeks.cheapestWeeks(inv, trip, settings, ctx, { now, limit: n + 1 });
+  // A partly priced date is dropped rather than offered as "cheapest strong" when it was not established:
+  // without the trip's hotel on later dates, several stand-ins are priced there, and a limit that covers
+  // the first date plus one of them cuts the second date off unfinished.
+  const twins = { ...inv, hotels: { ...inv.hotels, search: q => { const hs = inv.hotels.search(q); const own = hs.find(h => h.id === trip.spec.hotel); return q.checkIn === first ? hs : [...hs.filter(h => h.id !== own.id), ...Array.from({ length: 3 }, (_, i) => ({ ...own, id: `${own.id}-twin${i}`, name: `${own.name} twin ${i}` }))]; } } };
+  const part = weeks.cheapestWeeks(twins, trip, settings, ctx, { now, limit: n + 1 });
   assert.equal(part.truncated, true); assert.equal(part.datesSearched, 1); assert.equal(part.priced, n + 1);
   const full = weeks.cheapestWeeks(inv, trip, settings, ctx, { now });
   assert.equal(full.truncated, false);
@@ -367,9 +391,9 @@ test('windowWords: the cheapest window\'s own dates and price, the other windows
       const range = lo === hi ? fmt(lo) : `${fmt(lo)}–${fmt(hi)}`;
       if (c.month) {
         const name = new Intl.DateTimeFormat('en-US', { month: 'long', timeZone: 'UTC' }).format(new Date(`${c.month}-01T00:00:00Z`));
-        assert.equal(w.compared, `Compared with the ${others.length} other ${name} window${others.length === 1 ? '' : 's'} I priced for this trip: ${range}`);
+        assert.equal(w.compared, `Compared with the ${others.length} other ${name} window${others.length === 1 ? '' : 's'} I priced and would recommend for this trip: ${range}`);
       } else {
-        assert.equal(w.compared, `Compared with the ${others.length} other window${others.length === 1 ? '' : 's'} I priced for this trip between ${f(out.span.from)} and ${f(out.span.to)}: ${range}`);
+        assert.equal(w.compared, `Compared with the ${others.length} other window${others.length === 1 ? '' : 's'} I priced and would recommend for this trip between ${f(out.span.from)} and ${f(out.span.to)}: ${range}`);
       }
       assert.equal(w.honesty, 'Today\'s prices for those dates, not a forecast; dates I did not price are not covered');
       assert.equal(w.partial, null);

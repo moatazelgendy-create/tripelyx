@@ -1257,3 +1257,112 @@ a.tb-pill:hover { border-color: var(--blue-500); }
 }
 .tb-watch input[type="text"] { width: 7ch; }
 .tb-mytrip.is-alert { border-color: #0c5e43; box-shadow: 0 0 0 2px rgba(12, 94, 67, .12); }
+
+/* ---------- AI Savings Hunter (hu-) ---------- */
+.hu-page { padding-bottom: 48px; }
+.hu-page .tb-results-head { align-items: center; }
+.hu-hero-wait { color: #fff; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; white-space: nowrap; }
+.hu-hero-wait:hover { color: var(--sky-50); }
+.hu-signature { list-style: none; padding: 0; margin: 0 0 18px; display: grid; gap: 6px; }
+.hu-signature li { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; color: var(--navy-800); }
+.hu-empty { background: #fff; border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 28px 30px; box-shadow: var(--shadow-sm); max-width: 760px; }
+.hu-empty p { margin: 0 0 14px; line-height: 1.55; }
+.hu-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }
+.hu-row { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items: center; background: #fff; border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 14px 18px; }
+.hu-row h3 { font-size: 19px; margin: 4px 0; }
+.hu-row h3 a { color: var(--ink); text-decoration: none; }
+.hu-row h3 a:hover { color: var(--blue-600); }
+.hu-row p { margin: 2px 0; font-size: 15px; color: var(--text); }
+.hu-new { color: #0c5e43; }
+.hu-status { display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: 12.5px; font-weight: 700; letter-spacing: .08em; vertical-align: middle; }
+.hu-status.is-hunting { background: #e6f6ef; color: #0c5e43; }
+.hu-status.is-stopped { background: #eef2f7; color: var(--muted); }
+.hu-monitoring { line-height: 1.5; max-width: 760px; }
+
+/* the persistent card */
+.hu-card { background: var(--navy-800); color: #fff; border-radius: var(--radius-lg); padding: 24px 28px; margin: 8px 0 20px; box-shadow: var(--shadow); }
+.hu-facts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px 24px; margin: 0; }
+.hu-fact dt { font-size: 12.5px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: rgba(214, 231, 248, .86); margin-bottom: 4px; }
+.hu-fact dd { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.3; }
+.hu-fact dd a { color: #fff; }
+.hu-fact dd small { display: block; font-size: 14px; font-weight: 500; color: rgba(214, 231, 248, .86); }
+.hu-fact dd .tb-muted { color: rgba(214, 231, 248, .86); font-weight: 500; font-size: 16px; }
+.hu-fact-money dd { font-size: 30px; }
+.hu-card .hu-status.is-hunting { background: #0c5e43; color: #fff; }
+.hu-card .hu-status.is-stopped { background: rgba(255, 255, 255, .16); color: #fff; }
+.hu-target { margin: 18px 0 0; padding: 10px 14px; background: rgba(255, 255, 255, .08); border-radius: var(--radius-sm); font-size: 15px; }
+.hu-acceptance { margin: 18px 0 6px; font-size: 16px; line-height: 1.5; }
+.hu-card .hu-monitoring { color: rgba(214, 231, 248, .86); margin: 0; }
+
+/* opportunities */
+.hu-opps h2, .hu-log h2, .hu-learned h2 { font-size: 22px; margin: 28px 0 12px; }
+.hu-quiet { background: #fff; border: 1px dashed #cfd8e3; border-radius: var(--radius); padding: 20px 24px; color: var(--text); line-height: 1.5; }
+.hu-opp { background: #fff; border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 20px 24px; margin-bottom: 14px; box-shadow: var(--shadow-sm); }
+.hu-opp.is-new { border-color: var(--blue-400); }
+.hu-opp.is-rejected, .hu-opp.is-taken { opacity: .85; }
+.hu-opp-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.hu-opp h3 { font-size: 22px; margin: 6px 0 10px; }
+.hu-opp-status { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12.5px; font-weight: 600; background: #eef2f7; color: var(--muted); }
+.hu-opp-status.is-new { background: var(--blue-50); color: #0f4c8f; }
+.hu-opp-status.is-taken { background: #e6f6ef; color: #0c5e43; }
+.hu-decision { font-size: 16.5px; line-height: 1.55; margin: 0 0 8px; }
+.hu-trip-facts { color: var(--muted); margin: 0 0 12px; line-height: 1.5; }
+.hu-prev { border-collapse: collapse; margin: 6px 0 12px; font-size: 14.5px; }
+.hu-prev caption { text-align: left; caption-side: top; font-size: 13px; color: var(--muted); padding: 0 0 6px; }
+.hu-prev th, .hu-prev td { padding: 5px 14px 5px 0; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+.hu-prev thead th { font-size: 12.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.hu-prev tbody th { font-weight: 600; color: var(--text); }
+.hu-why { margin: 0 0 12px; padding-left: 18px; line-height: 1.5; }
+.hu-why li { margin: 3px 0; }
+.hu-receipt { margin: 8px 0 12px; border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 14px; background: var(--bg-soft); }
+.hu-receipt summary { cursor: pointer; font-weight: 600; color: var(--navy-800); }
+.hu-receipt-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 24px; margin-top: 10px; }
+.hu-receipt h4 { font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; }
+.hu-receipt ul { margin: 0; padding-left: 18px; font-size: 14.5px; line-height: 1.5; }
+.hu-receipt p { margin: 12px 0 2px; font-size: 14.5px; line-height: 1.5; }
+.hu-verified { display: flex; align-items: center; gap: 8px; color: var(--muted); margin: 0 0 14px; }
+.hu-verified .icon { width: 16px; height: 16px; flex: none; }
+.hu-opp-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; }
+.hu-opp-actions form { display: inline; }
+.hu-improve { flex: 1 1 100%; }
+.hu-improve > summary { list-style: none; display: inline-flex; width: auto; }
+.hu-improve > summary::-webkit-details-marker { display: none; }
+.hu-improve-body { margin-top: 12px; background: var(--bg-soft); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
+.hu-improve-body p { margin: 0 0 10px; line-height: 1.5; }
+.hu-improve-body .ag-chips { margin-bottom: 10px; }
+.hu-reject { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.hu-reject label { font-size: 14px; font-weight: 600; }
+.hu-reject input { flex: 1 1 180px; min-height: 40px; padding: 0 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); font: inherit; }
+
+/* the hunt's own actions, the run log, what it learned */
+.hu-action-row { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.hu-action-row p { margin: 8px 0 0; line-height: 1.5; }
+.hu-runs, .hu-learned-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+.hu-runs li, .hu-learned-list li { background: #fff; border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 8px 12px; font-size: 14.5px; line-height: 1.5; }
+.hu-learned-list li .tb-muted { margin-right: 6px; }
+
+/* the form */
+.hu-form .tb-panel { margin-bottom: 18px; }
+.hu-budget { max-width: 420px; }
+.hu-radios { display: flex; flex-wrap: wrap; gap: 10px 22px; margin-top: 6px; font-size: 15.5px; }
+.hu-radios label, .hu-check { display: inline-flex; align-items: center; gap: 8px; line-height: 1.4; }
+.hu-radios-col { flex-direction: column; align-items: flex-start; gap: 10px; }
+.hu-radios select { margin-left: 4px; }
+.hu-checks { display: grid; gap: 8px; margin-bottom: 16px; font-size: 15.5px; }
+.hu-check input { flex: none; }
+.hu-inline-num { width: 7ch; min-height: 36px; padding: 0 8px; border: 1px solid var(--line); border-radius: var(--radius-sm); font: inherit; }
+.hu-submit { display: grid; gap: 10px; justify-items: start; }
+
+@media (max-width: 900px) {
+  .hu-facts { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 720px) {
+  .hu-card { padding: 20px 18px; }
+  .hu-facts { grid-template-columns: 1fr; gap: 12px; }
+  .hu-row, .hu-action-row, .hu-receipt-cols { grid-template-columns: 1fr; }
+  .hu-opp { padding: 16px; }
+  .hu-opp-actions .btn, .hu-opp-actions form, .hu-improve > summary { width: 100%; }
+  .hu-opp-actions .btn { justify-content: center; }
+  .hu-page .tb-results-head { flex-direction: column; align-items: flex-start; gap: 12px; }
+  .hu-prev { display: block; overflow-x: auto; }
+}
