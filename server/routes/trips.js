@@ -72,22 +72,13 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
   r.get('/', async (req, res, next) => {
     try {
       await tracked(req, 'home_visit');
+      // The one example (P36): what $2,000 builds for two from San Francisco, priced by the engine.
       const example = await cached('home:example', 600000, async () => {
-        const result = await svc.sample({ b: '1500', k: '0', from: 'SFO', who: 'couple', when: 'anytime', nights: '5', style: 'beach', prio: 'hotel' });
+        const result = await svc.sample({ b: '2000', k: '0', from: 'SFO', who: 'couple', when: 'anytime', nights: '5', style: 'beach', prio: 'price' });
         return { ...result, originCity: originCity('SFO'), params: optimizer.searchParams(result.query) };
       });
-      const levels = await cached('home:levels', 600000, async () => {
-        const out = [];
-        for (const b of [500, 1000, 1500, 2000, 3000, 5000]) {
-          const result = await svc.sample({ b: String(b), k: '0', from: SAMPLE_ORIGIN, who: 'couple', when: 'anytime', nights: b <= 500 ? '2' : b <= 1000 ? '3' : '5', style: 'surprise', prio: 'price' });
-          const byDest = new Map();
-          for (const p of [...result.picks, ...result.closest]) if (p.trip.total <= b * 100 && !byDest.has(p.trip.dest.id)) byDest.set(p.trip.dest.id, p.trip);
-          out.push({ budget: b, originCity: originCity(SAMPLE_ORIGIN), destinations: result.eligibleDestinations, cheapest: result.cheapest, examples: [...byDest.values()].slice(0, 3).map(t => ({ name: t.dest.name, slug: slug(t.dest.name), total: t.total })) });
-        }
-        return out;
-      });
       const dreamDestinations = svc.inv.maps.listDestinations().sort((a, b) => a.name.localeCompare(b.name));
-      send(res, homeView(ctx, { example, levels, dreamDestinations, origins: svc.inv.maps.listOrigins(), user: user(req), recent: await svc.recentTrip(user(req)) }));
+      send(res, homeView(ctx, { example, dreamDestinations, origins: svc.inv.maps.listOrigins(), user: user(req), recent: await svc.recentTrip(user(req)) }));
     } catch (e) { next(e); }
   });
 
@@ -115,7 +106,7 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
   r.get('/dream', async (req, res, next) => {
     try {
       const dest = svc.inv.maps.getDestination(String(req.query.dest || '').slice(0, 40));
-      if (!dest) return res.redirect(303, '/#tb-dream-title');
+      if (!dest) return res.redirect(303, '/#search');
       const raw = { who: 'couple', style: 'surprise', prio: 'hotel', k: '0', ...req.query };
       // "I have to be there": an optional fixed departure date from the homepage form.
       const t0 = today();

@@ -1,13 +1,18 @@
 const { html, raw } = require('../lib/html');
 const { sprite, icon } = require('./icons');
 const { current } = require('../lib/requestContext');
+const { productStates, productItem } = require('./components');
 
-// The consumer navigation. Links that need the trip planner are left out when it is off.
+// The navigation. Desktop: the four travel products (each AVAILABLE or COMING SOON from its flag),
+// the AI Trip Builder and My Trips. Mobile: Search, AI Agent, Trips, Account. Every page that builds
+// or shows a trip passes active: 'plan', so the AI Trip Builder is marked on all of them.
 const TRIP_NAV = [
-  { href: '/plan', label: 'Build My Trip', key: 'plan', trips: true },
-  { href: '/how-it-works', label: 'How It Works', key: 'how' },
-  { href: '/destinations', label: 'Destinations', key: 'destinations', trips: true },
-  { href: '/my-trips', label: 'My Trips', key: 'my-trips', trips: true },
+  { href: '/agent', label: 'AI Trip Builder', key: 'plan' },
+  { href: '/my-trips', label: 'My Trips', key: 'my-trips' },
+];
+// With the trip planner off there is no agent and no trips to show: how it works and help instead.
+const INFO_NAV = [
+  { href: '/how-it-works', label: 'How it works', key: 'how' },
   { href: '/faq', label: 'Help', key: 'faq' },
 ];
 
@@ -19,22 +24,39 @@ function accountArea(user) {
   if (!user) return html`<a class="btn btn-ghost btn-sm header-cta" href="/signin">${icon('user')} Sign in</a>`;
   return html`<div class="header-account header-cta">
     ${user.isAdmin ? html`<a class="text-link header-admin" href="/admin">Admin</a>` : ''}
-    <a class="btn btn-ghost btn-sm" href="/my-trips">${icon('user')} ${user.name.split(' ')[0]}</a>
+    <a class="btn btn-ghost btn-sm" href="/my-trips#account">${icon('user')} ${user.name.split(' ')[0]}</a>
   </div>`;
 }
 
-function header(active, trips) {
-  const nav = TRIP_NAV.filter(n => trips || !n.trips);
+// The products as one group when none is connected yet (one COMING SOON for the four), one by one
+// as soon as any of them is available.
+function productNav(products) {
+  if (products.every(p => p.state === 'soon')) {
+    return html`<li class="nav-products is-soon"><span>${products.map(p => p.label).join(' · ')}</span> <small class="soon-badge">Coming soon</small></li>`;
+  }
+  return products.map(p => html`<li class="nav-product">${productItem(p)}</li>`);
+}
+
+function header(active, ctx) {
+  const trips = !!ctx.trips;
   const { user } = current();
+  const nav = trips ? TRIP_NAV : INFO_NAV;
+  const mobile = trips
+    ? [['/#search', 'Search', 'search', 'search'], ['/agent', 'AI Agent', 'plan', 'sparkle'], ['/my-trips', 'Trips', 'my-trips', 'bag'], [user ? '/my-trips#account' : '/signin', 'Account', 'account', 'user']]
+    : [['/how-it-works', 'How it works', 'how', 'compass'], ['/faq', 'Help', 'faq', 'info'], ['/contact', 'Contact', 'contact', 'mail']];
+  const here = key => (key === active ? raw(' aria-current="page"') : '');
   return html`
 <header class="site-header site-header-trips" data-header>
   <div class="container header-inner">
     <a class="header-logo" href="/" aria-label="Tripelyx home">${logo()}</a>
     <nav class="main-nav" id="main-nav" aria-label="Main">
-      <ul>
-        ${nav.map(n => html`<li><a href="${n.href}"${n.key === active ? raw(' aria-current="page"') : ''}>${n.label}</a></li>`)}
+      <ul class="nav-desktop">
+        ${productNav(productStates(ctx))}
+        ${nav.map(n => html`<li><a href="${n.href}"${here(n.key)}>${n.label}</a></li>`)}
       </ul>
-      ${trips ? html`<a class="btn btn-navy btn-sm nav-cta-mobile" href="${user ? '/my-trips' : '/signin'}">${user ? 'My account' : 'Sign in'} ${icon('arrow')}</a>` : ''}
+      <ul class="nav-mobile">
+        ${mobile.map(([href, label, key, ic]) => html`<li><a href="${href}"${here(key)}>${icon(ic)} ${label}</a></li>`)}
+      </ul>
     </nav>
     ${trips ? accountArea(user) : ''}
     <button class="nav-toggle" type="button" aria-controls="main-nav" aria-expanded="false" data-nav-toggle>
@@ -54,7 +76,7 @@ function footer(company, trips) {
     <div class="tf-top">
       <div class="tf-brand"><a class="footer-logo" href="/" aria-label="Tripelyx home">${logo()}</a><p>${company.footerLine}</p></div>
       ${col('Explore', trips
-        ? [['/plan', 'Build my trip'], ['/challenge', 'Beat my trip'], ['/destinations', 'Destinations'], ['/how-it-works', 'How it works']]
+        ? [['/agent', 'AI Trip Builder'], ['/challenge', 'Beat my trip'], ['/destinations', 'Destinations'], ['/how-it-works', 'How it works']]
         : [['/how-it-works', 'How it works']])}
       ${col('Company', [['/about', 'About Tripelyx'], ['/partners', 'For travel businesses']])}
       ${col('Support', [['/faq', 'Help and FAQ'], ['/contact', 'Contact support'], ...(trips ? [['/manage', 'Find a booking'], ['/my-trips', 'My Trips']] : [])])}
@@ -97,7 +119,7 @@ ${ctx.preload || ''}
 ${sprite}
 <a class="skip-link" href="#main">Skip to content</a>
 ${ctx.envBanner ? html`<aside class="env-banner" aria-label="Environment notice">${ctx.envBanner}</aside>` : ''}
-${header(active, trips)}
+${header(active, ctx)}
 <main id="main" tabindex="-1">
 ${body}
 </main>

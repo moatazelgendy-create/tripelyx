@@ -1,5 +1,5 @@
 // Travel by Budget enhancements. Every page works without this file; it only adds polish:
-// budget formatting, the budget slider and sharing. Nothing here pretends to work: results are shown
+// budget formatting and sharing. Nothing here pretends to work: results are shown
 // the moment they exist, never behind a timed "building" or "checking" animation.
 (function () {
   'use strict';
@@ -13,26 +13,6 @@
     input.addEventListener('input', function () { formatBudget(input); });
     if (input.value) formatBudget(input);
   });
-
-  // Budget slider on the homepage: show the matching level and carry its budget to the planner.
-  var slider = document.querySelector('[data-budget-slider]');
-  if (slider) {
-    var range = slider.querySelector('[data-range]');
-    var hidden = slider.querySelector('[data-range-budget]');
-    var levels = slider.querySelectorAll('[data-level]');
-    var data = document.getElementById('tb-home-data');
-    var budgets = [];
-    try { budgets = JSON.parse(data.textContent).levels; } catch (e) { /* ignore */ }
-    function show() {
-      var i = Number(range.value);
-      levels.forEach(function (lv, k) { lv.hidden = k !== i; lv.classList.toggle('is-on', k === i); });
-      if (budgets[i]) hidden.value = budgets[i];
-    }
-    range.addEventListener('input', show);
-    show();
-    // The range value itself isn't meaningful server-side.
-    slider.addEventListener('submit', function () { range.removeAttribute('name'); });
-  }
 
   // Share a trip: the Web Share sheet where it exists, otherwise copy the link.
   var toast;

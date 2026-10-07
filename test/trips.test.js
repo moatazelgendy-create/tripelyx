@@ -479,7 +479,7 @@ test('money and time: weekdays are a second budget, never a claim about anyoneâ€
   const home = await c.req('/');
   assert.match(home.text, /Or say it in your own words/);
   assert.match(home.text, /every total includes taxes and fees/);
-  assert.match(home.text, /Build my best trip/);
+  assert.match(home.text, /Show me what my money can do/);
   assert.match(home.text, /Your maximum is a ceiling, not a target\./);
 });
 
@@ -550,11 +550,10 @@ test('pages render without inline scripts or styles; the planner flag turns it a
     assert.ok(!/<script(?![^>]*\bsrc=)(?![^>]*application\/json)[^>]*>/.test(body), `${p} has an inline script`);
   }
   const home = await (await fetch(app.base + '/')).text();
-  assert.match(home, /How much do you<br>want to spend\?/);
-  assert.match(home, /Surprise me/i);
-  assert.match(home, /Demo inventory/);
-  assert.match(home, /Three answers\. One budget\. You choose, or keep talking\./);
-  assert.match(home, /Our pick/);
+  assert.match(home, /How much do you want to spend\?/);
+  assert.match(home, /No destination required\./);
+  assert.match(home, /Example Â· demo inventory/);
+  assert.match(home, /What one number builds/);
   assert.match(home, /Challenge us/);
   assert.match(home, /I have to be there on/);
   assert.equal((await fetch(app.base + '/trips-under-7')).status, 404);
@@ -587,7 +586,7 @@ test('the full journey: account, search, customize, price check, quote, pay, My 
   assert.equal(ok.status, 303); assert.equal(ok.location, '/my-trips');
   assert.ok(c.jar.txs, 'session cookie set');
   assert.equal((await c.req('/signup', { method: 'POST', form: { name: 'Ada', email: 'ada@example.com', password: 'correct horse battery' } })).status, 409);
-  assert.match((await c.req('/my-trips')).text, /Welcome back, Ada/);
+  assert.match((await c.req('/my-trips')).text, /Your trips, Ada/);
 
   // Search and customize: every change re-prices the whole trip server-side.
   const trip = await buildTrip(c);

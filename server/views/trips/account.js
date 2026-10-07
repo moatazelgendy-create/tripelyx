@@ -76,7 +76,7 @@ function huntsSection(hunts, destName) {
 function myTripsView(ctx, { user, upcoming, past, saved, watches, recent, lastSearch, notice, hunts = [], destName = id => id }) {
   const body = html`
 <div class="container tb-mytrips">
-  <header class="tb-results-head"><div><p class="eyebrow">My Trips</p><h1>Welcome back, ${user.name.split(' ')[0]}.</h1>
+  <header class="tb-results-head" id="account"><div><p class="eyebrow">My Trips</p><h1>Your trips, ${user.name.split(' ')[0]}.</h1>
     ${lastSearch ? html`<p class="tb-results-sub">Last time you looked for a ${plural(lastSearch.query.nights, 'night')} ${lastSearch.query.style === 'surprise' ? '' : `${lastSearch.query.style} `}trip around ${dollars(lastSearch.query.budget)}. <a href="/trips?${lastSearch.params}">See new trips</a> · <a href="/plan?${new URLSearchParams(Object.entries(Object.fromEntries(new URLSearchParams(lastSearch.params))).filter(([k]) => k !== 'style')).toString()}">Try a different style</a></p>` : ''}</div>
     <form method="post" action="/signout"><button class="btn btn-ghost btn-sm" type="submit">Sign out</button></form></header>
   ${notice ? html`<div class="alert alert-success" role="status">${icon('check')}<span>${notice}</span></div>` : ''}

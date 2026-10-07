@@ -256,10 +256,10 @@ test('pages: the homepage leads with the agent, a conversation has a page, a liv
     const home = await c.req('/');
     assert.equal(home.status, 200);
     assert.match(home.text, /How much do you.*want to spend\?/s);
-    assert.match(home.text, /Show me what my money can do/); assert.match(home.text, /No destination required/); assert.match(home.text, /I already know where I want to go/);
+    assert.match(home.text, /Show me what my money can do/); assert.match(home.text, /No destination required/); assert.match(home.text, /Already know where you’re going\? <a [^>]*href="#search">Search travel</);
     assert.match(home.text, /name="budget"/);
     assert.match(home.text, /action="\/agent"/);
-    assert.match(home.text, /action="\/challenge"/);
+    assert.match(home.text, /href="\/challenge">I found a trip — beat it/);
     assert.match(home.text, /Challenge us/);
     assert.equal((await c.req('/agent')).status, 200);
     // The job is held between its fast and deep phases, the way slow suppliers would hold it, so the
