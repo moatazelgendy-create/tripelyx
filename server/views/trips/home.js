@@ -11,6 +11,10 @@ const { EXAMPLES } = require('./agent');
 
 const BUDGET_LEVELS = [500, 1000, 1500, 2000, 3000, 5000];
 const STYLE_CHIPS = [['beach', 'Beach'], ['city', 'City break'], ['adventure', 'Adventure'], ['romantic', 'Romantic'], ['family', 'Family'], ['all-inclusive', 'All-inclusive']];
+// WHAT DO YOU WANT FROM THIS TRIP? The four ways in, each a submit of the number above with its mode:
+// SAVE THE MOST (Save Max), BEST VALUE (the mission as it is: routes/agent.js reads no mode from it),
+// MAKE IT EASY and MAKE IT MEMORABLE (Experience Max). The primary button stays best value.
+const ENTRY_MODES = [['save', 'SAVE THE MOST', 'wallet'], ['value', 'BEST VALUE', 'check'], ['easy', 'MAKE IT EASY', 'plane'], ['experience', 'MAKE IT MEMORABLE', 'sparkle']];
 
 function budgetForm({ id = 'home', value = '', cta = 'Build my best trip', surprise = true, autofocus = false } = {}) {
   return html`<form class="tb-budget-form" action="/plan" method="get" data-budget-form>
@@ -67,12 +71,16 @@ function homeView(ctx, { example, levels, dreamDestinations, origins, user, rece
         <button class="btn btn-blue btn-lg" type="submit">Show me what my money can do ${icon('arrow')}</button>
       </div>
       <p class="tb-budget-hint" id="hero-budget-hint">No destination required. Your number is the ceiling, not the target: every total includes taxes and fees, and nothing is booked until you confirm.</p>
+      <fieldset class="ag-hero-entry">
+        <legend class="ag-hero-entry-q">WHAT DO YOU WANT FROM THIS TRIP?</legend>
+        <div class="ag-hero-modes">${ENTRY_MODES.map(([value, label, ic]) => html`<button class="btn btn-white ag-hero-mode" type="submit" name="mode" value="${value}">${icon(ic)} ${label}</button>`)}</div>
+      </fieldset>
+      <p class="tb-budget-hint ag-hero-save">Save me the most: tell us your max, and we'll try not to use it. You see your max, what we built it for, and what you keep. <a class="hu-hero-wait" href="/hunts/new">I can wait: let the AI hunt for it</a></p>
+      <p class="ag-hero-build"><button class="btn btn-blue" type="submit" name="mode" value="experience">${icon('sparkle')} BUILD ME AN EXPERIENCE</button> <span class="ag-hero-promise">SPEND ON THE MEMORIES. NOT THE LABELS.</span></p>
       <div class="ag-hero-actions">
-        <button class="btn btn-white" type="submit" name="mode" value="save">${icon('wallet')} Save me the most</button>
         <a class="btn btn-ghost-light" href="#tb-ways-title">I already know where I want to go</a>
         <a class="btn btn-ghost-light" href="/challenge">I already found a trip</a>
       </div>
-      <p class="tb-budget-hint ag-hero-save">Save me the most: tell us your max, and we'll try not to use it. You see your max, what we built it for, and what you keep. <a class="hu-hero-wait" href="/hunts/new">I can wait: let the AI hunt for it</a></p>
     </form>
     <details class="ag-hero-say">
       <summary>Or say it in your own words</summary>
@@ -219,4 +227,4 @@ ${recent ? html`<section class="tb-section tb-section-tight" aria-label="Your un
   });
 }
 
-module.exports = { homeView, budgetForm, BUDGET_LEVELS };
+module.exports = { homeView, budgetForm, BUDGET_LEVELS, ENTRY_MODES };

@@ -4,6 +4,8 @@
 // what only the traveler can check is marked as such.
 const { plural, longDate, money } = require('../views/trips/common');
 const leaks = require('../trips/leaks');
+const { WORTH_IT_CHIPS } = require('../trips/experience');
+const { worthItOpen } = require('../trips/service');
 
 const STATUS_WORDS = { confirmed: 'Confirmed', pending_payment: 'Awaiting payment', confirming: 'Confirming with suppliers', pending_supplier: 'Awaiting a supplier', partially_confirmed: 'Partly confirmed', cancelled: 'Cancelled', refunded: 'Refunded', failed: 'Failed' };
 
@@ -84,7 +86,12 @@ function bookingHome(b, { now = new Date(), preview = null, origin = null } = {}
   // engine says the whole number and the booking's share apart, as the booking page does.
   const asks = (bud && bud.asks) || {};
   const victory = bud && bud.budget && t.flight && t.hotel && t.hotel.features ? leaks.victory({ max: bud.budget, trip: t, asks: { ...asks, ...(asks.rules || {}) }, reserve: bud.keep || 0 }) : null;
-  return { ref: b.ref, cancelled, toGo, today, next, status, remaining, reservation, actions, paid, total: b.total, bookingHref: `/booking/${b.ref}`, victory };
+  // WHAT WAS ACTUALLY WORTH IT? once the trip is over (the service's own rule: a trip that went ahead
+  // and whose return date has passed), with what was already answered; nothing is asked before.
+  const wo = worthItOpen(b, now);
+  const wi = b.worthIt || null;
+  const worthIt = { ask: !!wo.open, chips: WORTH_IT_CHIPS, answered: wi ? { worth: wi.worth || [], notWorth: wi.notWorth || [], other: wi.other || null, defaults: wi.defaults || null, earlier: wi.earlier || null } : null };
+  return { ref: b.ref, cancelled, toGo, today, next, status, remaining, reservation, actions, paid, total: b.total, bookingHref: `/booking/${b.ref}`, victory, worthIt };
 }
 
 module.exports = { bookingHome };

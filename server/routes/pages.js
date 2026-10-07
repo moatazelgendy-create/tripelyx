@@ -5,6 +5,7 @@ const { brandsView, technologyView, partnersView, aboutView, contactView } = req
 const { bookView, bookIndexView, offerView, checkoutView, bookingView, manageView, defaultsFor } = require('../views/book');
 const { notFoundView } = require('../views/errors');
 const { tripCheckoutView, tripBookingView } = require('../views/trips/pages');
+const { worthItOpen } = require('../trips/service');
 const { VERTICALS, getVertical } = require('../verticals');
 const { AppError } = require('../lib/errors');
 const { readCookies, bookingCookieName, setBookingCookie } = require('../lib/cookies');
@@ -137,7 +138,13 @@ function pagesRouter(ctx, { writeLimiter }) {
       const data = await getBooking(req);
       const notice = req.query.cancelled ? 'Your booking has been cancelled.' : req.query.sent ? 'Message sent. We reply by email and here.' : null;
       if (data.booking.vertical === 'trips') {
-        return send(res, tripBookingView(ctx, { ...data, notice, user: req.user || null, messages: await ctx.tripService.supportMessages(data.booking.ref) }));
+        // WHAT WAS ACTUALLY WORTH IT? opens once the trip is over (service.worthItOpen); the page says
+        // what was kept and where after an answer, or why nothing was.
+        // The form promises a save to the account's travel defaults only to the account that booked it.
+        const open = worthItOpen(data.booking, ctx.tripService.now()).open;
+        const account = open || data.booking.worthIt ? await ctx.tripService.worthItAccount(data.booking.ref, req.user || null) : { who: null, remembered: false };
+        const worth = { open, sent: req.query.worth === '1', error: ['both', 'empty', 'early', 'status'].includes(req.query.worthError) ? req.query.worthError : null, ...account };
+        return send(res, tripBookingView(ctx, { ...data, notice, user: req.user || null, messages: await ctx.tripService.supportMessages(data.booking.ref), worth }));
       }
       send(res, bookingView(ctx, { ...data, notice }));
     } catch (err) {

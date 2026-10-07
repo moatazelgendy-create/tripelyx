@@ -883,6 +883,89 @@ a.tb-pill:hover { border-color: var(--blue-500); }
   .tb-leak-table th:nth-child(2), .tb-leak-breakdown td:nth-child(2) { display: none; }
 }
 
+/* ---------- Experience Max (tb-mem-): spend on the memories, not the labels ---------- */
+.tb-mem-head { margin-bottom: 24px; }
+.tb-mem-head h1 { font-size: 36px; margin-bottom: 6px; }
+.tb-mem-signature { font-weight: 700; color: var(--navy-800); font-size: 17px; letter-spacing: .02em; margin: 0 0 8px; }
+.tb-mem-main { margin: 12px 0 0; font-size: 15.5px; }
+.tb-mem-main.is-protected { background: #e3f3ea; color: #0c5e43; border-radius: var(--radius); padding: 10px 14px; }
+.tb-mem-main.is-protected a { color: inherit; font-weight: 600; }
+.tb-mem-main.is-missing { margin-top: 12px; }
+.tb-mem-protect-link { margin: 4px 0 10px; font-size: 13.5px; }
+.tb-mem-protect-link b { color: #0c5e43; letter-spacing: .02em; }
+.tb-mem-protect-link small { color: var(--muted); }
+.tb-mem-switched { margin: 0 0 10px; }
+/* A version over the maximum says so beside its link: the ceiling is never a target. */
+.tb-mem-over { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 600; color: var(--warning); overflow-wrap: anywhere; }
+.tb-mem-list li[data-pick] .tb-leak-item b { color: var(--navy-800); }
+.tb-mem-chips { list-style: none; padding: 0; margin: 10px 0 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.tb-mem-chip { display: inline-flex; align-items: center; gap: 6px; border: 1.5px solid var(--line); border-radius: 999px; padding: 6px 14px; font-size: 14.5px; font-weight: 600; color: var(--ink); background: #fff; text-decoration: none; line-height: 1.3; }
+a.tb-mem-chip:hover, a.tb-mem-chip:focus-visible { border-color: var(--blue-500); }
+.tb-mem-chip.is-on { background: var(--navy-800); border-color: var(--navy-800); color: #fff; }
+.tb-mem-chip.is-off { color: var(--muted); background: var(--bg-soft); }
+.tb-mem-rank { font-size: 12px; font-weight: 700; background: rgba(255, 255, 255, .2); border-radius: 999px; padding: 0 6px; }
+.tb-mem-say { font-size: 16.5px; font-weight: 600; color: var(--navy-800); margin: 6px 0 10px; }
+.tb-mem-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0 0; }
+.tb-mem-actions .btn, .tb-mem-foot .btn, .tb-mem-list .btn { white-space: normal; text-align: left; }
+.tb-mem-goal { margin: 0 0 12px; }
+.tb-mem-receipt h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); display: flex; align-items: center; gap: 6px; margin: 0 0 6px; }
+.tb-mem-lines { list-style: none; padding: 0; margin: 0; }
+.tb-mem-lines li { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 15px; }
+.tb-mem-lines li b { white-space: nowrap; }
+.tb-mem-alloc tbody tr[data-key="experiences"] td { font-weight: 700; color: var(--navy-800); }
+.tb-mem-days { list-style: none; padding: 0; margin: 12px 0 8px; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.tb-mem-days li { background: var(--bg-soft); border-radius: var(--radius); padding: 10px 12px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.tb-mem-days li b { font-size: 15px; }
+.tb-mem-days li small { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.tb-mem-days li.is-main { background: #e3f3ea; }
+.tb-mem-days li.is-main b { color: #0c5e43; }
+.tb-mem-days li.is-open { background: var(--sky-50); }
+.tb-mem-day { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; }
+.tb-leak-block.is-pick { background: #e3f3ea; box-shadow: inset 0 0 0 1.5px #a7d8bf; }
+.tb-mem-list li { grid-template-columns: minmax(0, 1fr) auto minmax(0, auto); }
+.tb-mem-free li { margin-bottom: 6px; }
+/* $0 MORE's trades: their own list under the free one, each marked as giving something up. */
+.tb-mem-trades li { border-left: 3px solid var(--warning); padding-left: 10px; }
+.tb-mem-free small { color: var(--muted); }
+.tb-mem-conflicts { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }
+.tb-mem-ladder { list-style: none; padding: 0; margin: 12px 0; display: grid; gap: 6px; counter-reset: rung; }
+.tb-mem-ladder li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 8px 12px; border-left: 3px solid var(--line); background: #fff; }
+.tb-mem-ladder li.is-sweet { border-left-color: #0c7a4f; background: #e3f3ea; }
+.tb-mem-ladder li.is-this { border-left-color: var(--blue-500); }
+.tb-mem-ladder li.is-top { border-left-style: dashed; color: var(--muted); }
+.tb-mem-rung { font-weight: 600; min-width: 0; flex: 1 1 200px; }
+.tb-mem-sweet { font-size: 12.5px; letter-spacing: .06em; color: #0c5e43; }
+.tb-mem-dupes { list-style: none; padding: 0; margin: 0; display: grid; gap: 14px; }
+.tb-mem-dupes h3 { font-size: 16px; margin: 0 0 4px; }
+.tb-mem-dupes h3 small { color: var(--muted); font-weight: 500; font-size: 13.5px; }
+.tb-mem-protect tr.is-ok td:last-child { color: #0c5e43; font-weight: 600; }
+.tb-mem-protect tr.is-verify td:last-child { color: var(--warning); font-weight: 600; }
+.tb-mem-checks li.is-miss .icon { color: var(--warning); }
+.tb-mem-close { text-align: center; padding: 28px 0 8px; }
+.tb-mem-close .tb-mem-signature { font-size: 20px; }
+.tb-mem-foot { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: center; margin: 8px 0 0; }
+.tb-mem-review { margin-top: 8px; }
+.tb-mem-scheduled a { font-weight: 600; }
+.tb-mem-worth-form > summary { cursor: pointer; font-weight: 600; margin: 4px 0 10px; }
+.tb-mem-chipset { border: 0; padding: 0; margin: 0 0 12px; min-width: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.tb-mem-chipset legend { font-weight: 600; font-size: 14.5px; padding: 0; margin-bottom: 6px; width: 100%; }
+.tb-mem-pick { cursor: pointer; font-weight: 500; }
+.tb-mem-pick input { margin: 0; accent-color: var(--navy-800); }
+.tb-mem-pick:has(input:checked) { background: var(--navy-800); border-color: var(--navy-800); color: #fff; }
+.tb-mem-pick:focus-within { outline: 2px solid var(--blue-400); outline-offset: 2px; }
+.tb-mem-remember { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; margin: 4px 0 2px; }
+.tb-mem-kept { background: var(--bg-soft); border-radius: var(--radius); padding: 12px 14px; margin: 0 0 12px; }
+.tb-mem-kept.is-new { background: #e3f3ea; }
+.tb-mem-kept p { margin: 0 0 6px; }
+@media (max-width: 640px) {
+  .tb-mem-head h1 { font-size: 28px; }
+  .tb-mem-days { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .tb-mem-list li { grid-template-columns: minmax(0, 1fr); }
+  .tb-mem-chip { font-size: 14px; padding: 6px 12px; }
+  .tb-mem-protect th:nth-child(3), .tb-mem-protect td:nth-child(3) { white-space: nowrap; }
+  .tb-mem-foot .btn { width: 100%; justify-content: center; }
+}
+
 /* ---- Trip Challenge ---- */
 .tb-chal-page .tb-results-head { margin-bottom: 20px; }
 .tb-chal-form { display: grid; gap: 18px; }
@@ -1158,6 +1241,17 @@ a.tb-pill:hover { border-color: var(--blue-500); }
 /* The mission: one number, three ways, the direction pushed, the live draft, the budget slider. */
 .ag-hero-number .tb-budget-input { max-width: 720px; }
 .ag-hero-number .tb-budget-hint { margin: 12px 0 10px; }
+/* WHAT DO YOU WANT FROM THIS TRIP? The four ways in, and BUILD ME AN EXPERIENCE with its promise. */
+.ag-hero-entry { border: 0; padding: 0; margin: 4px 0 0; min-width: 0; max-width: 720px; }
+.ag-hero-entry-q { color: #fff; font-weight: 700; font-size: 13.5px; letter-spacing: .08em; padding: 0; margin-bottom: 8px; }
+.ag-hero-modes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.ag-hero-mode { justify-content: center; white-space: normal; text-align: center; font-size: 14px; letter-spacing: .02em; padding: 10px 12px; }
+.ag-hero-build { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 14px 0 0; max-width: 720px; }
+.ag-hero-promise { color: #fff; font-weight: 700; letter-spacing: .04em; font-size: 14.5px; }
+@media (max-width: 640px) {
+  .ag-hero-modes { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .ag-hero-build .btn { width: 100%; justify-content: center; }
+}
 .ag-hero-say { max-width: 720px; margin-top: 14px; }
 .ag-hero-say > summary { cursor: pointer; color: #fff; font-weight: 600; opacity: .92; list-style: none; display: inline-flex; align-items: center; gap: 6px; }
 .ag-hero-say > summary::-webkit-details-marker { display: none; }
@@ -1442,3 +1536,22 @@ a.tb-pill:hover { border-color: var(--blue-500); }
 .ag-leak-chips { width: 100%; margin-top: 4px; }
 .ag-victory { margin: 0 0 14px; }
 .ag-saver-nums .is-over b { color: var(--danger); }
+/* Experience Max on the agent page: the protected experience on the mission panel, the goals row,
+   the A/B columns, the lettered version lists and the after-trip "worth it" chips. */
+.ag-mission-facts .ag-mission-wide { grid-column: 1 / -1; }
+.ag-protected { margin-top: 10px; padding: 8px 10px; border-radius: 10px; background: rgba(255, 255, 255, .1); display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+.ag-protected p { margin: 0; }
+.ag-protected .tb-kicker { width: 100%; }
+.ag-protected .tb-muted { color: rgba(255, 255, 255, .75); }
+.ag-mission .ag-protected .btn-ghost { color: #fff; border-color: rgba(255, 255, 255, .45); }
+.ag-ab .ag-contract-cols > div { padding: 10px; border-radius: 10px; background: var(--bg-soft); }
+.ag-ab .ag-contract-cols > div.is-pick { outline: 2px solid var(--navy-800); }
+.ag-x-list li.is-current { outline: 2px solid var(--line); }
+.ag-x-list .ag-say, .ag-x-conflict .ag-say { display: inline-block; margin-left: 6px; }
+.ag-x-signature { margin: 4px 0 8px; }
+.ag-x-chips { margin-top: 6px; }
+.ag-worth { margin: 0 0 12px; display: grid; gap: 6px; }
+.ag-worth .ag-chips { margin: 0; }
+@media (max-width: 720px) {
+  .ag-ab .ag-contract-cols { grid-template-columns: 1fr; }
+}

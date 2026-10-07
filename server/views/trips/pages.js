@@ -12,6 +12,7 @@ const { vacationPlan, coveredBy, unpricedFor } = require('../../trips/vacation')
 const { tripCard } = require('./plan');
 const { victory } = require('../../trips/leaks');
 const { victoryPanel } = require('./leaks');
+const { worthItPanel } = require('./memories');
 
 function howItWorksView(ctx) {
   const body = html`
@@ -214,7 +215,7 @@ function componentStatus(c) {
   return html`<span class="tb-status tb-status-${tone}">${l}</span>`;
 }
 
-function tripBookingView(ctx, { booking: b, cancellationPreview: preview, payment, notice, messages = [], user, messageError }) {
+function tripBookingView(ctx, { booking: b, cancellationPreview: preview, payment, notice, messages = [], user, messageError, worth = null }) {
   const t = b.trip;
   const ok = b.status === 'confirmed';
   const partial = b.status === 'partially_confirmed';
@@ -245,6 +246,7 @@ function tripBookingView(ctx, { booking: b, cancellationPreview: preview, paymen
   ${notice ? html`<div class="alert alert-success mb-16" role="status">${icon('check')}<span>${notice}</span></div>` : ''}
   ${partial ? html`<div class="alert alert-warning mb-16" role="alert">${icon('alert')}<span><b>One part of your trip couldn’t be confirmed</b> (see below). Our team has been alerted and will contact you at ${b.traveler.email} with options or a refund for that part. The confirmed parts are safe. Nothing else is needed from you right now.</span></div>` : ''}
   ${b.status === 'failed' ? html`<div class="alert alert-error mb-16" role="alert">${icon('alert')}<span>The flights couldn’t be confirmed, so your payment of ${money(b.refundAmount || b.total)} has been refunded in full. <a href="/plan">Build another trip</a>.</span></div>` : ''}
+  ${worth ? worthItPanel(b, { ...worth, user }) : ''}
   <div class="tb-command-grid">
     <div>
       <section class="tb-panel" aria-labelledby="it-title">

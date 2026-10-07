@@ -129,7 +129,11 @@ function stepUp(base, t, nightsAsked) {
 // Every package the optimizer would price for these lengths, under the same rules and filters it
 // applies (mirrors its packagesFor, which is not exported), minus the destinations and hotels a
 // "try again" or a rejection excludes.
-function buildPool(inv, q, nightsList, { settings, now, exclude }) {
+// `protect` (Experience Max: the main experience the customer protected, an activity id) keeps every
+// package on it: destinations that do not offer it are left out and every activity set carries it,
+// so no strategy, variant or budget note is ever a version without the experience they protected.
+const withProtect = (sets, protect) => { const seen = new Set(), out = []; for (const a of [[protect], ...sets.map(x => [...new Set([...x, protect])])]) { const k = [...a].sort().join(','); if (!seen.has(k)) { seen.add(k); out.push(a); } } return out; };
+function buildPool(inv, q, nightsList, { settings, now, exclude, protect = null }) {
   const origin = inv.maps.getOrigin(q.origin);
   const airport = origin.airports[0].code;
   const ex = exclusions(exclude);
@@ -145,8 +149,10 @@ function buildPool(inv, q, nightsList, { settings, now, exclude }) {
       const flights = inv.flights.search({ from: airport, destId: dest.id, depart, nights, travelers: q.travelers }).filter(f => rulesAllowFlight(f, q.rules));
       const hotels = inv.hotels.search({ destId: dest.id, checkIn: depart, nights, rooms: roomsFor(base) }).filter(h => hotelAllowed(h, q) && rulesAllowHotel(h, q.rules) && !skipHotel.has(h.id));
       const acts = inv.activities.search({ destId: dest.id, date: depart, travelers: q.travelers });
+      if (protect && !acts.some(a => a.id === protect)) continue;
       const transfers = q.rules && q.rules.transfer ? [true] : [false, true];
-      for (const f of flights) for (const h of hotels) for (const a of activitySets(acts, q.style)) for (const transfer of transfers) {
+      const sets = protect ? withProtect(activitySets(acts, q.style), protect) : activitySets(acts, q.style);
+      for (const f of flights) for (const h of hotels) for (const a of sets) for (const transfer of transfers) {
         const t = priceTrip(inv, { ...base, flight: f.id, hotel: h.id, activities: a, bags: false, transfer }, settings);
         if (t) out.push(t);
       }
@@ -154,6 +160,7 @@ function buildPool(inv, q, nightsList, { settings, now, exclude }) {
   }
   return out;
 }
+const keepsProtected = (t, protect) => !protect || t.spec.activities.includes(protect);
 
 // Candidates at or under `cap`, minus what `skip` leaves out: a trip over the ceiling is never a
 // strategy. `match` is the fit the rest of the product shows (budget included); `plain` is the trip's
@@ -194,12 +201,13 @@ function choosePick(strategies, q) {
 // The three strategies (plus the candidate list and the pool, for budgetShift). `cap` is the ceiling
 // the set is aimed at; `keep` is always read against q.budget, the customer's own number. `hold`
 // ({ trip, locks }) keeps every package on the locked parts of that trip.
-function plan(inventory, q, { settings, now = new Date(), nightsOpen = false, exclude = {}, cap = q.budget, prefer = null, minNights = 2, hold = null } = {}) {
+function plan(inventory, q, { settings, now = new Date(), nightsOpen = false, exclude = {}, cap = q.budget, prefer = null, minNights = 2, hold = null, protect = null } = {}) {
   if (!q || !q.budget || !q.origin) throw new AppError('invalid_search', 'Tell us your budget and where you’re leaving from.', 422);
   const inv = memoInventory(inventory);
   const n = q.nights;
+  protect = protect || q.protect || null;
   const nightsFor = { more: nightsOpen ? range(n, n + 2) : [n], keep: nightsOpen ? range(Math.max(minNights, n - 1), n) : [n], special: [n] };
-  let pool = buildPool(inv, q, [...new Set(Object.values(nightsFor).flat())], { settings, now, exclude });
+  let pool = buildPool(inv, q, [...new Set(Object.values(nightsFor).flat())], { settings, now, exclude, protect }).filter(t => keepsProtected(t, protect));
   if (hold && hold.trip) pool = pool.filter(t => !crossesLock(hold.trip, t, hold.locks));
   const skip = excluder(exclude);
   const cands = candidates(pool, cap, contexts(q), skip);
@@ -267,14 +275,15 @@ function threeWays(inv, q, opts = {}) {
 // `missing`, with the customer's own rule when that is what stops it: a lock (`locks`, as the agent
 // keeps them), an exact departure or a chosen month (q.dateMode), a stated length (`nightsOpen` false),
 // a rejected destination or hotel (`exclude`). `prefer` orders the pools built for another destination.
-function pushDirection(inventory, q, chosen, key, { settings, now = new Date(), locks = {}, nightsOpen = true, exclude = {}, prefer = null } = {}) {
+function pushDirection(inventory, q, chosen, key, { settings, now = new Date(), locks = {}, nightsOpen = true, exclude = {}, prefer = null, protect = null } = {}) {
   if (!LABELS[key]) throw new AppError('invalid_strategy', 'Pick one of the three strategies first.', 422);
   const inv = memoInventory(inventory);
   locks = locks || {};
+  protect = protect || q.protect || null;
   const ex = exclusions(exclude), skipTok = new Set(ex.tokens), skipHotel = new Set(ex.hotels);
   const cur = tripOf(chosen), s = cur.spec, curToken = encodeSpec(s), cx = contexts(q), budget = q.budget;
   const price = spec => priceTrip(inv, spec, settings);
-  const fits = t => t && t.total <= budget && encodeSpec(t.spec) !== curToken && !skipTok.has(encodeSpec(t.spec));
+  const fits = t => t && t.total <= budget && encodeSpec(t.spec) !== curToken && !skipTok.has(encodeSpec(t.spec)) && keepsProtected(t, protect);
   const wrap = t => ({ trip: t, token: encodeSpec(t.spec), total: t.total, match: scoreTrip(t, cx.ctx).match, plain: scoreTrip(t, cx.plain).match });
   const hotelsOk = hs => hs.filter(h => hotelAllowed(h, q) && rulesAllowHotel(h, q.rules) && !skipHotel.has(h.id));
   const priced = specs => specs.map(price).filter(fits).map(wrap);
@@ -283,14 +292,15 @@ function pushDirection(inventory, q, chosen, key, { settings, now = new Date(), 
   // and on the same departure date when the dates are locked.
   const away = { dests: [...new Set([s.dest, ...ex.dests])], tokens: ex.tokens, hotels: ex.hotels };
   const qAway = locks.dates ? { ...q, dateMode: 'exact', depart: s.depart, month: null } : q;
-  const elsewhere = keep => strongest(candidates(buildPool(inv, qAway, [s.nights], { settings, now, exclude: away }), budget, cx, excluder(away)).filter(c => keep(c) && !crossesLock(cur, c.trip, locks)), order);
+  const elsewhere = keep => strongest(candidates(buildPool(inv, qAway, [s.nights], { settings, now, exclude: away, protect }), budget, cx, excluder(away)).filter(c => keep(c) && !crossesLock(cur, c.trip, locks)), order);
   const earliest = addDays(today(now), 3);
   const inMonth = d => q.dateMode !== 'flexible' || !q.month || d.slice(0, 7) === q.month;
   // The rule that stops a variant, in the customer's terms; null when nothing does.
   const held = (...parts) => { for (const p of parts) if (locks[p]) return LOCKED[p]; return null; };
   const nightsRule = () => held('nights', 'dates') || (nightsOpen ? null : `You asked for exactly ${plural(q.nights, 'night')}`);
   const datesRule = () => held('dates') || (q.dateMode === 'exact' ? `Leaving ${q.depart || s.depart} is fixed` : null);
-  const awayRule = () => held('dest', 'hotel');
+  const protectedName = protect ? (cur.activities.find(a => a.id === protect) || { name: protect }).name : null;
+  const awayRule = () => held('dest', 'hotel') || (protect ? `${protectedName}, the protected experience, is offered in ${cur.dest.name}` : null); // "protected", never "you protected": the agent may have set it
   const flightsHeld = locks.flight ? ' and the flights locked' : '';
   const plans = {
     more: [
@@ -328,7 +338,7 @@ function pushDirection(inventory, q, chosen, key, { settings, now = new Date(), 
           || (awayRule() ? null : elsewhere(c => c.trip.hotel.features.allInclusive)) || `No all-inclusive resort fits ${fmt(budget)} for ${plural(s.nights, 'night')} with your rules${locks.dest ? ` in ${cur.dest.name}` : ''}${flightsHeld}`;
       }],
       ['C', c => `More included: ${list(differences(c.trip, cur).extras)}`, () => null, () => {
-        const sets = [s.activities, ...activitySets(cur.activityOptions, q.style).filter(a => a.length > s.activities.length)];
+        const sets = [s.activities, ...(protect ? withProtect(activitySets(cur.activityOptions, q.style), protect) : activitySets(cur.activityOptions, q.style)).filter(a => a.length > s.activities.length)];
         const specs = [];
         for (const transfer of s.transfer ? [true] : [true, false]) for (const a of sets) if (transfer !== s.transfer || a.length > s.activities.length) specs.push({ ...s, transfer, activities: a });
         if (!specs.length) return 'Everything the destination offers is already included';
@@ -429,16 +439,17 @@ function mixTrips(inventory, a, b, { hotelFrom = 'a', flightFrom = 'b' } = {}, {
 // lock is forwarded: the rebuild stays on the locked destination, dates and length, no candidate that
 // crosses a lock is proposed, and a stated length (`nightsOpen` false) holds the length as well.
 // `exclude` keeps rejected destinations and hotels out of the rebuild and out of the comparison.
-function budgetShift(inventory, q, current, newBudget, { settings, now = new Date(), locks = {}, nightsOpen = true, exclude = {}, prefer = null } = {}) {
+function budgetShift(inventory, q, current, newBudget, { settings, now = new Date(), locks = {}, nightsOpen = true, exclude = {}, prefer = null, protect = null } = {}) {
   const cur = tripOf(current);
   locks = locks || {};
+  protect = protect || q.protect || null;
   const holdNights = !!(locks.nights || locks.dates) || !nightsOpen;
   const anyLock = ['hotel', 'flight', 'dates', 'nights', 'dest'].some(k => locks[k]);
   const q2 = { ...q, budget: newBudget, vacationBudget: newBudget + (q.keep || 0) };
   if (locks.dest) q2.dest = cur.dest.id;
   if (locks.dates) { q2.dateMode = 'exact'; q2.depart = cur.spec.depart; q2.month = null; }
   if (locks.nights || locks.dates) q2.nights = cur.spec.nights;
-  const { cands, pool, ...strategies } = plan(inventory, q2, { settings, now, nightsOpen: !holdNights, exclude, prefer, hold: { trip: cur, locks } }); // eslint-disable-line no-unused-vars
+  const { cands, pool, ...strategies } = plan(inventory, q2, { settings, now, nightsOpen: !holdNights, exclude, prefer, hold: { trip: cur, locks }, protect }); // eslint-disable-line no-unused-vars
   const changeWords = rows => rows.map(r => `${r.label.toLowerCase()}: ${r.b}${r.direction < 0 ? ` (was ${r.a})` : ''}`).join('; ');
   let note;
   if (newBudget > q.budget) {
@@ -459,7 +470,7 @@ function budgetShift(inventory, q, current, newBudget, { settings, now = new Dat
       // stops, hotel class, meals, the beach, a transfer, experiences), else as the improvement rows
       // (bags, cancellation, usable time, a rating). The dearer versions are every package priced
       // under the new budget, shown before or not, minus what the customer rejected or locked.
-      const dearer = candidates(pool, newBudget, contexts(q2)).filter(c => c.total > cur.total && !crossesLock(cur, c.trip, locks)).sort(cheapest);
+      const dearer = candidates(pool, newBudget, contexts(q2)).filter(c => c.total > cur.total && !crossesLock(cur, c.trip, locks) && keepsProtected(c.trip, protect)).sort(cheapest);
       const worthIt = c => { const ch = classifyChanges(cur, c.trip); return ch.improvements.length && !ch.tradeoffs.length ? ch : null; };
       const describe = (c, ch) => {
         const g = gains(cur, c.trip), where = c.trip.dest.id === cur.dest.id ? `in ${cur.dest.name}` : `in ${c.trip.dest.name} instead of ${cur.dest.name}`;
@@ -484,7 +495,7 @@ function budgetShift(inventory, q, current, newBudget, { settings, now = new Dat
       }
     }
   } else if (newBudget < cur.total) {
-    const r = nameYourPrice(inventory, cur, settings, contexts(q2).ctx, newBudget, { now, locks });
+    const r = nameYourPrice(inventory, cur, settings, { ...contexts(q2).ctx, protect }, newBudget, { now, locks });
     const rec = r.recommended;
     const dateWords = t => { const d = daysBetween(cur.spec.depart, t.spec.depart); return d ? `moving departure ${plural(Math.abs(d), 'day')} ${d < 0 ? 'earlier' : 'later'} (${t.spec.depart})` : null; };
     const how = v => list([dateWords(v.trip), changeWords(v.changes.neutral.filter(x => x.key !== 'dates')) || null, v.changes.improvements.length ? `and better: ${changeWords(v.changes.improvements)}` : null].filter(Boolean));

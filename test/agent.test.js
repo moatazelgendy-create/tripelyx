@@ -624,3 +624,37 @@ test('a conversation that belongs to one account is not reachable from another a
     assert.equal((await app.ctx.store.listRecords('watch', { limit: 10 })).length, 0);
   } finally { await app.close(); }
 });
+
+test('a letter is a menu answer only while that menu is open: an old card\'s "Option X" is never "yes" to whatever is on the table', async () => {
+  // Words: the letter as the whole message (or a button's "Option X: label") with a menu open; with none
+  // open it is a stale letter, and a sentence that starts with "a" is no letter at all.
+  for (const t of ['B', 'Option A', 'Option C: An airport transfer']) {
+    const u = understand(t, { pending: null, proposal: { kind: 'nights' } }, { maps });
+    assert.ok(!u.intents.includes('approve'), t); assert.equal(u.updates.option, undefined, t); assert.ok(u.updates.staleOption, t);
+  }
+  const lab = understand('Option B: Nonstop flights', { pending: 'options' }, { maps }).updates;
+  assert.equal(lab.option, 'B'); assert.equal(lab.optionLabel, 'Nonstop flights');
+  assert.equal(understand('A nonstop flight would be better', { pending: 'options' }, { maps }).updates.option, undefined);
+  // In conversation: a priced proposal is on the table, and an old button's "Option A" takes nothing.
+  const app = await startApp();
+  try {
+    const agent = app.agent;
+    const s0 = await agent.create({ visitor: 'v-stale-letter' });
+    await agent.say(s0.id, 'I have $2,000, two of us from JFK, 5 nights, beach. Booking budget.');
+    await agent.jobs.drain();
+    let s = await agent.load(s0.id);
+    const before = s.current.token;
+    await agent.say(s0.id, 'Give me one more night.');
+    s = await agent.load(s0.id);
+    const p = s.proposal;
+    assert.equal(p.kind, 'nights');
+    await agent.say(s0.id, 'Option A');
+    s = await agent.load(s0.id);
+    assert.equal(s.current.token, before, 'nothing applied on an old card\'s letter');
+    assert.match(last(s).text, /^Those words name option A, which is not on the table now, so nothing is applied on them\./);
+    assert.equal(s.proposal && s.proposal.token, p.token, 'the proposal waits for its own answer');
+    await agent.say(s0.id, 'Take it');
+    s = await agent.load(s0.id);
+    assert.equal(s.current.token, p.token);
+  } finally { await app.close(); }
+});

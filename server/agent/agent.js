@@ -19,8 +19,9 @@ const savemax = require('../trips/savemax');
 const weeks = require('../trips/weeks');
 const hunter = require('../trips/hunter');
 const leaks = require('../trips/leaks');
+const X = require('../trips/experience');
 const { HuntService, NOTIFY_KINDS: HUNT_NOTIFY_KINDS, intervalWords } = require('../trips/hunts');
-const { classifyChanges, lineDiff } = require('../trips/facts');
+const { classifyChanges, lineDiff, usableTime } = require('../trips/facts');
 const { encodeSpec, decodeSpec } = require('../trips/spec');
 const { priceTrip } = require('../trips/pricing');
 const { understand, NOT_COMPARED } = require('./understand');
@@ -28,11 +29,16 @@ const state = require('./state');
 const { JobRunner, breathe, newJob, setStep } = require('./jobs');
 
 const money = c => fmtMoney(c, 'USD');
+const signed = c => `${c < 0 ? '−' : '+'}${money(Math.abs(c))}`;
 const dollars = c => `$${Math.round(c / 100).toLocaleString('en-US')}`;
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 const hm = m => `${Math.floor(m / 60)}h${m % 60 ? ` ${String(m % 60).padStart(2, '0')}m` : ''}`;
 const joinAnd = items => (items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`);
-const longDate = d => new Intl.DateTimeFormat('en-US', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }).format(new Date(`${d}T00:00:00Z`));
+// Dates in customer words are written one way, by the formatter the pages and the engines' own sentences
+// use (trips/words), so an engine sentence the agent quotes and the agent's own words never differ and
+// never print an ISO date; a date the code reads stays ISO.
+const { longDate } = require('../trips/words');
+const { cutoffText } = require('../views/trips/common');
 const monthWords = m => new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${m}-01T00:00:00Z`));
 const stampOf = iso => `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
 const FAST_DESTINATIONS = 4;
@@ -55,6 +61,17 @@ const IMPROVE_WORDS = [['nonstop', /\b(nonstop|non-stop|non stop|direct)\b/], ['
 // its own five chips for the same five things.
 const IMPROVE_MAX_WORDS = 3;
 const sentences = arr => (arr.length ? ` ${arr.map(x => x.replace(/\.?$/, '.')).join(' ')}` : '');
+// A booking made without an account belongs to no account: nothing from it can be remembered, signed in or not.
+const WORTH_GUEST = 'This booking was made without an account, so there is no account to remember it on: it stays on this booking only. Remembering needs a booking made while signed in to your account.';
+// Who set the protection is the session's to say (speak()). The engines name it neutrally ("the
+// protected experience", "the protected one"), since px may be the results' lock or the customer's;
+// each reads as the customer's own only when they said "protect <it>", and as the agent's otherwise.
+const cap1 = x => x.charAt(0).toUpperCase() + x.slice(1);
+const XWHO = {
+  neutral: [[/\b[Tt]he protected experience\b/g, 'exp'], [/\bthe protected one\b/g, 'one']],
+  yours: { exp: 'the experience you protected', one: 'the one you protected', which: 'which you protected' },
+  mine: { exp: 'the main experience I\'m protecting for you', one: 'the one I\'m protecting for you', which: 'which I\'m protecting for you' },
+};
 // The words that name a pending proposal in a reminder ("take ... or keep what you have"): a removal
 // ("Without <item>") or an add-back is a version, so it is named as one, never read as if the item
 // itself were the thing to take ("take the checked bag" must never mean removing it).
@@ -83,21 +100,50 @@ const NAMED_APPROVALS = [
   { re: /^take the trade-?off version$/, kinds: ['sacrifice'], intent: 'freeSavings', name: () => 'the trade-off version' },
   { re: /^take the cut(?: version)?$/, kinds: ['cut'], intent: 'cutInOrder', name: () => 'the cut' },
   { re: /^add back (.+)$/, kinds: ['addBack'], intent: 'addBack', item: m => m[1].trim(), name: m => `adding back ${m[1].trim()}` },
+  // Experience Max: each names the version its card put on the table (a choice names its side).
+  { re: /^make the trade$/, kinds: ['trade'], intent: 'xTrade', name: () => 'the trade' },
+  { re: /^take the experiences?$/, kinds: ['hoe'], intent: 'xHotelOrExp', choice: 'b', name: () => 'the experiences' },
+  { re: /^take the hotel(?: upgrade)?$/, kinds: ['hoe'], intent: 'xHotelOrExp', choice: 'a', name: () => 'the hotel upgrade' },
+  { re: /^take (?:the )?one big memory$/, kinds: ['big'], intent: 'xBigVsMany', choice: 'a', name: () => 'one big memory' },
+  { re: /^take (?:the )?more things to do$/, kinds: ['big'], intent: 'xBigVsMany', choice: 'b', name: () => 'more things to do' },
+  { re: /^move \$?([\d,]+(?:\.\d{1,2})?) to the experiences?$/, kinds: ['downsell'], intent: 'xDownsell', amount: m => Math.round(Number(m[1].replace(/,/g, '')) * 100), name: (m, amount) => `moving ${money(amount)} to the experience` },
+  { re: /^open up a day$/, kinds: ['freeTime'], intent: 'xFreeTime', name: () => 'the version with a day opened up' },
+  { re: /^use the better location$/, kinds: ['location'], intent: 'xLocation', name: () => 'the better location' },
+  // "Add <backup>" names the weather backup on the table and nothing else: with no backup pending the
+  // words are not an approval at all ("add a night" stays a longer trip).
+  { re: /^add (?!back\b)(.+)$/, kinds: ['backup'], intent: 'xBackup', item: m => m[1].trim(), name: m => `adding ${m[1].trim()}`, onlyPending: true },
 ];
-function namedApproval(text) {
-  const lower = String(text || '').trim().toLowerCase().replace(/[.!?]+$/, '').trim();
+function namedApproval(text, s = null) {
+  const lower = String(text || '').trim().toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/[.!?]+$/, '').trim();
   for (const n of NAMED_APPROVALS) {
     const m = lower.match(n.re);
     if (!m) continue;
     const item = n.item ? n.item(m) : null;
     if (item !== null && /^what(?:'s| is) worth it$/.test(item)) return null; // "add back what's worth it" asks for the list; it names no item
     const amount = n.amount ? n.amount(m) : null;
-    return { kinds: n.kinds, intent: n.intent, amount, item, name: n.name(m, amount) };
+    const out = { kinds: n.kinds, intent: n.intent, amount, item, choice: n.choice || null, name: n.name(m, amount) };
+    if (n.onlyPending && !namedFits(out, s && s.proposal)) continue;
+    return out;
   }
   return null;
 }
-// Whether the pending proposal is the one the named words may apply.
-const namedFits = (n, p) => !!p && n.kinds.includes(p.kind) && (n.amount === null || p.delta === -n.amount) && (n.item === null || wordsFit(itemWords(n.item), `${p.itemKey || ''} ${p.label || ''}`));
+// Whether the pending proposal is the one the named words may apply. MOVE $X TO THE EXPERIENCE names
+// the hotel saving in whole dollars (`namedAmount`), as its card says it.
+const namedFits = (n, p) => !!p && n.kinds.includes(p.kind) && (n.amount === null || (p.namedAmount !== undefined && p.namedAmount !== null ? Math.round(p.namedAmount / 100) === Math.round(n.amount / 100) : p.delta === -n.amount)) && (n.item === null || wordsFit(itemWords(n.item), `${p.itemKey || ''} ${p.label || ''}`)) && (!n.choice || !!(p.choices && p.choices[n.choice]));
+
+// A card label against another, ignoring case, spacing and punctuation: the button sends its version's
+// own label, so only the version it was drawn for matches.
+const labelKey = l => String(l || '').toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/[^a-z0-9$]+/g, ' ').trim();
+const sameLabel = (a, b) => !!labelKey(a) && labelKey(a) === labelKey(b);
+// What a version gives up against the trip it would replace, in words: the comparison's trade-offs, and
+// every experience it no longer has (a swap or a move elsewhere counts the experiences as the same or
+// more, but the one left out is still given up), so "Nothing given up" is never said when one goes.
+function lostWords(before, after, ch = classifyChanges(before, after)) {
+  const out = changeWords(ch.tradeoffs);
+  const gone = before.activities.filter(a => !after.spec.activities.includes(a.id)).map(a => a.name);
+  if (gone.length && !ch.tradeoffs.some(r => r.key === 'experiences')) out.push(`${joinAnd(gone)} (no longer in the trip)`);
+  return out;
+}
 
 const THEIRS_ORDER = ['taxes', 'stars', 'meals', 'flight', 'cancel', 'bags', 'transfer', 'dates'];
 const THEIRS_QUESTIONS = {
@@ -160,7 +206,7 @@ class AgentService {
   async create({ visitor = null, userId = null, booking = null, mission = false, mode = null } = {}) {
     const s = state.newState({ id: makeId('agt'), visitor, userId, now: this.now() });
     if (booking) s.booking = booking;
-    if (mission) s.mission = { mode: mode === 'save' ? 'save' : null, startedAt: this.now().toISOString(), accepted: false, signal: null, strategies: [], shown: [], variants: [], chosen: null, round: 0, wrong: [], rounds: 0, fastRound: null };
+    if (mission) s.mission = { mode: ['save', 'easy', 'experience'].includes(mode) ? mode : null, startedAt: this.now().toISOString(), accepted: false, signal: null, strategies: [], shown: [], variants: [], chosen: null, round: 0, wrong: [], rounds: 0, fastRound: null };
     // Defaults the traveler approved earlier are applied and always shown, never silently.
     if (userId && !booking) {
       const d = await this.store.getRecord('travel_defaults', userId);
@@ -178,6 +224,9 @@ class AgentService {
     if (d.bags && !s.bags) s.bags = d.bags;
     if (d.flexibleDates && !s.dateMode) s.dateMode = 'anytime';
     if (d.savingsLevel && !s.savingsLevel) s.savingsLevel = d.savingsLevel;
+    // What an earlier trip was worth, kept on the account only on the traveler's yes (WHAT WAS ACTUALLY
+    // WORTH IT?): used here and named every time it changes an answer.
+    if (d.experiencePrefs && !s.prefs) { const { from = null, savedAt, ...p } = d.experiencePrefs; if (Object.keys(p).length) s.prefs = { ...p, from }; }
   }
   defaultsWords(d) {
     const o = d.origin ? this.maps.getOrigin(d.origin) : null;
@@ -234,7 +283,7 @@ class AgentService {
     s.pending = null;
     // A menu (compromises, breakpoints, a decision, priced weeks) is answered on the next turn or not at all.
     const option = pending === 'options' ? (u.updates.option || (s.decision ? this.decisionByWords(s, text) : null)) : null;
-    if (!option) { if (s.compromises && s.compromises.length) s.compromises = []; if (s.breakpoints && s.breakpoints.length) s.breakpoints = []; s.decision = null; s.decisionFacts = null; s.weeks = []; }
+    if (!option) { if (s.compromises && s.compromises.length) s.compromises = []; if (s.breakpoints && s.breakpoints.length) s.breakpoints = []; s.decision = null; s.decisionFacts = null; s.weeks = []; s.xmenu = []; }
 
     if (intents.has('restart')) return this.restart(s, actor);
     if (intents.has('stop') && !intents.has('keepLooking')) {
@@ -248,6 +297,9 @@ class AgentService {
       if (curNow) await this.bookFlow(s, curNow);
       return s;
     }
+    // "Remember this for next time?" after WHAT WAS ACTUALLY WORTH IT? is answered before "remember
+    // this" could be read as saving the trip's defaults.
+    if (pending === 'worthRemember' && s.booking) { if (await this.worthRememberFlow(s, text, intents, user)) return this.afterTurn(s); }
     if (intents.has('remember')) { await this.rememberDefaults(s); return this.afterTurn(s); }
     if (intents.has('forget')) { await this.forgetDefaults(s, /\bforget\b/.test(text.toLowerCase())); return this.afterTurn(s); }
     // The answer to "what should I improve?" changes the hunt's rules, never the trip on the canvas:
@@ -268,10 +320,18 @@ class AgentService {
     if (pending === 'cutBy' && !intents.has('cutInOrder')) this.speak(s, 'No amount, so nothing is cut. Say "cut $200 in order" whenever you want to.');
 
     // Answers to what I asked, approvals and declines come first: they are about the thing on the table.
-    if (option) { await this.chooseOption(s, option); return this.afterTurn(s); }
+    // A card's button carries its version's label ("Option C: An airport transfer"): it picks from the
+    // menu on the table only when that menu's letter has that label; a button from an older card is
+    // said as such and applies nothing, and the menu on the table stays open.
+    if (option) {
+      const lbl = u.updates.optionLabel || null, entry = this.menuEntry(s, option);
+      if (lbl && !(entry && sameLabel(lbl, entry.label))) { this.staleLetter(s, { letter: option, label: lbl }, { menuOpen: true }); return this.afterTurn(s); }
+      await this.chooseOption(s, option); return this.afterTurn(s);
+    }
+    if (u.updates.staleOption) { await this.staleLetter(s, u.updates.staleOption); return this.afterTurn(s); }
     // Words that name a version ("take the lean version", "remove $148", "add back the transfer")
     // apply only a pending proposal of that kind; otherwise they are their own ask, routed below.
-    const named = namedApproval(text);
+    const named = namedApproval(text, s);
     if ((intents.has('approve') || named) && !intents.has('cheaper') && !intents.has('better')) {
       if (await this.approve(s, text, pending, named)) return this.afterTurn(s);
       if (named) intents.add(named.intent);
@@ -282,20 +342,68 @@ class AgentService {
     if (u.updates.theirs) { await this.theirsFlow(s, u.updates.theirs); return this.afterTurn(s); }
 
     const budgetBefore = state.bookingBudget(s);
+    const hadGoals = s.goals ? s.goals.join() : null;
     const { rebuild } = state.applyUpdates(s, u.updates, { now });
-    const ack = u.ack.length ? `Got it: ${joinAnd(u.ack)}.` : null;
+    // "The hotel matters most" in Experience Max is heard and said for what it changes: the build still
+    // spends on what they want to remember (no stars on my own), and I no longer argue against a better
+    // hotel when they ask for one.
+    const stayNote = this.xmode(s) && (u.updates.priority === 'hotel' || u.updates.statedStay) ? ' I still build around what you want to remember, so I won\'t spend more on the hotel on my own; and I won\'t argue against a better one: say "upgrade the hotel" and I price it.' : '';
+    const ack = u.ack.length ? `Got it: ${joinAnd(u.ack)}.${stayNote}` : null;
     let handled = false;
+    // New memory goals: the protection the results set (the agent's, said aloud) was for the old goals,
+    // so it is released and said; one the traveler set stays until they say otherwise.
+    if (u.updates.goals && hadGoals !== null && hadGoals !== s.goals.join() && s.protectAuto && state.protectedId(s)) {
+      this.speak(s, `${this.xname(s)} is no longer protected: I had protected it from the results for what you wanted to remember before.`);
+      s.locks.experience = false; s.mainExperience = null; s.mainName = null; s.protectAuto = false;
+    }
+    if (u.updates.goals && pending === 'goals') this.speak(s, `What you want to remember: ${state.goalWords(s.goals)}.${s.goals.includes('new') ? ` ${X.NEW_NOTE}` : ''}`);
+    // After "none of these": new goals build around new memories (and drop what an earlier "none" left
+    // out); the same goals would build the same set, so the places just passed on are left out and that
+    // is said, or, when they cannot be (a named destination, a protection the traveler set there), the
+    // agent says plainly that nothing different fits and what would change it.
+    const xnone = s.mission && s.mission.xnone && pending === 'goals' && u.updates.goals ? s.mission.xnone : null;
+    if (xnone) s.mission.xnone = null;
+    if (u.updates.goals && hadGoals !== null && hadGoals !== s.goals.join() && s.mission) s.mission.xnot = [];
+    if (xnone && xnone.goals === s.goals.join() && s.current) {
+      const names = xnone.dests.map(d => (this.maps.getDestination(d) || { name: d }).name);
+      if (s.destination || state.protectedId(s)) {
+        this.speak(s, `The same goals ${s.destination ? `in ${names.join(', ')}` : `with ${this.xname(s)} protected, as you asked`} build the same set, so I have nothing genuinely different to show. Tell me what to change: the nights, the dates or the ceiling${s.destination ? ', or another destination' : ', or say "unprotect"'}.`);
+        return this.afterTurn(s);
+      }
+      s.mission.xnot = [...new Set([...(s.mission.xnot || []), ...xnone.dests])];
+      this.speak(s, `Same goals, so a different set means other places: I leave out ${joinAnd(names)}, the ${names.length === 1 ? 'one' : 'ones'} you just passed on.`);
+      await this.startBuild(s, { previous: s.current.token, reason: 'rebuild' });
+      return this.afterTurn(s);
+    }
     // A mission starts from one number: the agent says what it will do, then asks only what it cannot
     // go without (where you fly from), with any saved defaults stated.
     if (s.mission && !s.mission.accepted && s.budget) {
       s.mission.accepted = true;
-      this.speak(s, this.saver(s)
-        ? `Mission accepted: ${money(state.vacationBudget(s))} is your maximum, and I'll try not to use it. I'll build the strongest trip I can for well under it, say exactly how I kept the cost down and compared with what, and interrupt you only for a real decision.${s.defaults ? ` Using your saved savings style: ${joinAnd(this.defaultsWords(s.defaults))}. Say "not this time" to drop it.` : ''}`
-        : `Mission accepted: ${money(state.vacationBudget(s))} is the ceiling, not a target. I'll find the strongest vacation I can build for it, protect the budget, and only interrupt you when I need a real decision.${s.defaults ? ` Using your saved defaults: ${joinAnd(this.defaultsWords(s.defaults))}. Say "not this time" to drop them.` : ''}`);
+      const mode = s.mission.mode;
+      const defaultsLine = s.defaults && this.defaultsWords(s.defaults).length ? ` Using your saved defaults: ${joinAnd(this.defaultsWords(s.defaults))}. Say "not this time" to drop them.` : '';
+      if (mode === 'experience') {
+        const learned = this.prefWords(s.prefs);
+        this.speak(s, `Mission accepted: ${money(state.vacationBudget(s))} is the ceiling, and I'll spend it on the memories, not the labels: hotel stars, brands and upgrades only when they matter to what you want to remember.${defaultsLine}${learned.length ? ` After your last trip you asked me to remember that ${joinAnd(learned)}; I'll say where it changes anything${defaultsLine ? '' : ', and "not this time" drops it'}.` : ''}`);
+      } else if (mode === 'easy') {
+        // MAKE IT EASY: the existing mission with three preferences set now and said, each one the
+        // traveler can undo in words; nothing they already said is overwritten.
+        const set = [];
+        if (!s.flightStops) { s.flightStops = 'nonstop'; s.flightRule = 'soft'; set.push('nonstop flights if possible'); }
+        if (!s.transfer && u.updates.transfer !== false) { s.transfer = true; set.push('an airport transfer in the price'); }
+        if (!s.priority) s.priority = 'flights';
+        s.mission.easyTime = true;
+        set.push('and before you pay, a check for flight times that leave more of your first and last day, with what they cost');
+        this.speak(s, `Mission accepted: ${money(state.vacationBudget(s))} is the ceiling, not a target, and I'll make the trip easy: ${set.join(', ')}. Say "a stop is fine" or "no transfer" to change any of it.${defaultsLine}`);
+      } else {
+        this.speak(s, this.saver(s)
+          ? `Mission accepted: ${money(state.vacationBudget(s))} is your maximum, and I'll try not to use it. I'll build the strongest trip I can for well under it, say exactly how I kept the cost down and compared with what, and interrupt you only for a real decision.${s.defaults && this.defaultsWords(s.defaults).length ? ` Using your saved savings style: ${joinAnd(this.defaultsWords(s.defaults))}. Say "not this time" to drop it.` : ''}`
+          : `Mission accepted: ${money(state.vacationBudget(s))} is the ceiling, not a target. I'll find the strongest vacation I can build for it, protect the budget, and only interrupt you when I need a real decision.${s.defaults && this.defaultsWords(s.defaults).length ? ` Using your saved defaults: ${joinAnd(this.defaultsWords(s.defaults))}. Say "not this time" to drop them.` : ''}`);
+      }
     }
 
     // Post-booking questions, when this conversation is about a booked trip.
     if (s.booking) {
+      if (intents.has('worthIt') && u.updates.worthIt) { await this.worthItFlow(s, u.updates.worthIt, user); return this.afterTurn(s); }
       for (const k of ['next', 'cancelInfo', 'extend', 'afford', 'car', 'flightChange']) if (intents.has(k)) { await this.bookingAnswer(s, k, u); handled = true; }
       if (handled) return this.afterTurn(s);
     }
@@ -303,6 +411,9 @@ class AgentService {
     const cur = s.current ? await this.currentTrip(s) : null;
     for (const k of ['next', 'cancelInfo', 'afford', 'car', 'flightChange']) if (!handled && intents.has(k)) { this.generalAnswer(s, k, cur); handled = true; }
     if (handled) return this.afterTurn(s);
+    // Experience Max's chips and words (understand.js keeps them to experience mode, one at a time).
+    const xk = [...intents].find(k => /^x[A-Z]/.test(k));
+    if (xk) { await this.experienceFlow(s, xk, u, cur); return this.afterTurn(s); }
     // Hunt mode comes before the trip's own asks: "hunt for a better deal" carries the word "better"
     // but asks for a hunt, not a dearer version of the trip.
     if (intents.has('hunt')) { await this.huntFlow(s, u, cur, actor); handled = true; }
@@ -339,8 +450,12 @@ class AgentService {
     else if (intents.has('receipt')) { await this.receiptFlow(s, cur); handled = true; }
     else if (intents.has('whenLess')) { await this.weeksFlow(s, cur); handled = true; }
     else if ((intents.has('howLow') || intents.has('cutMore') || intents.has('sameTripLess') || intents.has('breakpoints')) && !cur) { this.speak(s, 'There is nothing on the canvas to cut yet. Give me the number and where you fly from, and I build first.'); handled = true; }
+    // In experience mode "keep looking" gets the honest answer: every package that serves the goals was
+    // already priced, so it is where more money stops buying memories (the ladder), not another round.
+    else if (intents.has('keepLooking') && this.xmode(s) && cur && !s.proposal) { this.speak(s, 'I already priced every package that serves what you want to remember; here is where more money stops buying memories.'); await this.experienceFlow(s, 'xLadder', u, cur); handled = true; }
     else if (intents.has('keepLooking')) { await this.keepLooking(s, cur); handled = true; }
-    else if (u.updates.budget && s.mission && cur && budgetBefore && state.bookingBudget(s) !== budgetBefore && !intents.has('cheaper') && !intents.has('better')) { await this.shiftFlow(s, cur, budgetBefore); handled = true; }
+    // A new number in experience mode is a rebuild around the same goals (below), never the mission's budget shift.
+    else if (u.updates.budget && s.mission && !this.xmode(s) && cur && budgetBefore && state.bookingBudget(s) !== budgetBefore && !intents.has('cheaper') && !intents.has('better')) { await this.shiftFlow(s, cur, budgetBefore); handled = true; }
     else if (u.updates.unlocks && !intents.has('cheaper') && !intents.has('better')) {
       const words = state.lockedWords(s);
       this.speak(s, words.length ? `Unlocked. Still locked: ${words.join(', ')}.` : 'Unlocked everything. I may change any part of the trip now, and I will still ask before I do.');
@@ -353,7 +468,7 @@ class AgentService {
     if (!handled && cur) {
       if (intents.has('nonstopRule') && cur) { await this.nonstopFlow(s, cur); handled = true; }
       else if (intents.has('stopSaves')) { await this.stopSaves(s, cur); handled = true; }
-      else if (intents.has('extend')) { await this.changeNights(s, cur, +1); handled = true; }
+      else if (intents.has('extend')) { await this.changeNights(s, cur, u.updates.addNights || 1); handled = true; }
       else if (intents.has('shorten')) { await this.changeNights(s, cur, -1); handled = true; }
       else if (intents.has('elsewhere')) { s.notCountry = cur.trip.dest.country; s.destination = null; this.speak(s, `Leaving ${cur.trip.dest.country} out. Rebuilding somewhere else with the same money and rules.`); await this.startBuild(s, { previous: s.current.token }); handled = true; }
       else if (intents.has('easier')) { await this.makeEasier(s, cur); handled = true; }
@@ -376,7 +491,7 @@ class AgentService {
     if (cur) {
       if (intents.has('cheaper')) { await this.makeCheaper(s, cur, u.updates.cheaperBy || null); return this.afterTurn(s); }
       if (intents.has('better')) { await this.makeBetter(s, cur, u.updates.moreBy || null); return this.afterTurn(s); }
-      if (intents.has('extend')) { await this.changeNights(s, cur, +1); return this.afterTurn(s); }
+      if (intents.has('extend')) { await this.changeNights(s, cur, u.updates.addNights || 1); return this.afterTurn(s); }
       if (intents.has('shorten')) { await this.changeNights(s, cur, -1); return this.afterTurn(s); }
     }
 
@@ -397,7 +512,22 @@ class AgentService {
 
   afterTurn(s) { return s; }
 
-  speak(s, text, card = null) { state.pushMessage(s, 'agent', text, card, this.now()); }
+  speak(s, text, card = null) {
+    // Who set a protection is said as it is. The engines never say who set it ("the protected
+    // experience", "the protected one"): px may be the results' lock or the customer's. Here, where the
+    // session knows, it is said in the text and on its card: the customer's own "protect <it>" reads as
+    // theirs ("the experience you protected"); the results' lock reads as the agent's ("the main
+    // experience I'm protecting for you"), and never "you protected": the customer never hears that they
+    // asked for a lock they did not ask for. With nothing protected the neutral words stay as they are.
+    if (state.protectedId(s)) {
+      const who = s.protectAuto ? XWHO.mine : XWHO.yours;
+      const say = x => XWHO.neutral.reduce((t, [re, k]) => t.replace(re, m => (/^T/.test(m) ? cap1 : String)(who[k])), x)
+        .replace(/\bthe experience you protected\b/g, who.exp).replace(/\bwhich you protected\b/g, who.which);
+      text = say(String(text));
+      if (card) card = JSON.parse(say(JSON.stringify(card)));
+    }
+    state.pushMessage(s, 'agent', text, card, this.now());
+  }
 
   // "Start over": the trip object is new. A hunt this conversation started stays on the account exactly
   // as it is (a standing instruction is never stopped without the customer's word), so its status is
@@ -440,10 +570,13 @@ class AgentService {
     const ask = state.nextQuestion(s);
     if (ask) {
       s.pending = ask.key;
-      const options = ask.options ? ask.options.map(([label, say]) => ({ label, say })) : ask.origins ? this.maps.listOrigins().map(o => ({ label: `${o.city} (${o.airports[0].code})`, say: o.airports[0].code })) : null;
-      this.speak(s, ask.text, options ? { kind: 'ask', options } : null);
+      // WHAT DO YOU WANT TO REMEMBER? comes with the ten memory chips, in the spec's order.
+      const options = ask.goals ? X.GOALS.map(g => ({ label: g.label, say: g.label })) : ask.options ? ask.options.map(([label, say]) => ({ label, say })) : ask.origins ? this.maps.listOrigins().map(o => ({ label: `${o.city} (${o.airports[0].code})`, say: o.airports[0].code })) : null;
+      const hint = ask.goals && s.prefs && s.prefs.goalsAdd && s.prefs.goalsAdd.length ? ` After your last trip you told me ${joinAnd(s.prefs.goalsAdd.map(k => (state.GOAL_LABEL[k] || k).toLowerCase()))} was worth it (you asked me to remember it).` : '';
+      this.speak(s, `${ask.text}${hint}`, options ? { kind: 'ask', options, chips: !!ask.goals } : null);
       return;
     }
+    if (this.xmode(s)) return this.startExperience(s, { previous, reason });
     const { query: q, assumed } = state.toQuery(s, { maps: this.maps });
     s.assumed = assumed;
     s.proposal = null;
@@ -459,6 +592,24 @@ class AgentService {
     setStep(s.job, 'understand', 'done', this.describe(q, assumed), this.now());
     this.speak(s, `${reason === 'rebuild' ? 'Rebuilding' : 'Building'}: ${this.describe(q, assumed)}.${assumed.length ? ` I assumed ${joinAnd(assumed)}; say otherwise and I will change it.` : ''} First strong match in a moment; I keep searching after that.`);
     this.jobs.start(s.id, job => this.runBuild(s.id, job));
+  }
+
+  // Experience Max builds around the goals: one engine call (experienceWays) that prices every package
+  // serving them, in real phases on the job, OUR PICK on the canvas when it lands.
+  startExperience(s, { previous = null, reason = 'build' } = {}) {
+    const { query: q, assumed } = state.toQuery(s, { maps: this.maps });
+    s.assumed = assumed;
+    s.proposal = null; s.options = []; s.decision = null; s.decisionFacts = null; s.weeks = []; s.xmenu = [];
+    if (reason === 'rebuild') s.history = [];
+    s.job = newJob(makeId('job'), ['understand', 'fast', 'deep', 'expand'], this.now());
+    const label = { fast: 'Matching destinations to what you want to remember', deep: 'Pricing every package that serves your goals', expand: 'Widening the search' };
+    for (const st of s.job.steps) if (label[st.key]) st.label = label[st.key];
+    s.job.previous = previous;
+    s.job.reason = reason;
+    setStep(s.job, 'understand', 'done', this.describe(q, assumed), this.now());
+    const px = state.protectedId(s);
+    this.speak(s, `${reason === 'rebuild' ? 'Rebuilding' : 'Building'} around what you want to remember (${state.goalWords(this.xgoals(s))}): ${this.describe(q, assumed)}.${assumed.length ? ` I assumed ${joinAnd(assumed)}; say otherwise and I will change it.` : ''}${px ? ` Every version keeps ${this.xname(s)}, ${this.protWords(s)}.` : ''} Experience first, then the destination, the dates, the flight and the hotel.`);
+    this.jobs.start(s.id, job => this.runExperience(s.id, job));
   }
 
   describe(q, assumed = []) {
@@ -658,7 +809,13 @@ class AgentService {
   async approve(s, text, pending, named = null) {
     const lower = text.toLowerCase();
     if (s.proposal) {
-      const p = s.proposal;
+      let p = s.proposal;
+      // The hotel-upgrade challenge: the upgrade itself stays one phrase away and is never refused.
+      if (p.alternative && /\btake the upgrade\b/.test(lower) && !named) {
+        const a = p.alternative;
+        if (a.over && !s.overApproved && !/\b(over|allow|exceed|above|anyway)\b/.test(lower)) { s.proposal = { ...p, ...a, kind: 'upgrade', alternative: null, improvements: [], tradeoffs: [], neutral: [] }; this.speak(s, `The upgrade is ${money(a.total - state.bookingBudget(s))} over your ${money(state.bookingBudget(s))} ceiling. Say "go over" to take it anyway, or "keep" to stay.`); return true; }
+        return this.applyProposal(s, { kind: 'upgrade', token: a.token, total: a.total, delta: a.delta, label: a.label, over: a.over });
+      }
       // Words that name a version apply only that version. With another kind on the table nothing is
       // applied on them; one version is on the table at a time, so the pending one steps aside, neither
       // taken nor declined (nothing is recorded against it, and it can be proposed again), and that is
@@ -666,8 +823,19 @@ class AgentService {
       if (named && !namedFits(named, p)) {
         named.aside = p;
         s.proposal = null;
-        this.speak(s, `Those words name ${named.name}; what was on the table was ${proposalWords(p)} at ${money(p.total)}, and nothing is applied on them. It comes off the table, neither taken nor declined.`);
+        this.speak(s, `Those words name ${named.name}; what was on the table was ${proposalWords(p)}${p.total !== null && p.total !== undefined ? ` at ${money(p.total)}` : ''}, and nothing is applied on them. It comes off the table, neither taken nor declined.`);
         return false;
+      }
+      // Two priced versions side by side (HOTEL OR EXPERIENCE?, ONE BIG MEMORY vs MORE THINGS TO DO):
+      // the words name a side; a plain yes takes the one the card recommends, and with no
+      // recommendation the agent asks which, since that decision is the traveler's.
+      if (p.choices) {
+        const sides = Object.values(p.choices).filter(Boolean);
+        const key = named && named.choice ? named.choice : p.recommended || (sides.length === 1 ? sides[0].key : null);
+        const c = key ? p.choices[key] : null;
+        if (!c) { this.speak(s, `Both are priced and I don't pick this one for you: say ${sides.map(x => `"${x.say.toLowerCase()}"`).join(' or ')}, or keep what you have.`); return true; }
+        p = { ...p, choices: null, recommended: null, token: c.token, total: c.total, delta: c.delta, label: c.label, over: c.over };
+        s.proposal = p;
       }
       if (p.anyway && /\b(anyway|the \$|cheap(?:er|est)|lower|target)\b/.test(lower) && !/\b(floor|recommend)/.test(lower)) return this.applyProposal(s, { ...p, token: p.anyway.token, total: p.anyway.total, delta: p.anyway.delta, label: p.anyway.label, challengedAccepted: true });
       if (p.over && !s.overApproved && !/\b(over|allow|exceed|above|anyway)\b/.test(lower)) { this.speak(s, `That version is ${money(p.total - state.bookingBudget(s))} over your ${money(state.bookingBudget(s))} ceiling. Say "go over" to take it anyway, or "keep" to stay.`); return true; }
@@ -696,16 +864,41 @@ class AgentService {
       // as the biggest leak or as "remove one thing", is kept: the scan at "book it" says it once and
       // never proposes the same version twice.
       if (p.savingsScan || p.kind === 'leak' || p.kind === 'removeOne') s.declinedLeak = p.token;
-      this.speak(s, p.kind === 'switch' ? `Kept your first option at ${money(s.current.total)}. The better one stays in your options if you change your mind.` : `Kept your trip as it is${p.delta < 0 || p.silent ? `, at ${money(s.current.total)}` : ''}.`);
+      // The checks at "book it" say a version the traveler kept once, and never propose it twice.
+      if (p.kind === 'final') s.declinedFinal = p.token;
+      if (p.kind === 'easyTime') s.declinedEasy = p.token;
+      if (p.kind === 'downsell') { this.speak(s, `Kept the hotel${s.current ? `, at ${money(s.current.total)}` : ''}.`); return true; }
+      this.speak(s, p.kind === 'switch' ? `Kept your first option at ${money(s.current.total)}. The better one stays in your options if you change your mind.` : `Kept your trip as it is${(p.delta !== null && p.delta < 0) || p.silent || p.choices ? `, at ${money(s.current.total)}` : ''}.`);
       return true;
     }
     if (pending === 'options' && s.current) { this.speak(s, `Kept your trip as it is, at ${money(s.current.total)}.`); return true; }
     if (s.options.length && !pending) { this.speak(s, `Kept our pick at ${money(s.current ? s.current.total : 0)}.`); return true; }
+    if (this.xmode(s) && s.current && !pending) { this.speak(s, `Nothing was waiting for your word; your trip stays as it is, at ${money(s.current.total)}.`); return true; }
     return false;
   }
 
   async chooseOption(s, kind) {
     if (typeof kind === 'string' && /^[AB]$/.test(kind) && s.decision) return this.decide(s, kind);
+    // An Experience Max menu (MAKE $100 MEMORABLE, the ladder, MAKE IT MORE MEMORABLE, the priced fixes,
+    // the alternatives): a letter takes that version, through the same ceiling gate and protect gate.
+    if (typeof kind === 'string' && /^[A-E]$/.test(kind) && s.xmenu && s.xmenu.length) {
+      const it = s.xmenu.find(x => x.letter === kind);
+      if (!it) { this.speak(s, 'That option is not on the table any more.'); return true; }
+      s.xmenu = [];
+      const before = s.current ? await this.priceToken(s.current.token) : null, after = await this.priceToken(it.token);
+      if (!after) { this.speak(s, 'That version is no longer available from the suppliers, so I did not switch. Your trip is unchanged.'); return true; }
+      const from = before ? before.total : 0, ch = before ? classifyChanges(before, after, { date: longDate }) : { improvements: [], tradeoffs: [], neutral: [] };
+      // The proposal keeps the letter and label it was drawn from, so the card's own button can still
+      // take it after the menu lapses, and no other card's button can.
+      const p = { kind: it.kind, token: it.token, total: after.total, delta: after.total - from, label: it.label, over: this.overCeiling(s, after.total, from), improvements: changeWords(ch.improvements), tradeoffs: changeWords(ch.tradeoffs), neutral: changeWords(ch.neutral), letter: it.letter, optLabel: it.label };
+      // A letter takes the version it names only when it gives nothing up. A version with a trade-off
+      // (a night, an experience, the carry-on on a Basic fare) is a proposal that says each one first
+      // and waits for the customer's word: nothing is lost before it is said.
+      const lost = before ? lostWords(before, after, ch) : [];
+      if (lost.length) { this.propose(s, p, `Option ${it.letter}, ${it.label.replace(/;\s*the trade-offs?: .*$/, '')}: ${money(after.total)} (${signed(p.delta)}). It gives up ${joinAnd(lost)}.${this.xover(s, p)} Take it, or keep what you have.`); return true; }
+      if (p.over && !s.overApproved) { const budget = state.bookingBudget(s); this.propose(s, p, `${it.label}: ${money(after.total)}, ${money(after.total - budget)} over your ${money(budget)} ceiling. Say "go over" to take it anyway, or "keep" to stay.`); return true; }
+      return this.applyProposal(s, p);
+    }
     if (typeof kind === 'string' && /^[A-E]$/.test(kind) && s.weeks && s.weeks.length) {
       const w = s.weeks.find(x => x.letter === kind);
       if (!w) { this.speak(s, 'That week is not on the table any more.'); return true; }
@@ -737,10 +930,41 @@ class AgentService {
     return this.applyProposal(s, { kind: 'option', token: o.token, total: o.total, delta: s.current ? o.total - s.current.total : 0, label: o.label, over: !!o.over });
   }
 
+  // The label a pending lettered menu carries for a letter (what its card's button says), in the order
+  // chooseOption reads the menus; null when no menu has that letter.
+  menuEntry(s, letter) {
+    if (/^[AB]$/.test(letter) && s.decision && s.decision.length) { const d = s.decision.find(x => x.letter === letter); return d ? { label: d.label } : null; }
+    for (const list of [s.xmenu, s.weeks, s.breakpoints, s.compromises]) if (list && list.length) { const x = list.find(y => y.letter === letter); return x ? { label: x.label || x.gets || (x.depart ? `Leaving ${longDate(x.depart)}` : null) } : null; }
+    return null;
+  }
+  // A letter from an earlier card (or one typed with no lettered menu open): it takes a version only
+  // when the proposal waiting for the customer's word was drawn from that letter and that label (the
+  // card's own button); anything else applies nothing, is said, and leaves what is on the table there.
+  async staleLetter(s, lt, { menuOpen = false } = {}) {
+    const p = s.proposal;
+    if (!menuOpen && p && p.letter === lt.letter && lt.label && sameLabel(lt.label, p.optLabel)) return this.approve(s, `option ${lt.letter}`, null, null);
+    if (menuOpen) s.pending = 'options';
+    const named = `option ${lt.letter}${lt.label ? ` (${lt.label})` : ''}`;
+    this.speak(s, `Those words name ${named}${lt.label ? ' from an earlier card' : ''}, which is not on the table now, so nothing is applied on them.${menuOpen ? ' The menu on the table is the latest card: pick from it by its letter, or keep what you have.' : p ? ` Still waiting for your word: ${p.label ? `"${p.label}"` : 'the proposal'}${p.total !== null && p.total !== undefined ? ` at ${money(p.total)}` : ''}; take it, or keep what you have.` : ' Ask for that card again and pick from it.'}`);
+    return true;
+  }
+
   async applyProposal(s, p) {
     const before = s.current ? await this.priceToken(s.current.token) : null;
     const after = await this.priceToken(p.token);
     if (!after) { s.proposal = null; this.speak(s, 'That version is no longer available from the suppliers, so I did not switch. Your trip is unchanged.'); return true; }
+    // The protect gate: a version without the main experience the traveler protected (or the results
+    // protected, said aloud) is never applied on a plain approval, whatever flow proposed it. It stays
+    // on the table, and only "drop <it>" (or "unprotect") lets it through.
+    const px = state.protectedId(s);
+    if (px && !p.dropProtected && !after.spec.activities.includes(px)) {
+      const name = this.xname(s);
+      s.proposal = { ...p, removesProtected: true };
+      this.speak(s, `That version ${before && before.spec.activities.includes(px) ? 'removes' : 'does not have'} ${name}, ${this.whoProtected(s)}; say "drop ${name}" if you want that.`, { kind: 'ask', options: [{ label: `Drop ${name}`, say: `Drop ${name}` }, { label: 'Keep what I have', say: 'Keep what I have' }] });
+      return true;
+    }
+    const freed = px && p.dropProtected && !after.spec.activities.includes(px) ? this.xname(s) : null;
+    if (freed) { s.locks.experience = false; s.mainExperience = null; s.mainName = null; s.protectAuto = false; }
     if (p.relax) this.applyRelax(s, p.relax);
     const q = state.toQuery(s, { maps: this.maps }).query;
     const ctx = state.budgetContext(s, q);
@@ -753,14 +977,19 @@ class AgentService {
     s.proposal = null;
     if (p.nights) s.nights = p.nights;
     if (p.challengedAccepted) s.challenged[p.kind] = true;
+    // BUILD AROUND AN EVENT: once taken, the dates are locked around it.
+    if (p.eventLock) { s.dateMode = 'exact'; s.depart = after.spec.depart; s.month = null; s.locks.dates = true; }
     const c = tripCard(after, p.token, ctx);
     if (before) {
-      const ch = classifyChanges(before, after);
-      this.speak(s, `Done. Before ${money(before.total)} → after ${money(after.total)} (${after.total <= before.total ? `you keep ${money(before.total - after.total)} more` : `${money(after.total - before.total)} more`}).${ch.tradeoffs.length ? ` You gave up: ${joinAnd(changeWords(ch.tradeoffs))}.` : ' Nothing given up.'}`,
-        { kind: 'diff', before: tripCard(before, encodeSpec(before.spec), ctx), after: c, improvements: changeWords(ch.improvements), tradeoffs: changeWords(ch.tradeoffs), neutral: changeWords(ch.neutral), lines: lineDiff(before, after) });
+      // Every loss is named, an experience left out included: "Nothing given up" only when nothing was.
+      const ch = classifyChanges(before, after, { date: longDate }), lost = lostWords(before, after, ch);
+      this.speak(s, `Done. Before ${money(before.total)} → after ${money(after.total)} (${after.total <= before.total ? `you keep ${money(before.total - after.total)} more` : `${money(after.total - before.total)} more`}).${lost.length ? ` You gave up: ${joinAnd(lost)}.` : ' Nothing given up.'}`,
+        { kind: 'diff', before: tripCard(before, encodeSpec(before.spec), ctx), after: c, improvements: changeWords(ch.improvements), tradeoffs: lost, neutral: changeWords(ch.neutral), lines: lineDiff(before, after) });
     } else {
       this.speak(s, `Your trip: ${c.summary}, ${money(c.total)}.`, { kind: 'trip', trip: c, label: p.label || 'Your trip' });
     }
+    if (freed) this.speak(s, `${freed} is no longer protected: you said to drop it.`);
+    if (p.eventLock && s.event) { const eb = X.eventBuffer(after, s.event); this.speak(s, eb.ok ? `Dates locked around ${s.event.name} on ${longDate(s.event.date)}: ${this.landWords(after)}, a day's buffer either side. Say "unlock the dates" to move them.` : `Dates locked, but ${eb.text} Say "unlock the dates" to move them.`); }
     return true;
   }
 
@@ -800,7 +1029,7 @@ class AgentService {
         s.pending = 'options';
         const more = s.compromises.some(c => c.key && c.label !== c.short);
         this.speak(s, `${floorOpt ? `Without giving anything up I can get it to ${money(out.floor.total)}${lockNote}, not ${money(target)}. ` : `I can't find ${money(cheaperBy)} without breaking what you asked for${lockNote}. `}To reach ${money(target)} I need one more compromise: ${s.compromises.filter(c => c.key).map(c => `${c.letter}. ${c.short}: ${money(c.total)}`).join('; ')}. Which one do you prefer?${more ? ' Each button says everything that version gives up.' : ''}${floorOpt ? ` Or ${floorOpt.short.toLowerCase()} (${s.compromises[s.compromises.length - 1].letter}).` : ''} You can also keep what you have.`,
-          { kind: 'ask', options: [...s.compromises.map(c => ({ label: `${c.letter}. ${c.label} · ${money(c.total)}`, say: `Option ${c.letter}` })), { label: 'Keep what I have', say: 'Keep what I have' }] });
+          { kind: 'ask', options: [...s.compromises.map(c => ({ label: `${c.letter}. ${c.label} · ${money(c.total)}`, say: `Option ${c.letter}: ${c.label}` })), { label: 'Keep what I have', say: 'Keep what I have' }] });
         return;
       }
       this.speak(s, out.floor && out.floor.total < t.total
@@ -897,7 +1126,7 @@ class AgentService {
     const budget = state.bookingBudget(s);
     const over = budget ? opt.total > budget : false;
     this.propose(s, { kind: 'nights', nights: n, token: encodeSpec(spec), total: opt.total, delta: opt.delta, label: `${plural(n, 'night')}`, improvements: delta > 0 ? [`length: ${plural(t.spec.nights, 'night')} → ${plural(n, 'night')}`] : [], tradeoffs: delta < 0 ? [`length: ${plural(t.spec.nights, 'night')} → ${plural(n, 'night')}`] : [], neutral: [], over },
-      `${delta > 0 ? 'One more night' : 'One night less'} is ${opt.delta >= 0 ? `+${money(opt.delta)}` : `−${money(-opt.delta)}`}: ${plural(n, 'night')} for ${money(opt.total)}${over ? `, which is ${money(opt.total - budget)} over your ${money(budget)} ceiling` : budget ? `, ${money(budget - opt.total)} under your limit` : ''}. ${over ? 'Say "go over" to take it, or keep the current length.' : 'Take it, or keep the current length.'}`);
+      `${delta > 1 ? `${plural(delta, 'more night')}` : delta > 0 ? 'One more night' : 'One night less'} is ${opt.delta >= 0 ? `+${money(opt.delta)}` : `−${money(-opt.delta)}`}: ${plural(n, 'night')} for ${money(opt.total)}${over ? `, which is ${money(opt.total - budget)} over your ${money(budget)} ceiling` : budget ? `, ${money(budget - opt.total)} under your limit` : ''}. ${over ? 'Say "go over" to take it, or keep the current length.' : 'Take it, or keep the current length.'}`);
   }
 
   async nonstopFlow(s, cur) {
@@ -1100,6 +1329,39 @@ class AgentService {
       return;
     }
     this.speak(s, `${check}${scan.text}${kept ? ` ${scan.found.token === s.declinedLeak ? 'That is the one you chose to keep' : 'That is the version you chose not to take'}, so your trip stands at ${money(t.total)}.` : ''}`, scanCard);
+    // MAKE IT EASY: the flight-time check the acceptance line promised. Another flight on the same trip
+    // that leaves at least an hour more of the first and last day, gives nothing else up and stays
+    // under the ceiling is a decision before paying; one the traveler kept is said, never re-proposed.
+    if (s.mission && s.mission.mode === 'easy') {
+      const settings = await this.settings();
+      const opts = (t.flightOptions || []).filter(f => f.id !== t.spec.flight && optimizer.rulesAllowFlight(f, q.rules)).map(f => { const v = priceTrip(this.inv, { ...t.spec, flight: f.id }, settings); return v ? { flight: f, delta: v.total - t.total, total: v.total, v } : null; }).filter(Boolean);
+      const alt = decision.timeAlternatives(t, { flights: opts }).map(a => ({ ...a, v: opts.find(o => o.flight.id === a.flight.id).v })).find(a => !classifyChanges(t, a.v).tradeoffs.some(r => r.key !== 'price') && !this.overCeiling(s, a.total, t.total)) || null;
+      const base = usableTime(t);
+      if (alt && encodeSpec(alt.v.spec) !== s.declinedEasy) {
+        const ch = classifyChanges(t, alt.v);
+        this.propose(s, { kind: 'easyTime', token: encodeSpec(alt.v.spec), total: alt.total, delta: alt.delta, label: `${alt.flight.name} flights`, improvements: changeWords(ch.improvements), tradeoffs: changeWords(ch.tradeoffs), neutral: changeWords(ch.neutral), over: false }, `Flight-time check before you pay: the ${alt.flight.name} flights leave you ${hm(alt.gain)} more of your days (${alt.time.usableLabel} instead of ${base ? base.usableLabel : 'what you have'}) for ${alt.delta > 0 ? `${money(alt.delta)} more` : alt.delta < 0 ? `${money(-alt.delta)} less` : 'the same total'}. Take it, or keep what you have; then say "book it" again.`);
+        return;
+      }
+      this.speak(s, alt ? 'Flight-time check: the flights that leave more of your days are the ones you chose not to take, so your flights stand.' : 'Flight-time check: no other flight on this trip leaves more of your first and last day without giving something up or going over your ceiling.');
+    }
+    // EXPERIENCE MAX: the FINAL EXPERIENCE CHECK after the savings and money leak checks: one line when
+    // the trip serves what they told us; otherwise a rebuild that passes, as a proposal, before the
+    // contract. Then WHY THIS TRIP IS BUILT THIS WAY and the PROTECTION rows for the main experience.
+    if (this.xmode(s)) {
+      const x = await this.xo(s);
+      const fc = X.finalCheck(t, x.gs, x.o);
+      const fcard = { kind: 'final', ok: fc.ok, reasons: fc.reasons.map(r => ({ ok: r.ok, text: r.text })) };
+      if (!fc.ok && fc.rebuild && fc.rebuild.token !== s.declinedFinal && fc.rebuild.token !== s.current.token) {
+        const p = this.xproposal(s, t, fc.rebuild, { kind: 'final', label: 'Rebuild that passes the final check' });
+        this.propose(s, p, `${fc.text} Take the rebuild, or keep what you have; then say "book it" again.`, { ...fcard, proposal: p });
+        return;
+      }
+      this.speak(s, fc.ok ? fc.text : `${fc.text.replace(/ A rebuild that passes:.*$/, '')}${fc.rebuild && fc.rebuild.token === s.declinedFinal ? ' The rebuild that passes is the one you chose not to take, so your trip stands.' : fc.rebuild ? '' : ' No rebuild inside your rules and ceiling passes it either; it is your call.'}`, fcard);
+      const r = X.receipt(this.inv, x.q, t, x.gs, x.o);
+      this.speak(s, `WHY THIS TRIP IS BUILT THIS WAY: against ${r.baseline.label} (${money(r.baseline.total)}).`, this.xreceiptCard(r));
+      const main = this.xmain(s, t, x.gs);
+      if (main) { const pr = X.protection(this.inv, t, main, x.o); this.speak(s, `EXPERIENCE PROTECTION for ${main.name}: ${pr.text}`, { kind: 'protection', name: main.name, protected: state.protectedId(s) === main.id, rows: pr.rows, checkedAt: pr.checkedAt }); }
+    }
     const card = await this.scorecardFor(s, cur);
     this.speak(s, `Your savings check: ${card.text}`, this.scorecardCard(card));
     this.speak(s, `${unmet.length ? `Before you book, one thing is not what you asked for: ${joinAnd(unmet)}. ` : ''}Here is what you asked for against what you are getting. I don't charge anything: the next page re-checks the live price, and you confirm there.`, { kind: 'contract', asked: state.askedFor(s, { maps: this.maps }), getting, href: `/trip/${s.current.token}/review?${cx}`, trip: c, unmet });
@@ -1159,6 +1421,22 @@ class AgentService {
 
   async waysFlow(s, u, cur) {
     const m = s.mission;
+    if (this.xmode(s)) {
+      // None of the three: a different set means different memories, so the one question is asked again.
+      // The set passed on is kept for this mission (its destinations), so the answer, whatever it is,
+      // builds a genuinely different set; the protection the results set came with that set and goes
+      // with it, said. One the traveler set stays.
+      if (u.updates.way === 'none') {
+        m.xnone = { goals: (s.goals || []).join(), dests: [...new Set((m.strategies || []).map(w => decodeSpec(w.token).dest))] };
+        if (s.protectAuto && state.protectedId(s)) { this.speak(s, `${this.xname(s)} is no longer protected: I had protected it from the results you passed on.`); s.locks.experience = false; s.mainExperience = null; s.mainName = null; s.protectAuto = false; }
+        s.pending = 'goals';
+        this.speak(s, 'Fair. What do you want to remember instead? Pick up to three and I build a different set.', { kind: 'ask', options: X.GOALS.map(g => ({ label: g.label, say: g.label })), chips: true });
+        return true;
+      }
+      if (u.updates.way) return this.chooseXWay(s, u.updates.way);
+      this.speak(s, 'Say "more memories", "our pick" or "more comfort" (or its number on the card).');
+      return true;
+    }
     if (u.updates.variant) return this.pickVariant(s, u.updates.variant);
     if (u.updates.mix) return this.mixFlow(s, u.updates.mix);
     if (u.updates.wrong) return this.differentSetFlow(s, u.updates.wrong);
@@ -1387,6 +1665,7 @@ class AgentService {
       if (d.bags && s.bags === d.bags) s.bags = null;
       if (d.flexibleDates && s.dateMode === 'anytime') s.dateMode = null;
       if (d.savingsLevel && s.savingsLevel === d.savingsLevel) s.savingsLevel = null;
+      s.prefs = null;
       s.defaults = null;
       this.speak(s, permanently ? 'Forgotten, and removed from your account. Tell me the trip from scratch.' : 'Dropped for this trip; your saved defaults stay for next time. Tell me the trip from scratch.');
       await this.startBuild(s, { reason: 'build' });
@@ -1531,13 +1810,19 @@ class AgentService {
   // money comes from what the traveler stated, never from margin. The only facts handed to the engine
   // are the ones the traveler said (null when unknown) and the locks every engine honours.
   leakOpts(s) {
-    return { now: this.now(), locks: state.effectiveLocks(s), prefs: { style: s.style, priority: s.priority, who: s.who, bags: s.bags, rules: state.rulesOf(s), nightsAsked: s.nightsStated ? s.nights : null }, promo: null };
+    // Experience Max: the traveler asked for the money to go to the memories, so an experience is not
+    // a leak unless they set another priority themselves (and the protected one is never offered).
+    const priority = s.priority || (this.xmode(s) ? 'activities' : null);
+    return { now: this.now(), locks: state.effectiveLocks(s), prefs: { style: s.style, priority, who: s.who, bags: s.bags, rules: state.rulesOf(s), nightsAsked: s.nightsStated ? s.nights : null }, promo: null, protect: state.protectedId(s) };
   }
   async leakScan(s, cur) { return leaks.finalScan(this.inv, cur.trip, await this.settings(), cur.ctx, this.leakOpts(s)); }
   // The ceiling gate every proposal shares: a version that costs more than now and ends above the
   // booking budget waits for "go over" (the maximum is a ceiling, and only the traveler's word crosses
   // it); a version cheaper than now never waits, since it only lowers an overrun they already approved.
   overCeiling(s, total, from) { const budget = state.bookingBudget(s); return !!(budget && total > budget && total > from); }
+  // How far a version is over the customer's maximum, in cents: its priced total minus the ceiling, and only when it is over
+  // (overCeiling); never its difference from the trip now. Cards say it with the amount, never as the pick.
+  overBy(s, total, from) { return this.overCeiling(s, total, from) ? total - state.bookingBudget(s) : 0; }
   // A leak found by the scan as a proposal, worded by what its version actually is, read off its token
   // rather than the check it came from: the scan's "bags" check finds either the bag add-on itself (the
   // same fare without the bought bag: a removal, "Without <bag>", "<bag> comes out") or a cheaper fare
@@ -2373,6 +2658,690 @@ class AgentService {
   }
 
   // ---- after booking: the same agent, answering from the booking's facts ------------------------
+  // ---- EXPERIENCE MAX (customer level 4) ----------------------------------------------------------
+  // "How do I get the most experience from my travel budget?" Every number below is the experience
+  // engine's (server/trips/experience.js): a priced total for a token, or arithmetic on two of them.
+  // Every version is a proposal the traveler takes or keeps; the main experience they protected (or
+  // the results protected, said aloud) is never dropped on a plain approval (applyProposal's gate);
+  // the maximum is a ceiling, not a target. Nothing here reads a commission or a margin.
+  xmode(s) { return state.experienceMode(s); }
+  // No goal given yet (a chip asked outside experience mode) reads as "Surprise me": every experience
+  // counts and none is called worth it for a goal nobody named.
+  xgoals(s) { return s.goals && s.goals.length ? s.goals : ['surprise']; }
+  xname(s) { return s.mainName || s.mainExperience; }
+  // Who protected the main experience, said as it is: one the results set is the agent's ("the main
+  // experience I'm protecting for you"), never "which you protected"; only the customer's own "protect
+  // <it>" is theirs. `whoProtected` follows the name ("X, which you protected"), `protWords` stands alone.
+  protWords(s) { return s.protectAuto ? 'the main experience I\'m protecting for you (say "unprotect" to free it)' : 'the experience you protected'; }
+  whoProtected(s) { return s.protectAuto ? this.protWords(s) : 'which you protected'; }
+  // "You land <date>" from the flight's own arrival: an overnight flight lands the day after it leaves.
+  landWords(t) { const L = X.landing(t); return `you land ${longDate(L.date)}${L.nextDay ? ` (the overnight flight lands${L.time ? ` at ${L.time}` : ''} the day after you leave, ${longDate(L.depart)})` : ''} and fly home ${longDate(t.flight.return)}`; }
+  xctx(s, settings) {
+    const { query: q } = state.toQuery(s, { maps: this.maps });
+    // The places a "none of these" passed on (same goals) stay out of this mission's results.
+    const xnot = s.mission && s.mission.xnot && s.mission.xnot.length && !q.dest ? s.mission.xnot : null;
+    if (xnot) q.dests = this.maps.listDestinations().map(d => d.id).filter(id => !xnot.includes(id));
+    const ctx = state.budgetContext(s, q);
+    const gs = this.xgoals(s);
+    const o = { now: this.now(), settings, locks: state.effectiveLocks(s), cap: q.budget, rules: q.rules, ctx, protect: state.protectedId(s), prefs: this.xprefs(s), statedStay: !!s.statedStay, stayLow: !!s.stayLow, nightsOpen: !s.nightsStated && !s.locks.nights, q, event: s.event && s.event.date ? s.event : null, inv: this.inv, goals: gs };
+    return { q, ctx, gs, o };
+  }
+  async xo(s) { return this.xctx(s, await this.settings()); }
+  // An experience named in the traveler's words, from a list the trip itself carries.
+  xfind(list, words) { const w = itemWords(words); return w.length ? (list || []).find(a => wordsFit(w, a.name)) || null : null; }
+  // The protected experience while the trip has it, else the strongest one for the goals.
+  xmain(s, t, gs) { const px = state.protectedId(s); return (px && t.activities.find(a => a.id === px)) || X.mainOf(t, gs); }
+  // A priced version as a proposal, with what it changes read off the two trips before anything is taken.
+  // Dates in the rows are said in words (a card shows them as written), never as ISO dates.
+  xproposal(s, t, v, extra) {
+    const ch = classifyChanges(t, v.trip, { date: longDate });
+    return { token: v.token, total: v.total, delta: v.total - t.total, improvements: changeWords(ch.improvements), tradeoffs: changeWords(ch.tradeoffs), neutral: changeWords(ch.neutral), over: this.overCeiling(s, v.total, t.total), overBy: this.overBy(s, v.total, t.total), ...extra };
+  }
+  // A lettered menu of priced versions (at most five), answered on the next turn or not at all.
+  xmenuSet(s, items) {
+    s.xmenu = items.filter(it => it.token && (!s.current || it.token !== s.current.token)).slice(0, 5).map((it, i) => ({ letter: 'ABCDE'[i], token: it.token, total: it.total, label: it.label, kind: it.kind || 'xmenu' }));
+    if (s.xmenu.length) s.pending = 'options';
+    return s.xmenu;
+  }
+  // A version over the ceiling is said as over, whoever recommends it: the maximum is a ceiling, and
+  // only the traveler's "go over" crosses it.
+  // `said`: the engine's own text already named the amount over the maximum, so only the gate is added and the
+  // amount is never said twice.
+  xover(s, v, said = false) { const b = state.bookingBudget(s); return v && v.over && b ? (said ? ' Taking it needs your "go over".' : ` It is ${money(v.total - b)} over your ${money(b)} ceiling, so taking it needs your "go over".`) : ''; }
+  xletter(s, token) { const m = (s.xmenu || []).find(x => x.token === token); return m ? m.letter : null; }
+  // The words a lettered card's button sends: its letter and its version's own label, so the button
+  // takes that version and no other, whatever is on the table when it is pressed.
+  xsay(s, token) { const m = (s.xmenu || []).find(x => x.token === token); return m ? `Option ${m.letter}: ${m.label}` : null; }
+  rhythmDays(rh) { return rh.days.map(d => ({ n: d.n, date: d.date, label: d.label, items: d.items, open: !!d.open })); }
+  // What an earlier trip taught us, in words, only from what the traveler asked us to remember.
+  prefWords(p) {
+    if (!p) return [];
+    const W = { stayMatters: v => (v ? 'the hotel mattered to you' : 'the hotel did not matter much to you'), mainMatters: v => (v ? 'the main experience was worth it' : 'the main experience was not worth it'), openDays: v => (v ? 'free time was worth it' : 'free time mattered less'), locationMatters: v => (v ? 'the location was worth it' : 'the location mattered less'), goalsAdd: v => `${joinAnd(v.map(k => (state.GOAL_LABEL[k] || k).toLowerCase()))} was worth it` };
+    return Object.entries(p).filter(([k, v]) => W[k] && v !== null && v !== undefined && !(Array.isArray(v) && !v.length)).map(([k, v]) => W[k](v));
+  }
+  // What they said about the stay in this conversation outranks what they asked me to remember after an
+  // earlier trip: the remembered stayMatters is not used (nor named) once their own words here say otherwise.
+  xprefs(s) {
+    const p = s.prefs || null;
+    if (!p || p.stayMatters === undefined || !(s.stayLow || s.statedStay)) return p;
+    const { stayMatters, ...rest } = p; // eslint-disable-line no-unused-vars
+    return rest;
+  }
+  stayLine(s) { return s.prefs && s.prefs.stayMatters === true && !s.stayLow ? ' After your last trip you told me the hotel mattered to you (you asked me to remember it), so I don\'t argue against a better hotel here.' : ''; }
+
+  // Every Experience Max chip and its words, routed to the engine.
+  async experienceFlow(s, k, u, cur) {
+    if (k === 'xUnprotect') return this.xUnprotect(s);
+    if (k === 'xEvent') return this.xEventFlow(s, u.updates.event || {}, cur);
+    if (k === 'xSurpriseAll') return this.xSurpriseAll(s, cur);
+    if (k === 'xDrop' && s.proposal && s.proposal.removesProtected) return this.xDrop(s, cur, u.updates.target || null);
+    if (!cur) { this.speak(s, 'There is no trip on the canvas yet. Give me the number and where you fly from, and I build one around what you want to remember first.'); return; }
+    const x = await this.xo(s);
+    switch (k) {
+      case 'xHotelOrExp': return this.xHotelOrExp(s, cur, x);
+      case 'xMemorable': return this.xMemorable(s, cur, x, u.updates.memAmount || 10000);
+      case 'xOneBig': return this.xOneBig(s, cur, x);
+      case 'xPack': return this.xPack(s, cur, x);
+      case 'xFree': return this.xFree(s, cur, x);
+      case 'xSurpriseOne': return this.xSurpriseOne(s, cur, x);
+      case 'xFreeTime': return this.xFreeTime(s, cur, x);
+      case 'xSameFeeling': return this.xSameFeeling(s, cur, x);
+      case 'xAlternative': return this.xAlternative(s, cur, x, u.updates.target || null);
+      case 'xLadder': return this.xLadder(s, cur, x);
+      case 'xReceipt': return this.xReceipt(s, cur, x);
+      case 'xMore': return this.xMore(s, cur, x, false);
+      case 'xZero': return this.xMore(s, cur, x, true);
+      case 'xTrade': return this.xTrade(s, cur, x, u.updates.target || null);
+      case 'xBigVsMany': return this.xBigVsMany(s, cur, x);
+      case 'xRhythm': return this.xRhythm(s, cur, x, { conflictsOnly: false });
+      case 'xConflicts': return this.xRhythm(s, cur, x, { conflictsOnly: true });
+      case 'xProtect': return this.xProtect(s, cur, x, u.updates.target || null);
+      case 'xDrop': return this.xDrop(s, cur, u.updates.target || null);
+      case 'xBudget': case 'xDownsell': return this.xBudget(s, cur, x);
+      case 'xLocation': return this.xLocation(s, cur, x);
+      case 'xProtection': return this.xProtection(s, cur, x);
+      case 'xBackup': return this.xBackup(s, cur, x);
+      case 'xWhyDest': return this.xWhyDest(s, cur, x);
+      case 'xUpgrade': return this.xUpgrade(s, cur, x);
+      default: this.speak(s, 'I did not understand that, and I would rather say so than guess.');
+    }
+  }
+
+  // The build: EXPERIENCE → DESTINATION → DATES → FLIGHT → HOTEL, one engine call priced in full.
+  async runExperience(id, job) {
+    const settings = await this.settings();
+    const now = () => this.now();
+    const snap = await this.withState(id, s => ({ jobId: s.job && s.job.id, city: s.origin ? (this.maps.getOrigin(s.origin) || {}).city : null, px: state.protectedId(s) ? this.xname(s) : null, ...this.xctx(s, settings) }));
+    if (!snap.jobId) return;
+    const { q, ctx, gs, o } = snap;
+    const mine = s => s.job && s.job.id === snap.jobId && !job.cancelled;
+    const g1 = state.GOAL_LABEL[gs[0]] || gs[0];
+    await this.patch(id, s => { if (!mine(s)) return; setStep(s.job, 'fast', 'running', `Matching every destination we serve from ${snap.city || q.origin} to ${g1.toLowerCase()}${snap.px ? `, keeping ${snap.px}` : ''}`, now()); });
+    await this.breathe();
+    if (job.cancelled) return;
+    const W = X.experienceWays(this.inv, q, gs, o);
+    await this.patch(id, s => {
+      if (!mine(s)) return;
+      const res = W.ladder.search, open = gs[0] === 'surprise' || gs[0] === 'new';
+      const meet = res.destinations.filter(d => (open ? d.match.met.length > 0 : d.match.met.some(m => m.key === gs[0])));
+      setStep(s.job, 'fast', 'done', `${plural(meet.length, 'destination')} of ${res.destinations.length} offer ${g1.toLowerCase()}${meet.length ? `: ${joinAnd(meet.slice(0, 6).map(d => d.dest.name))}${meet.length > 6 ? ' and more' : ''}` : ''}`, now());
+      setStep(s.job, 'deep', 'done', `${W.considered} complete packages priced around your goals; every experience in season and on a full day of its own`, now());
+      setStep(s.job, 'expand', 'skipped', W.pick ? 'Not needed' : 'Nothing to widen without changing what you asked for', now());
+      s.job.considered = W.considered;
+      s.job.destinations = res.destinations.length;
+      s.job.feed = s.job.feed || [];
+      s.job.feed.push(`Checked ${plural(res.destinations.length, 'destination')} for ${state.goalWords(gs)}; ${W.considered} complete packages priced`);
+      for (const d of W.dropped) s.job.feed.push(`${d.key === 'memories' ? 'MORE MEMORIES' : d.key === 'comfort' ? 'MORE COMFORT' : 'OUR PICK'} not built: ${d.reason}`);
+      if (W.rejected) s.job.feed.push(`Rejected: ${W.rejected.label}, ${joinAnd(W.rejected.gets)}; no experience gain`);
+      this.presentXWays(s, W, q, ctx, { replace: true });
+      s.job.status = 'done';
+      s.job.finishedAt = now().toISOString();
+    });
+  }
+
+  // EXPERIENCE MAX RESULTS: MORE MEMORIES / OUR PICK ★ / MORE COMFORT, the reason sentence, the hotel
+  // upgrade the pick passed on, and "I wouldn't spend $X." when the pick is under the number. A build
+  // (`replace`) puts OUR PICK on the canvas and protects its main experience, said aloud; anything else
+  // (SURPRISE ME COMPLETELY over a trip already on the canvas) waits for the traveler to pick one.
+  presentXWays(s, W, q, ctx, { replace = true, lead = '', tail = '' } = {}) {
+    const m = s.mission, gs = W.goals && W.goals.length ? W.goals : this.xgoals(s);
+    m.round += 1;
+    const keys = ['memories', 'pick', 'comfort'].filter(k => W[k]);
+    m.strategies = keys.map(k => { const w = W[k]; return { key: k, label: w.label, token: w.token, total: w.total, keep: w.keep, blurbs: w.blurbs, main: w.main && X.goalScore(w.main, gs) > 0 ? { id: w.main.id, name: w.main.name } : null, card: tripCard(w.trip, w.token, ctx) }; });
+    m.pick = W.pick ? { key: 'pick', reasons: W.pick.blurbs } : null;
+    m.dropped = W.dropped;
+    m.variants = [];
+    m.signal = null;
+    // Results built over a trip already on the canvas (SURPRISE ME COMPLETELY) are not the ones the
+    // protection came from: picking one never moves or frees the protection, the gate decides.
+    m.surprise = !replace;
+    if (!W.pick) {
+      const px = state.protectedId(s);
+      this.speak(s, `${lead ? `${lead} ` : ''}${W.reason}${px ? ` Every version I build keeps ${this.xname(s)}, ${s.protectAuto ? 'the main experience I\'m protecting for you' : 'the experience you protected'}; say "unprotect" and I search without it.` : ''} A higher ceiling, other dates or other goals would change that.`);
+      s.pending = null;
+      return;
+    }
+    let protectLine = '';
+    if (replace) {
+      s.current = { token: W.pick.token, total: W.pick.total, since: this.now().toISOString() };
+      if (s.job) { s.job.best = m.strategies.find(w => w.key === 'pick').card; s.job.bestAtMs = Date.parse(this.now().toISOString()) - Date.parse(s.job.startedAt); }
+      const main = W.pick.main;
+      if (state.protectedId(s)) protectLine = ` MAIN EXPERIENCE: ${this.xname(s)}, protected${s.protectAuto ? ' (by me, from the results; say "unprotect" to free it)' : ' as you asked'}.`;
+      else if (main && X.goalScore(main, gs) > 0) {
+        s.mainExperience = main.id; s.mainName = main.name; s.locks.experience = true; s.protectAuto = true;
+        protectLine = ` MAIN EXPERIENCE: ${main.name}, PROTECTED: it is the main experience I'm protecting for you, so no version I offer drops it unless you say "drop ${main.name}"; say "unprotect" to free it.`;
+      }
+    }
+    const card = {
+      kind: 'xways', ways: m.strategies.map(w => ({ key: w.key, label: w.label, star: w.key === 'pick', total: w.total, keep: w.keep, blurbs: w.blurbs, main: w.main ? w.main.name : null, trip: w.card })),
+      reason: W.reason, rejected: W.rejected ? { label: W.rejected.label, text: W.rejected.text, total: W.rejected.total, delta: W.rejected.delta, gets: W.rejected.gets } : null,
+      signature: W.signature, dropped: W.dropped.map(d => d.reason), max: q.budget, goals: state.goalWords(gs), notes: (W.ladder && W.ladder.search && W.ladder.search.notes) || [], onCanvas: replace,
+    };
+    const stay = !W.rejected ? this.stayLine(s) : '';
+    // Built around an event: the day the pick lands is said from its own flight, and the buffer only when
+    // it holds (an overnight flight that lands on the day is said as the conflict it is).
+    let eventLine = '';
+    if (replace && s.event && s.event.date) { const eb = X.eventBuffer(W.pick.trip, s.event); eventLine = eb.ok ? ` ${cap(s.event.name)} on ${longDate(s.event.date)}: ${this.landWords(W.pick.trip)}, a day's buffer either side.` : ` ${eb.text} Say "schedule conflicts" and I price the dates that cover it.`; }
+    this.speak(s, `${lead ? `${lead} ` : ''}${W.signature ? `${W.signature} ` : ''}${W.reason}${W.rejected ? ` ${W.rejected.text}` : ''}${stay}${tail ? ` ${tail}` : ''}${protectLine}${eventLine} ${replace ? 'Which feels more like you?' : 'Say "our pick" (or another by name) to put it on your canvas, or keep what you have.'}`, card);
+    s.pending = 'ways';
+  }
+
+  // A result picked by name or number. The protection the results set follows the result picked (it
+  // was the agent's, said aloud); one the traveler set is kept, so a result without it meets the gate.
+  async chooseXWay(s, key) {
+    const m = s.mission, w = (m.strategies || []).find(x => x.key === key);
+    const LABEL = { memories: 'MORE MEMORIES', pick: 'OUR PICK', comfort: 'MORE COMFORT' };
+    if (!w) { const d = (m.dropped || []).find(x => x.key === key); this.speak(s, `${LABEL[key] || 'That result'} is not on the table${d ? `: ${d.reason}` : ''}.`); return true; }
+    m.signal = key;
+    m.chosen = { key, token: w.token };
+    if (s.current && s.current.token === w.token) { this.speak(s, `${w.label} is already on your canvas at ${money(w.total)}.`); return true; }
+    let note = '';
+    if (m.surprise) { /* the protection stays where it is; a result without it meets the protect gate */ }
+    else if (s.protectAuto && state.protectedId(s) && w.main && w.main.id !== s.mainExperience) { const had = this.xname(s); s.mainExperience = w.main.id; s.mainName = w.main.name; note = `The protection moves with it: ${w.main.name} is now the main experience, protected (it was ${had}, which I had protected from the results).`; }
+    else if (s.protectAuto && state.protectedId(s) && !w.main) { note = `${this.xname(s)} is no longer protected: it was mine from the results, and ${w.label} has no goal experience to protect.`; s.locks.experience = false; s.mainExperience = null; s.mainName = null; s.protectAuto = false; }
+    await this.applyProposal(s, { kind: 'xway', token: w.token, total: w.total, delta: s.current ? w.total - s.current.total : 0, label: w.label, over: this.overCeiling(s, w.total, s.current ? s.current.total : 0) });
+    if (note && s.current && s.current.token === w.token) this.speak(s, note);
+    return true;
+  }
+
+  xHotelOrExp(s, cur, { gs, o }) {
+    const t = cur.trip, r = X.hotelOrExperience(this.inv, t, gs, o);
+    if (!r.a && !r.b) { this.speak(s, `HOTEL OR EXPERIENCE? ${r.text}`); return; }
+    const side = (v, key, label, lines, say) => (v ? { key, label, lines, say, token: v.token, total: v.total, delta: v.delta, over: this.overCeiling(s, v.total, t.total), overBy: this.overBy(s, v.total, t.total) } : null);
+    const a = side(r.a, 'a', r.a ? `Hotel upgrade: ${r.a.hotel.name}` : '', r.a ? r.a.gets : [], 'Take the hotel');
+    const b = side(r.b, 'b', r.b ? (r.b.names.length === 2 ? 'Two experiences' : 'One experience') : '', r.b ? r.b.names : [], 'Take the experiences');
+    const rec = r.verdict === 'a' ? a : r.verdict === 'b' ? b : null;
+    const p = { kind: 'hoe', choices: { ...(a ? { a } : {}), ...(b ? { b } : {}) }, recommended: rec ? rec.key : null, token: rec ? rec.token : null, total: rec ? rec.total : null, delta: rec ? rec.delta : null, label: rec ? rec.label : 'HOTEL OR EXPERIENCE?', over: rec ? rec.over : false, improvements: [], tradeoffs: [], neutral: [] };
+    const say = [a ? '"take the hotel"' : null, b ? '"take the experiences"' : null].filter(Boolean).join(' or ');
+    this.propose(s, p, `HOTEL OR EXPERIENCE? ${a ? `A: ${a.label} (${joinAnd(a.lines)}), ${signed(a.delta)}.` : 'A: no hotel step-up is priced.'} ${b ? `B: ${joinAnd(b.lines)}, ${signed(b.delta)}.` : 'B: no goal experience is left to add.'} ${r.text}${this.xover(s, rec)}${r.verdict === 'a' ? '' : this.stayLine(s)} Say ${say}, or keep what you have.`, { kind: 'ab', title: 'HOTEL OR EXPERIENCE?', a: a && { ...a, head: 'A · Hotel upgrade' }, b: b && { ...b, head: `B · ${b.label}` }, verdict: r.verdict, text: r.text, current: t.total, proposal: p });
+  }
+
+  xMemorable(s, cur, { gs, o }, amount) {
+    const t = cur.trip, r = X.memoryTest(this.inv, t, gs, o, amount);
+    const paid = r.candidates.filter(c => c.kind !== 'free');
+    const menu = this.xmenuSet(s, paid.map(c => ({ token: c.token, total: c.total, label: c.label, kind: 'memory' })));
+    const items = paid.slice(0, 5).map(c => ({ letter: this.xletter(s, c.token), say: this.xsay(s, c.token), label: c.label, text: c.text, total: c.total, delta: c.delta, gain: c.gain, givesUp: c.givesUp || [], over: this.overCeiling(s, c.total, t.total), overBy: this.overBy(s, c.total, t.total), pick: !!(r.pick && r.pick.token === c.token && r.pick.kind === c.kind) && !this.overCeiling(s, c.total, t.total) }));
+    const free = r.candidates.filter(c => c.kind === 'free').slice(0, 3).map(c => ({ name: c.free.name, note: c.free.note, source: c.source, checkedAt: c.checkedAt }));
+    const card = { kind: 'memory', title: `MAKE ${dollars(amount)} MEMORABLE`, items, free, text: r.text, current: t.total };
+    if (r.pick && r.pick.kind !== 'free') {
+      const pl = this.xletter(s, r.pick.token), p = this.xproposal(s, t, r.pick, { kind: 'memory', label: r.pick.label, ...(pl ? { letter: pl, optLabel: (s.xmenu.find(x => x.letter === pl) || {}).label } : {}) });
+      this.propose(s, p, `MAKE ${dollars(amount)} MEMORABLE: ${r.text}${this.xover(s, p)} Take it${menu.length > 1 ? ', pick another letter,' : ''} or keep the money.`, { ...card, proposal: p });
+      return;
+    }
+    this.speak(s, `MAKE ${dollars(amount)} MEMORABLE: ${r.text}${r.pick ? ' There is nothing to book for it.' : ''}${menu.length ? ' The priced options are on the card by letter if you want one anyway.' : ''}`, card);
+  }
+
+  xOneBig(s, cur, { q, gs, o }) {
+    const t = cur.trip, r = X.oneBigThing(this.inv, q, gs, o);
+    if (!r.main) { this.speak(s, `GIVE ME ONE AMAZING THING: ${r.why}`); return; }
+    if (r.token === s.current.token) { this.speak(s, `GIVE ME ONE AMAZING THING: ${r.why} That is the trip on your canvas already.`); return; }
+    const px = state.protectedId(s), loses = px && !r.trip.spec.activities.includes(px);
+    const p = this.xproposal(s, t, r, { kind: 'onebig', label: `One amazing thing: ${r.main.name}` });
+    // A new build around one experience may have fewer nights, another fare, hotel or dates: every loss and
+    // every other change is said before "Take it", never first heard in the "Done" line.
+    const lost = lostWords(t, r.trip, classifyChanges(t, r.trip, { date: longDate })), diff = `${lost.length ? ` Against your trip it gives up ${lost.join('; ')}.` : ''}${p.neutral.length ? ` It also changes ${p.neutral.join('; ')}.` : ''}`;
+    this.propose(s, p, `GIVE ME ONE AMAZING THING: ${r.why}${diff}${loses ? ` It is a different trip without ${this.xname(s)}, ${this.whoProtected(s)}; taking it needs "drop ${this.xname(s)}".` : ''}${this.xover(s, p)} Take it, or keep what you have.`, { kind: 'onebig', main: r.main.name, day: r.day ? r.day.date : null, why: r.why, days: r.rhythm ? this.rhythmDays(r.rhythm) : [], protection: r.protection ? r.protection.rows : [], trip: tripCard(r.trip, r.token, cur.ctx), proposal: p });
+  }
+
+  xPack(s, cur, { gs, o }) {
+    const t = cur.trip, r = X.packTrip(this.inv, t, gs, o);
+    if (!r.added.length) { this.speak(s, `PACK THE TRIP: You don't need another paid activity. ${r.text}`); return; }
+    const p = this.xproposal(s, t, r, { kind: 'pack', label: `Pack the trip: + ${joinAnd(r.added.map(a => a.name))}` });
+    this.propose(s, p, `PACK THE TRIP: + ${joinAnd(r.added.map(a => `${a.name} (${a.hours}h)`))}, ${money(r.total)} (${signed(r.delta)}). ${r.text}${this.xover(s, p)} Take it, or keep what you have.`);
+  }
+
+  // FIND FREE THINGS WORTH DOING: only with the guide's source and the date it was checked; a free
+  // option is never booked, so the only version offered is the one without a paid experience it beats.
+  async xFree(s, cur, { gs }) {
+    const t = cur.trip, f = X.freeThings(this.inv, t.dest, gs);
+    if (!f) { this.speak(s, `FIND FREE THINGS WORTH DOING: there are no verified free options for ${t.dest.name} in our guide data, so I won't name any.`); return; }
+    const matching = f.items.filter(i => i.matches).length;
+    const card = { kind: 'xfree', dest: t.dest.name, source: f.source, checkedAt: f.checkedAt, items: f.items.map(it => ({ name: it.name, kind: it.kind, note: it.note, goal: it.matches ? state.GOAL_LABEL[it.matches] : null })) };
+    const head = `FIND FREE THINGS WORTH DOING in ${t.dest.name}: ${plural(f.items.length, 'free option')}, free according to ${f.source} as of ${longDate(f.checkedAt)}${matching ? `; ${matching} ${matching === 1 ? 'matches' : 'match'} what you want to remember` : ''}.`;
+    const fop = X.freeOverPaid(this.inv, t, gs);
+    if (fop) {
+      const v = await this.priceToken(encodeSpec({ ...t.spec, activities: t.spec.activities.filter(x => x !== fop.paid.id) }));
+      if (v) {
+        const p = this.xproposal(s, t, { token: encodeSpec(v.spec), total: v.total, trip: v }, { kind: 'freeSwap', label: `Without ${fop.paid.name}` });
+        this.propose(s, p, `${head} ${fop.text} Without ${fop.paid.name}: ${money(v.total)} (${signed(p.delta)}); ${fop.free.name} needs no booking. Take it, or keep what you have.`, { ...card, proposal: p });
+        return;
+      }
+    }
+    this.speak(s, `${head} None of them is booked or priced into your trip; nothing to take.`, card);
+  }
+
+  xSurpriseOne(s, cur, { gs, o }) {
+    const t = cur.trip, r = X.surpriseOne(this.inv, t, gs, o.rules, o);
+    if (!r.activity) { this.speak(s, `SURPRISE ME WITH ONE THING: ${r.why}`); return; }
+    const p = this.xproposal(s, t, r, { kind: 'surprise', label: `+ ${r.activity.name}` });
+    this.propose(s, p, `SURPRISE ME WITH ONE THING: ${r.activity.name} (${r.activity.hours}h), ${r.why}.${this.xover(s, p)} Take it, or keep what you have.`);
+  }
+
+  // SURPRISE ME COMPLETELY: what to remember becomes "Surprise me" (said), and the results are built
+  // for it. Over a trip already on the canvas they wait to be picked; nothing is replaced unasked.
+  // The protected main experience stays protected through the surprise: a surprise is built from scratch
+  // and may not include it, which is said before anything is built, and a version without it meets the
+  // protect gate like any other ("drop <it>" or "unprotect" lets it through). Nothing is freed silently.
+  async xSurpriseAll(s, cur) {
+    const was = s.goals && s.goals.length ? state.goalWords(s.goals) : null;
+    s.goals = ['surprise'];
+    const px = state.protectedId(s), name = px ? this.xname(s) : null;
+    const keep = px ? ` ${name} stays protected (${s.protectAuto ? 'I protected it from the results' : 'you protected it'}): a surprise may not include it, and taking a version without it needs your "drop ${name}".` : '';
+    if (!cur || state.nextQuestion(s)) {
+      this.speak(s, `SURPRISE ME COMPLETELY: what you want to remember is now "Surprise me"${was ? ` (it was ${was})` : ''}; I pick the strongest experiences your money buys.${keep}`);
+      await this.startBuild(s, { reason: 'build' });
+      return;
+    }
+    const x = await this.xo(s);
+    // The trip on the canvas is what "nothing new is required" is measured against (a passport abroad).
+    const r = X.surpriseCompletely(this.inv, x.q, { ...x.o, current: cur.trip });
+    this.presentXWays(s, r, x.q, x.ctx, { replace: false, lead: `SURPRISE ME COMPLETELY (what you want to remember is now "Surprise me"${was ? `; it was ${was}` : ''}):${keep}`, tail: r.text.slice(r.reason.length).trim() });
+  }
+
+  xFreeTime(s, cur, { gs, o }) {
+    const t = cur.trip, r = X.fatigue(t, gs, { ...o, inv: this.inv });
+    if (!r.scheduled) { this.speak(s, `GIVE ME MORE FREE TIME: ${r.text}`); return; }
+    const why = ` (${joinAnd(r.reasons)})`;
+    if (!r.freeTime || !r.freeTime.trip) { this.speak(s, `GIVE ME MORE FREE TIME: This itinerary is very scheduled${why}, but every experience in it is the main one or the one ${s.protectAuto ? 'I\'m protecting for you' : 'you protected'}, so there is nothing I would take out.`); return; }
+    const ft = r.freeTime, p = this.xproposal(s, t, ft, { kind: 'freeTime', label: `Open up a day: without ${ft.removed.name}` });
+    this.propose(s, p, `GIVE ME MORE FREE TIME: This itinerary is very scheduled${why}. I can open up a day without changing the main experiences: without ${ft.removed.name}, ${money(ft.total)} (${signed(ft.delta)}). Say "open up a day", or keep what you have.${this.xover(s, p)}`);
+  }
+
+  xSameFeeling(s, cur, { q, gs, o }) {
+    const t = cur.trip;
+    if (s.locks.dest) { this.speak(s, `SAME FEELING FOR LESS looks at other destinations, and you locked ${t.dest.name}. Unlock the destination and I'll look.`); return; }
+    const r = X.sameFeeling(this.inv, q, gs, t, o);
+    if (!r.trip) { this.speak(s, `SAME FEELING FOR LESS: ${r.text}`); return; }
+    const px = state.protectedId(s), loses = px && !r.trip.spec.activities.includes(px);
+    const p = this.xproposal(s, t, r, { kind: 'sameFeeling', label: `Same feeling for less: ${r.trip.dest.name}` });
+    this.propose(s, p, `SAME FEELING FOR LESS: ${r.text}${loses ? ` It does not keep ${this.xname(s)}, ${this.whoProtected(s)}; taking it needs "drop ${this.xname(s)}".` : ''}${this.xover(s, p)} Take it, or keep what you have.`);
+  }
+
+  // FIND AN ALTERNATIVE EXPERIENCE: for one in the trip (named, else the dearest) a cheaper one of the
+  // same kind, its similarities and differences said; for one the traveler wants that is not in the
+  // trip, the ways it fits under the ceiling, each a priced version.
+  xAlternative(s, cur, { gs, o }, target) {
+    const t = cur.trip;
+    const inTrip = target ? this.xfind(t.activities, target) : [...t.activities].sort((a, b) => b.pricePerPerson - a.pricePerPerson)[0] || null;
+    if (!inTrip && target) {
+      const wanted = this.xfind(t.activityOptions, target);
+      if (!wanted) { this.speak(s, `I can't find "${target}" among the experiences offered for this trip.`); return; }
+      const r = X.alternative(this.inv, t, gs, wanted, o);
+      if (r.fits) { const p = this.xproposal(s, t, r, { kind: 'add', label: `+ ${wanted.name}` }); this.propose(s, p, `${r.text}${this.xover(s, p)} Take it, or keep what you have.`); return; }
+      const menu = this.xmenuSet(s, r.options.map(x => ({ token: x.token, total: x.total, label: x.text, kind: 'alternative' })));
+      this.speak(s, `FIND AN ALTERNATIVE EXPERIENCE: ${r.text}${menu.length ? ' Pick one by its letter, or keep what you have.' : ''}`, { kind: 'menu', title: `FIND AN ALTERNATIVE EXPERIENCE · ${wanted.name}`, items: r.options.slice(0, 5).map(x => ({ letter: this.xletter(s, x.token), say: this.xsay(s, x.token), label: x.text, total: x.total, delta: x.delta, differences: x.differences, over: this.overCeiling(s, x.total, t.total) })), current: t.total, note: r.provider });
+      return;
+    }
+    if (!inTrip) { this.speak(s, 'There is no paid experience in this trip to find an alternative for. Say "find an alternative to <experience>" for one you want.'); return; }
+    const r = X.dupe(this.inv, t, inTrip, o);
+    if (!r || !r.alternative || !r.trip) { this.speak(s, `FIND AN ALTERNATIVE EXPERIENCE for ${inTrip.name}: ${r ? r.text : X.NO_DUPE}`); return; }
+    const prot = state.protectedId(s) === inTrip.id;
+    const p = this.xproposal(s, t, r, { kind: 'dupe', label: `${r.alternative.name} instead of ${inTrip.name}` });
+    this.propose(s, p, `FIND AN ALTERNATIVE EXPERIENCE for ${inTrip.name}: ${r.text}${prot ? ` ${inTrip.name} is ${this.protWords(s)}; the swap needs "drop ${inTrip.name}".` : ''}${this.xover(s, p)} Take it, or keep what you have.`);
+  }
+
+  xLadder(s, cur, { q, gs, o }) {
+    const t = cur.trip, L = X.ladder(this.inv, q, gs, o), sw = X.sweetSpot(L, t);
+    if (!L.rungs.length) { this.speak(s, `EXPERIENCE LADDER: ${L.text}`); return; }
+    this.xmenuSet(s, L.rungs.map(r => ({ token: r.token, total: r.total, label: `${r.label} (${r.trip.dest.name})`, kind: 'ladder' })));
+    const card = { kind: 'ladder', rungs: L.rungs.map(r => ({ label: r.label, total: r.total, gain: r.gain, dest: r.trip.dest.name, letter: this.xletter(s, r.token), say: this.xsay(s, r.token), current: r.token === s.current.token })), top: L.top, stop: L.stop.total, sweet: { total: sw.total, reasons: sw.reasons, text: sw.text }, current: t.total, max: q.budget };
+    this.speak(s, `EXPERIENCE LADDER: ${L.rungs.map(r => `${r.label} ${money(r.total)}`).join(' → ')}${L.top ? ` → ${money(L.top.total)}: ${L.top.text}` : ''}. MEMORY SWEET SPOT: ${sw.text}${sw.reasons.length ? ` (${sw.reasons.join(', ')})` : ''}${(s.xmenu || []).length ? ' Pick a rung by its letter, or keep what you have.' : ''}`, card);
+  }
+
+  xreceiptCard(r) { return { kind: 'xreceipt', goal: r.goal, lessOn: r.lessOn, usedFor: r.usedFor, final: r.final, max: r.max, keep: r.keep, baseline: { label: r.baseline.label, total: r.baseline.total } }; }
+  xReceipt(s, cur, { q, gs, o }) {
+    const r = X.receipt(this.inv, q, cur.trip, gs, o);
+    this.speak(s, `WHY THIS TRIP IS BUILT THIS WAY: against ${r.baseline.label} (${money(r.baseline.total)}); each line is the difference between the two priced versions.`, this.xreceiptCard(r));
+  }
+
+  // MAKE IT MORE MEMORABLE (and MAKE IT BETTER FOR $0 MORE, which never lists a version above the
+  // current total): each priced version by letter; a free thing with its source, never as a version.
+  // A version that gives something up (a fare without the carry-on, a lower-rated hotel) is never listed
+  // as a free improvement: it has its own list on the card, each with what it gives up, said before any
+  // letter, and its letter is a proposal that names the loss again before anything is taken.
+  xMore(s, cur, { gs, o }, zeroMore) {
+    const t = cur.trip, r = X.moreMemorable(this.inv, t, gs, o, { zeroMore });
+    const fits = f => f.token !== s.current.token && (!zeroMore || f.total <= t.total);
+    const versions = r.free.filter(f => f.kind !== 'free-thing' && fits(f));
+    const trades = (r.givesUp || []).filter(fits);
+    const things = r.free.filter(f => f.kind === 'free-thing');
+    const paid = zeroMore ? [] : r.paid || [];
+    const kind = zeroMore ? 'zero' : 'more';
+    const all = [...versions.map(f => ({ token: f.token, total: f.total, label: f.text, kind })), ...paid.map(p => ({ token: p.token, total: p.total, label: `${p.label}: ${money(p.total)}`, kind: 'more' })), ...trades.map(f => ({ token: f.token, total: f.total, label: f.text, kind, givesUp: f.givesUp || [] }))];
+    const menu = this.xmenuSet(s, all);
+    const title = zeroMore ? 'MAKE IT BETTER FOR $0 MORE' : 'MAKE IT MORE MEMORABLE';
+    const row = m => ({ letter: this.xletter(s, m.token), say: this.xsay(s, m.token), label: m.label, total: m.total, delta: m.total - t.total, over: this.overCeiling(s, m.total, t.total), overBy: this.overBy(s, m.total, t.total), ...(m.givesUp ? { givesUp: m.givesUp } : {}) });
+    const shown = all.slice(0, 5);
+    const card = { kind: 'more', title, zeroMore, items: shown.filter(m => !m.givesUp).map(row), trades: shown.filter(m => m.givesUp).map(row), things: things.map(f => ({ name: f.free.name, note: f.free.note, source: f.source, checkedAt: f.checkedAt })), current: t.total };
+    const parts = [versions.length ? `${plural(versions.length, 'change')} at or under ${money(t.total)} with nothing given up` : `nothing at or under ${money(t.total)} makes this trip more memorable by what you told me with nothing given up`];
+    if (!zeroMore) parts.push(paid.length ? `${plural(paid.length, 'step')} with more money, each meaningfully more memorable with nothing given up` : 'no paid step adds an experience gain with nothing given up');
+    if (things.length) parts.push(`${plural(things.length, 'free thing')} that need no booking, with their source`);
+    const tradeLine = card.trades.length ? ` Each of these gives something up: ${card.trades.map(m => `${m.letter ? `${m.letter}: ` : ''}${m.label}`).join('; ')}.` : '';
+    this.speak(s, `${title}: ${parts.join('; ')}.${tradeLine}${menu.length ? ' Pick one by its letter, or keep what you have.' : ' I\'d keep the trip as it is.'}`, card);
+  }
+
+  xTrade(s, cur, { gs, o }, target) {
+    const t = cur.trip;
+    let want = target ? this.xfind(t.activityOptions, target) || this.xfind(t.activities, target) : s.tradeFor ? (t.activityOptions || []).find(a => a.id === s.tradeFor && !t.spec.activities.includes(a.id)) || null : null;
+    if (target && !want) { this.speak(s, `I can't find "${target}" among the experiences offered for this trip.`); return; }
+    if (!want) want = (t.activityOptions || []).filter(a => !t.spec.activities.includes(a.id) && X.goalScore(a, gs) > 0).sort((a, b) => X.goalScore(b, gs) - X.goalScore(a, gs) || b.hours - a.hours || a.name.localeCompare(b.name))[0] || null;
+    if (!want) { this.speak(s, 'TRADE SOMETHING FOR THIS: every goal experience offered here is already in your trip. Name one ("trade something for <experience>") and I price the trade.'); return; }
+    s.tradeFor = want.id;
+    const r = X.trade(this.inv, t, want, { ...o, goals: gs });
+    if (!r.trip) { this.speak(s, `TRADE SOMETHING FOR THIS: ${r.text}`); return; }
+    const p = this.xproposal(s, t, r, { kind: 'trade', label: `Make the trade: ${want.name}` });
+    this.propose(s, p, `TRADE SOMETHING FOR THIS: ${r.text}${this.xover(s, p)} Say "make the trade", or keep what you have.`, { kind: 'trade', add: r.add, remove: r.remove, total: r.total, current: t.total, proposal: p });
+  }
+
+  // ONE BIG MEMORY vs MORE THINGS TO DO: each side a priced version. A side that is the trip already on
+  // the canvas is said as that ("your trip already has it") and is never offered as a +$0 choice; only
+  // the side that changes something is on the table, and with neither, nothing is proposed.
+  xBigVsMany(s, cur, { gs, o }) {
+    const t = cur.trip, r = X.bigVsMany(this.inv, t, gs, o);
+    if (!r.a) { this.speak(s, `ONE BIG MEMORY vs MORE THINGS TO DO: ${r.text}`); return; }
+    const own = v => !!(v && v.token === s.current.token);
+    const side = (v, key, head, label, lines, say) => (v ? { key, head, label, lines, say: own(v) ? null : say, own: own(v), ownText: 'your trip now', token: v.token, total: v.total, delta: v.delta, over: this.overCeiling(s, v.total, t.total), overBy: this.overBy(s, v.total, t.total) } : null);
+    const a = side(r.a, 'a', 'ONE BIG MEMORY', `One big memory: ${r.a.activity.name}`, [`${r.a.activity.name} (${r.a.activity.hours}h)`], 'Take one big memory');
+    const b = side(r.b, 'b', 'MORE THINGS TO DO', r.b ? `More things to do: ${joinAnd(r.b.activities.map(x => x.name))}` : '', r.b ? r.b.activities.map(x => `${x.name} (${x.hours}h)`) : [], 'Take more things to do');
+    const card = { kind: 'ab', title: 'ONE BIG MEMORY vs MORE THINGS TO DO', a, b, verdict: null, current: t.total };
+    const offer = [a, b].filter(x => x && !x.own);
+    if (!offer.length) { this.speak(s, `ONE BIG MEMORY vs MORE THINGS TO DO: your trip already has the one big memory, ${r.a.activity.name}${b ? `, and the other side is your trip too` : '; no two or three smaller experiences here come within 15% of its price'}. Nothing to change.`, { ...card, text: r.text }); return; }
+    const mine = [a, b].find(x => x && x.own);
+    const ownLine = mine ? ` ${mine.key === 'a' ? `Your trip already has the one big memory, ${r.a.activity.name}` : 'Your trip already is the more-things-to-do side'}, so the only change on the table is ${offer[0].label.toLowerCase()}.` : '';
+    const both = offer.length === 2;
+    const p = { kind: 'big', choices: Object.fromEntries(offer.map(x => [x.key, x])), recommended: null, token: both ? null : offer[0].token, total: both ? null : offer[0].total, delta: both ? null : offer[0].delta, label: both ? 'ONE BIG MEMORY vs MORE THINGS TO DO' : offer[0].label, over: both ? false : offer[0].over, improvements: [], tradeoffs: [], neutral: [] };
+    this.propose(s, p, `${r.text}${ownLine}${both ? '' : this.xover(s, offer[0])} Say ${offer.map(x => `"${x.say.toLowerCase()}"`).join(' or ')}, or keep what you have.`, { ...card, text: both ? 'Your call: the two are within 15% of each other on price.' : r.text, proposal: p });
+  }
+
+  collisionList(s, col) { return col.map(c => ({ text: c.text, fixes: c.fixes.map(f => ({ text: f.text, letter: f.token ? this.xletter(s, f.token) : null, say: f.token ? this.xsay(s, f.token) : null, protected: !!f.protected })) })); }
+  // THE RHYTHM (a suggested rhythm, not a schedule) with any SCHEDULE CONFLICT and its priced fixes;
+  // a fix that would drop the protected experience is said, never offered.
+  xRhythm(s, cur, { gs, o }, { conflictsOnly = false } = {}) {
+    const t = cur.trip, main = this.xmain(s, t, gs), rh = X.rhythm(t, gs, { main });
+    const col = X.collisions(t, { event: o.event, inv: this.inv, settings: o.settings, goals: gs, protect: o.protect, rules: o.rules, locks: o.locks });
+    const fa = X.fatigue(t, gs, { ...o, inv: this.inv });
+    this.xmenuSet(s, col.flatMap(c => c.fixes.filter(f => f.token).map(f => ({ token: f.token, total: f.total, label: f.text, kind: 'fix' }))));
+    const hit = main ? rh.placed.find(x => x.activity.id === main.id) : null;
+    const conflicts = this.collisionList(s, col);
+    const tail = `${col.length ? ` ${col.map(c => c.text).join(' ')}${(s.xmenu || []).length ? ' Each priced fix has a letter.' : ''}` : conflictsOnly ? ' No schedule conflict: every experience has a full day of its own, in season.' : ''}${fa.scheduled ? ' This itinerary is very scheduled; say "give me more free time" and I open up a day.' : ''}`;
+    if (conflictsOnly) { this.speak(s, `SCHEDULE CONFLICT check:${tail}`, col.length ? { kind: 'collision', conflicts } : null); return; }
+    this.speak(s, `THE RHYTHM for ${plural(t.spec.nights, 'night')} in ${t.dest.name}: ${plural(rh.openDays, 'open day')}${hit ? `, ${main.name} on day ${hit.day.n} (${longDate(hit.day.date)})` : ''}. ${rh.text}${tail}`, { kind: 'rhythm', days: this.rhythmDays(rh), text: rh.text, conflicts, scheduled: fa.scheduled ? fa.reasons : null, openDays: rh.openDays });
+  }
+
+  xProtect(s, cur, { gs, o }, target) {
+    const t = cur.trip;
+    const a = target ? this.xfind(t.activities, target) : X.mainOf(t, gs);
+    if (!a) { const off = target ? this.xfind(t.activityOptions, target) : null; this.speak(s, off ? `${off.name} is not in this trip, so there is nothing to protect yet. Say "trade something for ${off.name}" and I price fitting it in.` : target ? `There is no "${target}" in this trip.` : 'There is no experience in this trip to protect.'); return; }
+    // One main experience is protected at a time: protecting another replaces it, and the release is
+    // said in the same breath ("<new> is now the experience I protect; <old> is no longer protected"),
+    // so the first one is never left unguarded without a word. Re-protecting the one the results
+    // protected makes it the customer's own.
+    const px = state.protectedId(s), had = px && px !== a.id ? this.xname(s) : null, fromResults = px === a.id && s.protectAuto;
+    s.mainExperience = a.id; s.mainName = a.name; s.locks.experience = true; s.protectAuto = false;
+    if (s.proposal && s.proposal.removesProtected) delete s.proposal.removesProtected;
+    const pr = X.protection(this.inv, t, a, { ...o, protect: a.id });
+    const swap = had ? ` ${a.name} is now the experience I protect; ${had} is no longer protected.` : fromResults ? ' I had protected it from the results; now it is protected because you asked.' : '';
+    this.speak(s, `MAIN EXPERIENCE: ${a.name}, PROTECTED.${swap} No version I offer drops it unless you say "drop ${a.name}"; say "unprotect" to free it. ${pr.text}`, { kind: 'protection', name: a.name, protected: true, released: had, rows: pr.rows, checkedAt: pr.checkedAt });
+  }
+  xUnprotect(s) {
+    if (!state.protectedId(s)) { this.speak(s, 'Nothing is protected right now.'); return; }
+    const name = this.xname(s);
+    s.locks.experience = false; s.mainExperience = null; s.mainName = null; s.protectAuto = false;
+    if (s.proposal && s.proposal.removesProtected) delete s.proposal.removesProtected;
+    this.speak(s, `Unprotected: ${name} is now like any other experience in the trip. I still ask before any change.`);
+  }
+  // "Drop <main>": the traveler's own word for the version without it. With a version the gate held on
+  // the table, that version is applied; otherwise the version without it is priced and proposed.
+  async xDrop(s, cur, target) {
+    const px = state.protectedId(s), name = this.xname(s);
+    const isMain = !!px && (!target || wordsFit(itemWords(target), name));
+    if (isMain && s.proposal && s.proposal.removesProtected) { const p = s.proposal; delete p.removesProtected; return this.applyProposal(s, { ...p, dropProtected: true }); }
+    if (!cur) { this.speak(s, 'There is no trip on the canvas yet.'); return; }
+    if (s.proposal) s.proposal = null;
+    const t = cur.trip, a = target ? this.xfind(t.activities, target) : isMain ? t.activities.find(x => x.id === px) || null : null;
+    if (!a) { this.speak(s, target ? `There is no "${target}" in this trip.` : 'Say which experience to drop.'); return; }
+    const v = await this.priceToken(encodeSpec({ ...t.spec, activities: t.spec.activities.filter(x => x !== a.id) }));
+    if (!v) { this.speak(s, `I couldn't price the trip without ${a.name}, so nothing changed.`); return; }
+    const p = this.xproposal(s, t, { token: encodeSpec(v.spec), total: v.total, trip: v }, { kind: 'drop', label: `Without ${a.name}`, dropProtected: a.id === px });
+    this.propose(s, p, `Without ${a.name}: ${money(v.total)} (${signed(p.delta)})${a.id === px ? `; ${a.name} is ${this.protWords(s)}, and taking this version frees it` : ''}.${this.xover(s, p)} Take it, or keep what you have.`);
+  }
+
+  // YOUR EXPERIENCE BUDGET (the trip's own price lines) and MOVE $X TO THE EXPERIENCE / KEEP THE HOTEL.
+  xBudget(s, cur, { q, gs, o }) {
+    const t = cur.trip, hoe = X.hotelOrExperience(this.inv, t, gs, o);
+    const al = X.allocation(t, q.budget, hoe.verdict === 'a' ? {} : { hotelUp: hoe.a, o });
+    const card = { kind: 'allocation', lines: al.lines, total: al.total, keep: al.keep, max: q.budget, text: al.text };
+    const d = X.downsell(this.inv, t, gs, o);
+    if (d && d.experience && d.token !== s.current.token) {
+      const p = this.xproposal(s, t, d, { kind: 'downsell', label: `Move ${dollars(d.saved)} to the experience`, namedAmount: d.saved });
+      this.propose(s, p, `YOUR EXPERIENCE BUDGET: ${al.text} I'd downgrade the room and spend the money on the trip: ${d.text} Say "move ${dollars(d.saved)} to the experience", or "keep the hotel".`, { ...card, downsell: { hotel: d.cheaper.name, saved: d.saved, experience: d.experience.name, say: `Move ${dollars(d.saved)} to the experience` }, proposal: p });
+      return;
+    }
+    this.speak(s, `YOUR EXPERIENCE BUDGET: ${al.text}${d && !d.experience ? ` ${d.text}` : ''}`, card);
+  }
+
+  xLocation(s, cur, { gs, o }) {
+    const t = cur.trip, r = X.locationCheck(this.inv, t, gs, o);
+    if (r.unknown) { this.speak(s, `LOCATION: ${r.unknown}`); return; }
+    const side = (v, key, head) => (v ? { key, head, label: `${v.hotel.name}`, lines: [v.text, v.hotel.area], say: key === 'b' && !v.own ? 'Use the better location' : null, token: v.token, total: v.total, delta: v.delta, over: this.overCeiling(s, v.total, t.total), overBy: this.overBy(s, v.total, t.total), own: v.own } : null);
+    // With no hotel off the beach priced, A is the trip's own hotel, so the card compares two real ones.
+    const a = side(r.a, 'a', 'A · Not on the beach') || { key: 'a', head: 'A · Your hotel', label: t.hotel.name, lines: [t.hotel.area], say: null, token: s.current.token, total: t.total, delta: 0, over: false, own: true }, b = side(r.b, 'b', 'B · Beachfront');
+    // "My pick" only where the engine recommends it: never a beachfront side over the ceiling.
+    const card = { kind: 'ab', title: 'LOCATION', a, b, verdict: b && r.verdict ? 'b' : null, text: r.text, current: t.total };
+    if (b && !b.own) {
+      const p = this.xproposal(s, t, r.b, { kind: 'location', label: `Better location: ${b.label}` });
+      this.propose(s, p, `LOCATION: ${a ? `A: ${a.label}, ${a.lines[0]}. ` : ''}B: ${b.label}, ${b.lines[0]}. ${r.text}${this.xover(s, b, !r.verdict)} Say "use the better location", or keep what you have.`, { ...card, proposal: p });
+      return;
+    }
+    this.speak(s, `LOCATION: ${b && b.own ? `your hotel (${b.label}) is already beachfront.` : r.text}`, card);
+  }
+
+  xProtection(s, cur, { gs, o }) {
+    const t = cur.trip, main = this.xmain(s, t, gs);
+    if (!main) { this.speak(s, 'There is no experience in this trip to check.'); return; }
+    const pr = X.protection(this.inv, t, main, o), bd = X.bestDay(t, main, { ...o, inv: this.inv, goals: gs });
+    this.speak(s, `EXPERIENCE PROTECTION for ${main.name}: ${pr.text}${bd.weather ? ` ${bd.weather}` : ''}`, { kind: 'protection', name: main.name, protected: state.protectedId(s) === main.id, rows: pr.rows, checkedAt: pr.checkedAt, day: bd.day ? { n: bd.day.n, date: bd.day.date } : null, reasons: bd.reasons, weather: bd.weather });
+  }
+
+  xBackup(s, cur, { gs, o }) {
+    const t = cur.trip, main = this.xmain(s, t, gs);
+    if (!main) { this.speak(s, 'There is no experience in this trip that needs a backup.'); return; }
+    const r = X.backup(this.inv, t, main, { ...o, goals: gs });
+    if (!r) { this.speak(s, `${main.name} does not depend on the weather by our data, so it needs no weather backup. The weather itself can't be guaranteed.`); return; }
+    if (!r.trip) { this.speak(s, r.text); return; }
+    const p = this.xproposal(s, t, r, { kind: 'backup', label: `+ ${r.activity.name} (backup)`, itemKey: r.activity.name });
+    this.propose(s, p, `${r.text} Say "add ${r.activity.name}" to book it too (${signed(p.delta)}), or keep what you have.${this.xover(s, p, !!r.over)}`);
+  }
+
+  xWhyDest(s, cur, { q, gs, o }) {
+    const r = X.destinationMatch(this.inv, q, gs, o);
+    const note = r.pick && r.pick.dest.id !== cur.trip.dest.id ? ` (that is the destination the results pick; your canvas is ${cur.trip.dest.name})` : '';
+    this.speak(s, `${r.why}${note}`, r.whyNot && r.whyNot.length ? { kind: 'facts', title: 'Why not the others', items: r.whyNot } : null);
+  }
+
+  // The hotel-upgrade challenge: never a refusal and never applied. The engine's line, the version that
+  // spends about the same money outside the hotel as the proposal, and the upgrade itself one phrase away.
+  xUpgrade(s, cur, { gs, o }) {
+    const t = cur.trip, lower = (s.messages[s.messages.length - 1] || {}).text || '';
+    const room = /\b(?:view|room)\b/i.test(lower) ? 'Room categories (a view room, a suite) are not in our data; the nearest thing I can price is a better hotel. ' : '';
+    if (s.locks.hotel) { this.speak(s, `${room}You locked the hotel, so I won't price another one. Unlock it and ask again.`); return; }
+    const h = X.hotelOrExperience(this.inv, t, gs, o);
+    if (!h.a) { this.speak(s, `${room}No better hotel is priced for this trip inside your rules.`); return; }
+    const up = h.a, ch = X.challengeUpgrade(t, up.trip, gs, this.inv, o);
+    const alt = { token: up.token, total: up.total, delta: up.delta, label: `Hotel upgrade: ${up.hotel.name}`, over: this.overCeiling(s, up.total, t.total) };
+    // The instead is a paid version that fits the maximum (a ceiling, not a target): one over it is never
+    // offered in the upgrade's place, and when it is the only one, that is what is said.
+    const gains = ch.instead ? ch.instead.candidates.filter(c => c.kind !== 'free' && c.gain > 0) : [];
+    const inst = gains.find(c => !c.over) || null, overOnly = !inst && gains.length > 0;
+    const named = s.prefs && s.prefs.stayMatters === true && !s.stayLow ? ' After your last trip you told me the hotel mattered to you (you asked me to remember it), so I don\'t argue against it.' : '';
+    // "You told me the trip itself matters more than the room" only when they did: their words here
+    // (s.stayLow) or a "not worth it: Hotel" they asked me to remember. Otherwise the challenge says what
+    // is true, that nothing they told me asks for it, and no word is put in their mouth.
+    const told = s.stayLow || (s.prefs && s.prefs.stayMatters === false);
+    const chText = ch.challenge && !told ? ch.text.replace(/^You told me the trip itself matters more than the room\./, 'Nothing you told me asks for a better room.') : ch.text;
+    if (ch.challenge && inst) {
+      const p = this.xproposal(s, t, inst, { kind: 'instead', label: inst.label, alternative: alt });
+      this.propose(s, p, `${room}${chText} The upgrade (${up.hotel.name}, ${joinAnd(up.gets)}) is ${signed(up.delta)}; for about the same money: ${inst.text}.${this.xover(s, p)} Take it, say "take the upgrade" for the hotel, or keep what you have.`);
+      return;
+    }
+    const p = this.xproposal(s, t, up, { kind: 'upgrade', label: alt.label });
+    this.propose(s, p, `${room}${ch.challenge ? `${chText} Nothing priced for that money${overOnly ? ' within your maximum' : ''} makes the trip more memorable by what you told me${overOnly ? ` (${gains[0].label} would, but it is ${money(gains[0].overBy)} over your maximum; going over is your call)` : ''}, so the upgrade is yours to take: ` : `${chText}${named} `}${up.hotel.name}, ${joinAnd(up.gets)}, ${signed(up.delta)}.${this.xover(s, p)} Take it, or keep what you have.`);
+  }
+
+  // BUILD AROUND AN EVENT / RESERVATION: the dates cover it with a day's buffer either side, counted from
+  // the day the traveler lands (an overnight flight lands the day after it leaves), said with that date;
+  // the cheapest priced version of the same trip that covers it is a proposal, and once taken the dates
+  // are locked around it. Fixed dates are never moved. A version that moves a seasonal experience to
+  // dates it does not run is never offered as the same trip: when no date keeps every experience in
+  // season, the version without it is the proposal, and the loss is named before anything is taken.
+  async xEventFlow(s, ev, cur) {
+    const draft = s.eventDraft || {};
+    const event = { name: ev.name || draft.name || 'your reservation', date: ev.date || null, slot: ev.slot !== undefined && ev.slot !== null ? ev.slot : draft.slot || null };
+    if (!event.date) { s.eventDraft = event; s.pending = 'eventDate'; this.speak(s, `What date is ${event.name}? Say it like "December 12", and I'll move the dates to cover it with a day's buffer either side.`); return; }
+    s.eventDraft = null;
+    s.event = event;
+    const nights = cur ? cur.trip.spec.nights : s.nights || 5, gs = this.xgoals(s);
+    const range = X.eventRange(event, nights, cur ? cur.trip.flight : null);
+    const Name = cap(event.name);
+    if (!range.from) { this.speak(s, `${Name} on ${longDate(event.date)}: ${range.text}`); return; }
+    const earliest = addDays(today(this.now()), 3);
+    if (!cur) {
+      if (state.effectiveLocks(s).dates) { this.speak(s, `${Name} on ${longDate(event.date)}: ${range.text} Your dates are fixed, so I won't move them; say "my dates are flexible" and I will.`); return; }
+      // The flight is not known before the build: leave early enough that even an overnight flight lands
+      // a day before it (when the length allows), and say the day they land once the trip is built.
+      const safe = X.eventRange(event, nights, { arrivesNextDay: true }), r = safe.from && safe.to >= earliest ? safe : range;
+      if (r.to < earliest) { this.speak(s, `${Name} on ${longDate(event.date)} is too soon to build a trip around: the latest departure that covers it (${longDate(r.to)}) has passed the booking window.`); return; }
+      s.dateMode = 'exact'; s.depart = r.to; s.month = null;
+      this.speak(s, `${Name} on ${longDate(event.date)}: ${range.text} I'll build leaving ${longDate(r.to)}${r === safe ? ', early enough that even an overnight flight lands a day before it' : ''}, and say the day you land once the flight is picked.`);
+      await this.startBuild(s, { reason: 'build' });
+      return;
+    }
+    const t = cur.trip;
+    const clash = X.eventCollision(t, event);
+    if (!clash) {
+      s.locks.dates = true; s.dateMode = 'exact'; s.depart = t.spec.depart;
+      const col = X.collisions(t, { event, goals: gs, protect: state.protectedId(s) }).filter(c => c.kind === 'event');
+      this.speak(s, `${Name} on ${longDate(event.date)} is inside your trip: ${this.landWords(t)}, a day's buffer either side. I've locked the dates so nothing I offer moves them off it.${col.length ? ` ${col[0].text}` : ''}`);
+      return;
+    }
+    if (state.effectiveLocks(s).dates) { this.speak(s, `${clash.text} The dates are locked, so I won't move them: ${range.text} Say "unlock the dates" and I will.`); return; }
+    const keepAll = [], without = [];
+    for (let d = range.from; d <= range.to; d = addDays(d, 1)) {
+      if (d < earliest) continue;
+      const v = await this.priceToken(encodeSpec({ ...t.spec, depart: d }));
+      if (!v || X.eventCollision(v, event)) continue;
+      // Each experience must run on the new dates (the rhythm's own season check).
+      const off = X.collisions(v, { goals: gs }).filter(c => c.kind === 'season');
+      if (!off.length) { keepAll.push(v); continue; }
+      const ids = off.map(c => c.activity.id), w = await this.priceToken(encodeSpec({ ...v.spec, activities: v.spec.activities.filter(id => !ids.includes(id)) }));
+      if (w && !X.eventCollision(w, event)) without.push({ v: w, off });
+    }
+    const byTotal = (a, b) => a.total - b.total || (a.spec.depart < b.spec.depart ? -1 : 1);
+    keepAll.sort(byTotal); without.sort((a, b) => byTotal(a.v, b.v));
+    const pick = keepAll[0] || (without[0] && without[0].v) || null;
+    if (!pick) { this.speak(s, `${clash.text} ${range.text} No version of this trip is priced on those dates.`); return; }
+    const off = keepAll[0] ? [] : without[0].off, px = state.protectedId(s), losesPx = !!px && off.some(c => c.activity.id === px);
+    const label = `Leaving ${longDate(pick.spec.depart)}, home ${longDate(pick.flight.return)}${off.length ? `, without ${joinAnd(off.map(c => c.activity.name))}` : ''}`;
+    const p = this.xproposal(s, t, { token: encodeSpec(pick.spec), total: pick.total, trip: pick }, { kind: 'event', label, eventLock: true });
+    const season = off.length ? ` No date that covers it keeps every experience in season. ${off.map(c => c.text.replace(/^SCHEDULE CONFLICT:\s*/, '')).join(' ')} So this version drops ${joinAnd(off.map(c => c.activity.name))}${losesPx ? `, ${this.whoProtected(s)}; taking it needs "drop ${this.xname(s)}"` : ''}.` : '';
+    const n = keepAll.length || without.length;
+    this.propose(s, p, `${clash.text} ${range.text}${season} The cheapest priced version of this trip that covers it leaves ${longDate(pick.spec.depart)}: ${this.landWords(pick)}, ${money(pick.total)} (${signed(p.delta)}), ${plural(n, 'departure date')} priced.${this.xover(s, p)} Take it, or keep your dates.`);
+  }
+
+  // WHAT WAS ACTUALLY WORTH IT? after the trip: kept on the booking (the service decides when it is
+  // open and says why not); "Remember this for next time?" is asked once, and only a yes from the
+  // signed-in owner puts it on the account.
+  worthWords(a) { return [a.worth && a.worth.length ? `worth it: ${joinAnd(a.worth.map(x => x.toLowerCase()))}` : null, a.notWorth && a.notWorth.length ? `not worth it: ${joinAnd(a.notWorth.map(x => x.toLowerCase()))}` : null].filter(Boolean).join('; '); }
+  // What the service decided, said as it decided it (service.setWorthIt): where the answer is kept
+  // (`defaults`) and what became of an answer from this booking remembered before (`earlier`). A booking
+  // made without an account belongs to no account, so signing in never makes it rememberable.
+  worthSaved(rec) {
+    const where = rec.defaults === 'saved' ? `Remembered on your account: ${joinAnd(this.prefWords(rec.prefs))}. I'll name it whenever I use it.`
+      : rec.defaults === 'nothing' ? 'Nothing in that answer is a preference I can use next time, so nothing was added to your account; it stays on this booking.'
+      : rec.defaults === 'guest' ? WORTH_GUEST
+      : rec.defaults === 'not-owner' ? 'This booking is not on the account you are signed in with, so it stays on this booking only.'
+      : rec.defaults === 'signed-out' ? 'Remembering it needs your account; it stays on this booking only.'
+      : 'Kept on this booking only.';
+    return `${where}${this.worthEarlier(rec)}`;
+  }
+  worthEarlier(rec) {
+    return rec.earlier === 'replaced' ? ' It replaces the answer from this booking you asked me to remember before.'
+      : rec.earlier === 'removed' ? ' The answer from this booking you asked me to remember before is removed from your account, so it never contradicts your latest answer.'
+      : rec.earlier === 'kept' ? ' An answer from this booking remembered earlier is still on the account that booked it: only that account, signed in, can change it.'
+      : '';
+  }
+  async worthItFlow(s, answer, user) {
+    const ref = s.booking.ref;
+    if (typeof this.svc.setWorthIt !== 'function') { this.speak(s, 'I can’t keep this answer from here yet, so nothing was stored. The booking page asks the same question.', { kind: 'link', href: `/booking/${ref}`, label: 'Open the booking page' }); return; }
+    // One chip at a time adds to the answer already kept on this booking; a later word about the same
+    // thing replaces the earlier one (the traveler's latest word counts), and nothing else changes.
+    const b = await this.store.getBookingByRef(ref);
+    const prev = s.worthAnswer || (b && b.worthIt ? { worth: b.worthIt.worth || [], notWorth: b.worthIt.notWorth || [] } : { worth: [], notWorth: [] });
+    const nw = answer.worth || [], nn = answer.notWorth || [];
+    answer = { worth: [...prev.worth.filter(c => !nn.includes(c) && !nw.includes(c)), ...nw], notWorth: [...prev.notWorth.filter(c => !nw.includes(c) && !nn.includes(c)), ...nn] };
+    // Their yes or no stands for the rest of this conversation, and rides on every later call with who
+    // is asking: the service decides whether the account saves it, replaces or removes an answer this
+    // booking left there before, or keeps it (not the owner). Before they give one the question stays
+    // open and the asker is not passed, so nothing on the account moves on a word not yet said.
+    const decided = s.worthRemember === true || s.worthRemember === false, remember = s.worthRemember === true;
+    let rec;
+    try { rec = await this.svc.setWorthIt(ref, answer, decided ? { remember, userId: user ? user.id : null } : { remember: false, userId: null }); } catch (e) { if (!(e instanceof AppError)) throw e; this.speak(s, e.message); return; }
+    s.worthAnswer = { worth: answer.worth, notWorth: answer.notWorth };
+    if (decided) { this.speak(s, `Kept: ${this.worthWords(answer)}. ${remember ? this.worthSaved(rec) : `On this booking only, as you said.${this.worthEarlier(rec)}`}`); return; }
+    // The question is asked only where a yes can be kept: a booking made without an account, or one on
+    // another account than the one signed in, is said as it is instead of promising a save. The owner
+    // whose account already holds an answer from this booking hears what each reply does to it.
+    const acct = typeof this.svc.worthItAccount === 'function' ? await this.svc.worthItAccount(ref, user || null) : { who: null, remembered: false };
+    // A typed "remember it" after that still reaches the service, which says the same (pending stays).
+    s.pending = 'worthRemember';
+    if (acct.who === 'guest' || acct.who === 'other') { this.speak(s, `Kept on this booking: ${this.worthWords(answer)}. ${acct.who === 'guest' ? WORTH_GUEST : 'This booking is not on the account you are signed in with, so it stays on this booking only.'}`); return; }
+    const had = acct.remembered ? ' Your account already has an answer from this booking that you asked me to remember: a yes replaces it with this one, a no removes it.' : '';
+    this.speak(s, `Kept on this booking: ${this.worthWords(answer)}. ${s.worthAsked ? 'Nothing goes to your account unless you say so.' : rec.text}${had} Remember this for next time?`, { kind: 'ask', options: [{ label: 'Yes, remember it', say: 'Yes, remember it' }, { label: 'No, this trip only', say: 'No, this trip only' }] });
+    s.worthAsked = true;
+  }
+  async worthRememberFlow(s, text, intents, user) {
+    // Only a plain yes puts the answer on the account ("Only retain preferences with appropriate customer
+    // permission"): "yes", "sure", "ok", "yes, remember it" (the chip), "please remember it". A no in any
+    // words ("please don't", "do not remember this", "please never remember that", "sure, but I'd rather
+    // you didn't") is a no, read before any yes; anything else lets the question lapse with nothing kept.
+    if (intents.has('worthIt')) return false; // another chip ("Not worth it: Hotel") adds to the answer; the question stays open
+    const lower = text.toLowerCase().replace(/[\u2018\u2019]/g, "'").trim();
+    const no = intents.has('decline') || /\b(?:no|nope|nah|not|never|don'?t|do not|forget it|this (?:trip|booking) only|only (?:this|on this) (?:trip|booking)|rather (?:you )?(?:not|didn'?t|wouldn'?t))\b|n't\b/.test(lower);
+    const yes = !no && (/^(?:yes|yep|yeah|yup|sure|ok(?:ay)?|please do|go ahead)(?:[ ,]+(?:please|thanks?|thank you|remember (?:it|this|that)(?: for next time)?|you can))*\s*[.!]*$/.test(lower) || /^(?:please )?remember (?:it|this|that)(?: for next time)?(?:,? please)?\s*[.!]*$/.test(lower));
+    if (!yes && !no) return false; // the question lapses, like every question; nothing is kept on the account
+    if (!s.worthAnswer || typeof this.svc.setWorthIt !== 'function') { this.speak(s, no ? 'Kept only on this booking; nothing goes to your account.' : 'There is no answer to remember yet.'); if (no) s.worthRemember = false; return true; }
+    // The decision goes to the service with who is asking, and what it decided is said: a no from the
+    // owner also removes an answer this booking left on their account before (their latest word counts).
+    let rec;
+    try { rec = await this.svc.setWorthIt(s.booking.ref, s.worthAnswer, { remember: !no, userId: user ? user.id : null }); } catch (e) { if (!(e instanceof AppError)) throw e; this.speak(s, e.message); return true; }
+    if (no) { s.worthRemember = false; this.speak(s, `Kept only on this booking; nothing goes to your account.${this.worthEarlier(rec)}`); return true; }
+    // Signed out on a booking that has an account: signing in can keep it, so the question stays open.
+    if (rec.defaults === 'signed-out') { this.speak(s, `Remembering it needs your account: sign in and say "yes, remember it" again. Until then it stays on this booking only.${this.worthEarlier(rec)}`, { kind: 'link', href: `/signin?next=${encodeURIComponent(`/agent/${s.id}`)}`, label: 'Sign in' }); s.pending = 'worthRemember'; return true; }
+    s.worthRemember = true;
+    this.speak(s, this.worthSaved(rec));
+    return true;
+  }
+
   async bookingAnswer(s, kind, u) {
     const b = await this.store.getBookingByRef(s.booking.ref);
     if (!b) { this.speak(s, 'I can’t find that booking any more.'); return; }
@@ -2390,7 +3359,7 @@ class AgentService {
     if (kind === 'cancelInfo') {
       const p = this.svc.bookingProvider().cancellationPreview(b, now);
       if (!p.allowed) { this.speak(s, `Cancelling is not possible from here right now: ${p.reason}`); return; }
-      const next = p.nextCutoff ? ` The next cutoff is ${p.nextCutoff.component}, ${p.nextCutoff.cutoff.slice(0, 10)}.` : '';
+      const next = p.nextCutoff ? ` The next cutoff is ${p.nextCutoff.component}, ${cutoffText(p.nextCutoff.cutoff)}.` : ''; // a midnight-UTC cutoff is the end of the day before, said as the pages say it
       this.speak(s, `If you cancel now you get ${money(p.refundAmount)} back of the ${money((b.payment && b.payment.amount) || b.total)} you paid. ${p.policy}${next} Nothing is cancelled unless you do it yourself on the booking page.`, { kind: 'facts', title: 'Refund by part', items: p.breakdown.map(x => `${x.component}: ${money(x.amount)}`), href: `/booking/${b.ref}`, label: 'Open the booking page' });
       return;
     }

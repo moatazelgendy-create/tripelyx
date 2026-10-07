@@ -382,6 +382,8 @@ class BookingEngine {
       budget: b.quote.budget || null,
       refundAmount: b.refundAmount ?? null,
       createdAt: b.createdAt,
+      // The traveler's own answer to WHAT WAS ACTUALLY WORTH IT? after a trip (Experience Max), as kept.
+      worthIt: b.worthIt || null,
     };
   }
 }

@@ -15,6 +15,10 @@ const { priceTrip, roomsFor } = require('./pricing');
 const { classifyChanges } = require('./facts');
 
 const STYLES = ['beach', 'city', 'adventure', 'romantic', 'family', 'all-inclusive', 'surprise'];
+// The Experience Max memory chips, in the spec's order; experience.js carries their labels and rules.
+// They live here so a trip link's `mem=` is validated without optimizer requiring the engine built on it.
+const GOAL_KEYS = ['beach', 'food', 'adventure', 'nightlife', 'romantic', 'nature', 'culture', 'family', 'new', 'surprise'];
+const ACTIVITY_ID = /^[a-z0-9-]{1,40}$/i;
 const PRIORITIES = ['hotel', 'flights', 'longer', 'activities', 'price'];
 const WHO_DEFAULT = { solo: 1, couple: 2, family: 4, friends: 4 };
 const STYLE_ACTIVITY = { beach: ['beach'], adventure: ['adventure'], romantic: ['romantic', 'beach'], family: ['family', 'beach'], city: ['culture', 'nightlife'] };
@@ -140,8 +144,17 @@ function budgetContext(q) {
 // they named, so a booking can say it was kept; absent when the platform chose it) and `promo` (a
 // code the review page verified, so every version opened from it is priced with the same code). A
 // repeated key (b=100&b=200) is read as its first value, never joined into one number that would
-// then ride on every link and into the quote's asks.
+// then ride on every link and into the quote's asks. Experience Max adds `mem` (the memory goals the
+// traveler ranked, `mem=beach,food`, at most three, only the chips the engine knows, in the order
+// said) and `px` (the activity id of the main experience they protected): both ride on every link so
+// no page forgets what the trip is for, and a protected experience is never offered for removal.
 const BAGS = ['personal', 'carry-on', 'checked'];
+function parseGoals(v) {
+  if (typeof v !== 'string') return [];
+  const out = [];
+  for (const g of v.split(',').map(x => x.trim().toLowerCase())) if (GOAL_KEYS.includes(g) && !out.includes(g)) out.push(g);
+  return out.slice(0, 3);
+}
 function parseContext(raw = {}) {
   const r = Object.fromEntries(Object.entries(raw || {}).map(([k, v]) => [k, Array.isArray(v) ? v[0] : v]));
   const b = int(r.b, null, 100, 1000000);
@@ -154,11 +167,14 @@ function parseContext(raw = {}) {
     bags: r.bg === '1' ? 'checked' : BAGS.includes(r.bg) ? r.bg : null,
     dest: typeof r.dest === 'string' && /^[a-z0-9-]{1,40}$/i.test(r.dest) ? r.dest : null,
     promo: typeof r.promo === 'string' && r.promo.trim() ? r.promo.trim().slice(0, 30) : null,
+    goals: parseGoals(r.mem),
+    protect: typeof r.px === 'string' && ACTIVITY_ID.test(r.px) ? r.px : null,
   };
 }
 
 function contextParams(ctx, extra = {}) {
-  const p = { b: ctx.budget ? Math.round(ctx.budget / 100) : undefined, k: ctx.budget && ctx.keep ? Math.round(ctx.keep / 100) : undefined, ov: ctx.allowOver ? '10' : undefined, style: ctx.style && ctx.style !== 'surprise' ? ctx.style : undefined, prio: ctx.priority && ctx.priority !== 'price' ? ctx.priority : undefined, nights: ctx.nightsAsked, s: ctx.searchParams || undefined, ...rulesParams(ctx.rules), dm: ctx.dateMode === 'exact' ? 'exact' : undefined, bg: BAGS.includes(ctx.bags) ? ctx.bags : undefined, dest: ctx.dest || undefined, promo: ctx.promo || undefined, ...extra };
+  const goals = parseGoals(Array.isArray(ctx.goals) ? ctx.goals.join(',') : ctx.goals);
+  const p = { b: ctx.budget ? Math.round(ctx.budget / 100) : undefined, k: ctx.budget && ctx.keep ? Math.round(ctx.keep / 100) : undefined, ov: ctx.allowOver ? '10' : undefined, style: ctx.style && ctx.style !== 'surprise' ? ctx.style : undefined, prio: ctx.priority && ctx.priority !== 'price' ? ctx.priority : undefined, nights: ctx.nightsAsked, s: ctx.searchParams || undefined, ...rulesParams(ctx.rules), dm: ctx.dateMode === 'exact' ? 'exact' : undefined, bg: BAGS.includes(ctx.bags) ? ctx.bags : undefined, dest: ctx.dest || undefined, promo: ctx.promo || undefined, mem: goals.length ? goals.join(',') : undefined, px: typeof ctx.protect === 'string' && ACTIVITY_ID.test(ctx.protect) ? ctx.protect : undefined, ...extra };
   // A list (the customizer's experiences) is repeated, one parameter per item, so the route reads it
   // back as a list; an empty list stays as one empty parameter, which means "none". Joined with commas
   // it would reach the token as a single name and the token would not decode.
@@ -531,4 +547,4 @@ function oneRuleAway(inventory, q, { settings, now = new Date() }) {
   return { works, notAlone };
 }
 
-module.exports = { search, dreamSearch, oneRuleAway, parseSearch, searchParams, budgetContext, parseContext, contextParams, parseRules, rulesParams, rulesAllowFlight, rulesAllowHotel, sameCountry, tradeoffs, scoreTrip, whyThisTrip, customizerOptions, memoInventory, activitySets, hotelAllowed, candidateDates, int, STYLES, PRIORITIES, WHO_DEFAULT };
+module.exports = { search, dreamSearch, oneRuleAway, parseSearch, searchParams, budgetContext, parseContext, contextParams, parseGoals, parseRules, rulesParams, rulesAllowFlight, rulesAllowHotel, sameCountry, tradeoffs, scoreTrip, whyThisTrip, customizerOptions, memoInventory, activitySets, hotelAllowed, candidateDates, packagesFor, int, STYLES, PRIORITIES, WHO_DEFAULT, GOAL_KEYS };

@@ -104,7 +104,10 @@ function agentRouter(ctx, { writeLimiter, computeLimiter, sameOrigin }) {
       const booking = b && b.vertical === 'trips' ? { ref: b.ref, token: b.trip.token, dest: b.trip.dest.name, depart: b.trip.spec.depart, nights: b.trip.spec.nights, total: b.total, status: b.status } : null;
       const amount = String(req.body.budget || '').replace(/[^\d]/g, '').slice(0, 7);
       const mission = !!amount;
-      const s = await agent.create({ visitor: req.visitor, userId: req.user ? req.user.id : null, booking, mission, mode: mission && req.body.mode === 'save' ? 'save' : null });
+      // WHAT DO YOU WANT FROM THIS TRIP? SAVE THE MOST (save), MAKE IT EASY (easy) and MAKE IT MEMORABLE /
+      // BUILD ME AN EXPERIENCE (experience) start the mission in that mode; BEST VALUE and the primary
+      // button are the mission as it is. A mode means nothing without the number, so it needs one.
+      const s = await agent.create({ visitor: req.visitor, userId: req.user ? req.user.id : null, booking, mission, mode: mission && ['save', 'easy', 'experience'].includes(req.body.mode) ? req.body.mode : null });
       const text = said(req.body) || (amount ? `$${Number(amount).toLocaleString('en-US')}` : req.body.mode === 'surprise' ? 'Surprise me: pick the best trip my money can buy.' : req.body.mode === 'challenge' ? 'I already found a trip. Can you beat it?' : '');
       if (booking && !text) await agent.say(s.id, `What do I need to do next for trip ${booking.ref}?`, { user: user(req) });
       else if (text) {

@@ -27,15 +27,23 @@ function timeAlternatives(t, options) {
 // ---- the verdict -----------------------------------------------------------------------------
 // Compromises weighted by how much they matter for what the traveler told us. Weight 3 means it
 // contradicts an answer they gave; 2 is a real downside; 1 is worth knowing.
+// A protected main experience (Experience Max, ctx.protect) is held like an answer the traveler gave: a
+// version without it contradicts it (weight 3), so it is named as a compromise and never offered as a
+// strong version by anything built on the verdict. The words say "the protected experience": the agent
+// may have protected it from the results, and a customer is never told they set what they did not.
+const protectedName = (t, id) => ((t.activityOptions || []).find(a => a.id === id) || t.activities.find(a => a.id === id) || { name: id }).name;
 function compromises(t, ctx = {}, time = usableTime(t)) {
   const style = ctx.style || 'surprise', prio = ctx.priority || 'price';
   const out = [];
+  if (ctx.protect && !t.spec.activities.includes(ctx.protect)) out.push({ w: 3, text: `without ${protectedName(t, ctx.protect)}, the protected experience` });
   if (ctx.nightsAsked && t.spec.nights < ctx.nightsAsked) out.push({ w: 3, text: `${plural(ctx.nightsAsked - t.spec.nights, 'night')} shorter than you asked for` });
   if (style === 'all-inclusive' && !t.hotel.features.allInclusive) out.push({ w: 3, text: 'not an all-inclusive resort' });
   else if (style !== 'surprise' && style !== 'all-inclusive' && !t.dest.styles.includes(style)) out.push({ w: 3, text: `not really a ${style === 'city' ? 'city-break' : style} destination (${t.dest.name})` });
-  if (prio === 'hotel' && t.hotel.stars <= 3) out.push({ w: 2, text: `a ${t.hotel.stars}-star hotel, when the hotel mattered most to you` });
-  else if (t.hotel.stars <= 2) out.push({ w: 2, text: `a ${t.hotel.stars}-star hotel` });
-  else if (t.hotel.stars === 3) out.push({ w: 1, text: 'a 3-star hotel' });
+  // Star lines carry key 'stars': Experience Max sets them aside when it grades its GOOD TRIP floor
+  // (stars are labels there: the floor is graded on the goal facts only).
+  if (prio === 'hotel' && t.hotel.stars <= 3) out.push({ w: 2, key: 'stars', text: `a ${t.hotel.stars}-star hotel, when the hotel mattered most to you` });
+  else if (t.hotel.stars <= 2) out.push({ w: 2, key: 'stars', text: `a ${t.hotel.stars}-star hotel` });
+  else if (t.hotel.stars === 3) out.push({ w: 1, key: 'stars', text: 'a 3-star hotel' });
   if (prio === 'flights' && t.flight.stops > 0) out.push({ w: 2, text: `${t.flight.stops}-stop flights, when flights mattered most to you` });
   else if (t.flight.stops > 0 && t.flight.durationMinutes >= 8 * 60) out.push({ w: 1, text: `long ${t.flight.stops}-stop flights (${Math.round(t.flight.durationMinutes / 60)}h each way)` });
   if (t.flight.id === 'basic') out.push({ w: 2, text: 'a Basic fare: personal item only, no changes' });
@@ -148,6 +156,7 @@ function optimizeAround(inventory, t, settings, ctx = {}, { locks = {}, cap = t.
   const seen = new Set();
   let best = null;
   for (const depart of dates) for (const nights of nightsList) for (const hotel of hotels) for (const flight of flights) for (const activities of sets) for (const transfer of transfers) {
+    if (ctx.protect && !activities.includes(ctx.protect)) continue; // never a version without the protected experience
     const spec = { ...s, depart, nights, hotel, flight, activities: [...activities].sort(), transfer };
     const key = JSON.stringify(spec);
     if (seen.has(key)) continue;
@@ -217,6 +226,7 @@ function nameYourPrice(inventory, t, settings, ctx = {}, target, { now = new Dat
   // MAX_PRICED versions and says so, instead of blocking the server on one request.
   let priced = 0, truncated = false;
   outer: for (const depart of dates) for (const nights of nightsList) for (const hotel of hotels) for (const flight of flights) for (const activities of sets) for (const transfer of transfers) for (const bags of bagsList) {
+    if (ctx.protect && !activities.includes(ctx.protect)) continue; // a protected experience is never priced away: no rung without it
     const spec = { ...s, depart, nights, hotel, flight, activities: [...activities].sort(), transfer, bags };
     const key = JSON.stringify(spec);
     if (seen.has(key)) continue;

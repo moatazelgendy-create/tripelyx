@@ -6,7 +6,7 @@ const { html, raw } = require('../../lib/html');
 const { icon } = require('../icons');
 const { layout } = require('../layout');
 const { money, dollars, longDate, plural, demoBadge, hiddenParams, fitBadge } = require('./common');
-const { askedFor, bookingBudget, vacationBudget, missionRules, LOCK_KEYS, LOCK_LABEL } = require('../../agent/state');
+const { askedFor, bookingBudget, vacationBudget, missionRules, LOCK_KEYS, LOCK_LABEL, experienceMode, protectedId, goalWords } = require('../../agent/state');
 const { COMMANDS } = require('../../agent/agent');
 const optimizer = require('../../trips/optimizer');
 const { showWords } = require('../../trips/leaks');
@@ -48,8 +48,11 @@ function diffCard(id, card) {
   </div>`;
 }
 
-function proposalCard(id, p, { current } = {}) {
+function proposalCard(id, p, { current, budget = null } = {}) {
   const over = p.over;
+  // How far over the maximum: the version's priced total minus the ceiling (never its difference from the trip now,
+  // which is what it costs, not what it goes over by).
+  const by = !over ? 0 : budget ? Math.max(0, p.total - budget) : p.overBy || 0;
   return html`<div class="ag-card ag-proposal${over ? ' is-over' : ''}">
     <div class="ag-proposal-nums">
       <div><span>Now</span><b>${current ? money(current.total) : '—'}</b></div>
@@ -59,11 +62,12 @@ function proposalCard(id, p, { current } = {}) {
     ${p.improvements && p.improvements.length ? html`<p class="ag-up">${icon('trend')} <span>${p.improvements.join('; ')}</span></p>` : ''}
     ${p.tradeoffs && p.tradeoffs.length ? html`<p class="ag-down">${icon('minus')} <span>${p.tradeoffs.join('; ')}</span></p>` : ''}
     ${p.neutral && p.neutral.length ? html`<p class="ag-same">${icon('info')} <span>${p.neutral.join('; ')}</span></p>` : ''}
-    ${over ? html`<p class="ag-over">${icon('alert')} <span>Over your ceiling. Your maximum is a ceiling, not a target; only you can raise it.</span></p>` : ''}
+    ${over ? html`<p class="ag-over">${icon('alert')} <span>${by ? `${money(by)} over your ${budget ? `${money(budget)} ` : ''}ceiling` : 'Over your ceiling'}. Your maximum is a ceiling, not a target; only you can raise it.</span></p>` : ''}
     <div class="ag-actions">
-      ${sayForm(id, over ? 'Go over' : 'Take it', over ? `Go over by ${money(Math.abs(p.delta))}` : 'Take it', 'btn btn-blue btn-sm')}
+      ${sayForm(id, over ? 'Go over' : 'Take it', over ? (by ? `Go over by ${money(by)}` : 'Go over') : 'Take it', 'btn btn-blue btn-sm')}
       ${sayForm(id, 'Keep what I have', p.delta > 0 ? `Keep the ${money(p.delta)}` : 'Keep what I have')}
       ${p.anyway ? sayForm(id, 'Do it anyway', `Do it anyway (${money(p.anyway.total)})`) : ''}
+      ${p.alternative && p.alternative.total ? sayForm(id, 'Take the upgrade', `Take the upgrade instead (${money(p.alternative.total)})`) : ''}
     </div>
   </div>`;
 }
@@ -265,7 +269,212 @@ function scorecardCard(c) {
 }
 const LEAK_CHIPS = ['What am I paying for?', 'Strip it down', 'Find my biggest leak', 'Money leak check'];
 
-function card(id, m, { current, hunt = null }) {
+// ---- Experience Max cards ----------------------------------------------------------------------
+// Every amount on these cards is the experience engine's: a priced total for a token, or the
+// difference between two. Every button says something to the agent; nothing is applied, removed or
+// preselected on the page itself, and a free thing is shown only with its source and checked date.
+const sgn = d => `${d < 0 ? '−' : '+'}${money(Math.abs(d))}`;
+const withProposal = (id, c, current, budget = null) => (c.proposal && c.proposal.token && c.proposal.total !== null ? proposalCard(id, c.proposal, { current, budget }) : '');
+// The chips the canvas offers in Experience Max, each one sentence the agent understands.
+const X_CHIPS = ['Hotel or experience?', 'Make $100 memorable', 'Give me one amazing thing', 'Pack the trip', 'Find free things worth doing', 'Surprise me with one thing', 'Give me more free time', 'Same feeling for less', 'Find an alternative experience', 'Experience ladder', 'Trade something for this', 'One big memory or more things to do?', 'Plan my days', 'Your experience budget', 'What if it rains?', 'Surprise me completely'];
+const X_SAY = { memories: 'More memories', pick: 'Our pick', comfort: 'More comfort' };
+
+// EXPERIENCE MAX RESULTS: MORE MEMORIES / OUR PICK ★ / MORE COMFORT, the reason sentence and the
+// version the pick passed on, each picked by its name.
+function xwaysCard(id, c, current) {
+  const on = w => !!(current && current.token === w.trip.token);
+  return html`<div class="ag-card ag-ways-card ag-xways">
+    <p class="tb-kicker">Experience Max results · ${c.goals}</p>
+    ${c.signature ? html`<p class="ag-x-signature"><b>${c.signature}</b></p>` : ''}
+    <ol class="ag-ways">${c.ways.map((w, i) => html`<li class="ag-way${w.star ? ' is-pick' : ''}${on(w) ? ' is-current' : ''}">
+      <p class="ag-way-head"><span class="ag-way-num">${i + 1}</span><b>${w.label}${w.star ? ' ★' : ''}</b>${on(w) ? html`<span class="tb-pill">On your canvas</span>` : ''}</p>
+      ${w.blurbs && w.blurbs.length ? html`<p class="ag-way-line">${w.blurbs.join(' · ')}</p>` : ''}
+      ${tripLine(w.trip)}
+      <div class="ag-way-nums"><div><span>Total</span><b>${money(w.total)}</b></div>${w.keep !== null && w.keep !== undefined ? html`<div class="${w.keep >= 0 ? 'is-keep' : 'is-over'}"><span>${w.keep >= 0 ? 'Keep' : 'Over'}</span><b>${money(Math.abs(w.keep))}</b></div>` : ''}</div>
+      ${w.main ? html`<p class="ag-same">${icon('flag')} <span>Main experience: ${w.main}</span></p>` : ''}
+      <p class="ag-actions">${on(w) ? '' : sayForm(id, X_SAY[w.key] || w.label, `Take ${(X_SAY[w.key] || w.label).toLowerCase()}`, 'btn btn-navy btn-sm')}<a class="text-link" href="/trip/${w.trip.token}">Full trip page ${icon('arrow')}</a></p>
+    </li>`)}</ol>
+    <p class="tb-small"><b>Why:</b> ${c.reason}</p>
+    ${c.rejected ? html`<p class="ag-down">${icon('minus')} <span>Rejected: ${c.rejected.label}${c.rejected.gets && c.rejected.gets.length ? ` (${c.rejected.gets.join('; ')})` : ''}, ${money(c.rejected.total)}. ${c.rejected.text}</span></p>` : ''}
+    ${c.dropped && c.dropped.length ? html`<p class="ag-same">${icon('info')} <span>Not built: ${c.dropped.join('; ')}</span></p>` : ''}
+    ${c.notes && c.notes.length ? html`<p class="tb-small tb-muted">${c.notes.join(' ')}</p>` : ''}
+    <p class="ag-ways-q"><b>${c.onCanvas ? 'Which feels more like you?' : 'Pick one to put it on your canvas, or keep what you have.'}</b> <span class="tb-muted">Spend on the memories, not the labels.</span></p>
+    ${c.onCanvas ? html`<div class="ag-actions">${sayForm(id, 'None — try again', 'None of these: ask me again')}</div>` : ''}
+  </div>`;
+}
+
+// Two priced versions side by side (HOTEL OR EXPERIENCE?, ONE BIG MEMORY vs MORE THINGS TO DO,
+// LOCATION): each side's total, its difference from the trip, and the words that take it.
+function abCard(id, c) {
+  // A side over the maximum is shown with its amount and is never "my pick": the maximum is a ceiling, not a target.
+  const pick = x => c.verdict === x.key && !x.over;
+  const col = x => (x ? html`<div class="${pick(x) ? 'is-pick' : ''}">
+      <p class="tb-kicker">${x.head || x.key.toUpperCase()}${pick(x) ? ' · my pick' : ''}</p>
+      <p><b>${x.label}</b></p>
+      ${x.lines && x.lines.length ? html`<ul class="tb-list tb-small">${x.lines.filter(Boolean).map(l => html`<li>${l}</li>`)}</ul>` : ''}
+      <p><b>${money(x.total)}</b> <small class="tb-muted">${x.own ? x.ownText || 'your hotel now' : sgn(x.delta)}${overWords(x)}</small></p>
+      ${x.say ? html`<div class="ag-actions">${sayForm(id, x.say, x.say, 'btn btn-navy btn-sm')}</div>` : ''}
+    </div>` : html`<div><p class="tb-small tb-muted">Not priced for this trip.</p></div>`);
+  return html`<div class="ag-card ag-ab">
+    <p class="tb-kicker">${c.title}</p>
+    <div class="ag-contract-cols">${col(c.a)}${col(c.b)}</div>
+    ${c.text ? html`<p class="tb-small">${c.text}</p>` : ''}
+    ${c.proposal ? html`<div class="ag-actions">${sayForm(id, 'Keep what I have', 'Keep what I have')}</div>` : ''}
+  </div>`;
+}
+
+// The words a lettered button sends: its letter and its version's own label ("Option C: An airport
+// transfer"), so an older card's button never takes whatever another card put on the table since.
+const optionSay = it => it.say || `Option ${it.letter}: ${it.label}`;
+// Over the maximum, said with the amount (the version's priced total minus the ceiling) whenever the card carries it.
+const overWords = x => (x.over ? ` · ${x.overBy ? `${money(x.overBy)} ` : ''}over your ceiling` : '');
+// A lettered list of priced versions: each one's difference, what it gives up, its total, and its button.
+function xversions(id, items) {
+  return html`<ol class="ag-bp-list ag-x-list">${items.map(it => html`<li class="${it.current ? 'is-current' : ''}"><span class="ag-way-num">${it.letter || '·'}</span><div><b>${it.delta !== undefined ? sgn(it.delta) : money(it.total)}</b> <span>${it.label}</span>${it.text && it.text !== it.label ? html`<small>${it.text}</small>` : ''}${it.differences && it.differences.length ? html`<small>Differs: ${it.differences.join('; ')}</small>` : ''}${it.givesUp && it.givesUp.length ? html`<small class="ag-down">Gives up: ${it.givesUp.join('; ')}</small>` : ''}<small>${money(it.total)} total${it.gain ? ` · experience score +${it.gain}` : ''}${overWords(it)}${it.pick && !it.over ? ' · my pick' : ''}</small></div>${it.letter ? sayForm(id, optionSay(it), 'Take it', 'btn btn-ghost btn-sm') : html`<span></span>`}</li>`)}</ol>`;
+}
+// A free thing is never booked or priced: it is named only with the guide's source and the date checked.
+function xfreeList(items) {
+  return html`<ul class="tb-list tb-small">${items.map(f => html`<li><b>${f.name}</b>${f.note ? html` · ${f.note}` : ''}${f.goal ? html` · ${f.goal}` : ''} <span class="tb-muted">(free according to ${f.source}, as of ${longDate(f.checkedAt)})</span></li>`)}</ul>`;
+}
+
+function memoryCard(id, c, current, budget = null) {
+  return html`<div class="ag-card ag-memory">
+    <p class="tb-kicker">${c.title}</p>
+    ${c.items.length ? xversions(id, c.items) : html`<p class="tb-small tb-muted">No paid version is priced in that range.</p>`}
+    ${c.free && c.free.length ? html`<p class="tb-kicker">Free, nothing to book</p>${xfreeList(c.free)}` : ''}
+    ${withProposal(id, c, current, budget)}
+  </div>`;
+}
+
+function moreCard(id, c) {
+  return html`<div class="ag-card ag-more">
+    <p class="tb-kicker">${c.title} · now ${money(c.current)}</p>
+    ${c.items.length ? xversions(id, c.items) : html`<p class="tb-small tb-muted">Nothing ${c.zeroMore ? `at or under ${money(c.current)} ` : ''}makes this trip more memorable by what you told me with nothing given up.</p>`}
+    ${c.trades && c.trades.length ? html`<p class="tb-kicker">Each of these gives something up</p>${xversions(id, c.trades)}` : ''}
+    ${c.things && c.things.length ? html`<p class="tb-kicker">Free, nothing to book</p>${xfreeList(c.things)}` : ''}
+    ${c.zeroMore ? html`<p class="tb-small tb-muted">Every version listed here is at or under your current total.</p>` : ''}
+    ${c.items.length || (c.trades && c.trades.length) ? html`<div class="ag-actions">${sayForm(id, 'Keep what I have', 'Keep what I have')}</div>` : ''}
+  </div>`;
+}
+
+function xmenuCard(id, c) {
+  return html`<div class="ag-card ag-menu">
+    <p class="tb-kicker">${c.title}</p>
+    ${c.items.length ? xversions(id, c.items) : html`<p class="tb-small tb-muted">No version is priced.</p>`}
+    ${c.note ? html`<p class="tb-small tb-muted">${c.note}</p>` : ''}
+  </div>`;
+}
+
+function xdays(days) {
+  return html`<ol class="ag-bp-list ag-x-days">${days.map(d => html`<li><span class="ag-way-num">${d.n}</span><div><b>${d.label}</b> <small>${longDate(d.date)}${d.items && d.items.length ? ` · ${d.items.join(', ')}` : ''}</small></div><span></span></li>`)}</ol>`;
+}
+function xconflicts(id, conflicts) {
+  return html`${conflicts.map(k => html`<div class="ag-x-conflict"><p class="ag-down">${icon('alert')} <span>${k.text}</span></p>${k.fixes.length ? html`<ul class="tb-list tb-small">${k.fixes.map(f => html`<li>${f.letter ? html`<b>${f.letter}</b> · ` : ''}${f.text}${f.letter ? sayForm(id, f.say || `Option ${f.letter}: ${f.text}`, 'Take this fix', 'btn btn-ghost btn-sm') : ''}</li>`)}</ul>` : ''}</div>`)}`;
+}
+// THE RHYTHM: a suggested rhythm, not a schedule; conflicts with their priced fixes by letter.
+function rhythmCard(id, c) {
+  return html`<div class="ag-card ag-rhythm">
+    <p class="tb-kicker">The rhythm · ${plural(c.openDays, 'open day')} · a suggestion, not a schedule</p>
+    ${xdays(c.days)}
+    ${c.conflicts && c.conflicts.length ? xconflicts(id, c.conflicts) : ''}
+    ${c.scheduled ? html`<p class="ag-same">${icon('info')} <span>This itinerary is very scheduled: ${c.scheduled.join('; ')}.</span></p><div class="ag-actions">${sayForm(id, 'Give me more free time', 'Give me more free time')}</div>` : ''}
+    ${c.text ? html`<p class="tb-small tb-muted">${c.text}</p>` : ''}
+  </div>`;
+}
+
+// EXPERIENCE PROTECTION: what was re-checked and what still needs verification, never hidden.
+function protectionCard(id, c) {
+  const ok = r => r.verified === true || r.known === true;
+  return html`<div class="ag-card ag-protection">
+    <p class="tb-kicker">${c.protected ? 'Main experience 🔒 protected' : 'Experience protection'} · ${c.name}</p>
+    ${c.rows && c.rows.length ? html`<table class="ag-receipt-table"><tbody>${c.rows.map(r => html`<tr><td>${r.key.charAt(0).toUpperCase() + r.key.slice(1)}</td><td>${r.value}</td><td class="ag-num">${ok(r) ? 'Verified' : 'Needs verification'}</td></tr>`)}</tbody></table>` : ''}
+    ${c.reasons && c.reasons.length ? html`<p class="tb-kicker">The best day${c.day ? ` · day ${c.day.n}, ${longDate(c.day.date)}` : ''}</p><ul class="tb-list tb-small">${c.reasons.map(r => html`<li>${r.ok ? '✓' : '·'} ${r.text}</li>`)}</ul>` : ''}
+    ${c.weather ? html`<p class="tb-small">${c.weather}</p>` : ''}
+    ${c.checkedAt ? html`<p class="tb-small tb-muted">Re-checked ${longDate(c.checkedAt)}. I never build around an unverified experience.</p>` : ''}
+    ${c.protected ? html`<div class="ag-actions">${sayForm(id, 'Unprotect', 'Unprotect')}</div>` : ''}
+  </div>`;
+}
+
+// WHY THIS TRIP IS BUILT THIS WAY: each line the difference between two priced versions.
+function xreceiptCard(c) {
+  const row = (l, cls, sign) => html`<tr><td>${l.label}</td><td class="ag-num ${cls}">${sign}${money(l.amount)}</td></tr>`;
+  return html`<div class="ag-card ag-receipt ag-xreceipt">
+    <p class="tb-kicker">Why this trip is built this way</p>
+    <p class="tb-small"><b>${c.goal}</b></p>
+    <table class="ag-receipt-table"><tbody>
+      ${c.lessOn.length ? html`<tr class="ag-receipt-final"><td>We spent less on</td><td></td></tr>${c.lessOn.map(l => row(l, 'is-save', '−'))}` : ''}
+      ${c.usedFor.length ? html`<tr class="ag-receipt-final"><td>We used money for</td><td></td></tr>${c.usedFor.map(l => row(l, 'is-add', '+'))}` : ''}
+      <tr class="ag-receipt-final"><td>Final</td><td class="ag-num">${money(c.final)}</td></tr>
+      ${c.max !== null && c.max !== undefined ? html`<tr><td>Your max</td><td class="ag-num">${money(c.max)}</td></tr><tr class="ag-receipt-keep"><td>${c.keep >= 0 ? 'Keep' : 'Over'}</td><td class="ag-num">${money(Math.abs(c.keep))}</td></tr>` : ''}
+    </tbody></table>
+    <p class="tb-small tb-muted">Against ${c.baseline.label} (${money(c.baseline.total)}).</p>
+  </div>`;
+}
+
+// EXPERIENCE LADDER with the MEMORY SWEET SPOT: where more money stops buying memories.
+function ladderCard(id, c) {
+  return html`<div class="ag-card ag-ladder">
+    <p class="tb-kicker">Experience ladder${c.sweet && c.sweet.total !== null && c.sweet.total !== undefined ? ` · memory sweet spot ${money(c.sweet.total)}` : ''}</p>
+    <ol class="ag-bp-list ag-x-list">${c.rungs.map(r => html`<li class="${r.current ? 'is-current' : ''}"><span class="ag-way-num">${r.letter || '·'}</span><div><b>${money(r.total)}</b> <span>${r.label}</span><small>${r.dest}${r.gain ? ` · experience score +${r.gain}` : ''}${c.sweet && r.total === c.sweet.total ? ' · memory sweet spot' : ''}${r.current ? ' · your trip' : ''}</small></div>${r.letter ? sayForm(id, r.say || `Option ${r.letter}: ${r.label} (${r.dest})`, 'Take it', 'btn btn-ghost btn-sm') : html`<span></span>`}</li>`)}
+      ${c.top ? html`<li><span class="ag-way-num">·</span><div><b>${money(c.top.total)}</b> <small>${c.top.text}</small></div><span></span></li>` : ''}</ol>
+    ${c.sweet ? html`<p class="tb-small"><b>${c.sweet.text}</b>${c.sweet.reasons && c.sweet.reasons.length ? ` ${c.sweet.reasons.join(' · ')}` : ''}</p>` : ''}
+  </div>`;
+}
+
+// YOUR EXPERIENCE BUDGET: the trip's own price lines; the downsell is two buttons, neither preselected.
+function allocationCard(id, c) {
+  return html`<div class="ag-card ag-allocation">
+    <p class="tb-kicker">Your experience budget</p>
+    <table class="ag-receipt-table"><tbody>${c.lines.map(l => html`<tr><td>${l.label}</td><td class="ag-num">${l.amount < 0 ? '−' : ''}${money(Math.abs(l.amount))}</td></tr>`)}
+      <tr class="ag-receipt-final"><td>Total</td><td class="ag-num">${money(c.total)}</td></tr>
+      ${c.keep !== null && c.keep !== undefined ? html`<tr class="ag-receipt-keep"><td>${c.keep >= 0 ? 'Keep' : 'Over'}${c.max ? ` of your ${money(c.max)}` : ''}</td><td class="ag-num">${money(Math.abs(c.keep))}</td></tr>` : ''}</tbody></table>
+    ${c.text ? html`<p class="tb-small">${c.text}</p>` : ''}
+    ${c.downsell ? html`<p class="ag-up">${icon('trend')} <span>${c.downsell.hotel} saves ${money(c.downsell.saved)}, for ${c.downsell.experience}${c.proposal ? `: ${money(c.proposal.total)} in all (${sgn(c.proposal.delta)})` : ''}.</span></p><div class="ag-actions">${sayForm(id, c.downsell.say, c.downsell.say, 'btn btn-navy btn-sm')}${sayForm(id, 'Keep the hotel', 'Keep the hotel')}</div>` : ''}
+  </div>`;
+}
+
+// TRADE SOMETHING FOR THIS: what goes in, what comes out, and the new total beside the current one.
+function tradeCard(id, c) {
+  return html`<div class="ag-card ag-trade">
+    <p class="tb-kicker">Trade something for this</p>
+    <table class="ag-receipt-table"><tbody>
+      ${c.add ? html`<tr><td>${c.add.label} in</td><td class="ag-num is-add">+${money(c.add.amount)}</td></tr>` : ''}
+      ${c.remove.map(r => html`<tr><td>${r.label} out</td><td class="ag-num is-save">−${money(r.amount)}</td></tr>`)}
+      <tr class="ag-receipt-final"><td>New total</td><td class="ag-num">${money(c.total)}</td></tr>
+      <tr><td>Now</td><td class="ag-num">${money(c.current)}</td></tr>
+    </tbody></table>
+    <div class="ag-actions">${sayForm(id, 'Make the trade', 'Make the trade', 'btn btn-navy btn-sm')}${sayForm(id, 'Keep what I have', 'Keep what I have')}</div>
+  </div>`;
+}
+
+function xfreeCard(id, c, current, budget = null) {
+  return html`<div class="ag-card ag-xfree">
+    <p class="tb-kicker">Free things worth doing · ${c.dest}</p>
+    ${xfreeList(c.items.map(it => ({ ...it, source: c.source, checkedAt: c.checkedAt })))}
+    ${withProposal(id, c, current, budget)}
+  </div>`;
+}
+
+function onebigCard(id, c, current, budget = null) {
+  return html`<div class="ag-card ag-onebig">
+    <p class="tb-kicker">One amazing thing · ${c.main}</p>
+    ${c.trip ? tripLine(c.trip) : ''}
+    ${c.days && c.days.length ? xdays(c.days) : ''}
+    ${c.protection && c.protection.length ? html`<ul class="tb-list tb-small">${c.protection.map(r => html`<li>${r.key}: ${r.value}${r.verified === true || r.known === true ? '' : ' (needs verification)'}</li>`)}</ul>` : ''}
+    ${withProposal(id, c, current, budget)}
+  </div>`;
+}
+
+// FINAL EXPERIENCE CHECK before the contract: each reason the check passed or did not.
+function finalCard(id, c, current, budget = null) {
+  return html`<div class="ag-card ag-final">
+    <p class="tb-kicker">Final experience check · ${c.ok ? 'passed' : 'not passed'}</p>
+    <ul class="tb-list tb-small">${c.reasons.map(r => html`<li>${r.ok ? '✓' : '✗'} ${r.text}</li>`)}</ul>
+    ${withProposal(id, c, current, budget)}
+  </div>`;
+}
+
+function card(id, m, { current, hunt = null, budget = null }) {
   const c = m.card;
   if (!c) return '';
   switch (c.kind) {
@@ -278,7 +487,22 @@ function card(id, m, { current, hunt = null }) {
     case 'free': return freeCard(id, c);
     case 'scorecard': return scorecardCard(c);
     case 'hunt': return huntCard(id, c, { live: hunt });
-    case 'ask': return html`<div class="ag-actions">${c.options.map(o => sayForm(id, o.say, o.label, 'btn btn-ghost btn-sm'))}</div>`;
+    case 'ask': return html`<div class="ag-actions${c.chips ? ' ag-chips' : ''}">${c.options.map(o => sayForm(id, o.say, o.label, c.chips ? 'ag-chip' : 'btn btn-ghost btn-sm'))}</div>`;
+    case 'xways': return xwaysCard(id, c, current);
+    case 'ab': return abCard(id, c);
+    case 'memory': return memoryCard(id, c, current, budget);
+    case 'more': return moreCard(id, c);
+    case 'menu': return xmenuCard(id, c);
+    case 'ladder': return ladderCard(id, c);
+    case 'xreceipt': return xreceiptCard(c);
+    case 'allocation': return allocationCard(id, c);
+    case 'trade': return tradeCard(id, c);
+    case 'rhythm': return rhythmCard(id, c);
+    case 'collision': return html`<div class="ag-card ag-collision"><p class="tb-kicker">Schedule conflicts</p>${xconflicts(id, c.conflicts)}</div>`;
+    case 'protection': return protectionCard(id, c);
+    case 'xfree': return xfreeCard(id, c, current, budget);
+    case 'onebig': return onebigCard(id, c, current, budget);
+    case 'final': return finalCard(id, c, current, budget);
     case 'trip': return html`<div class="ag-card${c.over ? ' is-over' : ''}">${c.label ? html`<p class="tb-kicker">${c.label}</p>` : ''}${tripLine(c.trip)}${c.first ? html`<p class="ag-still">${icon('search')} <span>This is currently the trip to beat. Still checking whether I can get you more vacation or better quality without spending more.</span></p>` : ''}<div class="ag-actions">${c.first ? html`${sayForm(id, 'I like this one', 'I like this', 'btn btn-navy btn-sm')}${sayForm(id, 'Keep building', 'Keep building')}` : ''}<a class="text-link" href="/trip/${c.trip.token}">Full trip page ${icon('arrow')}</a></div></div>`;
     case 'options': return html`${optionsCard(id, c, current)}${c.final ? html`<div class="ag-actions">${sayForm(id, 'Book it', 'Verify & book', 'btn btn-blue btn-sm')}${sayForm(id, 'Challenge it again', 'Challenge it again')}</div>` : ''}`;
     case 'ways': return waysCard(id, c, current);
@@ -312,7 +536,7 @@ function card(id, m, { current, hunt = null }) {
     case 'weeks': return weeksCard(id, c, current);
     case 'decision': return html`<div class="ag-card ag-decision">
       <p class="tb-kicker">One decision away · ${c.trip.dest}, ${plural(c.trip.nights, 'night')}</p>
-      <div class="ag-decision-opts">${c.options.map(o => html`<form method="post" action="/agent/${id}" class="ag-say"><input type="hidden" name="say" value="Option ${o.letter}"><button class="ag-decision-btn" type="submit"><span class="ag-way-num">${o.letter}</span><b>${o.label}</b><small>${money(o.total)} total, everything included</small></button></form>`)}</div>
+      <div class="ag-decision-opts">${c.options.map(o => html`<form method="post" action="/agent/${id}" class="ag-say"><input type="hidden" name="say" value="Option ${o.letter}: ${o.label}"><button class="ag-decision-btn" type="submit"><span class="ag-way-num">${o.letter}</span><b>${o.label}</b><small>${money(o.total)} total, everything included</small></button></form>`)}</div>
       <p class="ag-ways-q"><b>Which matters more?</b> <span class="tb-muted">Both are priced and verified; I don't pick this one for you. Your answer steers this trip only.</span></p>
     </div>`;
     case 'switch': return html`<div class="ag-card ag-switch">
@@ -324,7 +548,7 @@ function card(id, m, { current, hunt = null }) {
       ${c.proposal.neutral.length ? html`<p class="ag-same">${icon('info')} <span>${c.proposal.neutral.join('; ')}</span></p>` : ''}
       <div class="ag-actions">${sayForm(id, 'Switch to the better option', 'Switch to the better option', 'btn btn-blue btn-sm')}${sayForm(id, 'Keep the first one', 'Keep the first one')}</div>
     </div>`;
-    case 'proposal': return proposalCard(id, c.proposal, { current });
+    case 'proposal': return proposalCard(id, c.proposal, { current, budget });
     case 'diff': return diffCard(id, c);
     case 'facts': return html`<div class="ag-card">${c.title ? html`<p class="tb-kicker">${c.title}</p>` : ''}<ul class="tb-list">${c.items.map(i => html`<li>${i}</li>`)}</ul>${c.href ? html`<p><a class="text-link" href="${c.href}">${c.label} ${icon('arrow')}</a></p>` : ''}</div>`;
     case 'link': return html`<p class="ag-actions"><a class="btn btn-ghost btn-sm" href="${c.href}">${c.label} ${icon('arrow')}</a></p>`;
@@ -384,9 +608,29 @@ function chat(ctx, s, { canvas, hunt }) {
   return html`<div id="live-chat" data-live="chat" data-running="${running ? '1' : '0'}">
     <ol class="ag-messages">
       ${s.messages.length ? '' : html`<li class="ag-msg is-agent"><div class="ag-bubble"><p>What do you want your trip to do? Tell me the budget, who is going, where you fly from, and anything that must be true. I search, compare and negotiate; you decide.</p></div></li>`}
-      ${s.messages.map(m => html`<li class="ag-msg is-${m.role}"><div class="ag-bubble"><p>${m.text}</p>${m.role === 'agent' ? card(s.id, m, { current, hunt: live }) : ''}</div></li>`)}
+      ${s.messages.map(m => html`<li class="ag-msg is-${m.role}"><div class="ag-bubble"><p>${m.text}</p>${m.role === 'agent' ? card(s.id, m, { current, hunt: live, budget: bookingBudget(s) }) : ''}</div></li>`)}
     </ol>
     ${progress(s.job, { mission: s.mission ? bookingBudget(s) : null })}
+  </div>`;
+}
+
+// WHAT WAS ACTUALLY WORTH IT? after the trip (the service says when it is open): one chip per answer,
+// each one sentence to the agent. The answer stays on this booking; only a "yes" to "Remember this
+// for next time?" from the signed-in owner puts it on the account, so nothing here is preselected.
+// Where the answer is kept, as the service decided it (`defaults`), and what became of an answer this
+// booking left on the account before (`earlier`): a booking made without an account belongs to none.
+function worthKept(a) {
+  if (a.defaults === 'saved') return `Remembered on your account, as you asked${a.earlier === 'replaced' ? '; it replaced the earlier answer from this booking' : ''}.`;
+  if (a.defaults === 'guest') return 'Kept on this booking only: it was made without an account, so there is no account to remember it on.';
+  return `Kept on this booking only${a.earlier === 'removed' ? '; the earlier answer remembered from it was removed from your account' : a.earlier === 'kept' ? '; an earlier answer from it is still remembered on the account that booked it' : ''}.`;
+}
+function worthItBlock(s, w) {
+  if (!w || (!w.ask && !w.answered)) return '';
+  const a = w.answered;
+  return html`<div class="ag-worth">
+    <p class="tb-kicker">WHAT WAS ACTUALLY WORTH IT?</p>
+    ${a ? html`<p class="tb-small">${a.worth && a.worth.length ? html`<b>Worth it:</b> ${a.worth.join(', ')}. ` : ''}${a.notWorth && a.notWorth.length ? html`<b>Not worth it:</b> ${a.notWorth.join(', ')}. ` : ''}<span class="tb-muted">${worthKept(a)}</span></p>` : ''}
+    ${w.ask ? html`<div class="ag-chips">${w.chips.map(c => sayForm(s.id, `Worth it: ${c}`, `Worth it: ${c}`, 'ag-chip'))}</div><div class="ag-chips">${w.chips.map(c => sayForm(s.id, `Not worth it: ${c}`, `Not worth it: ${c}`, 'ag-chip ag-chip-sm'))}</div>` : ''}
   </div>`;
 }
 
@@ -411,6 +655,7 @@ function homePanel(ctx, s, home) {
     <p class="tb-kicker">Important actions</p>
     ${home.actions.length ? html`<ul class="ag-home-actions">${home.actions.map(a => html`<li>${dot(a.status)}<span>${a.text}</span></li>`)}</ul>` : html`<p class="tb-small tb-muted">Nothing is due from you.</p>`}
     <div class="ag-chips ag-home-asks">${AFTER_BOOKING.map(c => sayForm(s.id, c, c, 'ag-chip'))}</div>
+    ${worthItBlock(s, home.worthIt)}
     <p class="ag-canvas-foot"><a class="text-link" href="${home.bookingHref}">The booking page: every confirmation, every term ${icon('arrow')}</a></p>
   </div>`;
 }
@@ -429,9 +674,13 @@ function missionPanel(ctx, s, { canvas, hunt: huntIn }) {
   const fresh = hunt && hunt.summary && hunt.summary.newOpportunities ? ` · ${plural(hunt.summary.newOpportunities, 'new find')}` : '';
   const status = running ? 'Building…' : s.proposal ? 'One decision away' : hunt ? `Hunting: ${hunt.name}${fresh}` : s.mission.strategies && s.mission.strategies.length && !s.mission.signal ? `${plural(s.mission.strategies.length, 'way')} built, waiting for which feels like you` : canvas ? 'A trip to beat is on the canvas' : s.pending === 'origin' ? 'Waiting for where you fly from' : 'Waiting for the budget';
   const rules = missionRules(s, { maps: ctx.tripService.inv.maps });
+  // Experience Max: what they want to remember, and the main experience no version drops on a plain
+  // approval, with the words that free it (the protection is the traveler's to lift, never the page's).
+  const xmax = experienceMode(s), px = protectedId(s);
   return html`<div class="ag-mission">
-    <div class="ag-mission-head"><div><p class="tb-kicker">Your mission</p><b>Build the best vacation${booking ? ` for ${money(booking)}` : ''}</b></div><span class="ag-mission-status${running ? ' is-running' : ''}">${status}</span></div>
-    <dl class="ag-mission-facts"><div><dt>Budget</dt><dd>${booking ? `${money(booking)} max` : 'not set'}</dd></div><div><dt>Travelers</dt><dd>${s.travelers ? plural(s.travelers, 'traveler') : 'open'}</dd></div><div><dt>From</dt><dd>${o ? o.city : 'not set'}</dd></div></dl>
+    <div class="ag-mission-head"><div><p class="tb-kicker">Your mission${xmax ? ' · Experience Max' : ''}</p><b>${xmax ? `The most experience${booking ? ` from ${money(booking)}` : ' from your budget'}` : `Build the best vacation${booking ? ` for ${money(booking)}` : ''}`}</b></div><span class="ag-mission-status${running ? ' is-running' : ''}">${status}</span></div>
+    <dl class="ag-mission-facts"><div><dt>Budget</dt><dd>${booking ? `${money(booking)} max` : 'not set'}</dd></div><div><dt>Travelers</dt><dd>${s.travelers ? plural(s.travelers, 'traveler') : 'open'}</dd></div><div><dt>From</dt><dd>${o ? o.city : 'not set'}</dd></div>${xmax ? html`<div class="ag-mission-wide"><dt>What you want to remember</dt><dd>${s.goals && s.goals.length ? goalWords(s.goals) : 'not asked yet'}</dd></div>` : ''}</dl>
+    ${px ? html`<div class="ag-protected"><p class="tb-kicker">MAIN EXPERIENCE 🔒 PROTECTED</p><p><b>${s.mainName || s.mainExperience}</b> <span class="tb-small tb-muted">${s.protectAuto ? 'I protected it from the results; n' : 'N'}o version I offer drops it unless you say “drop ${s.mainName || 'it'}”; say 'unprotect' to free it.</span></p>${sayForm(s.id, 'Unprotect', 'Unprotect', 'btn btn-ghost btn-sm')}</div>` : ''}
     <details class="ag-mission-rules"><summary>What are you optimizing?</summary>
       <div class="ag-mission-cols">
         <div><p class="tb-kicker">Hard rules</p>${rules.locked.length ? html`<ul>${rules.locked.map(r => html`<li>${icon('lock')} <span>${r}</span></li>`)}</ul>` : html`<p class="tb-small tb-muted">Only the budget ceiling.</p>`}</div>
@@ -477,10 +726,12 @@ function budgetSlider(s, booking) {
 function canvasPanel(ctx, s, canvas, { hunt: huntIn } = {}) {
   if (canvas && canvas.home) return homePanel(ctx, s, canvas.home);
   const booking = bookingBudget(s), vacation = vacationBudget(s);
-  const locks = LOCK_KEYS.filter(k => s.locks[k]);
+  // The protected experience has its own line on the mission panel, so it is not listed as a lock.
+  const locks = LOCK_KEYS.filter(k => k !== 'experience' && s.locks[k]);
   const lock = k => (s.locks[k] ? html`<span class="ag-lock" title="Locked">${icon('lock')}</span>` : '');
   const running = !!(s.job && s.job.status === 'running');
   const saver = !!(s.mission && s.mission.mode === 'save');
+  const xmax = experienceMode(s);
   // Hunt mode on the saver's canvas: the chip starts a hunt; once one hunts, its name links to it.
   const hunt = s.mission ? huntingOf(s, huntIn) : null;
   const head = html`<div class="ag-canvas-head"><p class="tb-kicker">${saver && canvas ? 'You told us your max. We found your minimum.' : 'Your trip'}</p>${demoBadge(ctx.tripService.demo, 'Demo inventory')}</div>`;
@@ -509,7 +760,8 @@ function canvasPanel(ctx, s, canvas, { hunt: huntIn } = {}) {
     ${locks.length ? html`<p class="ag-canvas-locks">${icon('lock')} Locked: ${locks.map(k => LOCK_LABEL[k]).join(', ')}</p>` : ''}
     ${canvas.receipt && canvas.receipt.lines.length ? html`<details class="ag-receipt-wrap"><summary>How we kept your cost down (${canvas.receipt.lines.length})</summary><table class="ag-receipt-table"><tbody><tr><td>Started at</td><td class="ag-num">${money(canvas.receipt.original)}</td></tr>${canvas.receipt.lines.map(l => html`<tr><td>${l.label}</td><td class="ag-num ${l.delta <= 0 ? 'is-save' : 'is-add'}">${l.delta <= 0 ? '−' : '+'}${money(Math.abs(l.delta))}</td></tr>`)}<tr class="ag-receipt-final"><td>Now</td><td class="ag-num">${money(canvas.receipt.final)}</td></tr>${canvas.receipt.keep !== null ? html`<tr class="ag-receipt-keep"><td>You keep</td><td class="ag-num">${money(canvas.receipt.keep)}</td></tr>` : ''}</tbody></table></details>` : ''}
     <div class="ag-canvas-actions">
-      ${saver ? html`${sayForm(s.id, 'Find $100', 'Find $100', 'btn btn-ghost btn-sm')}${sayForm(s.id, 'How low can you go?', 'How low can you go?', 'btn btn-ghost btn-sm')}${sayForm(s.id, 'Same trip for less', 'Same trip for less', 'btn btn-ghost btn-sm')}${sayForm(s.id, 'Get me more for this money', 'More for this money', 'btn btn-ghost btn-sm')}${hunt ? html`<a class="btn btn-ghost btn-sm" href="/hunts/${hunt.id}">${icon('search')} Hunting: ${hunt.name}</a>` : sayForm(s.id, 'Hunt for a better deal', 'Hunt for a better deal', 'btn btn-ghost btn-sm', html`${icon('search')} `)}` : html`${sayForm(s.id, 'Make it cheaper', 'Make it cheaper', 'btn btn-ghost btn-sm')}${sayForm(s.id, 'Make it better', 'Make it better', 'btn btn-ghost btn-sm')}`}
+      ${saver ? html`${sayForm(s.id, 'Find $100', 'Find $100', 'btn btn-ghost btn-sm')}${sayForm(s.id, 'How low can you go?', 'How low can you go?', 'btn btn-ghost btn-sm')}${sayForm(s.id, 'Same trip for less', 'Same trip for less', 'btn btn-ghost btn-sm')}${sayForm(s.id, 'Get me more for this money', 'More for this money', 'btn btn-ghost btn-sm')}${hunt ? html`<a class="btn btn-ghost btn-sm" href="/hunts/${hunt.id}">${icon('search')} Hunting: ${hunt.name}</a>` : sayForm(s.id, 'Hunt for a better deal', 'Hunt for a better deal', 'btn btn-ghost btn-sm', html`${icon('search')} `)}` : xmax ? html`${sayForm(s.id, 'Make it more memorable', 'Make it more memorable', 'btn btn-ghost btn-sm')}${sayForm(s.id, 'Make it better for $0 more', 'Better for $0 more', 'btn btn-ghost btn-sm')}${sayForm(s.id, 'Why this trip is built this way', 'Why it is built this way', 'btn btn-ghost btn-sm')}<a class="btn btn-ghost btn-sm" href="/trip/${canvas.token}/memories?${cx}">${icon('flag')} Memories page</a>` : html`${sayForm(s.id, 'Make it cheaper', 'Make it cheaper', 'btn btn-ghost btn-sm')}${sayForm(s.id, 'Make it better', 'Make it better', 'btn btn-ghost btn-sm')}`}
+      ${xmax ? html`<details class="ag-change" open><summary class="btn btn-ghost btn-sm">More from the same money</summary><div class="ag-chips ag-x-chips">${X_CHIPS.map(c => sayForm(s.id, c, c, 'ag-chip'))}</div><p class="tb-small tb-muted">Each one prices real versions of this trip; nothing changes until you take one.</p></details>` : ''}
       <details class="ag-change"><summary class="btn btn-ghost btn-sm">Change something</summary><div class="ag-chips">${(saver ? ['Give me one more night', 'One night less', 'Show me what one stop saves', 'Try another country', 'Upgrades worth considering', 'Make this easier'] : ['Give me one more night', 'One night less', 'Only nonstop', 'Try another country', 'Show me what one stop saves', 'Make this easier']).map(c => sayForm(s.id, c, c, 'ag-chip'))}<a class="ag-chip" href="/trip/${canvas.token}?${cx}#customize">Pick a different hotel or flight</a></div></details>
       ${saver ? html`<details class="ag-change"><summary class="btn btn-ghost btn-sm">Never cut below</summary><div class="ag-chips">${[['Only nonstop', 'Never a connection'], ['Refundable only', 'Never a non-refundable hotel'], ['3-star or better', 'Never below 3-star'], ['4-star or better', 'Never below 4-star'], ['Carry-on only', 'I pack carry-on only'], ['I check a bag', 'I check a bag'], ['Aggressive savings', 'Aggressive: every trade-off said'], ['Balanced savings', 'Balanced']].map(([say, label]) => sayForm(s.id, say, label, 'ag-chip'))}</div><p class="tb-small tb-muted">Each is a rule the search keeps; only rules the suppliers' data can check are offered.</p></details>` : ''}
       ${saver && !hunt ? html`<p class="ag-canvas-hunt tb-small tb-muted">Hunt mode: “I can wait. Only come back when my money can do something better.” A hunt keeps these rules on your account and says something only when a trip meets them.</p>` : ''}

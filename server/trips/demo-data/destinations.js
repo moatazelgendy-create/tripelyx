@@ -5,7 +5,26 @@
 //             features: B breakfast, P pool, F beachfront, A adults only, I all-inclusive, R free cancellation,
 //                       K family friendly, S spa, H airport shuttle (the hotel lists one; whether it is free,
 //                       scheduled and suits a flight's times needs verification, so it is never priced)
-// activities: [id, name, price per person, hours, kind]
+// activities: [id, name, price per person, hours, kind, extras?]
+//             kinds: adventure, beach, culture, romantic, nightlife, family, relaxing
+//             extras (demo, optional, invented like the rest): { slot, months, weather, tags }
+//               slot:    'day' (default) | 'morning' (sunrise, early access, early entry, morning tours)
+//                        | 'evening' (sunset, dinner, shows, jazz, izakaya, night food tours) | 'night' (northern lights, bio bay)
+//               months:  only for seasonal ones, the months the partner runs it (whale-watching Dec–Apr, northern lights Sep–Mar);
+//                        absent means the operating days are not in our data, never "all year"
+//               weather: true for open-water boats, snorkel, kayak, sails, cruises, hikes, treks, ziplines, ATV, e-bike,
+//                        surf, airboat and swamp tours, horseback, the Everglades, Grand Canyon, Golden Circle, Fuji,
+//                        Montserrat and rainforest trips: the experience engine then names a backup and never promises weather
+//               tags:    'food' (food walks, tastings, cooking classes, market tours, tapas, distilleries, fado dinner, dinner
+//                        cruise, izakaya, street food) and 'nature' (cenotes, islands, whales, rainforest, falls, canyons, lagoons,
+//                        northern lights, volcanoes, rice terraces, the bio bay); the kind itself is always a tag too
+//             there are still NO start times, operating days, age limits, meeting points or distances in this data
+// freeThings: [name, kind or tag, note, condition?] on some destinations: invented demo guide notes for the experience
+//             engine's FIND FREE THINGS WORTH DOING (exposed through MockGuides with a source and a checked date; a
+//             destination without the list has no free data, and the engine says so rather than guessing). The optional
+//             condition says when an item is free at all, e.g. { days: 'first-sunday' }: the engine calls it free only
+//             on a trip whose full days include such a day. GUIDE_CHECKED_AT is the fixed date these demo notes were
+//             written (invented, like the notes), never the day a page is opened.
 // climate:    tropical (warm all year), subtropical (warm Mar–Nov), mediterranean (warm May–Oct),
 //             temperate (warm Jun–Sep), desert (warm Mar–Nov, hot summers), cool (never warm)
 const DESTINATIONS = [
@@ -21,10 +40,14 @@ const DESTINATIONS = [
       ['cun-4', 'Mar de Luna Adults Resort', 5, 4.8, 390, 'IPFASR', 'Quiet north beach'],
     ],
     activities: [
-      ['cun-a1', 'Cenote swim and jungle bike tour', 74, 5, 'adventure'],
-      ['cun-a2', 'Isla Mujeres catamaran day', 89, 7, 'beach'],
-      ['cun-a3', 'Chichén Itzá early-access tour', 118, 11, 'culture'],
-      ['cun-a4', 'Reef snorkel trip', 52, 3, 'beach'],
+      ['cun-a1', 'Cenote swim and jungle bike tour', 74, 5, 'adventure', { weather: true, tags: ['nature'] }],
+      ['cun-a2', 'Isla Mujeres catamaran day', 89, 7, 'beach', { weather: true, tags: ['nature'] }],
+      ['cun-a3', 'Chichén Itzá early-access tour', 118, 11, 'culture', { slot: 'morning' }],
+      ['cun-a4', 'Reef snorkel trip', 52, 3, 'beach', { weather: true }],
+    ],
+    freeThings: [
+      ['Playa Delfines public beach', 'beach', 'Public beach in the Hotel Zone; no entry fee'],
+      ['Mercado 28 market walk', 'food', 'Open-air market; walking through it is free'],
     ],
   },
   {
@@ -38,9 +61,13 @@ const DESTINATIONS = [
       ['pvr-3', 'Sierra Mar All-Inclusive', 4, 4.3, 238, 'IPFKR', 'Nuevo Vallarta beachfront'],
     ],
     activities: [
-      ['pvr-a1', 'Marietas Islands boat and snorkel', 95, 6, 'beach'],
-      ['pvr-a2', 'Old town food walk', 58, 3, 'culture'],
-      ['pvr-a3', 'Sierra Madre zipline', 84, 4, 'adventure'],
+      ['pvr-a1', 'Marietas Islands boat and snorkel', 95, 6, 'beach', { weather: true, tags: ['nature'] }],
+      ['pvr-a2', 'Old town food walk', 58, 3, 'culture', { tags: ['food'] }],
+      ['pvr-a3', 'Sierra Madre zipline', 84, 4, 'adventure', { weather: true }],
+    ],
+    freeThings: [
+      ['Malecón boardwalk at sunset', 'romantic', 'Public seafront walk with sculptures'],
+      ['Playa Los Muertos public beach', 'beach', 'Public beach, no fee'],
     ],
   },
   {
@@ -54,9 +81,9 @@ const DESTINATIONS = [
       ['sjd-3', 'Punta Brisa Grand', 5, 4.8, 420, 'IPFASR', 'Quiet cove, adults only'],
     ],
     activities: [
-      ['sjd-a1', 'El Arco glass-bottom boat', 45, 2, 'beach'],
-      ['sjd-a2', 'Whale-watching cruise (Dec–Apr)', 99, 3, 'adventure'],
-      ['sjd-a3', 'Desert ATV ride', 110, 4, 'adventure'],
+      ['sjd-a1', 'El Arco glass-bottom boat', 45, 2, 'beach', { weather: true }],
+      ['sjd-a2', 'Whale-watching cruise (Dec–Apr)', 99, 3, 'adventure', { months: [12, 1, 2, 3, 4], weather: true, tags: ['nature'] }],
+      ['sjd-a3', 'Desert ATV ride', 110, 4, 'adventure', { weather: true }],
     ],
   },
   {
@@ -70,9 +97,9 @@ const DESTINATIONS = [
       ['puj-3', 'Arena Dorada Resort', 5, 4.7, 345, 'IPFSR', 'Cap Cana beachfront'],
     ],
     activities: [
-      ['puj-a1', 'Saona Island catamaran', 92, 9, 'beach'],
-      ['puj-a2', 'Hoyo Azul cenote and zipline', 105, 5, 'adventure'],
-      ['puj-a3', 'Sunset horseback ride', 64, 2, 'romantic'],
+      ['puj-a1', 'Saona Island catamaran', 92, 9, 'beach', { weather: true, tags: ['nature'] }],
+      ['puj-a2', 'Hoyo Azul cenote and zipline', 105, 5, 'adventure', { weather: true, tags: ['nature'] }],
+      ['puj-a3', 'Sunset horseback ride', 64, 2, 'romantic', { slot: 'evening', weather: true }],
     ],
   },
   {
@@ -86,9 +113,13 @@ const DESTINATIONS = [
       ['sju-3', 'Fortaleza Grand', 5, 4.7, 340, 'BPFSR', 'Condado beachfront', 30],
     ],
     activities: [
-      ['sju-a1', 'Bioluminescent bay kayak', 68, 3, 'adventure'],
+      ['sju-a1', 'Bioluminescent bay kayak', 68, 3, 'adventure', { slot: 'night', weather: true, tags: ['nature'] }],
       ['sju-a2', 'Old San Juan walking tour', 39, 2, 'culture'],
-      ['sju-a3', 'El Yunque rainforest hike', 85, 6, 'adventure'],
+      ['sju-a3', 'El Yunque rainforest hike', 85, 6, 'adventure', { weather: true, tags: ['nature'] }],
+    ],
+    freeThings: [
+      ['Old San Juan streets and plazas', 'culture', 'Public streets; the forts charge entry'],
+      ['Paseo de la Princesa', 'romantic', 'Public promenade along the old city wall'],
     ],
   },
   {
@@ -102,9 +133,9 @@ const DESTINATIONS = [
       ['mbj-3', 'Coral Cove Adults Resort', 5, 4.7, 360, 'IPFASR', 'Secluded cove, adults only'],
     ],
     activities: [
-      ['mbj-a1', 'Dunn’s River Falls climb', 79, 6, 'adventure'],
-      ['mbj-a2', 'Catamaran snorkel cruise', 75, 4, 'beach'],
-      ['mbj-a3', 'Rum and food tasting', 62, 3, 'culture'],
+      ['mbj-a1', 'Dunn’s River Falls climb', 79, 6, 'adventure', { tags: ['nature'] }],
+      ['mbj-a2', 'Catamaran snorkel cruise', 75, 4, 'beach', { weather: true }],
+      ['mbj-a3', 'Rum and food tasting', 62, 3, 'culture', { tags: ['food'] }],
     ],
   },
   {
@@ -118,9 +149,13 @@ const DESTINATIONS = [
       ['mia-3', 'Biscayne Grand', 5, 4.7, 410, 'PFSR', 'Mid-Beach oceanfront', 45],
     ],
     activities: [
-      ['mia-a1', 'Everglades airboat ride', 62, 3, 'adventure'],
-      ['mia-a2', 'Little Havana food walk', 69, 3, 'culture'],
-      ['mia-a3', 'Biscayne Bay sunset cruise', 48, 2, 'romantic'],
+      ['mia-a1', 'Everglades airboat ride', 62, 3, 'adventure', { weather: true, tags: ['nature'] }],
+      ['mia-a2', 'Little Havana food walk', 69, 3, 'culture', { tags: ['food'] }],
+      ['mia-a3', 'Biscayne Bay sunset cruise', 48, 2, 'romantic', { slot: 'evening', weather: true }],
+    ],
+    freeThings: [
+      ['South Beach public beach', 'beach', 'Public beach, no fee'],
+      ['Art Deco district walk', 'culture', 'Public streets; guided tours charge'],
     ],
   },
   {
@@ -134,9 +169,13 @@ const DESTINATIONS = [
       ['hnl-3', 'Diamond Head Grand', 5, 4.8, 470, 'BPFSR', 'Kapiʻolani beachfront', 50],
     ],
     activities: [
-      ['hnl-a1', 'Diamond Head sunrise hike', 45, 3, 'adventure'],
-      ['hnl-a2', 'Surf lesson in Waikīkī', 89, 2, 'adventure'],
-      ['hnl-a3', 'North Shore day trip', 139, 9, 'beach'],
+      ['hnl-a1', 'Diamond Head sunrise hike', 45, 3, 'adventure', { slot: 'morning', weather: true, tags: ['nature'] }],
+      ['hnl-a2', 'Surf lesson in Waikīkī', 89, 2, 'adventure', { weather: true }],
+      ['hnl-a3', 'North Shore day trip', 139, 9, 'beach', { tags: ['nature'] }],
+    ],
+    freeThings: [
+      ['Waikīkī public beach', 'beach', 'Public beach, no fee'],
+      ['Kapiʻolani Park', 'nature', 'Public park below Diamond Head'],
     ],
   },
   {
@@ -150,9 +189,12 @@ const DESTINATIONS = [
       ['las-3', 'Sapphire Tower', 5, 4.7, 290, 'PSR', 'Center Strip, suites', 50],
     ],
     activities: [
-      ['las-a1', 'Grand Canyon West day trip', 159, 11, 'adventure'],
-      ['las-a2', 'Evening show ticket', 95, 2, 'nightlife'],
-      ['las-a3', 'Red Rock Canyon e-bike', 99, 4, 'adventure'],
+      ['las-a1', 'Grand Canyon West day trip', 159, 11, 'adventure', { weather: true, tags: ['nature'] }],
+      ['las-a2', 'Evening show ticket', 95, 2, 'nightlife', { slot: 'evening' }],
+      ['las-a3', 'Red Rock Canyon e-bike', 99, 4, 'adventure', { weather: true, tags: ['nature'] }],
+    ],
+    freeThings: [
+      ['Strip fountain shows', 'nightlife', 'Free public shows on the Strip, evenings'],
     ],
   },
   {
@@ -166,9 +208,13 @@ const DESTINATIONS = [
       ['msy-3', 'Riverbend Grand', 5, 4.7, 320, 'PSR', 'Warehouse District'],
     ],
     activities: [
-      ['msy-a1', 'Swamp boat tour', 59, 3, 'adventure'],
-      ['msy-a2', 'Creole cooking class', 85, 3, 'culture'],
-      ['msy-a3', 'Jazz club evening', 45, 3, 'nightlife'],
+      ['msy-a1', 'Swamp boat tour', 59, 3, 'adventure', { weather: true, tags: ['nature'] }],
+      ['msy-a2', 'Creole cooking class', 85, 3, 'culture', { tags: ['food'] }],
+      ['msy-a3', 'Jazz club evening', 45, 3, 'nightlife', { slot: 'evening' }],
+    ],
+    freeThings: [
+      ['French Quarter walk', 'culture', 'Public streets'],
+      ['Jackson Square street music', 'nightlife', 'Public square; performers accept tips'],
     ],
   },
   {
@@ -182,9 +228,14 @@ const DESTINATIONS = [
       ['nyc-3', 'Park Avenue Grand', 5, 4.8, 520, 'SR', 'Midtown East'],
     ],
     activities: [
-      ['nyc-a1', 'Broadway show ticket', 135, 3, 'nightlife'],
-      ['nyc-a2', 'Harbor and Statue cruise', 42, 2, 'culture'],
-      ['nyc-a3', 'Brooklyn food walk', 75, 3, 'culture'],
+      ['nyc-a1', 'Broadway show ticket', 135, 3, 'nightlife', { slot: 'evening' }],
+      ['nyc-a2', 'Harbor and Statue cruise', 42, 2, 'culture', { weather: true }],
+      ['nyc-a3', 'Brooklyn food walk', 75, 3, 'culture', { tags: ['food'] }],
+    ],
+    freeThings: [
+      ['Central Park', 'nature', 'Public park'],
+      ['Staten Island Ferry', 'culture', 'Free public ferry past the harbor and the statue'],
+      ['Brooklyn Bridge walk', 'culture', 'Public walkway'],
     ],
   },
   {
@@ -198,9 +249,13 @@ const DESTINATIONS = [
       ['san-3', 'Coronado Shores Grand', 5, 4.7, 380, 'PFSR', 'Coronado beachfront', 35],
     ],
     activities: [
-      ['san-a1', 'La Jolla sea-cave kayak', 59, 2, 'adventure'],
+      ['san-a1', 'La Jolla sea-cave kayak', 59, 2, 'adventure', { weather: true, tags: ['nature'] }],
       ['san-a2', 'Zoo day ticket', 72, 6, 'family'],
-      ['san-a3', 'Harbor sunset sail', 55, 2, 'romantic'],
+      ['san-a3', 'Harbor sunset sail', 55, 2, 'romantic', { slot: 'evening', weather: true }],
+    ],
+    freeThings: [
+      ['Balboa Park gardens', 'nature', 'Public park; the museums inside charge'],
+      ['Mission Beach boardwalk', 'beach', 'Public beach and boardwalk'],
     ],
   },
   {
@@ -214,9 +269,9 @@ const DESTINATIONS = [
       ['bna-3', 'Cumberland Grand', 5, 4.7, 330, 'PSR', 'The Gulch'],
     ],
     activities: [
-      ['bna-a1', 'Opry evening ticket', 89, 3, 'nightlife'],
+      ['bna-a1', 'Opry evening ticket', 89, 3, 'nightlife', { slot: 'evening' }],
       ['bna-a2', 'Music history walking tour', 35, 2, 'culture'],
-      ['bna-a3', 'Whiskey distillery visit', 49, 2, 'culture'],
+      ['bna-a3', 'Whiskey distillery visit', 49, 2, 'culture', { tags: ['food'] }],
     ],
   },
   {
@@ -232,8 +287,12 @@ const DESTINATIONS = [
     ],
     activities: [
       ['lis-a1', 'Sintra palaces day trip', 85, 8, 'culture'],
-      ['lis-a2', 'Fado dinner evening', 72, 3, 'romantic'],
-      ['lis-a3', 'Tram 28 and food tour', 59, 3, 'culture'],
+      ['lis-a2', 'Fado dinner evening', 72, 3, 'romantic', { slot: 'evening', tags: ['food'] }],
+      ['lis-a3', 'Tram 28 and food tour', 59, 3, 'culture', { tags: ['food'] }],
+    ],
+    freeThings: [
+      ['Miradouro viewpoints', 'culture', 'Public viewpoints over the city'],
+      ['Alfama old town walk', 'culture', 'Public streets'],
     ],
   },
   {
@@ -249,8 +308,12 @@ const DESTINATIONS = [
     ],
     activities: [
       ['bcn-a1', 'Sagrada Família guided entry', 62, 2, 'culture'],
-      ['bcn-a2', 'Tapas and wine walk', 79, 3, 'culture'],
-      ['bcn-a3', 'Montserrat half day', 69, 5, 'adventure'],
+      ['bcn-a2', 'Tapas and wine walk', 79, 3, 'culture', { tags: ['food'] }],
+      ['bcn-a3', 'Montserrat half day', 69, 5, 'adventure', { weather: true, tags: ['nature'] }],
+    ],
+    freeThings: [
+      ['Barceloneta public beach', 'beach', 'City beach, no fee'],
+      ['Gothic Quarter walk', 'culture', 'Public streets'],
     ],
   },
   {
@@ -266,8 +329,12 @@ const DESTINATIONS = [
     ],
     activities: [
       ['cdg-a1', 'Louvre timed entry with guide', 79, 3, 'culture'],
-      ['cdg-a2', 'Seine dinner cruise', 115, 3, 'romantic'],
+      ['cdg-a2', 'Seine dinner cruise', 115, 3, 'romantic', { slot: 'evening', tags: ['food'] }],
       ['cdg-a3', 'Versailles half day', 95, 5, 'culture'],
+    ],
+    freeThings: [
+      ['Seine banks walk', 'romantic', 'Public riverbanks'],
+      ['First-Sunday free museum day', 'culture', 'Some museums are free on the first Sunday of the month; check the museum before going', { days: 'first-sunday' }],
     ],
   },
   {
@@ -283,8 +350,8 @@ const DESTINATIONS = [
     ],
     activities: [
       ['fco-a1', 'Colosseum and Forum guided entry', 75, 3, 'culture'],
-      ['fco-a2', 'Vatican Museums early entry', 89, 3, 'culture'],
-      ['fco-a3', 'Pasta-making class', 69, 3, 'culture'],
+      ['fco-a2', 'Vatican Museums early entry', 89, 3, 'culture', { slot: 'morning' }],
+      ['fco-a3', 'Pasta-making class', 69, 3, 'culture', { tags: ['food'] }],
     ],
   },
   {
@@ -299,9 +366,9 @@ const DESTINATIONS = [
       ['kef-3', 'Aurora Ridge Lodge', 5, 4.8, 410, 'BSR', 'Countryside, 40 min from town'],
     ],
     activities: [
-      ['kef-a1', 'Golden Circle day tour', 99, 8, 'adventure'],
-      ['kef-a2', 'Geothermal lagoon entry', 85, 3, 'relaxing'],
-      ['kef-a3', 'Northern lights trip (Sep–Mar)', 79, 4, 'adventure'],
+      ['kef-a1', 'Golden Circle day tour', 99, 8, 'adventure', { weather: true, tags: ['nature'] }],
+      ['kef-a2', 'Geothermal lagoon entry', 85, 3, 'relaxing', { tags: ['nature'] }],
+      ['kef-a3', 'Northern lights trip (Sep–Mar)', 79, 4, 'adventure', { slot: 'night', months: [9, 10, 11, 12, 1, 2, 3], tags: ['nature'] }],
     ],
   },
   {
@@ -316,9 +383,13 @@ const DESTINATIONS = [
       ['hnd-3', 'Marunouchi Palace', 5, 4.9, 480, 'BSR', 'Marunouchi'],
     ],
     activities: [
-      ['hnd-a1', 'Tsukiji market food tour', 89, 3, 'culture'],
-      ['hnd-a2', 'Mount Fuji day trip', 129, 10, 'adventure'],
-      ['hnd-a3', 'Izakaya evening walk', 75, 3, 'nightlife'],
+      ['hnd-a1', 'Tsukiji market food tour', 89, 3, 'culture', { tags: ['food'] }],
+      ['hnd-a2', 'Mount Fuji day trip', 129, 10, 'adventure', { weather: true, tags: ['nature'] }],
+      ['hnd-a3', 'Izakaya evening walk', 75, 3, 'nightlife', { slot: 'evening', tags: ['food'] }],
+    ],
+    freeThings: [
+      ['Meiji Shrine grounds', 'culture', 'Shrine grounds are free; the inner garden charges'],
+      ['Shibuya crossing at night', 'nightlife', 'Public street'],
     ],
   },
   {
@@ -332,8 +403,8 @@ const DESTINATIONS = [
       ['dps-3', 'Uluwatu Cliff Resort', 5, 4.8, 290, 'BPFASR', 'Uluwatu clifftop'],
     ],
     activities: [
-      ['dps-a1', 'Mount Batur sunrise trek', 55, 7, 'adventure'],
-      ['dps-a2', 'Temple and rice terrace tour', 45, 8, 'culture'],
+      ['dps-a1', 'Mount Batur sunrise trek', 55, 7, 'adventure', { slot: 'morning', weather: true, tags: ['nature'] }],
+      ['dps-a2', 'Temple and rice terrace tour', 45, 8, 'culture', { tags: ['nature'] }],
       ['dps-a3', 'Balinese spa ritual', 48, 2, 'relaxing'],
     ],
   },
@@ -349,8 +420,8 @@ const DESTINATIONS = [
     ],
     activities: [
       ['bkk-a1', 'Grand Palace and temples tour', 49, 4, 'culture'],
-      ['bkk-a2', 'Street food night tour', 55, 4, 'nightlife'],
-      ['bkk-a3', 'Floating market morning', 62, 6, 'culture'],
+      ['bkk-a2', 'Street food night tour', 55, 4, 'nightlife', { slot: 'evening', tags: ['food'] }],
+      ['bkk-a3', 'Floating market morning', 62, 6, 'culture', { slot: 'morning', tags: ['food'] }],
     ],
   },
   {
@@ -364,9 +435,9 @@ const DESTINATIONS = [
       ['lir-3', 'Rincón Rainforest Lodge', 4, 4.7, 195, 'BPSR', 'Near Rincón de la Vieja'],
     ],
     activities: [
-      ['lir-a1', 'Canopy zipline tour', 85, 3, 'adventure'],
-      ['lir-a2', 'Volcano hot springs day', 98, 7, 'adventure'],
-      ['lir-a3', 'Sunset catamaran', 89, 4, 'romantic'],
+      ['lir-a1', 'Canopy zipline tour', 85, 3, 'adventure', { weather: true }],
+      ['lir-a2', 'Volcano hot springs day', 98, 7, 'adventure', { tags: ['nature'] }],
+      ['lir-a3', 'Sunset catamaran', 89, 4, 'romantic', { slot: 'evening', weather: true }],
     ],
   },
   {
@@ -381,11 +452,15 @@ const DESTINATIONS = [
       ['dbb-3', 'Lagoon Bay Grand', 5, 4.8, 260, 'BPFSR', 'Lagoon beachfront'],
     ],
     activities: [
-      ['dbb-a1', 'Yacht half day from the marina', 85, 4, 'beach'],
+      ['dbb-a1', 'Yacht half day from the marina', 85, 4, 'beach', { weather: true }],
       ['dbb-a2', 'El Alamein memorials and museum', 35, 4, 'culture'],
-      ['dbb-a3', 'Desert safari at sunset', 59, 4, 'adventure'],
+      ['dbb-a3', 'Desert safari at sunset', 59, 4, 'adventure', { slot: 'evening' }],
     ],
   },
 ];
 
-module.exports = { DESTINATIONS };
+// The demo guide's checked date (demo data, invented): fixed here so "as of" never claims a check that
+// happens each time a page is opened.
+const GUIDE_CHECKED_AT = '2026-09-30';
+
+module.exports = { DESTINATIONS, GUIDE_CHECKED_AT };

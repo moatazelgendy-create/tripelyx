@@ -11,6 +11,7 @@ const { priceTrip, publicTrip, requireTrip, DEFAULT_SETTINGS } = require('./pric
 const optimizer = require('./optimizer');
 const decision = require('./decision');
 const leaks = require('./leaks');
+const experience = require('./experience');
 const { whyNot } = require('./savemax');
 const { classifyChanges } = require('./facts');
 const { cutoffs, isOpen, nextCutoff } = require('./deadlines');
@@ -49,9 +50,12 @@ function destAsked(cx, maps) {
   const d = maps && maps.getDestination(String(id));
   return d ? d.name : null;
 }
+// Experience Max: the memory goals the traveler ranked (`mem=`) are an ask like the others and ride
+// onto the quote as `asks.goals`; the protected main experience (`px=`) is kept beside the asks as
+// `budget.protect`. Both only when the link carried them: nothing is inferred from the booked trip.
 function quoteAsks(cx, t, maps) {
   const p = cx || {}, rules = p.rules || null;
-  return { nightsAsked: p.nightsAsked || null, style: p.style && p.style !== 'surprise' ? p.style : null, priority: p.priority && p.priority !== 'price' ? p.priority : null, rules, dest: destAsked(cx, maps), ...(rules || {}) };
+  return { nightsAsked: p.nightsAsked || null, style: p.style && p.style !== 'surprise' ? p.style : null, priority: p.priority && p.priority !== 'price' ? p.priority : null, rules, dest: destAsked(cx, maps), ...(rules || {}), ...(Array.isArray(p.goals) && p.goals.length ? { goals: p.goals.slice(0, 3) } : {}) };
 }
 
 function watchRule(input) {
@@ -89,6 +93,20 @@ function watchMet(rule, priceAtSave, now) {
   }
   if (change <= -r.amount) return { met: true, text: `The total dropped ${money(-change)} since you saved it: ${money(now)} now` };
   return { met: false, text: `No alert: ${moved}, not the ${money(r.amount)} drop you asked for` };
+}
+
+// WHAT WAS ACTUALLY WORTH IT? is asked once the trip is over: a booking that stands (confirmed, or
+// confirmed in part) whose return date has passed. Before that there is nothing to judge, and a
+// cancelled or failed booking was never travelled. Reads a stored booking (`quote.trip`) or the
+// public one (`trip`).
+const WORTH_IT_STATUSES = ['confirmed', 'partially_confirmed'];
+function worthItOpen(b, now) {
+  const t = (b && ((b.quote && b.quote.trip) || b.trip)) || null;
+  if (!t || !t.spec) return { open: false, code: 'unknown', reason: 'This booking has no trip to ask about.' };
+  const back = (t.flight && t.flight.return) || addDays(t.spec.depart, t.spec.nights);
+  if (!WORTH_IT_STATUSES.includes(b.status)) return { open: false, code: 'status', back, reason: 'This question is for a trip that went ahead; this booking did not.' };
+  if (today(now) <= back) return { open: false, code: 'early', back, reason: `This question is for after the trip: it opens the day after you fly home (${back}).` };
+  return { open: true, code: null, back, reason: null };
 }
 
 class TripService {
@@ -257,12 +275,16 @@ class TripService {
     const s = cx.searchParams ? new URLSearchParams(cx.searchParams) : null;
     return !!(s && s.get('when') === 'exact');
   }
+  // The memory goals and the protected experience the link carries reach every engine the same way:
+  // on the context (`goals`, `protect`) and, for the engines that read options, as `o.protect`, so a
+  // protected experience is listed and never offered for removal on any page.
   leakOptions(trip, cx, promo = null) {
     const p = cx || {};
-    return { now: this.now(), locks: this.datesHeld(cx) ? { dates: true } : {}, promo, prefs: { style: p.style && p.style !== 'surprise' ? p.style : null, priority: p.priority && p.priority !== 'price' ? p.priority : null, who: trip.spec.who, bags: p.bags || null, rules: p.rules || null, nightsAsked: p.nightsAsked || null } };
+    return { now: this.now(), locks: this.datesHeld(cx) ? { dates: true } : {}, promo, protect: p.protect || null, prefs: { style: p.style && p.style !== 'surprise' ? p.style : null, priority: p.priority && p.priority !== 'price' ? p.priority : null, who: trip.spec.who, bags: p.bags || null, rules: p.rules || null, nightsAsked: p.nightsAsked || null, goals: Array.isArray(p.goals) ? p.goals.slice(0, 3) : [] } };
   }
   leakContext(cx) {
-    return { ...(cx || {}), dateMode: this.datesHeld(cx) ? 'exact' : null };
+    const p = cx || {};
+    return { ...p, dateMode: this.datesHeld(cx) ? 'exact' : null, goals: Array.isArray(p.goals) ? p.goals.slice(0, 3) : [], protect: p.protect || null };
   }
   // Everything the Money Leak page shows, each part the engine's own data (its words live in `text`).
   // `cut` is the amount to take out, in cents, for the cut-in-order walk; null skips it. The biggest
@@ -293,6 +315,144 @@ class TripService {
   async leakCheck(trip, cx, { promo = null } = {}) {
     const settings = await this.settings(), o = this.leakOptions(trip, cx, promo), lctx = this.leakContext(cx);
     return { scorecard: leaks.scorecard({ max: (cx && cx.budget) || null, trip, history: [] }, this.inv, settings), scan: leaks.finalScan(this.inv, trip, settings, lctx, o), breakdown: leaks.breakdown(trip, o) };
+  }
+
+  // ---- Experience Max ----
+  // The query the experience engine reads for one trip: the trip's own origin, party, dates and
+  // length (a page about this trip compares versions of it on its own dates), and beyond that only
+  // what the link carries: the ceiling, a stated style, priority, length and rules. Nothing the
+  // traveler did not say is written in as an ask.
+  experienceQuery(trip, cx) {
+    const p = cx || {}, s = trip.spec, ap = this.inv.maps.airport(s.from);
+    return {
+      budget: p.budget || null, vacationBudget: p.budget ? p.budget + (p.keep || 0) : null, keep: p.keep || 0, budgetInput: p.budget ? Math.round((p.budget + (p.keep || 0)) / 100) : null, budgetType: 'total',
+      travelers: s.travelers, who: s.who, origin: ap ? ap.originId : null, dateMode: 'exact', depart: s.depart, month: null, nights: p.nightsAsked || s.nights,
+      style: p.style || 'surprise', priority: p.priority || 'price', allowOver: 0, dest: s.dest, region: null, rules: p.rules || null, dests: null, notCountry: null,
+    };
+  }
+  // The options every experience call gets. The ceiling is the budget the link carries, never the
+  // "up to 10% more" allowance: going over is the traveler's own word on a version, not a target an
+  // engine builds toward. A date the traveler fixed is held (dm=exact or when=exact), a stated length
+  // is not stretched, the rules ride along, and the protected experience (px=) reaches every engine.
+  async experienceOptions(trip, cx, { promo = null } = {}) {
+    const p = cx || {}, held = this.datesHeld(cx), px = this.offeredProtect(trip, cx);
+    return {
+      now: this.now(), settings: await this.settings(), locks: held ? { dates: true } : {}, cap: p.budget || null, rules: p.rules || null, protect: px, promo,
+      nightsOpen: !p.nightsAsked, goals: experience.goalsOf(p.goals || []), ctx: { dateMode: held ? 'exact' : null, rules: p.rules || null, protect: px },
+    };
+  }
+  // A protected experience (px=) counts only when this trip's destination offers it. A link that names
+  // anything else (another destination's experience, an edited or stale link) protects nothing here.
+  offeredProtect(trip, cx) {
+    const px = (cx && cx.protect) || null;
+    return px && (trip.activityOptions || []).some(a => a.id === px) ? px : null;
+  }
+  // The trip, memories and review routes call this first: a px the destination does not offer is
+  // dropped from the context, so no link out of the page carries it, and the page says so in words.
+  // Its id is never shown: it names nothing here.
+  dropUnoffered(trip, cx) {
+    if (!cx || !cx.protect || this.offeredProtect(trip, cx)) return null;
+    cx.protect = null;
+    return `The experience this link protects is not offered in ${trip.dest.name}, so it is no longer protected and nothing on this trip is held for it.`;
+  }
+  // The page's main experience is always one this trip has: the protected one while the trip has it,
+  // else the strongest for the goals, so PROTECTION always covers the trip's own main experience. A
+  // protected experience this version lacks is reported beside it by name (`missing`), never swapped in
+  // or dropped quietly; one the destination does not offer is `foreign`, never shown by its raw id.
+  experienceMain(trip, cx, gs) {
+    const px = (cx && cx.protect) || null, own = px ? trip.activities.find(a => a.id === px) || null : null;
+    const missing = px && !own ? (trip.activityOptions || []).find(a => a.id === px) || null : null;
+    return { main: own || experience.mainOf(trip, gs), protected: !!own, missing, foreign: !!(px && !own && !missing) };
+  }
+  // Everything the /trip/:token/memories page shows, each part the experience engine's own data (its
+  // words live in `text`, every version is a token priced in full). Nothing here is applied: the page
+  // turns each version into a link. `amount` is MAKE $X MEMORABLE's amount, in cents. Without goals
+  // the page asks for them first, and nothing is judged "worth it" before they are given.
+  async memories(trip, cx, { amount = 10000 } = {}) {
+    const X = experience, inv = this.inv, o = await this.experienceOptions(trip, cx), gs = o.goals, q = this.experienceQuery(trip, cx);
+    const m = this.experienceMain(trip, cx, gs);
+    if (!gs.length) return { goals: gs, q, ...m };
+    o.q = q;
+    const hoe = X.hotelOrExperience(inv, trip, gs, o), L = X.ladder(inv, q, gs, o), main = m.main;
+    // The budget's "I'd choose the simpler hotel" line is never said on the page that says "I'd take
+    // the hotel": when HOTEL OR EXPERIENCE? picks the hotel, the allocation gets no step-up to name.
+    const up = hoe.verdict === 'a' ? { hotelUp: null, inv: null } : { hotelUp: hoe.a, inv };
+    return {
+      goals: gs, q, ...m, amount,
+      receipt: X.receipt(inv, q, trip, gs, o), allocation: X.allocation(trip, o.cap, { ...up, o }), rhythm: X.rhythm(trip, gs, { main }),
+      hotelOrExperience: hoe, memoryTest: X.memoryTest(inv, trip, gs, o, amount), bigVsMany: X.bigVsMany(inv, trip, gs, o),
+      free: X.freeThings(inv, trip, gs), freeOverPaid: X.freeOverPaid(inv, trip, gs), location: X.locationCheck(inv, trip, gs, o),
+      collisions: X.collisions(trip, { inv, settings: o.settings, goals: gs, protect: o.protect, rules: o.rules, locks: o.locks }), fatigue: X.fatigue(trip, gs, { ...o, inv }),
+      ladder: L, sweetSpot: X.sweetSpot(L, trip), sameFeeling: X.sameFeeling(inv, q, gs, trip, o),
+      dupes: trip.activities.map(a => ({ activity: a, protected: a.id === o.protect, dupe: X.dupe(inv, trip, a, o) })),
+      protection: main ? X.protection(inv, trip, main, o) : null, bestDay: main ? X.bestDay(trip, main, { ...o, inv, goals: gs }) : null, backup: main ? X.backup(inv, trip, main, { ...o, goals: gs }) : null,
+      finalCheck: X.finalCheck(trip, gs, { ...o, inv }), more: X.moreMemorable(inv, trip, gs, o),
+    };
+  }
+  // The review page's experience additions, only when the link carries goals or a protected
+  // experience (a traveler who said neither gets the review as before): the EXPERIENCE RECEIPT, the
+  // PROTECTION rows for the main experience, the FINAL EXPERIENCE CHECK and the "very scheduled" line.
+  // The trip is the verified one, promo included, and every version these panels price carries the same
+  // code (as the money leak check's do): a link to another version's review then names that version's
+  // total with the code as the one seen, so its review says "still", never "dropped" because of the code.
+  async experienceReview(trip, cx, { promo = null } = {}) {
+    const X = experience, inv = this.inv, o = await this.experienceOptions(trip, cx, { promo }), gs = o.goals;
+    if (!gs.length && !o.protect) return null;
+    const q = this.experienceQuery(trip, cx), m = this.experienceMain(trip, cx, gs);
+    o.q = q;
+    return {
+      goals: gs, ...m, receipt: gs.length ? X.receipt(inv, q, trip, gs, o) : null, protection: m.main ? X.protection(inv, trip, m.main, o) : null,
+      finalCheck: gs.length ? X.finalCheck(trip, gs, { ...o, inv }) : null, fatigue: X.fatigue(trip, gs, { ...o, inv }),
+    };
+  }
+
+  // WHAT WAS ACTUALLY WORTH IT? after the trip. `answer` is { worth: [chips], notWorth: [chips], other }
+  // (a bare chip or list of chips counts as "worth it"); only WORTH_IT_CHIPS are read. The answer is
+  // kept on the booking (`booking.worthIt`), and on the account's travel defaults only when the
+  // traveler ticked "Remember this for next time" and is signed in as the booking's owner: a
+  // preference is never remembered on anyone's word but theirs, and "Other" stays their words only.
+  // It is asked after the trip is over, never before.
+  async setWorthIt(ref, answer, { remember = false, userId = null } = {}) {
+    const b = await this.store.getBookingByRef(String(ref || '').toUpperCase().slice(0, 20));
+    if (!b || b.vertical !== 'trips') throw new AppError('booking_not_found', 'We couldn’t find that booking.', 404);
+    const back = worthItOpen(b, this.now());
+    if (!back.open) throw new AppError('worth_it_closed', back.reason, 409, { reason: back.code });
+    const a = Array.isArray(answer) || typeof answer === 'string' ? { worth: answer } : answer || {};
+    const chips = v => [...new Set([].concat(v || []).filter(c => typeof c === 'string' && experience.WORTH_IT_CHIPS.includes(c)))];
+    const worth = chips(a.worth), notWorth = chips(a.notWorth), other = str(a.other, 300) || null;
+    const both = worth.filter(c => notWorth.includes(c));
+    if (both.length) throw new AppError('invalid_worth_it', `You marked ${both.join(' and ')} as both worth it and not worth it, so nothing was kept. Choose one for each.`, 422, { reason: 'both' });
+    if (!worth.length && !notWorth.length && !other) throw new AppError('invalid_worth_it', 'Choose at least one: what was worth it, or what was not.', 422, { reason: 'empty' });
+    const learned = experience.learn({ worth, notWorth });
+    const has = Object.keys(learned.prefs).length > 0, owner = !!(userId && b.userId && b.userId === userId);
+    // Where it is kept, said on the page as it was decided here. A booking made without an account
+    // ('guest') belongs to no account, so it is never said to belong to another one.
+    const defaults = !remember ? 'not-asked' : !b.userId ? 'guest' : !userId ? 'signed-out' : !owner ? 'not-owner' : !has ? 'nothing' : 'saved';
+    // An answer saved earlier from this booking follows this booking's latest answer, as the owner decides
+    // it now: ticked, the new answer replaces it; unticked, or with nothing in it I can use, it is removed,
+    // so the account never keeps a preference the traveler's latest word contradicts. Only the owner,
+    // signed in, changes their account; anyone else is told the earlier answer is still on it.
+    const d = b.userId ? await this.store.getRecord('travel_defaults', b.userId) : null;
+    const prior = !!(d && d.experiencePrefs && d.experiencePrefs.from === b.ref);
+    const earlier = !prior ? null : !owner ? 'kept' : defaults === 'saved' ? 'replaced' : 'removed';
+    const at = this.now().toISOString();
+    const record = { worth, notWorth, other, prefs: learned.prefs, text: learned.text, notes: learned.notes, at, defaults, earlier };
+    await this.store.updateBooking(b.id, null, { worthIt: record });
+    if (defaults === 'saved') await this.store.putRecord('travel_defaults', userId, { ...(d || {}), experiencePrefs: { ...learned.prefs, from: b.ref, savedAt: at } }, { userId });
+    else if (earlier === 'removed') { const { experiencePrefs, ...rest } = d; await this.store.putRecord('travel_defaults', userId, rest, { userId }); } // eslint-disable-line no-unused-vars
+    return record;
+  }
+  // Who is answering WHAT WAS ACTUALLY WORTH IT? for this booking, so the form promises a save only to
+  // the account that booked it: 'owner' (signed in as that account), 'signed-out' (a booking with an
+  // account, opened without signing in), 'other' (signed in as another account) or 'guest' (booked
+  // without an account: nothing can be remembered for it). `remembered` (only ever told to the owner):
+  // an answer from this booking is already saved to their account, so the form says what each choice does to it.
+  async worthItAccount(ref, user = null) {
+    const b = await this.store.getBookingByRef(String(ref || '').toUpperCase().slice(0, 20));
+    if (!b) return { who: user ? 'other' : 'signed-out', remembered: false };
+    const who = !b.userId ? 'guest' : !user ? 'signed-out' : user.id === b.userId ? 'owner' : 'other';
+    const d = who === 'owner' ? await this.store.getRecord('travel_defaults', b.userId) : null;
+    return { who, remembered: !!(d && d.experiencePrefs && d.experiencePrefs.from === b.ref) };
   }
 
   // `cx` is the trip-page context the review carried: what the traveler asked for travels onto the
@@ -333,7 +493,7 @@ class TripService {
         activities: t.activities.map(a => ({ id: a.id, amount: a.pricePerPerson * t.spec.travelers })),
         transfer: sum(['transfer']), service: sum(['service']), discount: -sum(['promo']),
       },
-      budget: { budget: budget || null, keep: budget && keep ? keep : 0, allowOver: allowOver || 0, asks: quoteAsks(cx, t, this.inv.maps) },
+      budget: { budget: budget || null, keep: budget && keep ? keep : 0, allowOver: allowOver || 0, asks: quoteAsks(cx, t, this.inv.maps), ...(cx && cx.protect ? { protect: cx.protect } : {}) },
       promoCode: v.promo ? v.promo.code : null,
       internal: t.internal,
       userId: user ? user.id : null,
@@ -602,4 +762,4 @@ class TripService {
   }
 }
 
-module.exports = { TripService, FUNNEL, FUNNEL_LABELS, watchRule, ruleText, watchMet, WATCH_RULES, WATCH_DEFAULT_RULE };
+module.exports = { TripService, FUNNEL, FUNNEL_LABELS, watchRule, ruleText, watchMet, WATCH_RULES, WATCH_DEFAULT_RULE, worthItOpen };

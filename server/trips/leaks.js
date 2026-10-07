@@ -31,7 +31,14 @@ const flightTaxes = t => detail(t, /^Flight taxes/), hotelTaxes = t => detail(t,
 // after opt(), so no two checks of one scan (a duplicate found, a transfer "a rule you set") can read
 // different rules and contradict each other.
 const rulesOf = (ctx, prefs) => (prefs && prefs.rules) || (ctx && ctx.rules) || null;
-const opt = (o = {}, ctx = null) => { const prefs = o.prefs || {}; return { now: o.now || new Date(), locks: o.locks || {}, prefs: { ...prefs, rules: rulesOf(ctx, prefs) }, promo: o.promo || null }; };
+// The protected main experience (Experience Max: `px=` on the link, `ctx.protect`, or `o.protect`) is
+// held like a rule that asks for that experience: it is listed with its reason and never offered for
+// removal, by any check here. Resolved once, like the rules, so no two checks disagree. The customer
+// may have protected it, or the agent from the results (its canvas links carry px= too), and nothing
+// here can tell which: it is "the protected experience", and never counted as "one you asked for".
+const protectOf = (o, ctx, prefs) => (o && o.protect) || (ctx && ctx.protect) || (prefs && prefs.protect) || null;
+const PROTECTED = 'the protected experience';
+const opt = (o = {}, ctx = null) => { const prefs = o.prefs || {}; return { now: o.now || new Date(), locks: o.locks || {}, prefs: { ...prefs, rules: rulesOf(ctx, prefs), protect: protectOf(o, ctx, prefs) }, promo: o.promo || null, protect: protectOf(o, ctx, prefs) }; };
 const holds = (ctx, locks) => (ctx && ctx.dateMode === 'exact' ? { ...locks, dates: true } : { ...locks });
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const dateWords = iso => (/^\d{4}-\d{2}-\d{2}$/.test(String(iso)) ? `${MONTHS[Number(iso.slice(5, 7)) - 1]} ${Number(iso.slice(8, 10))}` : String(iso));
@@ -119,7 +126,7 @@ function breakdown(trip, o, ctx) {
   if (resortFee(trip)) row('resortFee', 'Mandatory resort fee', resortFee(trip), 'mandatory', 'paid in this total, not at the hotel');
   if (lineAmount(trip, 'bags') > 0) row('bags', BAGS_LABEL, lineAmount(trip, 'bags'), 'optional');
   if (trip.transfer) { const rule = !!(prefs.rules && prefs.rules.transfer); row('transfer', TRANSFER_LABEL, lineAmount(trip, 'transfer'), rule ? 'mandatory' : 'optional', rule ? 'a rule you set' : null); }
-  for (const a of trip.activities) row(`${EXP}${a.id}`, a.name, a.pricePerPerson * T, 'optional', `${fmt(a.pricePerPerson)} per person`);
+  for (const a of trip.activities) row(`${EXP}${a.id}`, a.name, a.pricePerPerson * T, a.id === prefs.protect ? 'mandatory' : 'optional', a.id === prefs.protect ? `${fmt(a.pricePerPerson)} per person; ${PROTECTED}` : `${fmt(a.pricePerPerson)} per person`);
   row('service', 'Tripelyx service fee (platform fee)', lineAmount(trip, 'service'), 'mandatory');
   if (lineAmount(trip, 'promo')) row('promo', trip.lines.find(l => l.key === 'promo').label, lineAmount(trip, 'promo'), 'discount');
   const sum = kind => rows.filter(r => r.kind === kind).reduce((n, r) => n + r.amount, 0);
@@ -319,16 +326,17 @@ function optionalExtras(inventory, trip, settings, ctx, o) {
   const rules = prefs.rules;
   const price = pricer(inventory, settings, promo);
   const s = trip.spec, out = [], code = promoLabel(trip);
-  const item = (key, label, spec, required, reason, lineOnly) => {
+  const item = (key, label, spec, required, reason, lineOnly, stated = required) => {
     const p = price(spec);
     if (!p) return;
     const amount = trip.total - p.total, promoChange = lineAmount(p, 'promo') - lineAmount(trip, 'promo'), promoLost = promoChange > 0 && lineAmount(p, 'promo') === 0;
     const ends = promoLost ? 'ends' : 'shrinks';
     const note = promoChange > 0 ? (amount > 0 ? `removing it also ${ends} the ${code}: the total drops by ${fmt(amount)}, not ${fmt(lineOnly)}` : `removing it ${ends} the ${code}, so the total would ${amount === 0 ? 'not change' : `rise by ${fmt(-amount)}`}`) : null;
     const costly = note && amount <= 0 && !required;
-    out.push({ key, label, amount, lineOnly, token: encodeSpec(p.spec), total: p.total, required: required || !!costly, stated: required, reason: costly ? `removing it would not save money: ${note}` : reason, promoLost, promoChange, note });
+    out.push({ key, label, amount, lineOnly, token: encodeSpec(p.spec), total: p.total, required: required || !!costly, stated, reason: costly ? `removing it would not save money: ${note}` : reason, promoLost, promoChange, note });
   };
-  for (const a of trip.activities) item(`${EXP}${a.id}`, a.name, { ...s, activities: s.activities.filter(x => x !== a.id) }, false, 'optional: booking the flights and the hotel does not need it', a.pricePerPerson * s.travelers);
+  // The protected experience is required (never offered for removal) but not "stated": it may be the agent's protection.
+  for (const a of trip.activities) { const kept = a.id === prefs.protect; item(`${EXP}${a.id}`, a.name, { ...s, activities: s.activities.filter(x => x !== a.id) }, kept, kept ? PROTECTED : 'optional: booking the flights and the hotel does not need it', a.pricePerPerson * s.travelers, false); }
   if (trip.transfer) { const rule = !!(rules && rules.transfer); item('transfer', TRANSFER_LABEL, { ...s, transfer: false }, rule, rule ? 'a rule you set' : 'optional: booking the flights and the hotel does not need it', lineAmount(trip, 'transfer')); }
   if (s.bags && lineAmount(trip, 'bags') > 0) { const asked = prefs.bags === 'checked'; item('bags', BAGS_LABEL, { ...s, bags: false }, asked, asked ? 'you said you travel with a checked bag' : 'optional: booking the flights and the hotel does not need it', lineAmount(trip, 'bags')); }
   return out;
@@ -344,6 +352,7 @@ function valueOf(item, trip, prefs = {}, ctx = null) {
   const rules = rulesOf(ctx, prefs);
   const no = { worth: false, why: 'nothing you told me asks for it' };
   if (key.startsWith(EXP)) {
+    if (key.slice(EXP.length) === protectOf(null, ctx, prefs)) return { worth: true, why: PROTECTED };
     if (prefs.priority === 'activities') return { worth: true, why: 'you said experiences matter' };
     const a = [...trip.activities, ...(trip.activityOptions || [])].find(x => x.id === key.slice(EXP.length));
     if (a && prefs.style && (STYLE_ACTIVITY[prefs.style] || []).includes(a.kind)) return { worth: true, why: `a ${a.kind} experience fits the ${prefs.style} trip you asked for` };
@@ -397,14 +406,15 @@ function lean(inventory, trip, settings, ctx, o) {
   const price = pricer(inventory, settings, promo);
   const s = trip.spec, T = s.travelers, code = promoLabel(trip);
   const keepTransfer = !!(rules && rules.transfer), keepBag = prefs.bags === 'checked' || !lineAmount(trip, 'bags');
+  const protectedAct = trip.activities.find(a => a.id === prefs.protect) || null; // the protected main experience is a hard requirement: the lean version keeps it
   const removed = [];
-  for (const a of trip.activities) removed.push({ key: `${EXP}${a.id}`, label: a.name, amount: a.pricePerPerson * T });
+  for (const a of trip.activities) if (a !== protectedAct) removed.push({ key: `${EXP}${a.id}`, label: a.name, amount: a.pricePerPerson * T });
   if (trip.transfer && !keepTransfer) removed.push({ key: 'transfer', label: TRANSFER_LABEL, amount: lineAmount(trip, 'transfer') });
   if (s.bags && !keepBag) removed.push({ key: 'bags', label: BAGS_LABEL, amount: lineAmount(trip, 'bags') });
   const current = { total: trip.total, token: encodeSpec(s) };
-  const p = removed.length ? price({ ...s, activities: [], transfer: keepTransfer ? s.transfer : false, bags: keepBag ? s.bags : false }) : null;
+  const p = removed.length ? price({ ...s, activities: protectedAct ? [protectedAct.id] : [], transfer: keepTransfer ? s.transfer : false, bags: keepBag ? s.bags : false }) : null;
   const facts = ruleFacts(p || trip, rules);
-  const kept = [`Round-trip flights (${trip.flight.name})`, `${plural(s.nights, 'night')} at ${trip.hotel.name}`, 'Taxes, mandatory fees and the service fee', ...facts.kept, ...(prefs.bags === 'checked' && hasChecked(p || trip) ? ['Checked bag for each traveler (you said you travel with one)'] : [])];
+  const kept = [`Round-trip flights (${trip.flight.name})`, `${plural(s.nights, 'night')} at ${trip.hotel.name}`, 'Taxes, mandatory fees and the service fee', ...(protectedAct ? [`${protectedAct.name} (${PROTECTED})`] : []), ...facts.kept, ...(prefs.bags === 'checked' && hasChecked(p || trip) ? ['Checked bag for each traveler (you said you travel with one)'] : [])];
   const notKept = facts.notKept, keptText = `Kept: ${joinAnd(kept)}.${notKept.length ? ` Not met by this trip: ${joinAnd(notKept)}.` : ''}`;
   if (!p) return { current, lean: pack(trip), difference: 0, removed: [], givesUp: [], kept, notKept, promoLost: false, text: `Nothing optional is in this price: it is already the lean version.${notKept.length ? ` ${keptText}` : ''}` };
   const givesUp = removed.map(r => r.label), difference = trip.total - p.total, lineTotal = removed.reduce((n, r) => n + r.amount, 0);
@@ -763,4 +773,4 @@ function showWords(b) {
   return `the ${a.toLowerCase()} version`;
 }
 
-module.exports = { showWords, breakdown, hotelFees, seatFees, carCheck, duplicates, bagConfigs, mealCheck, nightChecks, optionalExtras, valueOf, whyKept, lean, addBack, removeOne, biggestLeak, freeSavings, cutInOrder, scorecard, finalScan, victory, notAvailable, PRIORITY_ORDER, ORDER_LABELS, SIGNATURE };
+module.exports = { PROTECTED, showWords, breakdown, hotelFees, seatFees, carCheck, duplicates, bagConfigs, mealCheck, nightChecks, optionalExtras, valueOf, whyKept, lean, addBack, removeOne, biggestLeak, freeSavings, cutInOrder, scorecard, finalScan, victory, notAvailable, PRIORITY_ORDER, ORDER_LABELS, SIGNATURE };

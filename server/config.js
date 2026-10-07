@@ -96,6 +96,7 @@ function loadConfig(env = process.env) {
       hotels: tripProvider('TRIP_HOTELS_PROVIDER'),
       activities: tripProvider('TRIP_ACTIVITIES_PROVIDER'),
       transfers: tripProvider('TRIP_TRANSFERS_PROVIDER'),
+      guides: tripProvider('TRIP_GUIDES_PROVIDER'),
       notifications: (env.NOTIFY_PROVIDER || 'outbox').trim().toLowerCase(),
     },
     // Signed-in accounts with these emails can open the admin control center (/admin).

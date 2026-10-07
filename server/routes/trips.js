@@ -18,6 +18,7 @@ const { guideView } = require('../views/trips/guide');
 const { compareView } = require('../views/trips/compare');
 const { authView, myTripsView } = require('../views/trips/account');
 const { leaksView } = require('../views/trips/leaks');
+const { memoriesView } = require('../views/trips/memories');
 const pages = require('../views/trips/pages');
 const { notFoundView } = require('../views/errors');
 
@@ -181,6 +182,9 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
       const cx = optimizer.parseContext(req.query);
       if (req.query.review === '1') return res.redirect(303, `/trip/${req.params.token}/review?${optimizer.contextParams(cx, { seen: req.query.seen })}`);
       const data = await svc.trip(req.params.token, cx);
+      // A protected experience this destination does not offer protects nothing: dropped from every link
+      // out of the page, and said in words (service.dropUnoffered).
+      const pxNote = svc.dropUnoffered(data.trip, cx);
       // A promo code carried from a review page: this page prices before the code (the customizer
       // compares versions before any code), says what the code takes off and the total with it, and
       // its review link names that total as the one seen, so the review page says "still", not "dropped".
@@ -194,7 +198,15 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
         const [s, w] = await Promise.all([ctx.store.listRecords('saved', { userId: req.user.id, limit: 100 }), ctx.store.listRecords('watch', { userId: req.user.id, limit: 100 })]);
         saved = { saved: s.some(x => x.token === data.token), watch: w.some(x => x.token === data.token) };
       }
-      send(res, tripView(ctx, { data, cx, user: user(req), saved, named: ['high', 'low'].includes(req.query.named) ? req.query.named : null, promo, promoError }));
+      // The main experience: MAIN EXPERIENCE 🔒 PROTECTED while the link protects one (px=), and a
+      // protected experience this version lacks said with the way back, never dropped quietly.
+      const main = svc.experienceMain(data.trip, cx, cx.goals || []);
+      // Only one experience is the protected main experience, so "Protect this instead" replaces the one
+      // protected before, and the page it opens says so: `pxwas` names the replaced one, once (it rides
+      // on that one link only, never on the context). Read only when it names an experience offered here.
+      const was = typeof req.query.pxwas === 'string' && main.protected ? data.trip.activityOptions.find(a => a.id === req.query.pxwas && a.id !== main.main.id) || null : null;
+      const switched = was ? { from: was, to: main.main } : null;
+      send(res, tripView(ctx, { data, cx, user: user(req), saved, named: ['high', 'low'].includes(req.query.named) ? req.query.named : null, promo, promoError, main, pxNote, switched }));
     } catch (e) { next(e); }
   });
 
@@ -274,6 +286,33 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
     } catch (e) { next(e); }
   });
 
+  // MAKE IT MORE MEMORABLE (Experience Max): what this trip gives the goals the traveler ranked
+  // (`mem=`), where its money goes, and every version that could make it more memorable, each priced
+  // in full by the experience engine; every control is a link to that version's token with the
+  // context carried (rules, mem, px, promo, dm, bg), so nothing is applied, added or removed here. The
+  // totals are before any promo code, as on the trip page; the code rides on every link to the review,
+  // and the review link names the total with the code as the one seen, so the review says "still", not
+  // "dropped": the code was applied, the price did not move.
+  // `amt` is MAKE $X MEMORABLE's amount in whole dollars as typed (its first value): anything that is
+  // not a whole number from $10 to $10,000 runs the $100 default, and the page says so.
+  r.get('/trip/:token/memories', compute, async (req, res, next) => {
+    try {
+      const cx = optimizer.parseContext(req.query);
+      const { promo: p, promoError } = await promoOf(cx);
+      const data = await svc.trip(req.params.token, cx);
+      const pxNote = svc.dropUnoffered(data.trip, cx);
+      const coded = p ? await svc.price(data.trip.spec, { promo: p }) : null;
+      const promo = coded ? { code: p.code, total: coded.total, off: data.trip.total - coded.total } : null;
+      const first = [].concat(req.query.amt ?? [])[0];
+      const typed = typeof first === 'string' ? first.trim().replace(/[$,\s]/g, '').slice(0, 12) : '';
+      const whole = /^\d{2,5}$/.test(typed) && Number(typed) >= 10 && Number(typed) <= 10000 ? Number(typed) : null;
+      const amountNote = typed && whole === null ? `I couldn't read "${typed}" as a whole-dollar amount from $10 to $10,000, so this shows $100.` : null;
+      const mem = await svc.memories(data.trip, cx, { amount: (whole || 100) * 100 });
+      await tracked(req, 'memories_viewed', { dest: data.trip.dest.id, total: data.trip.total, goals: mem.goals, protect: cx.protect || null });
+      send(res, memoriesView(ctx, { data, cx, mem, promo, promoError, amountNote, pxNote, user: user(req) }));
+    } catch (e) { next(e); }
+  });
+
   // Side by side: two or three trips by token (the results page links all three).
   r.get('/compare', async (req, res, next) => {
     try {
@@ -299,6 +338,9 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
       let verify;
       try { verify = await svc.verify(req.params.token, seen, { promoCode: cx.promo }); } catch (e) { if (e.code !== 'invalid_promo') throw e; verify = await svc.verify(req.params.token, seen); verify.promoError = e.message; }
       if (!verify.available) return send(res.status(410), unavailableView(ctx, { token: req.params.token, cx }));
+      // A protected experience this destination does not offer protects nothing here (and never reaches
+      // the quote): dropped from the context, and said on the page.
+      const pxNote = svc.dropUnoffered(verify.trip, cx);
       // The verified code rides on every link out of this page (the money leak check's REMOVE, the
       // leaks page, the trip page), so a version opened from here is priced with it; a code the rules
       // refuse is said on the page and carried nowhere.
@@ -308,7 +350,10 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
       // The savings check and the money leak check run on the verified trip with its promo, so every
       // version they price moves with the same code.
       const leak = await svc.leakCheck(verify.trip, cx, { promo: verify.promo });
-      send(res, reviewView(ctx, { data, cx, verify, user: user(req), promoError: verify.promoError, promoCode: verify.promo ? verify.promo.code : '', leak }));
+      // Experience Max's additions (the experience receipt, the protection rows, the final experience
+      // check, the "very scheduled" line), only when the link carries goals or a protected experience.
+      const experience = await svc.experienceReview(verify.trip, cx, { promo: verify.promo });
+      send(res, reviewView(ctx, { data, cx, verify, user: user(req), promoError: verify.promoError, promoCode: verify.promo ? verify.promo.code : '', leak, experience, pxNote }));
     } catch (e) { next(e); }
   });
 
@@ -415,6 +460,28 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
       });
       await svc.addSupportMessage(b.ref, { from: 'customer', text: req.body.text, name: `${b.traveler.firstName} ${b.traveler.lastName}` });
       res.redirect(303, `/booking/${b.ref}?sent=1`);
+    } catch (e) { next(e); }
+  });
+
+  // WHAT WAS ACTUALLY WORTH IT? after the trip (cookie or signed-in owner, as for messages). The
+  // chips as ticked, never preselected: `worth` and `not` are lists of WORTH_IT_CHIPS, `other` the
+  // traveler's own words. It is kept on the booking; on the account's defaults only when the box was
+  // ticked and the one asking is the signed-in owner (service.setWorthIt decides and says which).
+  r.post('/booking/:ref/worth-it', writeLimiter, sameOrigin, form, async (req, res, next) => {
+    try {
+      const { readCookies, bookingCookieName } = require('../lib/cookies');
+      const b = await ctx.engine.authorize(req.params.ref, { token: readCookies(req)[bookingCookieName(req.params.ref)] }).catch(async e => {
+        if (req.user) { const own = (await ctx.store.listBookings({ userId: req.user.id, limit: 200 })).find(x => x.ref === String(req.params.ref).toUpperCase()); if (own) return own; }
+        throw e;
+      });
+      const list = v => [].concat(v ?? []).filter(x => typeof x === 'string').slice(0, 10);
+      try {
+        await svc.setWorthIt(b.ref, { worth: list(req.body.worth), notWorth: list(req.body.not), other: typeof req.body.other === 'string' ? req.body.other : '' }, { remember: req.body.remember === '1', userId: req.user ? req.user.id : null });
+      } catch (e) {
+        if (e instanceof AppError && (e.code === 'invalid_worth_it' || e.code === 'worth_it_closed')) return res.redirect(303, `/booking/${b.ref}?worthError=${encodeURIComponent((e.details && e.details.reason) || 'empty')}#worth-it`);
+        throw e;
+      }
+      res.redirect(303, `/booking/${b.ref}?worth=1#worth-it`);
     } catch (e) { next(e); }
   });
 

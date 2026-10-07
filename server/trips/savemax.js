@@ -57,6 +57,7 @@ function versions(inv, t, settings, ctx, { locks = {}, dates, nightsList, sets, 
   const out = [];
   let priced = 0, truncated = false;
   outer: for (const depart of dateList) for (const nights of nightsIn) for (const hotel of hotels) for (const flight of flights) for (const activities of sets) for (const transfer of transfers) for (const bags of bagsList) {
+    if (ctx && ctx.protect && !activities.includes(ctx.protect)) continue; // the protected main experience (Experience Max) is never priced away
     const spec = { ...s, depart, nights, hotel, flight, activities: [...activities].sort(), transfer, bags };
     const key = encodeSpec(spec);
     if (seen.has(key)) continue;
@@ -343,6 +344,7 @@ function savingsCheck(inventory, trip, settings, ctx = {}, { now = new Date(), l
     considered++;
     if (p.total > fresh.total - material) continue;
     if (!sameSet(p.spec.activities, s.activities)) continue;
+    if (ctx.protect && !p.spec.activities.includes(ctx.protect)) continue; // never a cheaper version without the protected experience
     const ch = classifyChanges(fresh, p);
     if (ch.tradeoffs.length) continue;
     if (compromises(p, qctx).some(c => c.w >= 2 && !had.has(c.text))) continue;
@@ -404,6 +406,7 @@ function lowestRecommended(eligibleTrips = [], ctx = {}, { exclude = [] } = {}) 
     if (!t || (best && t.total > best.total)) continue;
     const token = encodeSpec(t.spec);
     if (skip.has(token)) continue;
+    if (ctx.protect && !t.spec.activities.includes(ctx.protect)) continue; // a trip without the protected experience is never "lowest I recommend"
     const v = verdict(t, qctx);
     if (v.grade !== 'great' && v.grade !== 'good') continue;
     const match = Number.isFinite(x.match) ? x.match : v.match;
