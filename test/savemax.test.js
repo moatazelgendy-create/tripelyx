@@ -499,16 +499,21 @@ test('saverVerdict: cut when a version we would still recommend costs less; othe
   if (held.cheapest) assert.equal(held.cheapest.trip.spec.depart, dearer.spec.depart);
 });
 
-test('labelsFor: saver-mode names on a new array, nothing mutated, never Best, Premium or Luxury', () => {
+test('labelsFor: saver-mode names on a new array, nothing mutated, never Best, Premium or Luxury; save-more is never called "Lowest I recommend"', () => {
   const before = JSON.stringify(result.picks.map(p => ({ kind: p.kind, label: p.label, blurb: p.blurb })));
   const out = savemax.labelsFor(result.picks);
   assert.notEqual(out, result.picks);
-  assert.equal(out.length, result.picks.length);
-  const names = { 'our-pick': 'Best value', 'save-more': 'Lowest I recommend', upgrade: 'Keep more comfort' };
+  // The optimizer's save-more pick is the strongest cheaper trip whatever its grade: without a trip
+  // lowestRecommended vouches for, nothing is named "Lowest I recommend", and save-more is dropped.
+  const kept = result.picks.filter(p => p.kind !== 'save-more');
+  assert.ok(result.picks.length > kept.length, 'this search has a save-more pick');
+  assert.equal(out.length, kept.length);
+  assert.ok(!out.some(o => o.label === 'Lowest I recommend' || o.kind === 'save-more'));
+  const names = { 'our-pick': 'Best value', upgrade: 'Keep more comfort' };
   out.forEach((o, i) => {
-    assert.notEqual(o, result.picks[i], 'a copy');
-    assert.equal(o.trip, result.picks[i].trip, 'the same priced trip');
-    assert.equal(o.label, names[result.picks[i].kind]);
+    assert.notEqual(o, kept[i], 'a copy');
+    assert.equal(o.trip, kept[i].trip, 'the same priced trip');
+    assert.equal(o.label, names[kept[i].kind]);
     assert.doesNotMatch(o.label, /^Best$|premium|luxury/i);
   });
   assert.equal(JSON.stringify(result.picks.map(p => ({ kind: p.kind, label: p.label, blurb: p.blurb }))), before, 'input untouched');

@@ -22,6 +22,7 @@ const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 const MAX_PRICED = 2500;
 const MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
 const LABEL = 'Cheapest strong week I found';
+const COMPARABLE_LABEL = 'Cheapest comparable week I found';
 const HONESTY = 'Today\'s prices for those dates, not a forecast; dates I did not price are not covered';
 const PARTIAL = 'The pass was cut off at the pricing limit, so later dates were not priced';
 const monthName = m => new Intl.DateTimeFormat('en-US', { month: 'long', timeZone: 'UTC' }).format(new Date(`${m}-01T00:00:00Z`));
@@ -29,8 +30,11 @@ const monthName = m => new Intl.DateTimeFormat('en-US', { month: 'long', timeZon
 // ---- the dates to price ----------------------------------------------------------------------
 // The caller's own list when given; else every day of the month the traveler named, from a week
 // out; else every second day from two weeks to five months out (the optimizer's windows, all of
-// them rather than its two cheapest). A locked departure, or one the traveler stated exactly, is
-// the only date whatever else was asked: nothing here moves a date the traveler set.
+// them rather than its two cheapest). The trip's own departure is always among them while it is
+// still ahead, so the trip competes on its own date whatever day the question is asked (the grid is
+// laid from today, and a trip built yesterday sits between its lines). A locked departure, or one
+// the traveler stated exactly, is the only date whatever else was asked: nothing here moves a date
+// the traveler set.
 function windowDates(trip, ctx = {}, { now = new Date(), locks = {}, dates = null } = {}) {
   const s = trip.spec;
   if ((locks && locks.dates) || ctx.dateMode === 'exact') return [s.depart];
@@ -42,7 +46,8 @@ function windowDates(trip, ctx = {}, { now = new Date(), locks = {}, dates = nul
   } else {
     for (let i = 14; i <= 150; i += 2) out.push(addDays(t, i));
   }
-  return out;
+  if (s.depart > t && !out.includes(s.depart) && (!ctx.month || !MONTH.test(ctx.month) || s.depart.slice(0, 7) === ctx.month)) out.push(s.depart);
+  return out.sort();
 }
 
 // ---- the cheapest strong week -----------------------------------------------------------------
@@ -52,7 +57,9 @@ function windowDates(trip, ctx = {}, { now = new Date(), locks = {}, dates = nul
 // own fare first (by id, else by fare name) so a tie goes to it. Each hotel × fare is priced in full
 // and the date keeps its cheapest STRONG version: decision.verdict grades it great or good with the
 // budget taken out, and it carries no compromise of weight 2 or more that the current trip does not
-// already carry. A date with no strong version is recorded under `weak` with the cheapest total
+// already carry. A trip the verdict itself grades below good sets the standard instead (`standard`
+// 'comparable'): a window must then be graded at least as well as the trip, so the comparison stays
+// like for like and no week is called "strong" against a trip that is not. A date with no strong version is recorded under `weak` with the cheapest total
 // priced that day and the reason it is not offered, read off the version that came closest to
 // strong (fewest new compromises, then the highest grade): its top new compromise when it has one
 // (kind 'compromise'), else the label of the grade it earned (kind 'grade', with the grade key).
@@ -65,10 +72,13 @@ function cheapestWeeks(inventory, trip, settings, ctx = {}, { now = new Date(), 
   const s = trip.spec;
   const qctx = { ...ctx, budget: null, allowOver: 0 };
   const had = new Set(compromises(trip, qctx).map(c => c.text));
+  const ownGrade = verdict(trip, qctx).grade;
+  const strongTrip = ownGrade === 'great' || ownGrade === 'good';
+  const floor = strongTrip ? GRADE_RANK.good : GRADE_RANK[ownGrade];
   const judge = p => {
     const v = verdict(p, qctx);
     const fresh = v.compromises.filter(c => c.w >= 2 && !had.has(c.text));
-    return { v, fresh, ok: (v.grade === 'great' || v.grade === 'good') && !fresh.length };
+    return { v, fresh, ok: GRADE_RANK[v.grade] >= floor && !fresh.length };
   };
   const list = windowDates(trip, ctx, { now, locks, dates });
   const rooms = roomsFor(s);
@@ -102,16 +112,22 @@ function cheapestWeeks(inventory, trip, settings, ctx = {}, { now = new Date(), 
     }
   }
   windows.sort((a, b) => a.total - b.total || (a.depart < b.depart ? -1 : a.depart > b.depart ? 1 : 0));
+  const ownToken = encodeSpec(s);
+  // The cheapest window priced, which may be the trip itself on its own date; and `cheaper`, the one
+  // worth moving to: strictly cheaper than the trip and not the trip. A dearer window is never
+  // "the cheapest week" against the trip in hand, and the label exists only when one is cheaper.
   const cheapest = windows[0] || null;
+  const cheaper = cheapest && cheapest.total < trip.total && cheapest.token !== ownToken ? cheapest : null;
   const range = windows.length ? { min: windows[0].total, max: Math.max(...windows.map(w => w.total)), count: windows.length } : null;
   const done = list.slice(0, searched);
   const held = (locks && locks.dates) || ctx.dateMode === 'exact';
   return {
-    current: { depart: s.depart, ret: trip.flight.return || addDays(s.depart, s.nights), total: trip.total, token: encodeSpec(s), strong: judge(trip).ok },
-    windows, cheapest, range, weak, priced, datesSearched: searched, dates: done, truncated,
+    current: { depart: s.depart, ret: trip.flight.return || addDays(s.depart, s.nights), total: trip.total, token: ownToken, strong: strongTrip, grade: ownGrade, priced: done.includes(s.depart) },
+    standard: strongTrip ? 'strong' : 'comparable',
+    windows, cheapest, cheaper, range, weak, priced, datesSearched: searched, dates: done, truncated,
     month: !held && ctx.month && MONTH.test(ctx.month) ? ctx.month : null,
     span: done.length ? { from: done[0], to: done[done.length - 1] } : null,
-    label: cheapest ? LABEL : null,
+    label: cheaper ? (strongTrip ? LABEL : COMPARABLE_LABEL) : null,
   };
 }
 
@@ -138,4 +154,4 @@ function windowWords(out, { fmtDate = d => d } = {}) {
   return { headline, compared, honesty: HONESTY, partial: out && out.truncated ? PARTIAL : null };
 }
 
-module.exports = { cheapestWeeks, windowWords, windowDates, LABEL, HONESTY, PARTIAL, MAX_PRICED };
+module.exports = { cheapestWeeks, windowWords, windowDates, LABEL, COMPARABLE_LABEL, HONESTY, PARTIAL, MAX_PRICED };

@@ -392,7 +392,9 @@ function saverVerdict(inventory, trip, settings, ctx = {}, opts = {}) {
 // is the pick itself, or not cheaper than it, is not listed: the pick is then the lowest we
 // recommend, and save-more (cheaper, but not a trip we would recommend) is still dropped. With no
 // `lowest` the options are relabelled as before (callers in saver mode should pass one).
-const SAVER_LABELS = { 'our-pick': 'Best value', 'save-more': 'Lowest I recommend', lowest: 'Lowest I recommend', upgrade: 'Keep more comfort' };
+// The optimizer's "save more" pick (the strongest cheaper trip, whatever its grade) has no saver name:
+// "Lowest I recommend" is only ever the trip lowestRecommended() vouches for.
+const SAVER_LABELS = { 'our-pick': 'Best value', lowest: 'Lowest I recommend', upgrade: 'Keep more comfort' };
 function lowestRecommended(eligibleTrips = [], ctx = {}, { exclude = [] } = {}) {
   const qctx = { ...ctx, budget: null, allowOver: 0 };
   const skip = new Set(exclude);
@@ -415,8 +417,10 @@ const tokenOf = o => (o && (o.token || (o.trip && o.trip.spec ? encodeSpec(o.tri
 const totalOf = o => (o && Number.isFinite(o.total) ? o.total : o && o.trip ? o.trip.total : NaN);
 function labelsFor(options = [], { lowest = null } = {}) {
   const relabel = o => (o && SAVER_LABELS[o.kind] ? { ...o, label: SAVER_LABELS[o.kind] } : { ...o });
-  if (!lowest) return options.map(relabel);
+  // Save-more is dropped either way: when nothing cheaper is recommended there is no second option
+  // to name, and the cheapest trip is still reachable through "how low can you go?", said as what it is.
   const out = options.filter(o => !(o && o.kind === 'save-more')).map(relabel);
+  if (!lowest) return out;
   const low = { ...lowest, kind: 'lowest', label: SAVER_LABELS.lowest };
   const token = tokenOf(low);
   if (token && out.some(o => tokenOf(o) === token)) return out; // already on the list (the pick itself): never the same package twice

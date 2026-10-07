@@ -85,7 +85,11 @@ test('every window is a priced package of the same trip, strong, sorted, with th
   }
   assert.equal(out.cheapest, out.windows[0]);
   assert.deepEqual(out.range, { min: out.cheapest.total, max: Math.max(...out.windows.map(w => w.total)), count: out.windows.length });
-  assert.equal(out.label, 'Cheapest strong week I found');
+  // `cheaper` is the window worth moving to: strictly cheaper than the trip and not the trip itself;
+  // the label exists only then, so a dearer week is never "the cheapest week found".
+  assert.equal(out.cheaper, out.cheapest.total < trip.total && out.cheapest.token !== encodeSpec(trip.spec) ? out.cheapest : null);
+  assert.equal(out.label, out.cheaper ? 'Cheapest strong week I found' : null);
+  assert.equal(out.standard, 'strong');
   assert.equal(out.truncated, false);
   assert.equal(out.month, null);
   // The anytime set: every second day from two weeks to five months out, each searched exactly once.
@@ -100,7 +104,7 @@ test('every window is a priced package of the same trip, strong, sorted, with th
   // The versions counted are the ones the pricer was asked for.
   assert.equal(out.priced, expected.reduce((n, d) => n + versionsOn(inv, trip, d).length, 0));
   // The current trip, judged as its own page judges it.
-  assert.deepEqual(out.current, { depart: trip.spec.depart, ret: trip.flight.return, total: trip.total, token: encodeSpec(trip.spec), strong: ['great', 'good'].includes(decision.verdict(trip, qctx).grade) });
+  assert.deepEqual(out.current, { depart: trip.spec.depart, ret: trip.flight.return, total: trip.total, token: encodeSpec(trip.spec), strong: ['great', 'good'].includes(decision.verdict(trip, qctx).grade), grade: decision.verdict(trip, qctx).grade, priced: true });
   // The current date is in the searched set here (the search picked it from the same windows): the
   // cheapest window is at least as cheap as the trip, and so is the window on the trip's own date.
   assert.ok(out.dates.includes(trip.spec.depart));
@@ -279,17 +283,72 @@ test('weak dates: searched, counted, and carrying the cheapest total priced that
     else assert.ok(vs.some(p => newHeavy(trip, p).includes(w.reason)));
     assert.equal(w.total, Math.min(...vs.map(p => p.total)));
   }
-  // A trip that is itself not strong (a compromise it already carries) is never offered a window: no
-  // version is strong, every date is weak for the grade, and the words have no headline to give.
+  // A trip that is itself not strong (a compromise it already carries) sets the standard: like for
+  // like, a window must be graded at least as well as the trip. With its date locked the only
+  // window is its own version, nothing is cheaper, and there is no label and no headline to give.
   const aiCtx = { ...ctx, style: 'all-inclusive' };
   const plainHotel = trip.hotelOptions.find(h => !h.features.allInclusive);
   const plainTrip = price(inv, { ...trip.spec, hotel: plainHotel.id });
   assert.ok(plainTrip && !plainTrip.hotel.features.allInclusive);
   const ai = weeks.cheapestWeeks(inv, plainTrip, settings, aiCtx, { now, locks: { dates: true } });
-  assert.equal(ai.current.strong, false);
-  assert.equal(ai.windows.length, 0); assert.equal(ai.cheapest, null); assert.equal(ai.range, null); assert.equal(ai.label, null);
-  assert.equal(ai.weak.length, 1); assert.equal(ai.weak[0].kind, 'grade'); assert.equal(ai.weak[0].grade, 'budget'); assert.equal(ai.weak[0].reason, 'Budget fit');
-  assert.equal(weeks.windowWords(ai).headline, null);
+  assert.equal(ai.current.strong, false); assert.equal(ai.current.grade, 'budget'); assert.equal(ai.standard, 'comparable');
+  assert.ok(ai.windows.length <= 1 && ai.windows.every(w => w.depart === plainTrip.spec.depart && w.total <= plainTrip.total));
+  assert.equal(ai.cheaper, ai.windows[0] && ai.windows[0].total < plainTrip.total ? ai.windows[0] : null);
+  assert.equal(ai.label, ai.cheaper ? 'Cheapest comparable week I found' : null);
+  assert.equal(ai.weak.length, 1 - ai.windows.length);
+  if (!ai.cheaper) assert.ok(!ai.windows.length || ai.windows[0].token === encodeSpec(plainTrip.spec));
+});
+
+test('a trip graded below good is compared like for like: every window is graded at least as well, never called strong, and "cheaper" only when it really is', () => {
+  const aiCtx = { ...ctx, style: 'all-inclusive' };
+  const plainHotel = trip.hotelOptions.find(h => !h.features.allInclusive);
+  const plainTrip = price(inv, { ...trip.spec, hotel: plainHotel.id });
+  const aiq = { ...aiCtx, budget: null, allowOver: 0 };
+  assert.equal(decision.verdict(plainTrip, aiq).grade, 'budget');
+  const out = weeks.cheapestWeeks(inv, plainTrip, settings, aiCtx, { now });
+  assert.equal(out.standard, 'comparable');
+  assert.equal(out.current.strong, false);
+  assert.ok(out.windows.length >= 1, 'other dates price the same kind of trip');
+  const rank = { look: 0, budget: 1, good: 2, great: 3 };
+  for (const w of out.windows) {
+    assert.ok(rank[decision.verdict(w.trip, aiq).grade] >= rank.budget, 'never below the trip\'s own grade');
+    assert.equal(newHeavy(plainTrip, w.trip).length, 0, 'no new compromise of weight 2 or more');
+  }
+  assert.ok(out.dates.includes(plainTrip.spec.depart), 'the trip competes on its own date');
+  const own = out.windows.find(w => w.depart === plainTrip.spec.depart);
+  assert.ok(own && own.total <= plainTrip.total, 'its own date never loses to itself');
+  assert.equal(out.cheapest, out.windows[0]);
+  if (out.cheapest.total < plainTrip.total && out.cheapest.token !== encodeSpec(plainTrip.spec)) { assert.equal(out.cheaper, out.cheapest); assert.equal(out.label, 'Cheapest comparable week I found'); }
+  else { assert.equal(out.cheaper, null); assert.equal(out.label, null); }
+  assert.ok(!/strong/.test(out.label || ''), 'never "strong" against a trip that is not');
+});
+
+test('the trip\'s own departure is always priced while it is ahead, whatever day the question is asked, so a dearer week is never the cheapest found', () => {
+  // Asked a day (and three days) after the trip was built, the grid from today no longer lands on
+  // the trip's date; the date is added anyway, in anytime and in month mode, and never twice.
+  for (const shift of [1, 3]) {
+    const later = new Date(now.getTime() + shift * 86400000);
+    const dates = weeks.windowDates(trip, ctx, { now: later });
+    assert.ok(dates.includes(trip.spec.depart), `shift ${shift}: own date present`);
+    assert.equal(new Set(dates).size, dates.length, 'no date twice');
+    assert.deepEqual(dates, [...dates].sort(), 'sorted');
+    const out = weeks.cheapestWeeks(inv, trip, settings, ctx, { now: later });
+    assert.equal(out.current.priced, true);
+    if (out.current.strong) {
+      const own = out.windows.find(w => w.depart === trip.spec.depart);
+      assert.ok(own && own.total <= trip.total, 'the trip never loses to itself on its own date');
+      assert.ok(!out.cheaper || out.cheaper.total < trip.total, 'cheaper means cheaper');
+      assert.ok(!out.label || out.cheaper, 'a label only with something cheaper');
+    }
+    const month = trip.spec.depart.slice(0, 7);
+    const inMonth = weeks.windowDates(trip, { ...ctx, month }, { now: later });
+    assert.ok(inMonth.includes(trip.spec.depart) && inMonth.every(d => d.slice(0, 7) === month));
+    const other = `${Number(month.slice(0, 4)) + 1}-${month.slice(5)}`;
+    assert.ok(!weeks.windowDates(trip, { ...ctx, month: other }, { now: later }).includes(trip.spec.depart), 'a month the trip is not in does not get its date');
+  }
+  // A departure already behind us is not added: nothing is priced in the past.
+  const past = { ...trip, spec: { ...trip.spec, depart: addDays(t0, -2) } };
+  assert.ok(!weeks.windowDates(past, ctx, { now }).includes(past.spec.depart));
 });
 
 test('windowWords: the cheapest window\'s own dates and price, the other windows\' range and count, and the honesty line; never typical, usually or predict', () => {
