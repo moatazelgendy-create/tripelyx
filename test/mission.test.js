@@ -215,9 +215,12 @@ test('Save Max: the saver\'s numbers, labels that never say best or luxury, how 
     const trap = savemax.cheapTrap(tr.trip, tr.trip.flightOptions, { bags: 'carry-on' });
     assert.ok(trap.text, 'a sentence that names what was compared');
     assert.ok(trap.badge === null || ['cheaper-overall', 'looks-cheaper'].includes(trap.badge));
-    // No predictions.
+    // No predictions: other departure dates are priced today, or the question is declined; nothing forecast.
     s = await say('When can I go for less?');
-    assert.match(said(s).split(' | ').pop(), /I don't predict prices/);
+    const wl = said(s).split(' | ').pop();
+    assert.match(wl, /Today's prices|today's prices|not a forecast|never predict/i);
+    assert.doesNotMatch(wl, /will (?:drop|fall|rise|be cheaper)|usually cheaper|tends to/i);
+    s = await say('Keep my dates');
     // Remembering is a savings style: how they pack and travel, never money.
     const s1 = await agent.create({ visitor: 'v-saver2', userId: 'u-saver', mission: true, mode: 'save' });
     const say1 = ask(agent, s1.id);
@@ -273,5 +276,198 @@ test('pages: the homepage asks for one number, a budget starts a mission, the ca
     const sv = await app.agent.load(sid);
     assert.equal(sv.mission.mode, 'save');
     assert.match(said(sv), /I'll try not to use it/);
+  } finally { await app.close(); }
+});
+
+test('the AI competes with itself: three ways from the likeliest destinations land first, every destination then tries to beat them, and a way is replaced only by something materially better, said aloud', async () => {
+  const app = await startApp();
+  try {
+    const agent = app.agent;
+    const s0 = await agent.create({ visitor: 'v-beat', mission: true });
+    await agent.say(s0.id, '$1,800');
+    // Hold the job right after the fast ways are on the table, the way slow suppliers would.
+    let reached, release, held = false;
+    const atGate = new Promise(r => { reached = r; });
+    const gate = new Promise(r => { release = r; });
+    agent.breathe = async () => { if (held) return; const st = await agent.load(s0.id); if (st.mission && st.mission.fastRound !== null) { held = true; reached(); await gate; } };
+    await agent.say(s0.id, 'JFK');
+    await atGate;
+    let s = await agent.load(s0.id);
+    assert.equal(s.job.status, 'running');
+    const fastCard = cards(s, 'ways').pop();
+    assert.ok(fastCard && fastCard.ways.length >= 2, 'ways from the fast phase, while the deep phase runs');
+    assert.match(said(s), /from the likeliest destinations/);
+    assert.match(said(s), /I'm now checking all \d+ destinations and replace one of these only if something materially better turns up/);
+    assert.equal(s.pending, 'ways', 'the traveler can answer while the rest is checked');
+    assert.ok(s.current && s.current.token === fastCard.ways.find(w => w.pick).trip.token, 'the champion is on the canvas already');
+    const before = Object.fromEntries(fastCard.ways.map(w => [w.key, w.trip.total]));
+    release();
+    await agent.jobs.drain();
+    s = await agent.load(s0.id);
+    assert.equal(s.job.status, 'done');
+    const checked = s.job.feed.find(f => /^Checked all \d+ destinations: \d+ complete packages/.test(f));
+    assert.ok(checked, s.job.feed.join(' / '));
+    assert.match(checked, /replaced by something materially better|nothing beat the ways from the first pass/);
+    const beats = cards(s, 'beat');
+    const finalWays = s.mission.strategies;
+    if (beats.length) {
+      assert.match(said(s), /I found something that beats Option \d \(/);
+      for (const b of beats) {
+        assert.ok(b.after && b.after.total <= b.before.total, 'a replacement is never dearer than the way it replaces');
+        assert.ok(b.after.total <= 180000, 'and stays inside the ceiling');
+        assert.ok(finalWays.some(w => w.token === b.after.token), 'the replacement is in the set now');
+        assert.ok(!b.before || b.after.token !== b.before.token);
+      }
+      const compact = cards(s, 'ways').pop();
+      assert.ok(compact.compact, 'the set after the deep phase is shown compact');
+      assert.match(said(s), /I'd stop here\. I checked all \d+ destinations/);
+    } else {
+      assert.match(said(s), /Nothing beat the ways from the first pass, so they stand/);
+      for (const w of finalWays) assert.equal(w.total, before[w.key], 'nothing was swapped under the traveler');
+    }
+    for (const w of finalWays) assert.ok(w.total <= 180000);
+    assert.equal(s.pending, 'ways');
+    assert.doesNotMatch(said(s), /\d+% (done|complete)/);
+  } finally { await app.close(); }
+});
+
+test('one decision away: two priced trips within $50 that trade exactly one thing are the traveler\'s call, never the agent\'s, and the stop line follows the answer', async () => {
+  const app = await startApp();
+  try {
+    const agent = app.agent;
+    const optimizer = require('../server/trips/optimizer');
+    const state = require('../server/agent/state');
+    const facts = require('../server/trips/facts');
+    const s0 = await agent.create({ visitor: 'v-decide' });
+    const say = ask(agent, s0.id);
+    const s = await say('I have $2,400, two of us from JFK, beach, 5 to 7 nights. Booking budget.');
+    assert.equal(s.job.status, 'done');
+    // The same search the agent ran, so the test knows whether a real decision existed.
+    const q = state.toQuery(s, { maps: app.ctx.tripService.inv.maps }).query;
+    const deep = optimizer.search(app.ctx.tripService.inv, q, { settings: await agent.settings(), now: agent.now() });
+    const best = deep.picks[0];
+    // The agent's own rule, mirrored: one group of facts traded against another, same destination.
+    const exists = (deep.eligibleTrips || []).some(c => {
+      if (c.trip === best.trip || c.trip.dest.id !== best.trip.dest.id || Math.abs(c.trip.total - best.trip.total) > 5000) return false;
+      const ch = facts.classifyChanges(best.trip, c.trip);
+      if (ch.neutral.some(r => r.key === 'dest')) return false;
+      const changed = new Set([...ch.improvements, ...ch.tradeoffs, ...ch.neutral].map(r => r.key));
+      const g = r => agent.decisionGroup(r.key, changed);
+      if ([...ch.improvements, ...ch.tradeoffs].some(r => g(r) === 'both')) return false;
+      const ups = new Set(ch.improvements.map(g).filter(Boolean)), downs = new Set(ch.tradeoffs.map(g).filter(Boolean));
+      return ups.size === 1 && downs.size === 1 && [...ups][0] !== [...downs][0];
+    });
+    const card = cards(s, 'decision').pop();
+    if (!exists) { assert.ok(!card, 'no decision is invented when the search does not hold one'); assert.match(said(s), /I'd stop here/); return; }
+    assert.ok(card, 'the decision is asked');
+    assert.equal(card.options.length, 2);
+    assert.ok(Math.abs(card.options[0].total - card.options[1].total) <= 5000, 'within $50');
+    assert.notEqual(card.options[0].label, card.options[1].label);
+    assert.match(said(s).split(' | ').pop(), /I'm one decision away\..*Which matters more\?/);
+    assert.doesNotMatch(said(s).split(' | ').pop(), /I'd (pick|go with|recommend) (A|B)\b/, 'the agent takes no side');
+    assert.equal(s.pending, 'options');
+    assert.doesNotMatch(said(s), /I'd stop here/, 'the signature stop waits for the answer');
+    const s2 = await say('Option B');
+    assert.equal(s2.current.token, card.options[1].token, 'the chosen version is on the canvas');
+    assert.match(said(s2), /it is: .* matters more, and I keep that in mind for this trip \(not saved unless you ask\)/);
+    assert.ok(card.options.every(o => o.label.length > 3), 'every button names what differs');
+    assert.match(said(s2).split(' | ').pop(), /I'd stop here\. I checked all \d+ destinations/);
+    assert.equal(s2.decision, null);
+    assert.equal((await app.ctx.store.listRecords('travel_defaults', { limit: 10 })).length, 0, 'nothing saved');
+  } finally { await app.close(); }
+});
+
+test('watch this trip: a watch on the account with the rule the traveler named, re-priced in My Trips, speaking only when the rule is met; sign-in first when anonymous; nothing to watch when nothing is built', async () => {
+  const app = await startApp();
+  try {
+    const agent = app.agent, svc = app.ctx.tripService;
+    const a0 = await agent.create({ visitor: 'v-anon' });
+    let a = await ask(agent, a0.id)('Watch this trip');
+    assert.match(said(a).split(' | ').pop(), /There is no trip to watch yet/);
+    a = await ask(agent, a0.id)('I have $2,000, two of us from JFK, 5 nights, beach. Booking budget.');
+    assert.ok(a.current);
+    a = await ask(agent, a0.id)('Watch this trip');
+    assert.match(said(a).split(' | ').pop(), /A watch lives on your account/);
+    assert.equal(last(a).card.kind, 'link');
+    assert.match(last(a).card.href, /^\/signin\?next=/);
+    assert.equal((await app.ctx.store.listRecords('watch', { limit: 10 })).length, 0, 'nothing is stored for an anonymous visitor');
+    const u = { id: 'u-watch', email: 'watch@example.com' };
+    const w0 = await agent.create({ visitor: 'v-watch', userId: u.id });
+    const say = ask(agent, w0.id);
+    let w = await say('I have $2,000, two of us from JFK, 5 nights, beach. Booking budget.');
+    assert.ok(w.current);
+    w = await say('Tell me when it drops $50');
+    const line = said(w).split(' | ').pop();
+    assert.match(line, /^Watching it\. /);
+    assert.match(line, /\$50/);
+    assert.match(line, /say something only when that rule is met/);
+    assert.match(line, /No other nudges, ever/);
+    const recs = await app.ctx.store.listRecords('watch', { userId: u.id, limit: 10 });
+    assert.equal(recs.length, 1);
+    assert.equal(recs[0].token, w.current.token);
+    assert.deepEqual(recs[0].rule, { kind: 'drop', amount: 5000 });
+    assert.equal(recs[0].priceAtSave, w.current.total, 'the price at save is the verified total, the only baseline');
+    const rows = await svc.listSaved(u, 'watch');
+    assert.equal(rows.length, 1);
+    assert.ok(rows[0].ruleText && /\$50/.test(rows[0].ruleText));
+    assert.equal(rows[0].alert.met, false, 'no alert when nothing happened');
+    assert.match(rows[0].alert.text, /^No alert: /, 'My Trips says plainly that nothing happened');
+    assert.ok(!('budgetGuess' in recs[0]) && !('income' in recs[0]));
+    w = await say('Let me know when it is under $1,200');
+    const r2 = await app.ctx.store.listRecords('watch', { userId: u.id, limit: 10 });
+    assert.equal(r2.length, 2);
+    assert.deepEqual(r2.find(r => r.rule.kind === 'under').rule, { kind: 'under', amount: 120000 });
+  } finally { await app.close(); }
+});
+
+test('when can I go for less: today\'s prices for the same trip on every other departure date searched, never a forecast; a flexible month gets its cheapest strong week; a fixed date is honest', async () => {
+  const app = await startApp();
+  try {
+    const agent = app.agent, svc = app.ctx.tripService;
+    const s0 = await agent.create({ visitor: 'v-weeks' });
+    const say = ask(agent, s0.id);
+    let s = await say('I have $2,500, two of us from JFK, 5 nights, beach, anytime in June. Booking budget.');
+    assert.equal(s.dateMode, 'flexible');
+    assert.ok(s.current, 'a trip was built');
+    const feedLine = s.job.feed.find(f => /^Cheapest strong week in June: /.test(f));
+    const wk = cards(s, 'weeks');
+    if (feedLine) {
+      assert.ok(wk.length, 'the cheapest strong week is on a card after the build');
+      assert.match(said(s), /not a forecast|today's prices/i);
+    }
+    s = await say('When can I go for less?');
+    const card = cards(s, 'weeks').pop();
+    const line = said(s).split(' | ').pop();
+    assert.match(line, /Today's prices, not a forecast|cheapest strong week|only date I priced|No other departure date/);
+    assert.doesNotMatch(line, /will (?:drop|fall|rise|be cheaper)|(?<!not a )forecast|usually|tends to|historically/i, 'nothing predicted');
+    if (card && card.windows.length) {
+      assert.ok(card.windows.every(w => /^\d{4}-\d{2}-\d{2}$/.test(w.depart)));
+      assert.ok(card.windows.every(w => w.depart.startsWith(s.month)), 'only the month the traveler named');
+      assert.ok(card.priced >= card.datesSearched && card.datesSearched >= card.windows.length, 'versions priced, dates priced in full, windows offered: each at least the next');
+      for (const w of card.windows) {
+        const priced = await svc.trip(w.token, {});
+        assert.equal(w.total, priced.trip.total, 'every window total is the live priced total, nothing estimated');
+        assert.equal(w.delta, w.total - card.current.total);
+      }
+      assert.deepEqual(card.windows.map(w => w.total), [...card.windows.map(w => w.total)].sort((a, b) => a - b), 'cheapest first');
+      if (card.range) assert.ok(card.range.min <= card.windows[0].total && card.range.max >= card.windows[card.windows.length - 1].total);
+      if (card.windows[0].letter) {
+        assert.equal(s.pending, 'options');
+        const first = card.windows[0];
+        s = await say('Option A');
+        assert.equal(s.current.token, first.token, 'picking a letter moves the trip to that week');
+        assert.ok(s.history.some(h => /^Leaving |^Cheaper version, same dates$/.test(h.label)), 'the move is a line on the receipt');
+      }
+    }
+    // A fixed date: only that date was priced, and the agent says so instead of guessing.
+    const f0 = await agent.create({ visitor: 'v-fixed' });
+    const sayF = ask(agent, f0.id);
+    let f = await sayF('I have $2,500, two of us from JFK, 5 nights, beach, leaving June 12. Booking budget.');
+    assert.equal(f.dateMode, 'exact');
+    if (f.current) {
+      f = await sayF('When can I go for less?');
+      assert.match(said(f).split(' | ').pop(), /Your departure is fixed on .*the only date I priced.*never predict/);
+      assert.equal(cards(f, 'weeks').length, 0);
+    }
   } finally { await app.close(); }
 });

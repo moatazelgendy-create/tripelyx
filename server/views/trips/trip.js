@@ -19,6 +19,14 @@ function delta(d) {
   return html`<span class="tb-delta ${d < 0 ? 'tb-delta-save' : 'tb-delta-add'}">${d < 0 ? '−' : '+'}${money(Math.abs(d))}</span>`;
 }
 
+// Watch this trip: the rule the alert waits for is chosen here and kept on the watch (see
+// trips/service watchRule). The amount box is for the "at or under" rule; "drops $100 or more" and
+// "any drop" need none. A plain form, so it works without a script; the route reads it as typed.
+function watchForm(token, cx, saved) {
+  if (saved && saved.watch) return html`<button class="btn btn-ghost" type="button" disabled>${icon('eye')} Watching price</button>`;
+  return html`<form method="post" action="/trip/${token}/save?${contextParams(cx)}" class="tb-inline tb-inline-field tb-watch"><input type="hidden" name="kind" value="watch"><label class="sr-only" for="watch-rule">Alert me when the price</label><select id="watch-rule" name="rule"><option value="drop">Drops $100 or more</option><option value="any-drop">Any drop</option><option value="under">At or under $</option></select><input type="text" name="amount" inputmode="numeric" pattern="[0-9,.]*" size="6" autocomplete="off" aria-label="Amount in dollars, for the at-or-under rule"><button class="btn btn-ghost" type="submit">${icon('eye')} Watch price</button></form>`;
+}
+
 function changeUrl(token, cx, change) {
   return `/trip/${token}/change?${contextParams(cx, change)}`;
 }
@@ -229,7 +237,7 @@ function tripView(ctx, { data, cx, user, saved, dreamGap, named = null }) {
       <div class="tb-trip-actions">
         <a class="btn btn-navy btn-lg" href="${reviewUrl}">Book this trip · ${money(t.total)} ${icon('arrow')}</a>
         <button class="btn btn-ghost" type="button" data-share="${token}" data-share-title="${s.nights} nights in ${t.dest.name} · ${money(t.perTraveler)}/person">${icon('share')} Share</button>
-        ${user ? html`<form method="post" action="/trip/${token}/save?${contextParams(cx)}" class="tb-inline"><button class="btn btn-ghost" type="submit" name="kind" value="saved"${saved && saved.saved ? raw(' disabled') : ''}>${icon(saved && saved.saved ? 'heart-fill' : 'heart')} ${saved && saved.saved ? 'Saved' : 'Save trip'}</button><button class="btn btn-ghost" type="submit" name="kind" value="watch"${saved && saved.watch ? raw(' disabled') : ''}>${icon('eye')} ${saved && saved.watch ? 'Watching price' : 'Watch price'}</button></form>`
+        ${user ? html`<form method="post" action="/trip/${token}/save?${contextParams(cx)}" class="tb-inline"><button class="btn btn-ghost" type="submit" name="kind" value="saved"${saved && saved.saved ? raw(' disabled') : ''}>${icon(saved && saved.saved ? 'heart-fill' : 'heart')} ${saved && saved.saved ? 'Saved' : 'Save trip'}</button></form>${watchForm(token, cx, saved)}`
           : html`<a class="btn btn-ghost" href="/signin?next=${encodeURIComponent(`/trip/${token}?${contextParams(cx)}`)}">${icon('heart')} Save or watch</a>`}
       </div>
       <nav class="tb-quick" aria-label="What you can do with this trip">

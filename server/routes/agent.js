@@ -24,8 +24,11 @@ function agentRouter(ctx, { writeLimiter, computeLimiter, sameOrigin }) {
   r.use((req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
 
   const owned = async (req, res) => {
-    const s = await agent.load(req.params.id);
+    let s = await agent.load(req.params.id);
     if (!agent.owns(s, { visitor: req.visitor, user: user(req) })) { send(res.status(404), notFoundView(ctx)); return null; }
+    // A conversation started before signing in becomes the account's once its owner signs in, so a
+    // watch set here lives on the account and the conversation survives a cleared cookie.
+    if (req.user && !s.userId) s = await agent.withState(s.id, st => { st.userId = req.user.id; return st; });
     return s;
   };
 
@@ -47,7 +50,7 @@ function agentRouter(ctx, { writeLimiter, computeLimiter, sameOrigin }) {
       const o = svc.inv.maps.getOrigin(s.origin);
       // The saver's facts on the canvas: the fare compared with the bag the traveler packs (only when
       // they said how they pack), and the receipt of every version applied in this conversation.
-      const trap = s.bags ? savemax.cheapTrap(data.trip, data.trip.flightOptions || [], { bags: s.bags }) : null;
+      const trap = s.bags ? savemax.cheapTrap(data.trip, data.trip.flightOptions || [], { bags: s.bags, rules: cx.rules, locks: state.effectiveLocks(s) }) : null;
       let receipt = null;
       if (s.history && s.history.length > 1) {
         const versions = [];

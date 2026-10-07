@@ -19,6 +19,54 @@ const FUNNEL_LABELS = {
 };
 const money = c => fmtMoney(c, 'USD');
 
+// ---- price watches: the rule a watch waits for, and whether today's price meets it ----
+// A watch speaks only when the rule the traveler set is met, judged on the total the pricer gives now
+// against the total when the trip was saved. Three rules and no others: the total falls by at least an
+// amount ('drop'), the same trip gets cheaper by any amount ('any-drop'), or the total is at or under
+// an amount ('under'). A watch asked for with no rule gets the $100 drop. Amounts are cents.
+const WATCH_RULES = ['drop', 'any-drop', 'under'];
+const WATCH_DEFAULT_RULE = { kind: 'drop', amount: 10000 };
+const WATCH_MAX_AMOUNT = 100000000; // $1,000,000, the same ceiling as "name your price"
+
+// The rule as stored: validated and nothing else. Anything outside the three kinds, or an amount
+// that is not a positive whole number of cents, is refused rather than guessed at.
+function watchRule(input) {
+  if (input === undefined || input === null) return { ...WATCH_DEFAULT_RULE };
+  const kind = input && typeof input === 'object' ? input.kind : input;
+  if (!WATCH_RULES.includes(kind)) throw new AppError('invalid_watch', 'Choose a watch rule: a drop of at least an amount, any drop, or a total at or under an amount.', 422, { rule: 'Choose a rule.' });
+  if (kind === 'any-drop') return { kind };
+  const amount = input.amount;
+  if (!Number.isInteger(amount) || amount <= 0 || amount > WATCH_MAX_AMOUNT) throw new AppError('invalid_watch', 'Enter the amount in dollars for the watch, a whole number above zero.', 422, { amount: 'Enter an amount in dollars.' });
+  return { kind, amount };
+}
+
+function ruleText(rule) {
+  const r = watchRule(rule);
+  if (r.kind === 'any-drop') return 'Alert when the same trip gets cheaper';
+  if (r.kind === 'under') return `Alert when the total is at or under ${money(r.amount)}`;
+  return `Alert when the total drops ${money(r.amount)} or more`;
+}
+
+// Is the rule met by the total priced now? Returns the verdict and the sentence My Trips shows: the
+// movement with its sign when the rule asks for a drop, the total against the line when it asks for
+// "at or under". A rule that is not met says so and never dresses the gap up.
+function watchMet(rule, priceAtSave, now) {
+  const r = watchRule(rule);
+  if (!Number.isFinite(now) || !Number.isFinite(priceAtSave)) return { met: false, text: 'No alert: this trip could not be priced.' };
+  const change = now - priceAtSave;
+  const moved = change === 0 ? 'the total is unchanged since you saved it' : `the total moved ${change < 0 ? '−' : '+'}${money(Math.abs(change))} since you saved it`;
+  if (r.kind === 'under') {
+    if (now <= r.amount) return { met: true, text: `Now ${money(now)}, ${now === r.amount ? 'at' : 'under'} your ${money(r.amount)}` };
+    return { met: false, text: `No alert: the total is ${money(now)}, above your ${money(r.amount)}` };
+  }
+  if (r.kind === 'any-drop') {
+    if (change < 0) return { met: true, text: `The total dropped ${money(-change)} since you saved it: ${money(now)} now` };
+    return { met: false, text: `No alert: ${moved}, so the same trip is not cheaper` };
+  }
+  if (change <= -r.amount) return { met: true, text: `The total dropped ${money(-change)} since you saved it: ${money(now)} now` };
+  return { met: false, text: `No alert: ${moved}, not the ${money(r.amount)} drop you asked for` };
+}
+
 class TripService {
   constructor({ inventory, store, notifier, config, now = () => new Date(), log = console }) {
     this.inv = inventory;
@@ -313,20 +361,42 @@ class TripService {
   }
 
   // ---- saved trips, price watches, abandoned trips ----
-  async saveTrip(user, token, { kind = 'saved', budget = null } = {}) {
+  // A saved trip is a bookmark with the price of the day. A watch also carries the rule it waits for
+  // (see watchRule); the rule is checked before the trip is priced, so bad input is a 422, not a search.
+  async saveTrip(user, token, { kind = 'saved', budget = null, rule } = {}) {
+    if (kind !== 'saved' && kind !== 'watch') throw new AppError('invalid_watch', 'Save the trip or watch its price.', 422);
+    const watch = kind === 'watch';
+    const checked = watch ? watchRule(rule) : null;
     const t = requireTrip(await this.price(decodeSpec(token)));
-    const rec = { id: id(kind === 'watch' ? 'wch' : 'sav'), kind, token: encodeSpec(t.spec), budget, priceAtSave: t.total, title: `${t.spec.nights} nights in ${t.dest.name}`, savedAt: this.now().toISOString() };
+    const rec = { id: id(watch ? 'wch' : 'sav'), kind, token: encodeSpec(t.spec), budget, priceAtSave: t.total, title: `${t.spec.nights} nights in ${t.dest.name}`, savedAt: this.now().toISOString() };
+    if (watch) rec.rule = checked;
     await this.store.putRecord(kind, rec.id, rec, { userId: user.id });
     return rec;
   }
 
+  // The agent's way in: a watch with the rule the traveler named, returned with its rule in words.
+  async watchTrip(user, token, { budget = null, rule } = {}) {
+    const rec = await this.saveTrip(user, token, { kind: 'watch', budget, rule });
+    return { ...rec, ruleText: ruleText(rec.rule) };
+  }
+
+  // Saved trips and watches re-priced now. A watch adds its rule, the rule in words and `alert`, the
+  // watchMet verdict; a trip that can no longer be priced keeps trip and alert null, and a trip whose
+  // dates have passed cannot alert, since it cannot be booked.
   async listSaved(user, kind) {
     const recs = await this.store.listRecords(kind, { userId: user.id, limit: 50 });
     const out = [];
     for (const r of recs) {
       let t = null;
       try { t = await this.price(decodeSpec(r.token)); } catch { t = null; }
-      out.push({ ...r, trip: t ? publicTrip(t) : null, now: t ? t.total : null, change: t ? t.total - r.priceAtSave : null, departed: decodeSpec(r.token).depart < today(this.now()) });
+      const departed = decodeSpec(r.token).depart < today(this.now());
+      const row = { ...r, trip: t ? publicTrip(t) : null, now: t ? t.total : null, change: t ? t.total - r.priceAtSave : null, departed };
+      if (kind === 'watch') {
+        row.rule = watchRule(r.rule);
+        row.ruleText = ruleText(row.rule);
+        row.alert = !t ? null : departed ? { met: false, text: 'No alert: this trip’s dates have passed' } : watchMet(row.rule, r.priceAtSave, t.total);
+      }
+      out.push(row);
     }
     return out;
   }
@@ -451,4 +521,4 @@ class TripService {
   }
 }
 
-module.exports = { TripService, FUNNEL, FUNNEL_LABELS };
+module.exports = { TripService, FUNNEL, FUNNEL_LABELS, watchRule, ruleText, watchMet, WATCH_RULES, WATCH_DEFAULT_RULE };

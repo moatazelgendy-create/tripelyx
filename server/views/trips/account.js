@@ -40,19 +40,26 @@ function tripRow(b) {
   </li>`;
 }
 
+// A saved trip or a price watch, re-priced. A watch also shows the rule it waits for and the honest
+// line from the service (listSaved's `alert`): the "Alert" pill and the is-alert class appear only
+// when that rule is met; otherwise the line says what moved and why no alert.
 function savedRow(r, kind) {
   const t = r.trip;
-  if (!t) return html`<li class="tb-mytrip tb-mytrip-gone"><div><h3>${r.title}</h3><p class="tb-muted">This trip is no longer available (saved at ${money(r.priceAtSave)}).</p></div><form method="post" action="/my-trips/remove"><input type="hidden" name="kind" value="${kind}"><input type="hidden" name="id" value="${r.id}"><button class="btn btn-ghost btn-sm" type="submit">Remove</button></form></li>`;
+  const watch = kind === 'watch';
+  const met = watch && !!(r.alert && r.alert.met);
+  const remove = html`<form method="post" action="/my-trips/remove"><input type="hidden" name="kind" value="${kind}"><input type="hidden" name="id" value="${r.id}"><button class="btn btn-ghost btn-sm" type="submit">Remove</button></form>`;
+  if (!t) return html`<li class="tb-mytrip tb-mytrip-gone"><div><h3>${r.title}</h3><p class="tb-muted">This trip is no longer available (saved at ${money(r.priceAtSave)}).</p>${watch ? html`<p class="tb-small tb-muted">${r.ruleText}. No alert: the trip can no longer be priced.</p>` : ''}</div>${remove}</li>`;
   const cx = { budget: r.budget };
-  return html`<li class="tb-mytrip">
+  return html`<li class="tb-mytrip${met ? ' is-alert' : ''}">
     <img src="${t.dest.image.url}" alt="" width="200" height="125" loading="lazy">
     <div>
-      <p class="tb-kicker">${kind === 'watch' ? 'Watching price' : 'Saved'} · ${r.departed ? 'dates passed' : `saved ${shortDate(r.savedAt.slice(0, 10))}`}</p>
+      <p class="tb-kicker">${watch ? 'Watching price' : 'Saved'} · ${r.departed ? 'dates passed' : `saved ${shortDate(r.savedAt.slice(0, 10))}`}${met ? html` <span class="tb-delta tb-delta-save">Alert</span>` : ''}</p>
       <h3><a href="/trip/${r.token}?${contextParams(cx)}">${plural(t.spec.nights, 'night')} in ${t.dest.name}</a></h3>
       <p>${longDate(t.spec.depart)} · ${plural(t.spec.travelers, 'traveler')} · ${t.hotel.name}</p>
       <p class="tb-small">When you saved it: <b>${money(r.priceAtSave)}</b> · now: <b>${money(r.now)}</b> ${r.change === 0 ? html`<span class="tb-delta tb-delta-same">no change</span>` : html`<span class="tb-delta ${r.change < 0 ? 'tb-delta-save' : 'tb-delta-add'}">${r.change < 0 ? '−' : '+'}${money(Math.abs(r.change))}</span>`}${r.budget ? html` · ${r.now <= r.budget ? html`<span class="tb-delta tb-delta-save">under your ${dollars(r.budget)}</span>` : html`<span class="tb-delta tb-delta-add">${money(r.now - r.budget)} over your ${dollars(r.budget)}</span>`}` : ''}</p>
+      ${watch ? html`<p class="tb-small tb-watch-rule"><span class="tb-muted">${r.ruleText}.</span> ${r.alert ? html`<span class="tb-watch-alert">${r.alert.text}.</span>` : ''}</p>` : ''}
     </div>
-    <form method="post" action="/my-trips/remove"><input type="hidden" name="kind" value="${kind}"><input type="hidden" name="id" value="${r.id}"><button class="btn btn-ghost btn-sm" type="submit">Remove</button></form>
+    ${remove}
   </li>`;
 }
 

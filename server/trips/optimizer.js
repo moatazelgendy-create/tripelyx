@@ -394,7 +394,13 @@ function search(inventory, rawQuery, { settings, now = new Date() }) {
   for (const x of all) if (!(x.trip.dest.id in cheapestByDest) || x.trip.total < cheapestByDest[x.trip.dest.id]) cheapestByDest[x.trip.dest.id] = x.trip.total;
   const eligibleDestinations = new Set(eligible.map(x => x.trip.dest.id)).size;
   const cheaperThanPick = picks[0] ? eligible.filter(x => x.trip.total < picks[0].trip.total).length : 0;
-  return { query: q, ctx, picks, keepMoney, closest, cheapest, cheapestEligible, cheapestByDest, considered: all.length, eligible: eligible.length, cheaperThanPick, destinations: destsConsidered, eligibleDestinations, airport };
+  // The eligible set itself, for callers that need more than the three picks (Save Max names the
+  // cheapest trip it would still recommend from it): every eligible candidate at or under the budget
+  // itself, cheapest first, and the eligible trips within $50 of the pick's price, strongest first,
+  // at most 40. Both hold references to the packages priced above; nothing is priced again.
+  const eligibleTrips = eligible.filter(x => x.trip.total <= q.budget).sort((a, b) => a.trip.total - b.trip.total).map(x => ({ trip: x.trip, match: x.match }));
+  const near = picks[0] ? eligible.filter(x => x.trip !== picks[0].trip && Math.abs(x.trip.total - picks[0].trip.total) <= 5000).sort((a, b) => b.match - a.match || a.trip.total - b.trip.total).slice(0, 40).map(x => ({ trip: x.trip, match: x.match })) : [];
+  return { query: q, ctx, picks, keepMoney, closest, cheapest, cheapestEligible, cheapestByDest, considered: all.length, eligible: eligible.length, cheaperThanPick, destinations: destsConsidered, eligibleDestinations, airport, eligibleTrips, near };
 }
 
 // Journey B: a dream destination and a maximum budget. Returns the strongest trip to that destination

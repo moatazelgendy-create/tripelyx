@@ -28,6 +28,9 @@ function newState({ id, visitor = null, userId = null, now = new Date() }) {
     // What has been built: the current trip, the three options from the last build, a pending proposal
     // the traveler has not approved, and the running or finished search job.
     current: null, options: [], proposal: null, job: null, challenged: {}, challenger: null, compromises: [],
+    // A real decision the search is one answer away from (two priced trips, one trade), and the
+    // priced departure windows on the table after "when can I go for less?"; both answered by letter.
+    decision: null, weeks: [],
     // The mission, when the conversation started from one number: the three ways built for it, what
     // the traveler reacted to, the direction they chose (a signal for this trip only, never saved
     // without permission) and the variants pushed in that direction.
@@ -177,6 +180,12 @@ function missionRules(s, { maps }) {
   return { locked, preferred, open };
 }
 
+// The locks every engine must honour: the ones the traveler set, plus an exactly stated departure
+// date, which the mission panel lists as a hard rule and no engine may move on its own.
+function effectiveLocks(s) {
+  return { ...s.locks, dates: !!(s.locks.dates || (s.dateMode === 'exact' && s.depart)) };
+}
+
 function lockedWords(s) {
   return LOCK_KEYS.filter(k => s.locks[k]).map(k => LOCK_LABEL[k]);
 }
@@ -217,4 +226,4 @@ function askedFor(s, { maps }) {
   return rows;
 }
 
-module.exports = { newState, applyUpdates, nextQuestion, toQuery, budgetContext, bookingBudget, vacationBudget, rulesOf, lockedWords, missionRules, pushMessage, askedFor, LOCK_KEYS, LOCK_LABEL };
+module.exports = { newState, applyUpdates, nextQuestion, toQuery, budgetContext, bookingBudget, vacationBudget, rulesOf, lockedWords, effectiveLocks, missionRules, pushMessage, askedFor, LOCK_KEYS, LOCK_LABEL };

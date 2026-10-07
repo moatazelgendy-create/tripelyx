@@ -148,7 +148,11 @@ function extractUpdates(text, { maps, now = new Date() }) {
   const when = parseDate(text, now);
   if (when && when.depart) { u.depart = when.depart; u.dateMode = 'exact'; if (when.nights && !u.nights) { u.nights = Math.max(2, Math.min(14, when.nights)); ack.push(`${u.nights} nights`); } ack.push(`leaving ${when.depart}`); }
   else if (when && when.month) { u.month = when.month; u.dateMode = 'flexible'; ack.push(`in ${MONTHS[Number(when.month.slice(5)) - 1]}`); }
-  if (has(lower, /\b(flexible|any dates|anytime|whenever|move them|you can move|dates are open|dates don'?t matter|no fixed dates|not fixed|open dates)\b/)) { u.dateMode = 'anytime'; u.depart = null; u.month = null; ack.push('dates flexible'); }
+  if (has(lower, /\b(flexible|any dates|anytime|whenever|move them|you can move|dates are open|dates don'?t matter|no fixed dates|not fixed|open dates)\b/)) {
+    // "Anytime in June" is flexible inside June; "anytime" alone opens the dates.
+    if (when && when.month && !when.depart) ack.push('dates flexible within the month');
+    else { u.dateMode = 'anytime'; u.depart = null; u.month = null; ack.push('dates flexible'); }
+  }
   else if (has(lower, /\b(fixed|exact dates|those dates|can'?t move|cannot move|must be those|have to be there)\b/) && !u.depart) { u.dateMode = 'exact'; }
 
   // Style and priorities.
@@ -226,7 +230,7 @@ const INTENTS = [
   ['cutMore', /\b(can (?:you|it|this) (?:go|be|get) (?:any )?(?:lower|cheaper)|anything cheaper|is there (?:anything|something) cheaper|any cheaper|can i (?:responsibly )?(?:make|get) (?:it|this) cheaper|go lower)\b/],
   ['sameTripLess', /\b(same trip for less|same trip,? (?:but )?cheaper|this trip for less|keep (?:the|this) trip,? (?:but )?(?:cheaper|for less)|same trip,? less money)\b/],
   ['breakpoints', /\b(upgrades? worth (?:considering|it|the money)|where does (?:the )?money (?:start|begin)|what (?:does|would) (?:more|extra) money (?:buy|get)|price breakpoints?|breakpoints?|what (?:can|could) i get for (?:a bit|a little) more)\b/],
-  ['whenLess', /\b(when can i go for less|when (?:is|would) it (?:be )?cheaper|cheaper (?:time|month|week|date) to go|when should i (?:go|book) (?:to pay less|for less|to save))\b/],
+  ['whenLess', /\b(when can i go for less|when (?:is|would) it (?:be )?cheaper|cheaper (?:time|month|week|date|dates) to go|when should i (?:go|book) (?:to pay less|for less|to save)|cheapest (?:strong )?week|which week is cheapest|when is it cheapest|other weeks)\b/],
   ['receipt', /\b(how (?:did|have) you (?:keep|kept) (?:my|the) (?:cost|price) down|savings receipt|show (?:me )?(?:the |my )?savings|what did (?:you|we) save|how much (?:did|have) (?:i|we) save[d]?|where did the savings come from)\b/],
   ['book', /\b(book (?:it|this|that|the trip|now)?|buy|purchase|reserve it|check ?out|pay(?: now)?|let'?s go with (?:it|this)|i'?ll take (?:it|this|the trip)|take (?:this|that|your) (?:trip|pick)|verify (?:&|and) book)\b/],
   ['approve', /^(?:yes|yep|yeah|yup|ok(?:ay)?|sure|fine|do it|do it anyway|anyway|go ahead|go over|take it|take it anyway|accept|agreed|please do|sounds good|switch|switch to (?:the )?better(?: option)?|take (?:the )?(?:upgrade|cheaper|cheapest|challenger|better|new|proposal|one stop|one-stop|our pick|save more|first|lowest|recommended)(?: \w+)*|use (?:it|that)|a|b|c|option a|option b|option c)[.!]?$/i],
@@ -243,7 +247,7 @@ const INTENTS = [
   ['flightChange', /\b(flight (?:changes?|is changed|gets? (?:cancell?ed|changed|moved)|schedule change)|airline changes?|if (?:my|the) flight)\b/],
   ['extend', /\b(extend|stay (?:a|one) (?:day|night) longer|add (?:a|one|1) (?:more )?night|(?:one|1|an extra|another) more night|give me (?:one|1|a) more night)\b/],
   ['shorten', /\b((?:one|1|a) (?:less|fewer) night|(?:one|1|a) night (?:less|fewer|shorter)|shorter|cut (?:a|one) night|drop (?:a|one) night|reduce to \d+ nights)\b/],
-  ['watch', /\b(watch for|set (?:up )?a watch|alert me|notify me|tell me when|let me know when)\b/],
+  ['watch', /\b(watch (?:for|this|the price|it|my trip|this trip|the trip)|set (?:up )?a watch|price watch|alert me|notify me|tell me when|let me know when)\b/],
   ['elsewhere', /\b(another country|somewhere else|different (?:place|destination|country|city)|try (?:another|a different|somewhere)|change the destination|not (?:cancun|there|that place)|anywhere else)\b/],
   ['easier', /\b(easier|simpler|less hassle|less travel|shorter travel|more convenient|easy trip|make this easier)\b/],
   ['cheaper', /\b(cheaper|too expensive|too much|less money|lower(?: the)? price|bring (?:it|the price) down|save me|save (?:another|an extra|a further) \$?[\d,]+|cut the price|reduce the price|take \$?[\d,]+ back|find \$?[\d,]+|under budget|spend less|more affordable)\b/],
@@ -303,7 +307,7 @@ function understand(text, state, { maps, now = new Date() } = {}) {
   if (pending === 'origin' && !updates.origin) { const o = originIn(clean, maps); if (o) updates.origin = o.origin; }
   if (pending === 'nights' && !updates.nights) { const m = lower.match(/\b(\d+)\b/); if (m) updates.nights = Math.max(2, Math.min(14, Number(m[1]))); }
   if (pending === 'budget' && !updates.budget) { const m = lower.match(/([\d,]+k?)/); if (m && num(m[1]) >= 100) { updates.budget = num(m[1]) * (/k$/i.test(m[1]) ? 1000 : 1) * 100; updates.budgetPer = 'total'; } }
-  if (pending === 'options' && /^\s*(?:option\s*)?([abc])\b/i.test(lower)) updates.option = lower.match(/^\s*(?:option\s*)?([abc])\b/i)[1].toUpperCase();
+  if (pending === 'options' && /^\s*(?:option\s*)?([a-e])\b/i.test(lower)) updates.option = lower.match(/^\s*(?:option\s*)?([a-e])\b/i)[1].toUpperCase();
   if (pending === 'challenge' && !updates.competitorTotal) { const m = lower.match(/\$?\s*([\d,]{3,}k?)\b/); if (m && num(m[1]) >= 100) { updates.competitorTotal = num(m[1]) * (/k$/i.test(m[1]) ? 1000 : 1) * 100; delete updates.budget; } if (!intents.includes('challenge')) intents.push('challenge'); }
   // The three ways: which one feels like the traveler, or none; one-tap feedback under a way; a way
   // referred to by number with a change ("number 2 but somewhere warmer"); the pushed variants.
@@ -341,6 +345,16 @@ function understand(text, state, { maps, now = new Date() } = {}) {
       intents.length = 0; intents.push(...keep, 'challenge');
       ack.length = 0;
     }
+  }
+  // The rule a watch is asked with, from the words only: a drop of at least $N, any drop, or a total
+  // at or under $N. No rule in the words means the agent states its default; nothing is inferred.
+  if (intents.includes('watch')) {
+    const drop = lower.match(/\b(?:drops?|falls?|goes down|cheaper)\b[^$\d]{0,20}\$?\s*([\d,]+)/) || lower.match(/\$\s*([\d,]+)\s*(?:drop|less|cheaper|off)\b/);
+    const under = lower.match(/\b(?:at or under|under|below|at or below|reaches|hits)\s*\$?\s*([\d,]{3,})\b/);
+    if (under && !drop) updates.watchRule = { kind: 'under', amount: num(under[1]) * 100 };
+    else if (drop && num(drop[1]) >= 1) updates.watchRule = { kind: 'drop', amount: num(drop[1]) * 100 };
+    else if (/\b(any (?:drop|change|time it(?:'s| is) cheaper)|gets? cheaper|becomes cheaper|goes down at all|same trip (?:gets|becomes|is) cheaper)\b/.test(lower)) updates.watchRule = { kind: 'any-drop' };
+    delete updates.budget; delete updates.competitorTotal;
   }
   // A bare number answers whatever was asked.
   if (/^\s*\$?\s*[\d,]+k?\s*$/.test(lower) && !pending && !updates.budget) { const v = num(lower.match(/([\d,]+)/)[1]) * (/k/i.test(lower) ? 1000 : 1); if (v >= 100) { updates.budget = v * 100; updates.budgetPer = 'total'; } }

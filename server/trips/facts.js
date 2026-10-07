@@ -64,6 +64,14 @@ function usableTime(t) {
 // The fields two trips can differ on, as readable values. Used by the compare page, the before/after
 // view of an optimization, and the optimizer's upgrade test.
 const dur = m => `${Math.floor(m / 60)}h${m % 60 ? ` ${String(m % 60).padStart(2, '0')}m` : ''}`;
+// Bags are read off the fare and the spec: a checked bag (included in the fare or bought) with or
+// without a carry-on, a carry-on only, or a personal item only; a checked bag on a fare with no
+// carry-on is said as such, so a switch to that fare never reads as the same bags. Experiences are a
+// set: the same experiences listed in another order are the same experiences, so they are compared
+// and shown sorted by name.
+const hasChecked = t => !!(t.flight.checkedBagIncluded || t.spec.bags);
+const bagsText = t => (hasChecked(t) ? (t.flight.carryOn ? 'Checked bag included' : 'Checked bag included (no carry-on)') : t.flight.carryOn ? 'Carry-on only' : 'Personal item only');
+const activitiesText = t => (t.activities.length ? t.activities.map(x => x.name).sort().join(', ') : 'None');
 function tripDiff(a, b, { date = x => x } = {}) {
   const stopsText = f => (f.stops ? `${f.stops} stop` : 'nonstop');
   const flex = t => [t.flight.refundable && 'flights refundable', t.hotel.refundable && 'hotel free to cancel'].filter(Boolean).join(', ') || 'flights and hotel non-refundable after 24h';
@@ -78,8 +86,8 @@ function tripDiff(a, b, { date = x => x } = {}) {
     ['meals', 'Meals', a.hotel.features.allInclusive ? 'All-inclusive' : a.hotel.features.breakfast ? 'Breakfast included' : 'Not included', b.hotel.features.allInclusive ? 'All-inclusive' : b.hotel.features.breakfast ? 'Breakfast included' : 'Not included'],
     ['flight', 'Flights', `${stopsText(a.flight)}, ${dur(a.flight.durationMinutes)} each way, ${a.flight.name} fare`, `${stopsText(b.flight)}, ${dur(b.flight.durationMinutes)} each way, ${b.flight.name} fare`],
     ['time', 'Usable vacation time', ta ? ta.usableLabel : 'Schedule not available', tb ? tb.usableLabel : 'Schedule not available'],
-    ['bags', 'Bags', a.flight.checkedBagIncluded || a.spec.bags ? 'Checked bag included' : a.flight.carryOn ? 'Carry-on only' : 'Personal item only', b.flight.checkedBagIncluded || b.spec.bags ? 'Checked bag included' : b.flight.carryOn ? 'Carry-on only' : 'Personal item only'],
-    ['experiences', 'Experiences', a.activities.length ? a.activities.map(x => x.name).join(', ') : 'None', b.activities.length ? b.activities.map(x => x.name).join(', ') : 'None'],
+    ['bags', 'Bags', bagsText(a), bagsText(b)],
+    ['experiences', 'Experiences', activitiesText(a), activitiesText(b)],
     ['transfer', 'Airport transfer', a.transfer ? 'Included, both ways' : 'Not included', b.transfer ? 'Included, both ways' : 'Not included'],
     ['flex', 'Cancellation', flex(a), flex(b)],
     ['perTraveler', 'Per traveler', fmt(a.perTraveler), fmt(b.perTraveler)],
@@ -100,7 +108,11 @@ function lineDiff(a, b) {
 
 // Which way each difference between two trips goes, from the facts rather than the wording.
 const MEAL_RANK = h => (h.features.allInclusive ? 2 : h.features.breakfast ? 1 : 0);
-const BAG_RANK = t => (t.flight.checkedBagIncluded || t.spec.bags ? 2 : t.flight.carryOn ? 1 : 0);
+// Bags rank monotone on what the traveler can bring: a checked bag (included or bought) counts 2 and
+// a carry-on 1 more, so personal item only = 0, carry-on = 1, checked bag without a carry-on = 2,
+// checked bag with a carry-on = 3. A carry-on fare to a personal-item fare with a bought bag is a
+// step up (1 to 2), but a carry-on fare with a bought bag to that same fare is a step down (3 to 2).
+const BAG_RANK = t => (hasChecked(t) ? 2 : 0) + (t.flight.carryOn ? 1 : 0);
 const FLEX_RANK = t => (t.flight.refundable ? 1 : 0) + (t.hotel.refundable ? 1 : 0);
 function direction(key, a, b) {
   const sign = (x, y, min = 0) => (y - x > min ? 1 : x - y > min ? -1 : 0);
@@ -126,4 +138,4 @@ function classifyChanges(a, b, opts) {
   return { improvements: rows.filter(r => r.direction > 0), tradeoffs: rows.filter(r => r.direction < 0), neutral: rows.filter(r => r.direction === 0) };
 }
 
-module.exports = { usableTime, clock, hoursLabel, direction, classifyChanges, tripDiff, lineDiff, lineAmount, LINE_ORDER, LINE_LABEL, DAY_START, DAY_END, FULL_DAY, ARRIVAL_BUFFER, AIRPORT_BUFFER };
+module.exports = { usableTime, clock, hoursLabel, direction, classifyChanges, tripDiff, lineDiff, lineAmount, hasChecked, LINE_ORDER, LINE_LABEL, DAY_START, DAY_END, FULL_DAY, ARRIVAL_BUFFER, AIRPORT_BUFFER };

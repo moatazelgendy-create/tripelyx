@@ -71,9 +71,10 @@ function optionsCard(id, card, current) {
   return html`<div class="ag-card ag-options">
     <ul>${card.options.map((o, i) => html`<li class="${current && current.token === o.token ? 'is-current' : ''}">
       <p class="tb-kicker">${o.label}${o.over ? ' · needs the extra you allowed' : ''}</p>
+      ${o.kind === 'lowest' && o.blurb ? html`<p class="ag-way-line">${o.blurb}</p>` : ''}
       ${tripLine(o)}
       ${o.upgrade ? html`<p class="tb-card-upgrade">${icon('sparkle')} +${money(o.upgrade.delta)} gets ${o.upgrade.gets}.</p>` : ''}
-      <div class="ag-actions">${current && current.token === o.token ? html`<span class="tb-pill">On your canvas</span>` : sayForm(id, o.kind === 'upgrade' ? 'Take the upgrade' : o.kind === 'save-more' ? 'Take save more' : 'Take our pick', o.kind === 'upgrade' ? 'Take the upgrade' : `Take ${o.label.toLowerCase()}`, 'btn btn-navy btn-sm')}<a class="text-link" href="/trip/${o.token}">Full trip page ${icon('arrow')}</a></div>
+      <div class="ag-actions">${current && current.token === o.token ? html`<span class="tb-pill">On your canvas</span>` : sayForm(id, o.kind === 'upgrade' ? 'Take the upgrade' : o.kind === 'lowest' ? 'Take the lowest' : o.kind === 'save-more' ? 'Take save more' : 'Take our pick', o.kind === 'upgrade' ? 'Take the upgrade' : o.kind === 'lowest' ? 'Take the lowest' : `Take ${o.label.toLowerCase()}`, 'btn btn-navy btn-sm')}<a class="text-link" href="/trip/${o.token}">Full trip page ${icon('arrow')}</a></div>
     </li>`)}
     ${card.keepMoney && card.keepMoney.spare > 0 && !card.options.some(o => o.kind === 'upgrade') ? html`<li class="ag-keep"><p class="tb-kicker">Keep your money</p><p><b>${money(card.keepMoney.spare)}</b> stays with you: nothing I priced improved on our pick in a way worth its price.</p></li>` : ''}</ul>
   </div>`;
@@ -118,8 +119,39 @@ function variantsCard(id, c, current) {
       <p class="ag-actions">${sayForm(id, `Pick ${v.letter}`, `Pick ${v.letter}`, 'btn btn-navy btn-sm')}<a class="text-link" href="/trip/${v.trip.token}">Full trip page ${icon('arrow')}</a></p>
     </li>`)}</ol>
     ${c.missing && c.missing.length ? html`<p class="ag-same">${icon('info')} <span>Not offered: ${c.missing.join('; ')}.</span></p>` : ''}
-    <div class="ag-actions">${c.variants.length > 1 ? sayForm(id, 'Mix them', 'Mix them') : ''}${sayForm(id, 'Keep what I have', 'Keep what I have')}</div>
-    <p class="tb-small tb-muted">Mixing: say which pieces, like “the hotel from C with the flight from A”. I rebuild it as one package and re-check the live total.</p>
+    <div class="ag-actions">${c.variants.length > 1 && c.mixable !== false ? sayForm(id, c.pair ? `The hotel from ${c.pair[0]} with the flights from ${c.pair[1]}` : 'Mix them', c.pair ? `Hotel from ${c.pair[0]}, flights from ${c.pair[1]}` : 'Mix them') : ''}${sayForm(id, 'Keep what I have', 'Keep what I have')}</div>
+    ${c.variants.length > 1 && c.mixable === false ? html`<p class="tb-small tb-muted">These cannot be mixed into one trip: they are in different places or on different dates, so each stands on its own.</p>` : html`<p class="tb-small tb-muted">Mixing: say which pieces, like “the hotel from C with the flight from A”. I rebuild it as one package and re-check the live total${c.variants.length > 1 ? ', and a mix over your ceiling is only said, never applied' : ''}.</p>`}
+  </div>`;
+}
+
+// Every destination checked: what beat one of the three ways, as what stays the same, what gets
+// better and what it costs, beside the trip it replaces.
+function beatCard(id, c, current) {
+  return html`<div class="ag-card ag-beat">
+    <p class="tb-kicker">${icon('trend')} Beats Option ${c.n} · ${c.label}</p>
+    ${tripLine(c.after)}
+    <div class="ag-beat-cols">
+      <div><span>Same</span>${c.same && c.same.length ? html`<ul>${c.same.map(x => html`<li>${x}</li>`)}</ul>` : html`<p class="tb-muted">A different shape; see the lines above</p>`}</div>
+      <div class="is-better"><span>Better</span>${c.better && c.better.length ? html`<ul>${c.better.map(x => html`<li>${x}</li>`)}</ul>` : html`<p class="tb-muted">Nothing changes but the price</p>`}</div>
+      <div class="${c.delta < 0 ? 'is-less' : c.delta > 0 ? 'is-more' : ''}"><span>Price</span><b>${c.delta < 0 ? `${money(-c.delta)} less` : c.delta > 0 ? `${money(c.delta)} more` : 'The same'}</b><small>${money(c.after.total)} total${c.before ? ` against ${money(c.before.total)}` : ''}</small></div>
+    </div>
+    ${c.neutral && c.neutral.length ? html`<p class="ag-same">${icon('info')} <span>Also different: ${c.neutral.join('; ')}.</span></p>` : ''}
+    <div class="ag-actions">${current && current.token === c.after.token ? html`<span class="tb-pill">On your canvas</span>` : sayForm(id, String(c.n), `Take Option ${c.n}`, 'btn btn-navy btn-sm')}<a class="text-link" href="/trip/${c.after.token}">Full trip page ${icon('arrow')}</a></div>
+  </div>`;
+}
+
+// Today's prices for the same trip on other departure dates: the cheapest strong week first, each
+// window a verified total, and the range the priced windows really cover. Never a forecast.
+function weeksCard(id, c, current) {
+  const sign = d => (d < 0 ? `${money(-d)} less` : d > 0 ? `${money(d)} more` : 'same price');
+  return html`<div class="ag-card ag-weeks${c.compact ? ' is-compact' : ''}">
+    <p class="tb-kicker">${c.compact ? 'Cheapest strong week' : 'When can you go for less?'} · today's prices, not a forecast</p>
+    <ol class="ag-weeks-list">
+      <li class="is-current"><span class="ag-week-dates">${longDate(c.current.depart)} – ${longDate(c.current.ret)}</span><b>${money(c.current.total)}</b><small>on your canvas</small></li>
+      ${c.windows.map(w => html`<li class="${w.over ? 'is-over' : ''}">${w.letter ? html`<span class="ag-way-num">${w.letter}</span>` : ''}<span class="ag-week-dates">${longDate(w.depart)} – ${longDate(w.ret)}</span><b>${money(w.total)}</b><small class="${w.delta < 0 ? 'is-save' : w.delta > 0 ? 'is-add' : ''}">${sign(w.delta)}${w.sameDates ? ' · your dates' : ''}${w.hotelChanged ? ' · different hotel, same class' : ''}${w.flightChanged ? ' · different flights' : ''}${w.over ? ' · over your ceiling' : ''}</small>${w.letter ? sayForm(id, `Option ${w.letter}`, w.sameDates ? 'Take this version' : `Leave ${longDate(w.depart)}`, 'btn btn-ghost btn-sm') : ''}</li>`)}
+    </ol>
+    <p class="tb-small tb-muted">${c.range && c.range.count > 1 ? `The ${plural(c.range.count, 'window')} priced run ${money(c.range.min)} to ${money(c.range.max)}. ` : ''}${plural(c.datesSearched, 'departure date')} priced in full${c.truncated ? '; the pass was cut off before every date was priced' : ''}. ${c.honesty || ''}</p>
+    ${c.compact ? '' : html`<div class="ag-actions">${sayForm(id, 'Keep my dates', 'Keep my dates', 'btn btn-navy btn-sm')}</div>`}
   </div>`;
 }
 
@@ -152,11 +184,18 @@ function card(id, m, { current }) {
         <tr><td>Started at</td><td class="ag-num">${money(c.original)}</td></tr>
         ${c.lines.map(l => html`<tr><td>${l.label}</td><td class="ag-num ${l.delta <= 0 ? 'is-save' : 'is-add'}">${l.delta <= 0 ? '−' : '+'}${money(Math.abs(l.delta))}</td></tr>`)}
         <tr class="ag-receipt-final"><td>Now</td><td class="ag-num">${money(c.final)}</td></tr>
-        ${c.keep !== null ? html`<tr class="ag-receipt-keep"><td>You keep of your ${money(c.max)}</td><td class="ag-num">${money(c.keep)}</td></tr>` : ''}
+        ${c.keep !== null ? html`<tr class="ag-receipt-keep"><td>You keep of your ${money(c.max)}</td><td class="ag-num">${money(c.keep)}</td></tr>` : c.over ? html`<tr class="ag-receipt-over"><td>Over your ${money(c.max)}, which you approved</td><td class="ag-num">${money(c.over)}</td></tr>` : ''}
       </tbody></table>
       <p class="tb-small tb-muted">Each line is one version's live price minus the one before it: sequential, nothing counted twice, no market “savings”.</p>
     </div>`;
     case 'variants': return variantsCard(id, c, current);
+    case 'beat': return beatCard(id, c, current);
+    case 'weeks': return weeksCard(id, c, current);
+    case 'decision': return html`<div class="ag-card ag-decision">
+      <p class="tb-kicker">One decision away · ${c.trip.dest}, ${plural(c.trip.nights, 'night')}</p>
+      <div class="ag-decision-opts">${c.options.map(o => html`<form method="post" action="/agent/${id}" class="ag-say"><input type="hidden" name="say" value="Option ${o.letter}"><button class="ag-decision-btn" type="submit"><span class="ag-way-num">${o.letter}</span><b>${o.label}</b><small>${money(o.total)} total, everything included</small></button></form>`)}</div>
+      <p class="ag-ways-q"><b>Which matters more?</b> <span class="tb-muted">Both are priced and verified; I don't pick this one for you. Your answer steers this trip only.</span></p>
+    </div>`;
     case 'switch': return html`<div class="ag-card ag-switch">
       <p class="tb-kicker">I beat my first option</p>
       <div class="ag-proposal-nums"><div><span>First</span><b>${money(c.first.total)}</b></div><div><span>Better</span><b>${money(c.better.total)}</b></div><div><span>${c.better.total <= c.first.total ? 'You keep' : 'Costs'}</span><b class="${c.better.total <= c.first.total ? 'is-save' : 'is-add'}">${c.better.total <= c.first.total ? '+' : ''}${money(Math.abs(c.first.total - c.better.total))}</b></div></div>
@@ -335,10 +374,11 @@ function canvasPanel(ctx, s, canvas) {
       <details class="ag-change"><summary class="btn btn-ghost btn-sm">Change something</summary><div class="ag-chips">${(saver ? ['Give me one more night', 'One night less', 'Show me what one stop saves', 'Try another country', 'Upgrades worth considering', 'Make this easier'] : ['Give me one more night', 'One night less', 'Only nonstop', 'Try another country', 'Show me what one stop saves', 'Make this easier']).map(c => sayForm(s.id, c, c, 'ag-chip'))}<a class="ag-chip" href="/trip/${canvas.token}?${cx}#customize">Pick a different hotel or flight</a></div></details>
       ${saver ? html`<details class="ag-change"><summary class="btn btn-ghost btn-sm">Never cut below</summary><div class="ag-chips">${[['Only nonstop', 'Never a connection'], ['Refundable only', 'Never a non-refundable hotel'], ['3-star or better', 'Never below 3-star'], ['4-star or better', 'Never below 4-star'], ['Carry-on only', 'I pack carry-on only'], ['I check a bag', 'I check a bag'], ['Aggressive savings', 'Aggressive: every trade-off said'], ['Balanced savings', 'Balanced']].map(([say, label]) => sayForm(s.id, say, label, 'ag-chip'))}</div><p class="tb-small tb-muted">Each is a rule the search keeps; only rules the suppliers' data can check are offered.</p></details>` : ''}
       ${sayForm(s.id, locks.length ? 'Unlock everything' : 'Lock everything', locks.length ? 'Unlock' : 'Lock this', 'btn btn-ghost btn-sm')}
+      ${running ? '' : sayForm(s.id, 'Watch this trip', 'Watch this trip', 'btn btn-ghost btn-sm', html`${icon('eye')} `)}
       ${sayForm(s.id, 'Book it', 'Book', 'btn btn-blue btn-sm')}
     </div>
     ${running ? '' : budgetSlider(s, booking)}
-    ${s.options.length > 1 ? html`<details class="ag-alts"><summary>Alternatives (${s.options.length})</summary><ul>${s.options.map(o => html`<li class="${s.current && s.current.token === o.token ? 'is-current' : ''}"><span><b>${o.label}</b> · ${o.dest}, ${plural(o.nights, 'night')} · ${money(o.total)}</span>${s.current && s.current.token === o.token ? html`<span class="tb-pill">Current</span>` : sayForm(s.id, o.kind === 'upgrade' ? 'Take the upgrade' : o.kind === 'save-more' ? 'Take save more' : 'Take our pick', 'Take', 'btn btn-ghost btn-sm')}</li>`)}</ul></details>` : ''}
+    ${s.options.length > 1 ? html`<details class="ag-alts"><summary>Alternatives (${s.options.length})</summary><ul>${s.options.map(o => html`<li class="${s.current && s.current.token === o.token ? 'is-current' : ''}"><span><b>${o.label}</b> · ${o.dest}, ${plural(o.nights, 'night')} · ${money(o.total)}</span>${s.current && s.current.token === o.token ? html`<span class="tb-pill">Current</span>` : sayForm(s.id, o.kind === 'upgrade' ? 'Take the upgrade' : o.kind === 'lowest' ? 'Take the lowest' : o.kind === 'save-more' ? 'Take save more' : 'Take our pick', 'Take', 'btn btn-ghost btn-sm')}</li>`)}</ul></details>` : ''}
     <p class="ag-canvas-foot"><a class="text-link" href="/trip/${canvas.token}?${cx}">Full trip page: every line, every term ${icon('arrow')}</a></p>
   </div>`;
 }

@@ -6,6 +6,7 @@ const { str } = require('../lib/validate');
 const optimizer = require('../trips/optimizer');
 const { encodeSpec, decodeSpec } = require('../trips/spec');
 const { publicTrip } = require('../trips/pricing');
+const { WATCH_DEFAULT_RULE } = require('../trips/service');
 const { homeView } = require('../views/trips/home');
 const { stepView, resultsView, STEPS } = require('../views/trips/plan');
 const { tripView, reviewView, unavailableView, singleChanges } = require('../views/trips/trip');
@@ -272,11 +273,20 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
     }
   });
 
+  // Save a trip, or watch its price under a rule: `rule` is 'drop', 'any-drop' or 'under' and `amount`
+  // is dollars as typed, turned into cents here. A drop with the amount left blank is the $100 default
+  // the form names; no rule at all means the same default; anything else unreadable is a 422.
   r.post('/trip/:token/save', writeLimiter, sameOrigin, form, requireUser, async (req, res, next) => {
     try {
       const cx = optimizer.parseContext(req.query);
       const kind = req.body.kind === 'watch' ? 'watch' : 'saved';
-      await svc.saveTrip(req.user, req.params.token, { kind, budget: cx.budget });
+      let rule;
+      if (kind === 'watch' && req.body.rule !== undefined) {
+        const typed = (typeof req.body.amount === 'string' ? req.body.amount : '').replace(/[,$\s]/g, '');
+        const cents = /^\d+(\.\d{1,2})?$/.test(typed) ? Math.round(Number(typed) * 100) : NaN;
+        rule = { kind: String(req.body.rule), amount: req.body.rule === 'drop' && typed === '' ? WATCH_DEFAULT_RULE.amount : cents };
+      }
+      await svc.saveTrip(req.user, req.params.token, { kind, budget: cx.budget, rule });
       res.redirect(303, req.query.back === 'dream' ? '/my-trips?saved=1' : `/trip/${req.params.token}?${optimizer.contextParams(cx)}`);
     } catch (e) { next(e); }
   });
