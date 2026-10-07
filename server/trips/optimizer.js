@@ -15,6 +15,10 @@ const { priceTrip, roomsFor } = require('./pricing');
 const { classifyChanges } = require('./facts');
 
 const STYLES = ['beach', 'city', 'adventure', 'romantic', 'family', 'all-inclusive', 'surprise'];
+// The Experience Max memory chips, in the spec's order; experience.js carries their labels and rules.
+// They live here so a trip link's `mem=` is validated without optimizer requiring the engine built on it.
+const GOAL_KEYS = ['beach', 'food', 'adventure', 'nightlife', 'romantic', 'nature', 'culture', 'family', 'new', 'surprise'];
+const ACTIVITY_ID = /^[a-z0-9-]{1,40}$/i;
 const PRIORITIES = ['hotel', 'flights', 'longer', 'activities', 'price'];
 const WHO_DEFAULT = { solo: 1, couple: 2, family: 4, friends: 4 };
 const STYLE_ACTIVITY = { beach: ['beach'], adventure: ['adventure'], romantic: ['romantic', 'beach'], family: ['family', 'beach'], city: ['culture', 'nightlife'] };
@@ -37,6 +41,7 @@ function memoInventory(inv) {
 }
 
 function int(v, def, min, max) {
+  if (Array.isArray(v)) return def; // a repeated key (b=100&b=200) is no number: never a joined one
   const n = Number(String(v ?? '').replace(/[,$\s]/g, ''));
   if (!Number.isFinite(n) || v === '' || v === undefined || v === null) return def;
   return Math.min(max, Math.max(min, Math.round(n)));
@@ -67,6 +72,10 @@ function parseSearch(raw = {}, { maps, now = new Date() } = {}) {
   // Optional narrowing used by landing pages: one destination, or international trips only.
   const dest = maps && raw.dest && maps.getDestination(String(raw.dest)) ? String(raw.dest) : null;
   const region = raw.region === 'international' ? 'international' : null;
+  // The traveler's standing rules (nonstop only, 4-star or better, ...): every package must obey them.
+  const rules = parseRules(raw);
+  const dests = maps && typeof raw.ds === 'string' ? raw.ds.split(',').filter(d => maps.getDestination(d)).slice(0, 30) : null;
+  const notCountry = typeof raw.notc === 'string' && raw.notc ? raw.notc.slice(0, 40) : null;
 
   if (!budgetInput || budgetInput < 100) missing.push('budget');
   else if (!keepGiven) missing.push('keep');
@@ -82,36 +91,141 @@ function parseSearch(raw = {}, { maps, now = new Date() } = {}) {
   const vacationBudget = perPartyInput ? perPartyInput * 100 : null;
   const budget = perPartyInput ? Math.max(0, perPartyInput - keep) * 100 : null;
   return {
-    query: { budget, vacationBudget, keep: keep * 100, budgetInput, budgetType, travelers, who: who || 'couple', origin, dateMode: dateMode || 'anytime', depart, month, nights, style: style || 'surprise', priority: priority || 'price', allowOver, dest, region },
+    query: { budget, vacationBudget, keep: keep * 100, budgetInput, budgetType, travelers, who: who || 'couple', origin, dateMode: dateMode || 'anytime', depart, month, nights, style: style || 'surprise', priority: priority || 'price', allowOver, dest, region, rules, dests: dests && dests.length ? dests : null, notCountry },
     missing,
   };
 }
 
+// Standing rules a traveler states once and the search keeps (ns=1 nonstop only, stars=4, ai=1
+// all-inclusive, bf=1 breakfast, bch=1 beachfront, tr=1 transfer included, rf=1 refundable).
+function parseRules(raw = {}) {
+  const on = v => v === '1' || v === 1 || v === true;
+  const stars = int(raw.stars, null, 3, 5);
+  const rules = { nonstop: on(raw.ns), minStars: stars, allInclusive: on(raw.ai), breakfast: on(raw.bf), beachfront: on(raw.bch), transfer: on(raw.tr), refundable: on(raw.rf) };
+  return Object.values(rules).some(Boolean) ? rules : null;
+}
+function rulesParams(rules) {
+  if (!rules) return {};
+  return { ns: rules.nonstop ? '1' : undefined, stars: rules.minStars || undefined, ai: rules.allInclusive ? '1' : undefined, bf: rules.breakfast ? '1' : undefined, bch: rules.beachfront ? '1' : undefined, tr: rules.transfer ? '1' : undefined, rf: rules.refundable ? '1' : undefined };
+}
+function rulesAllowFlight(f, rules) {
+  if (!rules) return true;
+  if (rules.nonstop && f.stops > 0) return false;
+  if (rules.refundable && !f.refundable) return false;
+  return true;
+}
+function rulesAllowHotel(h, rules) {
+  if (!rules) return true;
+  if (rules.minStars && h.stars < rules.minStars) return false;
+  if (rules.allInclusive && !h.features.allInclusive) return false;
+  if (rules.breakfast && !h.features.breakfast && !h.features.allInclusive) return false;
+  if (rules.beachfront && !h.features.beachfront) return false;
+  if (rules.refundable && !h.refundable) return false;
+  return true;
+}
+
 function searchParams(q, extra = {}) {
-  const p = { b: q.budgetInput, k: q.keep !== undefined ? Math.round(q.keep / 100) : undefined, bt: q.budgetType === 'pp' ? 'pp' : undefined, from: q.origin, who: q.who, n: q.travelers, when: q.dateMode, depart: q.dateMode === 'exact' ? q.depart : undefined, month: q.dateMode === 'flexible' ? q.month : undefined, nights: q.nights, style: q.style, prio: q.priority, ov: q.allowOver ? '10' : undefined, dest: q.dest || undefined, region: q.region || undefined, ...extra };
+  const p = { b: q.budgetInput, k: q.keep !== undefined ? Math.round(q.keep / 100) : undefined, bt: q.budgetType === 'pp' ? 'pp' : undefined, from: q.origin, who: q.who, n: q.travelers, when: q.dateMode, depart: q.dateMode === 'exact' ? q.depart : undefined, month: q.dateMode === 'flexible' ? q.month : undefined, nights: q.nights, style: q.style, prio: q.priority, ov: q.allowOver ? '10' : undefined, dest: q.dest || undefined, region: q.region || undefined, ...rulesParams(q.rules), ds: q.dests && q.dests.length ? q.dests.join(',') : undefined, notc: q.notCountry || undefined, ...extra };
   return new URLSearchParams(Object.entries(p).filter(([, v]) => v !== undefined && v !== null && v !== '')).toString();
 }
 
 // The budget context a trip page carries so its numbers can be read against the traveler's budget.
 function budgetContext(q) {
-  return { budget: q.budget, keep: q.keep || 0, allowOver: q.allowOver, style: q.style, priority: q.priority, nightsAsked: q.nights };
+  return { budget: q.budget, keep: q.keep || 0, allowOver: q.allowOver, style: q.style, priority: q.priority, nightsAsked: q.nights, rules: q.rules || null };
 }
 
 // The same context carried on trip page links (?b=1500&k=300&ov=10&style=beach&prio=hotel&nights=5).
 // `b` is the booking budget the trip is read against; `k` is the money the traveler protects for
-// the destination, so the whole vacation budget is b + k.
+// the destination, so the whole vacation budget is b + k. The standing rules (ns=1, stars=4, ...)
+// ride along too, so a trip link keeps what the traveler said must hold: the money leak hunter and
+// the quote read them from here, and a rule is never dropped between pages. Beyond those it carries
+// `dm=exact` (a date the traveler said they must leave on, so no page moves it), `bg` (the bag they
+// said they travel with: checked, carry-on or personal; '1' means checked), `dest` (a destination
+// they named, so a booking can say it was kept; absent when the platform chose it) and `promo` (a
+// code the review page verified, so every version opened from it is priced with the same code). A
+// repeated key (b=100&b=200) is read as its first value, never joined into one number that would
+// then ride on every link and into the quote's asks. Experience Max adds `mem` (the memory goals the
+// traveler ranked, `mem=beach,food`, at most three, only the chips the engine knows, in the order
+// said) and `px` (the activity id of the main experience they protected): both ride on every link so
+// no page forgets what the trip is for, and a protected experience is never offered for removal.
+// `locked` (locked=hotel,flight) carries the parts the traveler locked with the agent (the hotel, the flights, the
+// dates, the length, the destination) to every page opened from the canvas, so no page offers a version that moves
+// one of them: the experience and leak pages read it into the engines' o.locks, and the trip pages' "lk" checkboxes
+// (the optimize page's own letters) stay separate. Only the known lock names are read, in one canonical order.
+const BAGS = ['personal', 'carry-on', 'checked'], LOCK_NAMES = ['hotel', 'flight', 'dates', 'nights', 'dest'];
+function lockList(v) {
+  const raw = Array.isArray(v) ? v : typeof v === 'string' ? v.split(',') : v && typeof v === 'object' ? Object.keys(v).filter(k => v[k]) : [];
+  const want = new Set(raw.map(x => String(x).trim().toLowerCase()));
+  return LOCK_NAMES.filter(k => want.has(k));
+}
+const parseLocks = v => Object.fromEntries(lockList(typeof v === 'string' ? v : []).map(k => [k, true]));
+// `ev`, `evt` and `evn` carry the event the traveler built the trip around with the agent (BUILD AROUND AN EVENT / A
+// RESERVATION): its date (ev=2026-11-10), its time slot only when they said one (evt=evening, one of the engine's slot
+// names) and a short name (evn=your concert). Without them a page opened from the canvas draws the rhythm with no EVENT
+// DAY and could put an experience on the day the traveler already has. The date must be a real calendar date; a slot
+// outside the known names is dropped (an unknown time keeps the whole day, never a guessed one); the name keeps letters,
+// digits and plain punctuation, at most 40 characters, and is escaped like every other value where it is shown. Anything
+// unreadable is dropped, never an error, and an event with no readable date is no event. Whether it is near enough to a
+// trip to be read is the page's call (service.eventFor), since only the page knows the trip.
+const EVENT_SLOTS = ['morning', 'day', 'evening', 'night'];
+const eventWords = v => (typeof v === 'string' ? v.normalize('NFC').replace(/[^\p{L}\p{N} '’&.,-]+/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, 40).trim() : '');
+function parseEvent(date, slot, name) {
+  const d = typeof date === 'string' ? date.trim() : '';
+  if (!isIsoDate(d)) return null;
+  const t = typeof slot === 'string' ? slot.trim().toLowerCase() : '';
+  return { name: eventWords(name) || null, date: d, slot: EVENT_SLOTS.includes(t) ? t : null };
+}
+const eventParams = e => { const ev = e && typeof e === 'object' ? parseEvent(e.date, e.slot, e.name) : null; return ev ? { ev: ev.date, evt: ev.slot || undefined, evn: ev.name || undefined } : {}; };
+function parseGoals(v) {
+  if (typeof v !== 'string') return [];
+  const out = [];
+  for (const g of v.split(',').map(x => x.trim().toLowerCase())) if (GOAL_KEYS.includes(g) && !out.includes(g)) out.push(g);
+  return out.slice(0, 3);
+}
+// b= in dollars, whole (b=2000, read as before) or with cents (b=1999.50), into cents, held to $100–$1,000,000. Cents are
+// read exactly and anything finer is cut, never rounded up: a ceiling read back higher than it was would let a page
+// offer a version over the traveler's maximum.
+function budgetCents(v) {
+  const t = typeof v === 'string' ? v.trim().replace(/[,$\s]/g, '') : null;
+  if (t && /^\d{1,9}\.\d+$/.test(t)) return Math.min(100000000, Math.max(10000, Math.floor(Number(t) * 100 + 1e-6)));
+  const d = int(v, null, 100, 1000000);
+  return d ? d * 100 : null;
+}
 function parseContext(raw = {}) {
-  const b = int(raw.b, null, 100, 1000000);
+  const r = Object.fromEntries(Object.entries(raw || {}).map(([k, v]) => [k, Array.isArray(v) ? v[0] : v]));
+  const b = budgetCents(r.b);
   return {
-    budget: b ? b * 100 : null, keep: b ? int(raw.k, 0, 0, 1000000) * 100 : 0, allowOver: raw.ov === '10' ? 10 : 0,
-    style: STYLES.includes(raw.style) ? raw.style : 'surprise', priority: PRIORITIES.includes(raw.prio) ? raw.prio : 'price',
-    nightsAsked: int(raw.nights, null, 2, 14) || undefined, searchParams: typeof raw.s === 'string' ? raw.s.slice(0, 400) : null,
+    budget: b, keep: b ? int(r.k, 0, 0, 1000000) * 100 : 0, allowOver: r.ov === '10' ? 10 : 0,
+    style: STYLES.includes(r.style) ? r.style : 'surprise', priority: PRIORITIES.includes(r.prio) ? r.prio : 'price',
+    nightsAsked: int(r.nights, null, 2, 14) || undefined, searchParams: typeof r.s === 'string' ? r.s.slice(0, 400) : null,
+    rules: parseRules(r),
+    dateMode: r.dm === 'exact' ? 'exact' : null,
+    bags: r.bg === '1' ? 'checked' : BAGS.includes(r.bg) ? r.bg : null,
+    dest: typeof r.dest === 'string' && /^[a-z0-9-]{1,40}$/i.test(r.dest) ? r.dest : null,
+    promo: typeof r.promo === 'string' && r.promo.trim() ? r.promo.trim().slice(0, 30) : null,
+    goals: parseGoals(r.mem),
+    protect: typeof r.px === 'string' && ACTIVITY_ID.test(r.px) ? r.px : null,
+    locks: parseLocks(r.locked),
+    event: parseEvent(r.ev, r.evt, r.evn),
   };
 }
 
+// The ceiling rides as dollars, with the cents when it has any (b=1999.50): rounded to whole dollars it could move up
+// (a $1,999.50 ceiling read back as $2,000), and every page would then offer versions over the real maximum. The
+// maximum is a ceiling, never a target, so it is carried exactly, never rounded up.
+const dollarsParam = c => (c % 100 ? (c / 100).toFixed(2) : String(c / 100));
 function contextParams(ctx, extra = {}) {
-  const p = { b: ctx.budget ? Math.round(ctx.budget / 100) : undefined, k: ctx.budget && ctx.keep ? Math.round(ctx.keep / 100) : undefined, ov: ctx.allowOver ? '10' : undefined, style: ctx.style && ctx.style !== 'surprise' ? ctx.style : undefined, prio: ctx.priority && ctx.priority !== 'price' ? ctx.priority : undefined, nights: ctx.nightsAsked, s: ctx.searchParams || undefined, ...extra };
-  return new URLSearchParams(Object.entries(p).filter(([, v]) => v !== undefined && v !== null && v !== '')).toString();
+  const goals = parseGoals(Array.isArray(ctx.goals) ? ctx.goals.join(',') : ctx.goals);
+  const p = { b: ctx.budget ? dollarsParam(ctx.budget) : undefined, k: ctx.budget && ctx.keep ? Math.round(ctx.keep / 100) : undefined, ov: ctx.allowOver ? '10' : undefined, style: ctx.style && ctx.style !== 'surprise' ? ctx.style : undefined, prio: ctx.priority && ctx.priority !== 'price' ? ctx.priority : undefined, nights: ctx.nightsAsked, s: ctx.searchParams || undefined, ...rulesParams(ctx.rules), dm: ctx.dateMode === 'exact' ? 'exact' : undefined, bg: BAGS.includes(ctx.bags) ? ctx.bags : undefined, dest: ctx.dest || undefined, promo: ctx.promo || undefined, mem: goals.length ? goals.join(',') : undefined, px: typeof ctx.protect === 'string' && ACTIVITY_ID.test(ctx.protect) ? ctx.protect : undefined, locked: lockList(ctx.locks).join(',') || undefined, ...eventParams(ctx.event), ...extra };
+  // A list (the customizer's experiences) is repeated, one parameter per item, so the route reads it
+  // back as a list; an empty list stays as one empty parameter, which means "none". Joined with commas
+  // it would reach the token as a single name and the token would not decode.
+  const out = new URLSearchParams();
+  for (const [k, v] of Object.entries(p)) {
+    if (v === undefined || v === null || v === '') continue;
+    if (Array.isArray(v)) { if (!v.length) out.append(k, ''); else for (const x of v) out.append(k, String(x)); } else out.append(k, String(v));
+  }
+  return out.toString();
 }
 
 // Honest trade-offs for a trip, from facts we have.
@@ -247,10 +361,11 @@ function packagesFor(inv, q, dest, airport, settings, now) {
   for (const depart of candidateDates(inv, q, airport, dest.id, now)) {
     for (const nights of nightsList) {
       const base = { dest: dest.id, from: airport, depart, nights, travelers: q.travelers, who: q.who };
-      const flights = inv.flights.search({ from: airport, destId: dest.id, depart, nights, travelers: q.travelers });
-      const hotels = inv.hotels.search({ destId: dest.id, checkIn: depart, nights, rooms: roomsFor(base) }).filter(h => hotelAllowed(h, q));
+      const flights = inv.flights.search({ from: airport, destId: dest.id, depart, nights, travelers: q.travelers }).filter(f => rulesAllowFlight(f, q.rules));
+      const hotels = inv.hotels.search({ destId: dest.id, checkIn: depart, nights, rooms: roomsFor(base) }).filter(h => hotelAllowed(h, q) && rulesAllowHotel(h, q.rules));
       const acts = inv.activities.search({ destId: dest.id, date: depart, travelers: q.travelers });
-      for (const f of flights) for (const h of hotels) for (const a of activitySets(acts, q.style)) for (const transfer of [false, true]) {
+      const transfers = q.rules && q.rules.transfer ? [true] : [false, true];
+      for (const f of flights) for (const h of hotels) for (const a of activitySets(acts, q.style)) for (const transfer of transfers) {
         const t = priceTrip(inv, { ...base, flight: f.id, hotel: h.id, activities: a, bags: false, transfer }, settings);
         if (t) out.push(t);
       }
@@ -258,6 +373,9 @@ function packagesFor(inv, q, dest, airport, settings, now) {
   }
   return out;
 }
+
+// Demo data spells the United States two ways; a real maps provider will not.
+const sameCountry = (a, b) => { const n = s => (/^(usa|united states)$/i.test(String(s).trim()) ? 'united states' : String(s).trim().toLowerCase()); return n(a) === n(b); };
 
 function search(inventory, rawQuery, { settings, now = new Date() }) {
   const inv = memoInventory(inventory);
@@ -271,7 +389,9 @@ function search(inventory, rawQuery, { settings, now = new Date() }) {
   for (const dest of inv.maps.listDestinations()) {
     if (disabled.has(dest.id)) continue;
     if (q.dest && dest.id !== q.dest) continue;
-    if (q.region === 'international' && dest.country === (origin.country || 'United States')) continue;
+    if (q.dests && !q.dests.includes(dest.id)) continue;
+    if (q.notCountry && sameCountry(dest.country, q.notCountry)) continue;
+    if (q.region === 'international' && sameCountry(dest.country, origin.country || 'United States')) continue;
     for (const t of packagesFor(inv, q, dest, airport, settings, now)) {
       const sc = scoreTrip(t, ctx);
       all.push({ trip: t, ...sc, why: whyThisTrip(t, ctx) });
@@ -355,7 +475,14 @@ function search(inventory, rawQuery, { settings, now = new Date() }) {
   const cheapestByDest = {};
   for (const x of all) if (!(x.trip.dest.id in cheapestByDest) || x.trip.total < cheapestByDest[x.trip.dest.id]) cheapestByDest[x.trip.dest.id] = x.trip.total;
   const eligibleDestinations = new Set(eligible.map(x => x.trip.dest.id)).size;
-  return { query: q, ctx, picks, keepMoney, closest, cheapest, cheapestEligible, cheapestByDest, considered: all.length, destinations: destsConsidered, eligibleDestinations, airport };
+  const cheaperThanPick = picks[0] ? eligible.filter(x => x.trip.total < picks[0].trip.total).length : 0;
+  // The eligible set itself, for callers that need more than the three picks (Save Max names the
+  // cheapest trip it would still recommend from it): every eligible candidate at or under the budget
+  // itself, cheapest first, and the eligible trips within $50 of the pick's price, strongest first,
+  // at most 40. Both hold references to the packages priced above; nothing is priced again.
+  const eligibleTrips = eligible.filter(x => x.trip.total <= q.budget).sort((a, b) => a.trip.total - b.trip.total).map(x => ({ trip: x.trip, match: x.match }));
+  const near = picks[0] ? eligible.filter(x => x.trip !== picks[0].trip && Math.abs(x.trip.total - picks[0].trip.total) <= 5000).sort((a, b) => b.match - a.match || a.trip.total - b.trip.total).slice(0, 40).map(x => ({ trip: x.trip, match: x.match })) : [];
+  return { query: q, ctx, picks, keepMoney, closest, cheapest, cheapestEligible, cheapestByDest, considered: all.length, eligible: eligible.length, cheaperThanPick, destinations: destsConsidered, eligibleDestinations, airport, eligibleTrips, near };
 }
 
 // Journey B: a dream destination and a maximum budget. Returns the strongest trip to that destination
@@ -424,6 +551,8 @@ function oneRuleAway(inventory, q, { settings, now = new Date() }) {
     q.nights > 3 && { key: 'nights2', rule: `${q.nights} nights`, label: `${q.nights - 2} nights instead of ${q.nights}`, q: { ...q, nights: q.nights - 2 } },
     q.style !== 'surprise' && { key: 'style', rule: STYLE_WORD[q.style] || q.style, label: `Any style, not only ${STYLE_WORD[q.style] || q.style}`, q: { ...q, style: 'surprise' } },
     q.priority !== 'price' && { key: 'prio', rule: `${PRIO_WORD[q.priority] || q.priority} first`, label: `Lowest price first, instead of ${PRIO_WORD[q.priority] || q.priority}`, q: { ...q, priority: 'price' } },
+    q.rules && q.rules.nonstop && { key: 'nonstop', rule: 'nonstop flights only', label: 'Allow one stop', q: { ...q, rules: { ...q.rules, nonstop: false } } },
+    q.rules && q.rules.minStars && { key: 'stars', rule: `${q.rules.minStars}-star hotels or better`, label: 'Any star class', q: { ...q, rules: { ...q.rules, minStars: null } } },
     !q.allowOver && { key: 'over', rule: 'your budget as a hard ceiling', label: 'Up to 10% over your budget', q: { ...q, allowOver: 10 } },
     q.keep > 0 && { key: 'keep', rule: `${fmt(q.keep)} protected for the destination`, label: 'Part of your reserve', q: { ...q, budget: q.budget + q.keep, keep: 0 } },
   ].filter(Boolean);
@@ -460,4 +589,4 @@ function oneRuleAway(inventory, q, { settings, now = new Date() }) {
   return { works, notAlone };
 }
 
-module.exports = { search, dreamSearch, oneRuleAway, parseSearch, searchParams, budgetContext, parseContext, contextParams, tradeoffs, scoreTrip, whyThisTrip, customizerOptions, memoInventory, activitySets, hotelAllowed, int, STYLES, PRIORITIES, WHO_DEFAULT };
+module.exports = { search, dreamSearch, oneRuleAway, parseSearch, searchParams, budgetContext, parseContext, contextParams, parseGoals, parseLocks, lockList, LOCK_NAMES, parseEvent, EVENT_SLOTS, parseRules, rulesParams, rulesAllowFlight, rulesAllowHotel, sameCountry, tradeoffs, scoreTrip, whyThisTrip, customizerOptions, memoInventory, activitySets, hotelAllowed, candidateDates, packagesFor, int, STYLES, PRIORITIES, WHO_DEFAULT, GOAL_KEYS };

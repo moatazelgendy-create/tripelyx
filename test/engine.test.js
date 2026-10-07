@@ -87,12 +87,19 @@ test('expired quote and lapsed payment window are refused', async () => {
 
 test('cancellation refunds in full inside the free window, partially after it', async () => {
   const { engine, store, advance } = setup();
-  // Yacht charters: free until 7 days before, 50% after.
-  const query = { ...sampleQueries(10).yachts };
+  // Yacht charters: free until 7 days before, 50% after. The demo marks some yachts as booked on some
+  // dates, so the charter is on the first date from ten days out with a refundable yacht free.
+  let offset = 10, query;
+  for (; offset < 40; offset++) {
+    query = { ...sampleQueries(offset).yachts };
+    const { offers } = await engine.search('yachts', query);
+    if (offers.some(o => o.options.some(x => x.available) && o.cancellation.type !== 'non_refundable')) break;
+  }
+  assert.ok(offset < 40, 'a refundable yacht is free on some date in the next month');
   const quote = await quoteFor(engine, 'yachts', query);
   const { booking, accessToken } = await engine.createBooking({ quoteId: quote.id, traveler: TRAVELER });
   await engine.payBooking(booking.ref, { token: accessToken }, VISA);
-  advance(5 * 86400000); // now 5 days before the charter: past the 7-day window
+  advance((offset - 5) * 86400000); // now 5 days before the charter: past the 7-day window
   const { cancellationPreview } = await engine.getBooking(booking.ref, { token: accessToken });
   assert.equal(cancellationPreview.freeWindowOpen, false);
   assert.equal(cancellationPreview.refundAmount, quote.total - Math.round(quote.total / 2));

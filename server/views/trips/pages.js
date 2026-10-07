@@ -10,6 +10,9 @@ const { money, dollars, longDate, shortDate, plural, joinAnd, cutoffText, hm, st
 const { budgetForm } = require('./home');
 const { vacationPlan, coveredBy, unpricedFor } = require('../../trips/vacation');
 const { tripCard } = require('./plan');
+const { victory } = require('../../trips/leaks');
+const { victoryPanel } = require('./leaks');
+const { worthItPanel } = require('./memories');
 
 function howItWorksView(ctx) {
   const body = html`
@@ -212,7 +215,7 @@ function componentStatus(c) {
   return html`<span class="tb-status tb-status-${tone}">${l}</span>`;
 }
 
-function tripBookingView(ctx, { booking: b, cancellationPreview: preview, payment, notice, messages = [], user, messageError }) {
+function tripBookingView(ctx, { booking: b, cancellationPreview: preview, payment, notice, messages = [], user, messageError, worth = null }) {
   const t = b.trip;
   const ok = b.status === 'confirmed';
   const partial = b.status === 'partially_confirmed';
@@ -224,6 +227,11 @@ function tripBookingView(ctx, { booking: b, cancellationPreview: preview, paymen
   }[b.status] || b.status;
   const budget = b.budget && b.budget.budget;
   const plan = vacationPlan(t, { budget, keep: (b.budget && b.budget.keep) || 0 });
+  // The saver's victory screen: what the traveler gave as a maximum, what the trip costs, what they
+  // kept, and which stated asks the booked trip's facts meet (from the asks the quote kept; a
+  // booking without them lists no rules). Only with a maximum, and only while the booking stands.
+  const asks = (b.budget && b.budget.asks) || {};
+  const v = budget && !['failed', 'expired', 'cancelled', 'refund_pending', 'refunded'].includes(b.status) ? victory({ max: budget, trip: t, asks: { ...asks, ...(asks.rules || {}) }, reserve: (b.budget && b.budget.keep) || 0 }) : null;
   const body = html`
 <div class="container tb-command">
   ${ok ? stepsBar(3) : ''}
@@ -234,9 +242,11 @@ function tripBookingView(ctx, { booking: b, cancellationPreview: preview, paymen
     ${ok && days > 0 ? html`<p class="tb-countdown">${icon('calendar')} ${days === 1 ? 'Tomorrow!' : `${days} days to go`}</p>` : ''}
     ${b.demo ? html`<p class="demo-note">${icon('info')}Demo booking — test payment, no real supplier was contacted.</p>` : ''}
   </header>
+  ${v ? victoryPanel(v, { keep: (b.budget && b.budget.keep) || 0 }) : ''}
   ${notice ? html`<div class="alert alert-success mb-16" role="status">${icon('check')}<span>${notice}</span></div>` : ''}
   ${partial ? html`<div class="alert alert-warning mb-16" role="alert">${icon('alert')}<span><b>One part of your trip couldn’t be confirmed</b> (see below). Our team has been alerted and will contact you at ${b.traveler.email} with options or a refund for that part. The confirmed parts are safe. Nothing else is needed from you right now.</span></div>` : ''}
   ${b.status === 'failed' ? html`<div class="alert alert-error mb-16" role="alert">${icon('alert')}<span>The flights couldn’t be confirmed, so your payment of ${money(b.refundAmount || b.total)} has been refunded in full. <a href="/plan">Build another trip</a>.</span></div>` : ''}
+  ${worth ? worthItPanel(b, { ...worth, user }) : ''}
   <div class="tb-command-grid">
     <div>
       <section class="tb-panel" aria-labelledby="it-title">
@@ -254,10 +264,21 @@ function tripBookingView(ctx, { booking: b, cancellationPreview: preview, paymen
         ${recipe(t, budget)}
         ${b.payment ? html`<p class="secure-note">${icon('card')}Paid ${money(b.total)} with ${b.payment.brand} •••• ${b.payment.last4}${b.payment.mode === 'test' ? ' (test mode)' : ''}. Remaining balance: ${money(0)}.</p>` : ''}
         ${b.refundAmount ? html`<p class="secure-note">${icon('info')}Refund: ${money(b.refundAmount)}</p>` : ''}
-        ${budget && b.total <= budget ? html`<p class="tb-celebrate">${icon('sparkle')} Great choice. You came in <b>${money(budget - b.total)}</b> under your ${dollars(budget)}${plan && plan.keep ? ' booking' : ''} budget.</p>` : ''}
+        ${budget && b.total <= budget && !v ? html`<p class="tb-celebrate">${icon('sparkle')} You came in <b>${money(budget - b.total)}</b> under your ${dollars(budget)}${plan && plan.keep ? ' booking' : ''} budget.</p>` : ''}
         ${plan && plan.keep ? html`<p class="tb-vac-after">${icon('lock')}<span>${afterWords(plan)}</span></p>` : ''}
       </section>
       ${coversPanel(b, t)}
+      ${['confirmed', 'partially_confirmed', 'pending_supplier', 'confirming'].includes(b.status) ? html`<section class="tb-panel ag-after" aria-labelledby="ag-after-title">
+        <h2 id="ag-after-title">${icon('sparkle')} Ask your travel agent</h2>
+        <p class="tb-muted tb-small">The same agent that built this trip, now with your booking in front of it. It answers from the booking’s own facts, says “I don’t know yet” when it doesn’t, and never changes a booked trip on its own.</p>
+        <form class="ag-after-form" method="post" action="/agent">
+          <input type="hidden" name="ref" value="${b.ref}">
+          <label class="sr-only" for="ag-after-say">Ask your travel agent anything</label>
+          <textarea id="ag-after-say" name="say" rows="2" maxlength="600" placeholder="Ask your travel agent anything…"></textarea>
+          <button class="btn btn-navy btn-sm" type="submit">Ask ${icon('arrow')}</button>
+          <div class="ag-chips">${['What do I need to do next?', 'What if I cancel?', 'Can I extend one night?', 'Do I need a car?', 'What happens if my flight changes?'].map(q => html`<button class="ag-chip" type="submit" name="example" value="${q}">${q}</button>`)}</div>
+        </form>
+      </section>` : ''}
       <section class="tb-panel" aria-labelledby="info-title">
         <h2 id="info-title">Important travel information</h2>
         <ul class="tb-list">

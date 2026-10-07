@@ -477,10 +477,10 @@ test('money and time: weekdays are a second budget, never a claim about anyone�
   assert.ok(!/Shorten the trip|Relax one rule|Allow up to 10% more/.test(none.text), 'no single-rule link is offered twice');
   assert.doesNotMatch(none.text, /No results found/i);
   const home = await c.req('/');
-  assert.match(home.text, /Tell us how much\./);
-  assert.match(home.text, /We try to beat it\./);
+  assert.match(home.text, /Or say it in your own words/);
+  assert.match(home.text, /every total includes taxes and fees/);
   assert.match(home.text, /Build my best trip/);
-  assert.match(home.text, /Your budget\. Your trip\. Your way\./);
+  assert.match(home.text, /Your maximum is a ceiling, not a target\./);
 });
 
 test('your trip, step by step: built from the trip’s facts, honest about what only the itinerary can tell', async t => {
@@ -553,9 +553,9 @@ test('pages render without inline scripts or styles; corporate site moves to /co
   assert.match(home, /How much do you<br>want to spend\?/);
   assert.match(home, /Surprise me/i);
   assert.match(home, /Demo inventory/);
-  assert.match(home, /Three answers\. One budget\. You choose\./);
+  assert.match(home, /Three answers\. One budget\. You choose, or keep talking\./);
   assert.match(home, /Our pick/);
-  assert.match(home, /Beat my quote/);
+  assert.match(home, /Challenge us/);
   assert.match(home, /I have to be there on/);
   assert.equal((await fetch(app.base + '/trips-under-7')).status, 404);
   assert.equal((await fetch(app.base + '/legal/nope')).status, 404);
@@ -1152,4 +1152,31 @@ test('deciding today and after: dated cutoffs shared by the pages and the refund
     else assert.ok(after.text.includes(`${x.component}: $0 · non-refundable`), `${x.component} row`);
   }
   if (pv3.nextCutoff) assert.ok(after.text.includes(`Next cutoff: ${pv3.nextCutoff.component}, ${cutoffText(pv3.nextCutoff.cutoff)}.`), 'the next cutoff is named');
+});
+
+test('customizer links carry several experiences as repeated parameters, so adding a second one (or removing one of several) still decodes', async t => {
+  const app = await startApp();
+  t.after(app.close);
+  assert.equal(optimizer.contextParams({ budget: 150000 }, { activities: ['san-a3', 'san-a1'] }), 'b=1500&activities=san-a3&activities=san-a1');
+  assert.equal(optimizer.contextParams({}, { activities: [] }), 'activities=', 'removing the last experience still names the parameter');
+  const c = client(app.base);
+  const trip = await buildTrip(c);
+  const page = await c.req(`${trip.tripPath}?${trip.cx}`);
+  const adds = [...page.text.matchAll(/href="(\/trip\/[^"]+\/change\?[^"]*activities=[^"]*)"/g)].map(x => x[1].replace(/&amp;/g, '&'));
+  assert.ok(adds.length >= 2, 'the page offers experiences to add');
+  let token = trip.tripPath.split('/')[2];
+  // Add two experiences one after the other through the links the pages themselves offer (the pick may
+  // already carry one); every step is a trip that opens.
+  for (let i = 0; i < 2; i++) {
+    const have = decodeSpec(token).activities.length;
+    const cur = await c.req(`/trip/${token}?${trip.cx}`);
+    assert.equal(cur.status, 200);
+    const link = [...cur.text.matchAll(/href="(\/trip\/[^"]+\/change\?[^"]*activities=[^"]*)"/g)].map(x => x[1].replace(/&amp;/g, '&')).find(l => (l.match(/activities=[^&]+/g) || []).length === have + 1);
+    assert.ok(link, `a link adding experience ${have + 1}`);
+    const r = await c.req(link);
+    assert.equal(r.status, 303);
+    token = r.location.split('?')[0].split('/')[2];
+    assert.equal(decodeSpec(token).activities.length, have + 1, 'the token carries every chosen experience');
+    assert.equal((await c.req(r.location)).status, 200, 'the changed trip opens');
+  }
 });

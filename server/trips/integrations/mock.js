@@ -2,14 +2,14 @@
 // flights, hotels, activities and transfers. They read the invented inventory in ../demo-data and
 // generate deterministic prices, so a search always returns the same trips for the same day. Every
 // offer they return is marked demo: true, and none of them is reachable when demo inventory is off.
-const { DESTINATIONS } = require('../demo-data/destinations');
+const { DESTINATIONS, GUIDE_CHECKED_AT } = require('../demo-data/destinations');
 const { ORIGINS } = require('../demo-data/origins');
 const { hash32, id } = require('../../lib/ids');
 const { addDays, daysBetween, today } = require('../../lib/dates');
 
 const usd = n => Math.round(n * 100);
 const DEMO_AIRLINES = ['Skylark Air', 'Coral Wing Airways', 'Bluewater Air', 'Atlas Ridge Airways'];
-const FEATURE = { B: 'breakfast', P: 'pool', F: 'beachfront', A: 'adultsOnly', I: 'allInclusive', R: 'freeCancellation', K: 'familyFriendly', S: 'spa' };
+const FEATURE = { B: 'breakfast', P: 'pool', F: 'beachfront', A: 'adultsOnly', I: 'allInclusive', R: 'freeCancellation', K: 'familyFriendly', S: 'spa', H: 'airportShuttle' };
 
 function jitter(key, spread) {
   return 1 - spread + ((hash32(key) % 1000) / 1000) * spread * 2;
@@ -196,16 +196,35 @@ class MockHotels {
 
 class MockActivities {
   constructor() { this.kind = 'mock'; }
+  // `slot`, `months`, `weather` and `tags` come from the activity's optional sixth element (see the
+  // demo data's header): `months` is null when the partner states no season (the operating days are
+  // then not in our data, which is not the same as "all year"), `tags` always includes the kind.
   search({ destId }) {
     const d = DESTINATIONS.find(x => x.id === destId);
     if (!d) return [];
-    return d.activities.map(([aid, name, price, hours, kind]) => ({
+    return d.activities.map(([aid, name, price, hours, kind, extra = {}]) => ({
       id: aid, name, pricePerPerson: usd(price), commissionPercent: 15, hours, kind, demo: true,
+      slot: extra.slot || 'day', months: Array.isArray(extra.months) && extra.months.length ? [...extra.months] : null,
+      weather: !!extra.weather, tags: [...new Set([kind, ...(extra.tags || [])])],
       supplier: 'Demo activity partner', freeCancelHours: 24, policy: 'Free cancellation until 24 hours before the activity.',
     }));
   }
   async book(a) {
     return { status: 'confirmed', confirmation: `AC${(hash32(a.id + Math.random()) % 900000 + 100000)}` };
+  }
+}
+
+// Free things worth doing, from the demo guide notes. Every answer carries its source and the date the
+// notes were checked (the demo data's own fixed date, never today's: a page opened today has not
+// re-checked anything), because the experience engine says "free" only with both; an item free only on
+// some days carries its `condition`. A destination without notes gets null, which every caller reads as
+// "no free data", never as "nothing free exists there".
+class MockGuides {
+  constructor({ now = () => new Date() } = {}) { this.kind = 'mock'; this.now = now; }
+  freeThings({ destId }) {
+    const d = DESTINATIONS.find(x => x.id === destId);
+    if (!d || !Array.isArray(d.freeThings) || !d.freeThings.length) return null;
+    return { source: 'Demo guide data (invented for this demo)', checkedAt: d.freeThingsCheckedAt || GUIDE_CHECKED_AT, items: d.freeThings.map(([name, kind, note, condition]) => ({ name, kind, note, ...(condition ? { condition: { ...condition } } : {}) })) };
   }
 }
 
@@ -226,4 +245,4 @@ class MockTransfers {
   }
 }
 
-module.exports = { MockMaps, MockWeather, MockFlights, MockHotels, MockActivities, MockTransfers, haversineKm, seasonFactor, demoId: id };
+module.exports = { MockMaps, MockWeather, MockFlights, MockHotels, MockActivities, MockGuides, MockTransfers, haversineKm, seasonFactor, demoId: id };

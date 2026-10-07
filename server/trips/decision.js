@@ -5,7 +5,7 @@
 // platform's margin is never an input (the internal economics aren't passed in anywhere here).
 const { addDays, today } = require('../lib/dates');
 const { priceTrip } = require('./pricing');
-const { scoreTrip, memoInventory, activitySets, hotelAllowed } = require('./optimizer');
+const { scoreTrip, memoInventory, activitySets, hotelAllowed, rulesAllowHotel, rulesAllowFlight } = require('./optimizer');
 // The fact-only comparison helpers live in facts.js (shared with the optimizer); re-exported here so
 // every page keeps requiring them from the decision layer.
 const { usableTime, classifyChanges, tripDiff, clock, hoursLabel } = require('./facts');
@@ -27,15 +27,23 @@ function timeAlternatives(t, options) {
 // ---- the verdict -----------------------------------------------------------------------------
 // Compromises weighted by how much they matter for what the traveler told us. Weight 3 means it
 // contradicts an answer they gave; 2 is a real downside; 1 is worth knowing.
+// A protected main experience (Experience Max, ctx.protect) is held like an answer the traveler gave: a
+// version without it contradicts it (weight 3), so it is named as a compromise and never offered as a
+// strong version by anything built on the verdict. The words say "the protected experience": the agent
+// may have protected it from the results, and a customer is never told they set what they did not.
+const protectedName = (t, id) => ((t.activityOptions || []).find(a => a.id === id) || t.activities.find(a => a.id === id) || { name: id }).name;
 function compromises(t, ctx = {}, time = usableTime(t)) {
   const style = ctx.style || 'surprise', prio = ctx.priority || 'price';
   const out = [];
+  if (ctx.protect && !t.spec.activities.includes(ctx.protect)) out.push({ w: 3, text: `without ${protectedName(t, ctx.protect)}, the protected experience` });
   if (ctx.nightsAsked && t.spec.nights < ctx.nightsAsked) out.push({ w: 3, text: `${plural(ctx.nightsAsked - t.spec.nights, 'night')} shorter than you asked for` });
   if (style === 'all-inclusive' && !t.hotel.features.allInclusive) out.push({ w: 3, text: 'not an all-inclusive resort' });
   else if (style !== 'surprise' && style !== 'all-inclusive' && !t.dest.styles.includes(style)) out.push({ w: 3, text: `not really a ${style === 'city' ? 'city-break' : style} destination (${t.dest.name})` });
-  if (prio === 'hotel' && t.hotel.stars <= 3) out.push({ w: 2, text: `a ${t.hotel.stars}-star hotel, when the hotel mattered most to you` });
-  else if (t.hotel.stars <= 2) out.push({ w: 2, text: `a ${t.hotel.stars}-star hotel` });
-  else if (t.hotel.stars === 3) out.push({ w: 1, text: 'a 3-star hotel' });
+  // Star lines carry key 'stars': Experience Max sets them aside when it grades its GOOD TRIP floor
+  // (stars are labels there: the floor is graded on the goal facts only).
+  if (prio === 'hotel' && t.hotel.stars <= 3) out.push({ w: 2, key: 'stars', text: `a ${t.hotel.stars}-star hotel, when the hotel mattered most to you` });
+  else if (t.hotel.stars <= 2) out.push({ w: 2, key: 'stars', text: `a ${t.hotel.stars}-star hotel` });
+  else if (t.hotel.stars === 3) out.push({ w: 1, key: 'stars', text: 'a 3-star hotel' });
   if (prio === 'flights' && t.flight.stops > 0) out.push({ w: 2, text: `${t.flight.stops}-stop flights, when flights mattered most to you` });
   else if (t.flight.stops > 0 && t.flight.durationMinutes >= 8 * 60) out.push({ w: 1, text: `long ${t.flight.stops}-stop flights (${Math.round(t.flight.durationMinutes / 60)}h each way)` });
   if (t.flight.id === 'basic') out.push({ w: 2, text: 'a Basic fare: personal item only, no changes' });
@@ -136,15 +144,19 @@ function optimizeAround(inventory, t, settings, ctx = {}, { locks = {}, cap = t.
   const base = scoreTrip(t, qctx);
   const baseGrade = GRADE_RANK[verdict(t, qctx, base).grade];
   const baseHard = compromises(t, ctx).filter(c => c.w >= 3).length;
-  const hotels = locks.hotel ? [s.hotel] : t.hotelOptions.filter(h => hotelAllowed(h, { who: s.who, style: ctx.style })).map(h => h.id);
-  const flights = locks.flight ? [s.flight] : t.flightOptions.map(f => f.id);
+  const hotels = locks.hotel ? [s.hotel] : t.hotelOptions.filter(h => hotelAllowed(h, { who: s.who, style: ctx.style }) && rulesAllowHotel(h, ctx.rules)).map(h => h.id);
+  const flights = locks.flight ? [s.flight] : t.flightOptions.filter(f => rulesAllowFlight(f, ctx.rules)).map(f => f.id);
+  if (!hotels.includes(s.hotel)) hotels.push(s.hotel);
+  if (!flights.includes(s.flight)) flights.push(s.flight);
   const earliest = addDays(today(now), 3);
   const dates = locks.dates ? [s.depart] : [s.depart, ...[-2, -1, 1, 2].map(o => addDays(s.depart, o)).filter(d => d >= earliest)];
-  const nightsList = locks.dates ? [s.nights] : [s.nights, s.nights + 1].filter(n => n <= 14); // never shorter: that is "make it cheaper", not "better"
+  const nightsList = locks.dates || locks.nights ? [s.nights] : [s.nights, s.nights + 1].filter(n => n <= 14); // never shorter: that is "make it cheaper", not "better"
   const sets = [s.activities, ...activitySets(t.activityOptions, ctx.style || 'surprise')];
+  const transfers = ctx.rules && ctx.rules.transfer ? [true] : [s.transfer, !s.transfer];
   const seen = new Set();
   let best = null;
-  for (const depart of dates) for (const nights of nightsList) for (const hotel of hotels) for (const flight of flights) for (const activities of sets) for (const transfer of [s.transfer, !s.transfer]) {
+  for (const depart of dates) for (const nights of nightsList) for (const hotel of hotels) for (const flight of flights) for (const activities of sets) for (const transfer of transfers) {
+    if (ctx.protect && !activities.includes(ctx.protect)) continue; // never a version without the protected experience
     const spec = { ...s, depart, nights, hotel, flight, activities: [...activities].sort(), transfer };
     const key = JSON.stringify(spec);
     if (seen.has(key)) continue;
@@ -190,19 +202,20 @@ function rungLabel(v, changes, base) {
 }
 const changeText = r => `${r.label}: ${r.b}`;
 
-function nameYourPrice(inventory, t, settings, ctx = {}, target, { now = new Date() } = {}) {
+function nameYourPrice(inventory, t, settings, ctx = {}, target, { now = new Date(), locks = {} } = {}) {
   const inv = memoInventory(inventory);
   const s = t.spec;
   const qctx = { ...ctx, budget: null, allowOver: 0 };
-  const hotels = t.hotelOptions.filter(h => hotelAllowed(h, { who: s.who, style: ctx.style })).map(h => h.id);
+  const hotels = locks.hotel ? [s.hotel] : t.hotelOptions.filter(h => hotelAllowed(h, { who: s.who, style: ctx.style }) && rulesAllowHotel(h, ctx.rules)).map(h => h.id);
   if (!hotels.includes(s.hotel)) hotels.push(s.hotel);
-  const flights = t.flightOptions.map(f => f.id);
+  const flights = locks.flight ? [s.flight] : t.flightOptions.filter(f => rulesAllowFlight(f, ctx.rules)).map(f => f.id);
+  if (!flights.includes(s.flight)) flights.push(s.flight);
   const earliest = addDays(today(now), 3);
-  const dates = [s.depart, ...[-3, -2, -1, 1, 2, 3].map(o => addDays(s.depart, o)).filter(d => d >= earliest)];
+  const dates = locks.dates ? [s.depart] : [s.depart, ...[-3, -2, -1, 1, 2, 3].map(o => addDays(s.depart, o)).filter(d => d >= earliest)];
   const nightsList = [];
-  for (let n = s.nights; n >= Math.max(2, s.nights - 2); n--) nightsList.push(n);
+  for (let n = s.nights; n >= (locks.nights || locks.dates ? s.nights : Math.max(2, s.nights - 2)); n--) nightsList.push(n);
   const sets = [s.activities, [], ...activitySets(t.activityOptions, ctx.style || 'surprise')];
-  const transfers = s.transfer ? [true, false] : [false];
+  const transfers = s.transfer ? (ctx.rules && ctx.rules.transfer ? [true] : [true, false]) : [false];
   const bagsList = s.bags ? [true, false] : [s.bags];
   const currentV = verdict(t, qctx);
   const base = { grade: currentV.grade, texts: new Set(currentV.compromises.map(c => c.text)), priorityKeys: PRIORITY_KEYS[ctx.priority] || [] };
@@ -213,6 +226,7 @@ function nameYourPrice(inventory, t, settings, ctx = {}, target, { now = new Dat
   // MAX_PRICED versions and says so, instead of blocking the server on one request.
   let priced = 0, truncated = false;
   outer: for (const depart of dates) for (const nights of nightsList) for (const hotel of hotels) for (const flight of flights) for (const activities of sets) for (const transfer of transfers) for (const bags of bagsList) {
+    if (ctx.protect && !activities.includes(ctx.protect)) continue; // a protected experience is never priced away: no rung without it
     const spec = { ...s, depart, nights, hotel, flight, activities: [...activities].sort(), transfer, bags };
     const key = JSON.stringify(spec);
     if (seen.has(key)) continue;

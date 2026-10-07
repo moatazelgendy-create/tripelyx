@@ -11,7 +11,8 @@ const { addDays } = require('../../lib/dates');
 const money = c => format(c, 'USD');
 const dollars = c => `$${Math.round(c / 100).toLocaleString('en-US')}`;
 const shortDate = d => date(d, { day: 'numeric', month: 'short' });
-const longDate = d => date(d, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+// One date format for customer text, shared with the engines' sentences (trips/words).
+const { longDate } = require('../../trips/words');
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 
 const joinAnd = items => (items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`);

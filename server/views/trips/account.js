@@ -4,6 +4,7 @@ const { icon } = require('../icons');
 const { layout } = require('../layout');
 const { contextParams } = require('../../trips/optimizer');
 const { money, dollars, longDate, shortDate, plural, statusPill, demoBadge } = require('./common');
+const { huntRows, SEARCH_WORDS } = require('./hunts');
 
 function authView(ctx, { mode, error, errors = {}, values = {}, next = '' }) {
   const signin = mode === 'signin';
@@ -36,27 +37,43 @@ function tripRow(b) {
       <p>${longDate(t.spec.depart)} – ${shortDate(t.flight.return)} · ${plural(t.spec.travelers, 'traveler')} · ${t.hotel.name}</p>
       <p class="tb-small tb-muted">Total paid ${money(b.total)}</p>
     </div>
-    <a class="btn btn-ghost btn-sm" href="/booking/${b.ref}">Open trip ${icon('arrow')}</a>
+    <div class="tb-mytrip-actions"><a class="btn btn-ghost btn-sm" href="/booking/${b.ref}">Open trip ${icon('arrow')}</a>${b.status === 'cancelled' || b.status === 'refunded' ? '' : html`<form method="post" action="/agent"><input type="hidden" name="ref" value="${b.ref}"><button class="btn btn-ghost btn-sm" type="submit">Ask your travel agent</button></form>`}</div>
   </li>`;
 }
 
+// A saved trip or a price watch, re-priced. A watch also shows the rule it waits for and the honest
+// line from the service (listSaved's `alert`): the "Alert" pill and the is-alert class appear only
+// when that rule is met; otherwise the line says what moved and why no alert.
 function savedRow(r, kind) {
   const t = r.trip;
-  if (!t) return html`<li class="tb-mytrip tb-mytrip-gone"><div><h3>${r.title}</h3><p class="tb-muted">This trip is no longer available (saved at ${money(r.priceAtSave)}).</p></div><form method="post" action="/my-trips/remove"><input type="hidden" name="kind" value="${kind}"><input type="hidden" name="id" value="${r.id}"><button class="btn btn-ghost btn-sm" type="submit">Remove</button></form></li>`;
+  const watch = kind === 'watch';
+  const met = watch && !!(r.alert && r.alert.met);
+  const remove = html`<form method="post" action="/my-trips/remove"><input type="hidden" name="kind" value="${kind}"><input type="hidden" name="id" value="${r.id}"><button class="btn btn-ghost btn-sm" type="submit">Remove</button></form>`;
+  if (!t) return html`<li class="tb-mytrip tb-mytrip-gone"><div><h3>${r.title}</h3><p class="tb-muted">This trip is no longer available (saved at ${money(r.priceAtSave)}).</p>${watch ? html`<p class="tb-small tb-muted">${r.ruleText}. No alert: the trip can no longer be priced.</p>` : ''}</div>${remove}</li>`;
   const cx = { budget: r.budget };
-  return html`<li class="tb-mytrip">
+  return html`<li class="tb-mytrip${met ? ' is-alert' : ''}">
     <img src="${t.dest.image.url}" alt="" width="200" height="125" loading="lazy">
     <div>
-      <p class="tb-kicker">${kind === 'watch' ? 'Watching price' : 'Saved'} · ${r.departed ? 'dates passed' : `saved ${shortDate(r.savedAt.slice(0, 10))}`}</p>
+      <p class="tb-kicker">${watch ? 'Watching price' : 'Saved'} · ${r.departed ? 'dates passed' : `saved ${shortDate(r.savedAt.slice(0, 10))}`}${met ? html` <span class="tb-delta tb-delta-save">Alert</span>` : ''}</p>
       <h3><a href="/trip/${r.token}?${contextParams(cx)}">${plural(t.spec.nights, 'night')} in ${t.dest.name}</a></h3>
       <p>${longDate(t.spec.depart)} · ${plural(t.spec.travelers, 'traveler')} · ${t.hotel.name}</p>
       <p class="tb-small">When you saved it: <b>${money(r.priceAtSave)}</b> · now: <b>${money(r.now)}</b> ${r.change === 0 ? html`<span class="tb-delta tb-delta-same">no change</span>` : html`<span class="tb-delta ${r.change < 0 ? 'tb-delta-save' : 'tb-delta-add'}">${r.change < 0 ? '−' : '+'}${money(Math.abs(r.change))}</span>`}${r.budget ? html` · ${r.now <= r.budget ? html`<span class="tb-delta tb-delta-save">under your ${dollars(r.budget)}</span>` : html`<span class="tb-delta tb-delta-add">${money(r.now - r.budget)} over your ${dollars(r.budget)}</span>`}` : ''}</p>
+      ${watch ? html`<p class="tb-small tb-watch-rule"><span class="tb-muted">${r.ruleText}.</span> ${r.alert ? html`<span class="tb-watch-alert">${r.alert.text}.</span>` : ''}</p>` : ''}
     </div>
-    <form method="post" action="/my-trips/remove"><input type="hidden" name="kind" value="${kind}"><input type="hidden" name="id" value="${r.id}"><button class="btn btn-ghost btn-sm" type="submit">Remove</button></form>
+    ${remove}
   </li>`;
 }
 
-function myTripsView(ctx, { user, upcoming, past, saved, watches, recent, lastSearch, notice }) {
+// The Hunts section: each hunt's stored facts (server/trips/hunts.js list summary), nothing searched
+// here. `destName` turns a baseline's destination id into its name.
+function huntsSection(hunts, destName) {
+  return html`<section aria-labelledby="hu-title"><h2 id="hu-title">Hunts</h2>
+    ${hunts.length ? huntRows(hunts, { destName }) : html`<p class="tb-muted">Tell the AI your max and it waits for the right trip: it ${SEARCH_WORDS}, and says something only when one is worth your attention. <a href="/hunts/new">Start a hunt</a>.</p>`}
+    <p class="tb-small"><a href="/hunts">${hunts.length ? 'All hunts' : 'About hunts'}</a>${hunts.length ? html` · <a href="/hunts/new">Start another hunt</a>` : ''}</p>
+  </section>`;
+}
+
+function myTripsView(ctx, { user, upcoming, past, saved, watches, recent, lastSearch, notice, hunts = [], destName = id => id }) {
   const body = html`
 <div class="container tb-mytrips">
   <header class="tb-results-head"><div><p class="eyebrow">My Trips</p><h1>Welcome back, ${user.name.split(' ')[0]}.</h1>
@@ -67,6 +84,7 @@ function myTripsView(ctx, { user, upcoming, past, saved, watches, recent, lastSe
   <section aria-labelledby="up-title"><h2 id="up-title">Upcoming trips</h2>${upcoming.length ? html`<ul class="tb-mytrip-list">${upcoming.map(tripRow)}</ul>` : html`<p class="empty-state tb-empty">${icon('compass')} No upcoming trips yet. <a href="/plan">Build one from your budget</a>.</p>`}</section>
   <section aria-labelledby="sv-title"><h2 id="sv-title">Saved trips</h2>${saved.length ? html`<ul class="tb-mytrip-list">${saved.map(r => savedRow(r, 'saved'))}</ul>` : html`<p class="tb-muted">Save a trip from its page to come back to it later.</p>`}</section>
   <section aria-labelledby="w-title"><h2 id="w-title">Price watches</h2>${watches.length ? html`<ul class="tb-mytrip-list">${watches.map(r => savedRow(r, 'watch'))}</ul>` : html`<p class="tb-muted">Watch a trip and we’ll show you here when its price changes${ctx.tripService.demo ? ' (email alerts arrive once notifications are connected)' : ''}.</p>`}</section>
+  ${huntsSection(hunts, destName)}
   <section aria-labelledby="past-title"><h2 id="past-title">Past trips</h2>${past.length ? html`<ul class="tb-mytrip-list">${past.map(tripRow)}</ul>` : html`<p class="tb-muted">Nothing here yet.</p>`}</section>
 </div>`;
   return layout({ title: 'My Trips', active: 'my-trips', body, ctx, noindex: true });

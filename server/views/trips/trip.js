@@ -9,6 +9,8 @@ const { money, dollars, shortDate, longDate, plural, joinAnd, cutoffText, termsF
 const { cutoffs, isOpen, fullRefundApplies, FULL_REFUND_MIN_DAYS } = require('../../trips/deadlines');
 const { daysBetween, today } = require('../../lib/dates');
 const { vacationPlan } = require('../../trips/vacation');
+const { savingsCheckPanel, leakCheckPanel, breakdownDetails } = require('./leaks');
+const { mainLine, experienceReviewPanels } = require('./memories');
 
 const cap = s => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 
@@ -17,6 +19,14 @@ const FEATURE_LABEL = { breakfast: 'Breakfast included', pool: 'Pool', beachfron
 function delta(d) {
   if (d === 0) return html`<span class="tb-delta tb-delta-same">same price</span>`;
   return html`<span class="tb-delta ${d < 0 ? 'tb-delta-save' : 'tb-delta-add'}">${d < 0 ? '−' : '+'}${money(Math.abs(d))}</span>`;
+}
+
+// Watch this trip: the rule the alert waits for is chosen here and kept on the watch (see
+// trips/service watchRule). The amount box is for the "at or under" rule; "drops $100 or more" and
+// "any drop" need none. A plain form, so it works without a script; the route reads it as typed.
+function watchForm(token, cx, saved) {
+  if (saved && saved.watch) return html`<button class="btn btn-ghost" type="button" disabled>${icon('eye')} Watching price</button>`;
+  return html`<form method="post" action="/trip/${token}/save?${contextParams(cx)}" class="tb-inline tb-inline-field tb-watch"><input type="hidden" name="kind" value="watch"><label class="sr-only" for="watch-rule">Alert me when the price</label><select id="watch-rule" name="rule"><option value="drop">Drops $100 or more</option><option value="any-drop">Any drop</option><option value="under">At or under $</option></select><input type="text" name="amount" inputmode="numeric" pattern="[0-9,.]*" size="6" autocomplete="off" aria-label="Amount in dollars, for the at-or-under rule"><button class="btn btn-ghost" type="submit">${icon('eye')} Watch price</button></form>`;
 }
 
 function changeUrl(token, cx, change) {
@@ -70,6 +80,8 @@ function timePanel(t, time, alts, token, cx, pto) {
 // Budget unlocks: what a little more buys, from real re-priced changes; "make it better for the same
 // money"; and the locks that let the engine re-plan everything else.
 function unlockPanel(t, unlock, { budget, diff, token, cx, reviewUrl }) {
+  // A lock set with the agent rides on the link (locked=): shown ticked and fixed here, and held by the optimize route.
+  const held = (cx && cx.locks) || {};
   const title = unlock.within.length ? `You still have ${money(diff)} available` : budget ? 'What a little more would get you' : 'Make it better';
   return html`<section class="tb-panel" id="unlock" aria-labelledby="unlock-title">
     <h2 id="unlock-title">${icon('sparkle')} ${title}</h2>
@@ -85,8 +97,8 @@ function unlockPanel(t, unlock, { budget, diff, token, cx, reviewUrl }) {
     <form class="tb-locks" method="get" action="/trip/${token}/optimize">
       ${hiddenParams(contextParams(cx))}
       <input type="hidden" name="cap" value="${budget ? 'budget' : 'same'}">
-      <label><input type="checkbox" name="lk" value="h"> ${icon('bed')} Keep ${t.hotel.name}</label>
-      <label><input type="checkbox" name="lk" value="f"> ${icon('plane')} Keep these flights</label>
+      <label><input type="checkbox" name="lk" value="h"${held.hotel ? html` checked disabled` : ''}> ${icon('bed')} Keep ${t.hotel.name}${held.hotel ? ' (locked with your agent)' : ''}</label>
+      <label><input type="checkbox" name="lk" value="f"${held.flight ? html` checked disabled` : ''}> ${icon('plane')} Keep these flights${held.flight ? ' (locked with your agent)' : ''}</label>
       <label><input type="checkbox" name="lk" value="d" checked> ${icon('calendar')} Keep these dates</label>
       <button class="btn btn-ghost" type="submit">Optimize everything else ${icon('arrow')}</button>
     </form>
@@ -152,11 +164,15 @@ function singleChanges(t, options, token, cx) {
   for (const f of options.flights) if (f.flight.id !== s.flight) out.push({ label: `${f.flight.stops === 0 && t.flight.stops > 0 ? 'Nonstop flight' : f.flight.name + ' fare'} (${f.flight.stops ? `${f.flight.stops} stop` : 'nonstop'}, ${hm(f.flight.durationMinutes)})`, delta: f.delta, total: f.total, url: changeUrl(token, cx, { flight: f.flight.id }), kind: 'flight', better: (f.flight.stops < t.flight.stops) || (f.flight.refundable && !t.flight.refundable) });
   for (const n of options.nights) if (n.nights !== s.nights) out.push({ label: `${n.nights > s.nights ? 'Add' : 'Remove'} ${plural(Math.abs(n.nights - s.nights), 'night')} (${n.nights} nights)`, delta: n.delta, total: n.total, url: changeUrl(token, cx, { nights: n.nights }), kind: 'nights', better: n.nights > s.nights });
   for (const d of options.dates) out.push({ label: `Leave ${longDate(d.depart)} instead`, delta: d.delta, total: d.total, url: changeUrl(token, cx, { depart: d.depart }), kind: 'dates', better: false });
-  for (const a of options.activities) out.push({ label: `${a.selected ? 'Remove' : 'Add'} ${a.activity.name}`, delta: a.selected ? -a.cost : a.cost, total: t.total + (a.selected ? -a.cost : a.cost), url: changeUrl(token, cx, { activities: a.selected ? s.activities.filter(x => x !== a.activity.id) : [...s.activities, a.activity.id] }), kind: 'activity', better: !a.selected });
+  for (const a of options.activities) out.push({ label: `${a.selected ? 'Remove' : 'Add'} ${a.activity.name}`, delta: a.selected ? -a.cost : a.cost, total: t.total + (a.selected ? -a.cost : a.cost), url: changeUrl(token, cx, { activities: a.selected ? s.activities.filter(x => x !== a.activity.id) : [...s.activities, a.activity.id] }), kind: 'activity', better: !a.selected, activity: a.activity.id, removes: a.selected });
   if (options.transfer) out.push({ label: s.transfer ? 'Remove the airport transfer' : 'Add a private airport transfer, both ways', delta: options.transfer.delta, total: options.transfer.total, url: changeUrl(token, cx, { transfer: s.transfer ? '0' : '1' }), kind: 'transfer', better: !s.transfer });
   if (options.bags) out.push({ label: s.bags ? 'Remove checked bags' : 'Add a checked bag for each traveler', delta: options.bags.delta, total: options.bags.total, url: changeUrl(token, cx, { bags: s.bags ? '0' : '1' }), kind: 'bags', better: !s.bags });
   return out;
 }
+
+// The experience the traveler protected (px=) is never offered for removal in a list of changes: it
+// leaves the trip only by their own click in the customizer, which also says it unprotects it.
+const keepsProtected = cx => c => !(cx && cx.protect && c.kind === 'activity' && c.removes && c.activity === cx.protect);
 
 function changeList(items, { empty }) {
   if (!items.length) return html`<p class="tb-muted">${empty}</p>`;
@@ -199,12 +215,19 @@ function confidenceQuestions(t) {
   return html`<section class="tb-faq-inline" aria-labelledby="cq-title"><h2 id="cq-title">Simple answers before you book</h2>${qa.map(([q, a]) => html`<details><summary>${q}</summary><p>${a}</p></details>`)}</section>`;
 }
 
-function tripView(ctx, { data, cx, user, saved, dreamGap, named = null }) {
+// `pxNote` says a protection the link carried that this destination does not offer (the route dropped
+// it); `switched` ({ from, to }) says that "Protect this instead" replaced the experience protected before.
+function tripView(ctx, { data, cx, user, saved, dreamGap, named = null, promo = null, promoError = null, main = null, pxNote = null, switched = null }) {
   const { trip: t, token, scores, why, options, origin, weather } = data;
   const s = t.spec;
   const budget = cx.budget;
   const diff = budget ? budget - t.total : null;
-  const changes = singleChanges(t, options, token, cx);
+  const changes = singleChanges(t, options, token, cx).filter(keepsProtected(cx));
+  const memUrl = (hash = '') => `/trip/${token}/memories?${contextParams(cx)}${hash}`;
+  // Only one experience is the protected main experience: while one is protected (in this version or
+  // not), another's link reads "Protect this instead", names the one it replaces, and carries it once as
+  // `pxwas` so the page that opens says the switch. Never a lock moved without a word.
+  const protectedName = cx.protect ? ([...t.activities, ...(t.activityOptions || [])].find(a => a.id === cx.protect) || {}).name || null : null;
   const cheaper = changes.filter(c => c.delta < 0).sort((a, b) => a.delta - b.delta).slice(0, 6);
   const rescue = diff !== null && diff < 0 ? changes.filter(c => c.total <= budget).sort((a, b) => b.total - a.total).slice(0, 5) : [];
   const v = verdict(t, cx, scores);
@@ -212,7 +235,9 @@ function tripView(ctx, { data, cx, user, saved, dreamGap, named = null }) {
   const timeAlts = time ? timeAlternatives(t, options) : [];
   const pto = { weekdays: weekdaysAway(s.depart, s.nights), alts: ptoAlternatives(t, options) };
   const unlock = budgetUnlocks(changes, diff);
-  const reviewUrl = `/trip/${token}/review?${contextParams(cx, { seen: t.total })}`;
+  // A promo code carried from a review page prices there, not here (every option on this page is
+  // compared before any code), so the review link names the total with the code as the one seen.
+  const reviewUrl = `/trip/${token}/review?${contextParams(cx, { seen: promo ? promo.total : t.total })}`;
   const tos = tradeoffs(t, cx);
   const plan = vacationPlan(t, cx, options);
   const body = html`
@@ -229,7 +254,7 @@ function tripView(ctx, { data, cx, user, saved, dreamGap, named = null }) {
       <div class="tb-trip-actions">
         <a class="btn btn-navy btn-lg" href="${reviewUrl}">Book this trip · ${money(t.total)} ${icon('arrow')}</a>
         <button class="btn btn-ghost" type="button" data-share="${token}" data-share-title="${s.nights} nights in ${t.dest.name} · ${money(t.perTraveler)}/person">${icon('share')} Share</button>
-        ${user ? html`<form method="post" action="/trip/${token}/save?${contextParams(cx)}" class="tb-inline"><button class="btn btn-ghost" type="submit" name="kind" value="saved"${saved && saved.saved ? raw(' disabled') : ''}>${icon(saved && saved.saved ? 'heart-fill' : 'heart')} ${saved && saved.saved ? 'Saved' : 'Save trip'}</button><button class="btn btn-ghost" type="submit" name="kind" value="watch"${saved && saved.watch ? raw(' disabled') : ''}>${icon('eye')} ${saved && saved.watch ? 'Watching price' : 'Watch price'}</button></form>`
+        ${user ? html`<form method="post" action="/trip/${token}/save?${contextParams(cx)}" class="tb-inline"><button class="btn btn-ghost" type="submit" name="kind" value="saved"${saved && saved.saved ? raw(' disabled') : ''}>${icon(saved && saved.saved ? 'heart-fill' : 'heart')} ${saved && saved.saved ? 'Saved' : 'Save trip'}</button></form>${watchForm(token, cx, saved)}`
           : html`<a class="btn btn-ghost" href="/signin?next=${encodeURIComponent(`/trip/${token}?${contextParams(cx)}`)}">${icon('heart')} Save or watch</a>`}
       </div>
       <nav class="tb-quick" aria-label="What you can do with this trip">
@@ -238,8 +263,16 @@ function tripView(ctx, { data, cx, user, saved, dreamGap, named = null }) {
         <a class="btn btn-ghost btn-sm" href="#protect">${icon('lock')} Protect the magic</a>
         <a class="btn btn-ghost btn-sm" href="#customize">${icon('sliders')} Change one thing</a>
         ${cx.searchParams ? html`<a class="btn btn-ghost btn-sm" href="/trips?${cx.searchParams}">${icon('layers')} Compare my trips</a>` : ''}
+        <a class="btn btn-ghost btn-sm" href="/trip/${token}/leaks?${contextParams(cx)}#paying">${icon('wallet')} What am I paying for?</a>
+        <a class="btn btn-ghost btn-sm" href="/trip/${token}/leaks?${contextParams(cx)}#lean">${icon('minus')} Strip it down</a>
+        <a class="btn btn-ghost btn-sm" href="/trip/${token}/leaks?${contextParams(cx)}#leak">${icon('search')} Find my biggest money leak</a>
+        <a class="btn btn-ghost btn-sm" href="${memUrl()}">${icon('sparkle')} Make it more memorable</a>
+        ${cx.goals && cx.goals.length ? html`<a class="btn btn-ghost btn-sm" href="${memUrl('#receipt')}">${icon('layers')} Why this trip is built this way</a>` : html`<a class="btn btn-ghost btn-sm" href="${memUrl('#goals')}">${icon('layers')} Tell me what you want to remember</a>`}
       </nav>
+      ${pxNote ? html`<p class="tb-mem-main is-missing tb-tip tb-tip-warn">${icon('alert')} <span>${pxNote}</span></p>` : ''}
+      ${main && (main.protected || main.missing) ? mainLine(main, { token, cx, trip: t, here: 'trip' }) : ''}
       <p class="tb-checked">${icon('check')} Price checked moments ago. We check it again before you pay, and nothing is charged until you confirm.</p>
+      ${promo ? html`<p class="tb-checked" data-promo="${promo.code}">${icon('check')} Promo code ${promo.code} comes with you from the review page: ${money(promo.off)} off, so ${money(promo.total)} with it. The prices on this page are before the code; it is applied again when you review.</p>` : promoError ? html`<p class="tb-checked">${icon('info')} ${promoError} The code is not carried on from here.</p>` : ''}
     </div>
   </header>
 
@@ -270,7 +303,8 @@ function tripView(ctx, { data, cx, user, saved, dreamGap, named = null }) {
           </div>
         </div>
         <h3>${icon('flag')} Experiences</h3>
-        <ul class="tb-options tb-options-check">${options.activities.map(a => html`<li class="${a.selected ? 'is-on' : ''}"><a class="tb-opt" href="${changeUrl(token, cx, { activities: a.selected ? s.activities.filter(x => x !== a.activity.id) : [...s.activities, a.activity.id] })}" aria-pressed="${a.selected ? 'true' : 'false'}">${icon(a.selected ? 'check' : 'plus')}<span><b>${a.activity.name}</b><br><small>${a.activity.hours}h · ${money(a.activity.pricePerPerson)} per person · ${a.activity.supplier}</small></span>${a.selected ? html`<span class="tb-delta tb-delta-same">included · remove</span>` : delta(a.cost)}</a></li>`)}</ul>
+        ${switched ? html`<p class="tb-tip tb-mem-switched" role="status">${icon('lock')} <span>${switched.to.name} is now the experience I protect; ${switched.from.name} is no longer protected.</span></p>` : ''}
+        <ul class="tb-options tb-options-check">${options.activities.map(a => { const px = a.selected && cx.protect === a.activity.id; return html`<li class="${a.selected ? 'is-on' : ''}${px ? ' is-protected' : ''}"><a class="tb-opt" href="${changeUrl(token, cx, { activities: a.selected ? s.activities.filter(x => x !== a.activity.id) : [...s.activities, a.activity.id], ...(px ? { px: undefined } : {}) })}" aria-pressed="${a.selected ? 'true' : 'false'}">${icon(a.selected ? 'check' : 'plus')}<span><b>${a.activity.name}</b><br><small>${a.activity.hours}h · ${money(a.activity.pricePerPerson)} per person · ${a.activity.supplier}</small></span>${a.selected ? html`<span class="tb-delta tb-delta-same">${px ? 'included · remove (unprotects it)' : 'included · remove'}</span>` : delta(a.cost)}</a>${a.selected ? html`<p class="tb-mem-protect-link">${px ? html`<b>MAIN EXPERIENCE 🔒 PROTECTED</b> · <a href="/trip/${token}?${contextParams(cx, { px: undefined })}#customize">Unprotect</a>` : cx.protect && protectedName ? html`<a href="/trip/${token}?${contextParams(cx, { px: a.activity.id, pxwas: cx.protect })}#customize" data-protect="${a.activity.id}" data-replaces="${cx.protect}">${icon('lock')} Protect this instead</a> <small>(${protectedName} is then no longer protected)</small>` : html`<a href="/trip/${token}?${contextParams(cx, { px: a.activity.id })}#customize" data-protect="${a.activity.id}">${icon('lock')} Protect this experience</a>`}</p>` : ''}</li>`; })}</ul>
         <h3>${icon('bus')} Extras</h3>
         <ul class="tb-options tb-options-check">
           ${options.transfer ? html`<li class="${s.transfer ? 'is-on' : ''}"><a class="tb-opt" href="${changeUrl(token, cx, { transfer: s.transfer ? '0' : '1' })}" aria-pressed="${s.transfer ? 'true' : 'false'}">${icon(s.transfer ? 'check' : 'plus')}<span><b>Private airport transfer, both ways</b><br><small>${options.transfer.quote.vehicles} vehicle${options.transfer.quote.vehicles > 1 ? 's' : ''} · ${options.transfer.quote.supplier}</small></span>${s.transfer ? html`<span class="tb-delta tb-delta-same">included · remove</span>` : delta(options.transfer.delta)}</a></li>` : ''}
@@ -371,7 +405,10 @@ function decideToday(ctx, t, token, cx, user) {
   </section>`;
 }
 
-function reviewView(ctx, { data, cx, verify, user, promoError, promoCode }) {
+// `leak` is the route's savings check and money leak check on the verified trip (service.leakCheck);
+// a caller without it gets the page as before. `evNote` says an event the link carried that cannot belong to this trip
+// (dropped by the route: service.dropFarEvent).
+function reviewView(ctx, { data, cx, verify, user, promoError, promoCode, leak = null, experience = null, pxNote = null, evNote = null }) {
   const { trip: t, token, origin, weather } = data;
   const s = t.spec;
   const budget = cx.budget;
@@ -379,7 +416,7 @@ function reviewView(ctx, { data, cx, verify, user, promoError, promoCode }) {
   const v = verdict(t, cx, data.scores);
   const reality = realityCheck(t, { weather });
   const REALITY_STATUS = { ok: 'Fine', 'heads-up': 'Heads-up', verify: 'Check before paying' };
-  const changes = verify.status !== 'same' && diff !== null && diff < 0 ? singleChanges(t, data.options, token, cx).filter(c => c.total <= budget).sort((a, b) => b.total - a.total).slice(0, 4) : [];
+  const changes = verify.status !== 'same' && diff !== null && diff < 0 ? singleChanges(t, data.options, token, cx).filter(keepsProtected(cx)).filter(c => c.total <= budget).sort((a, b) => b.total - a.total).slice(0, 4) : [];
   const plan = vacationPlan(t, cx, data.options);
   // A price rise with money protected for the destination: say where the increase comes from,
   // part by part, and never take it from the reserve without the traveler choosing that by name.
@@ -426,9 +463,11 @@ function reviewView(ctx, { data, cx, verify, user, promoError, promoCode }) {
           <div><dt>Dates</dt><dd>${longDate(s.depart)} – ${longDate(t.flight.return)} · ${plural(s.nights, 'night')}</dd></div>
           <div><dt>Flights</dt><dd>${t.flight.airline}, ${t.flight.stops ? `${t.flight.stops} stop` : 'nonstop'} round trip from ${origin ? origin.code : s.from}, ${t.flight.name} fare</dd></div>
           <div><dt>Hotel</dt><dd>${t.hotel.name}, ${t.hotel.stars}-star${t.hotel.features.beachfront ? ' beachfront' : ''}${t.hotel.features.allInclusive ? ', all-inclusive' : ''} · ${t.rooms} room${t.rooms > 1 ? 's' : ''}</dd></div>
-          <div><dt>Experiences</dt><dd>${t.activities.length ? t.activities.map(a => a.name).join(', ') : 'None added'}</dd></div>
+          <div><dt>Experiences</dt><dd>${t.activities.length ? t.activities.map(a => (a.id === cx.protect ? `${a.name} (MAIN EXPERIENCE 🔒 PROTECTED)` : a.name)).join(', ') : 'None added'}</dd></div>
           <div><dt>Extras</dt><dd>${[t.transfer && 'Private airport transfer', (s.bags || t.flight.checkedBagIncluded) && 'Checked bags'].filter(Boolean).join(', ') || 'None'}</dd></div>
         </dl>
+        ${pxNote ? html`<p class="tb-mem-main is-missing tb-tip tb-tip-warn">${icon('alert')} <span>${pxNote}</span></p>` : ''}
+        ${evNote ? html`<p class="tb-mem-main is-missing tb-tip tb-tip-warn" data-event-note>${icon('alert')} <span>${evNote}</span></p>` : ''}
         ${plan && plan.keep ? html`<div class="tb-vac-final" id="vacation"><p class="tb-recipe-title">Your vacation plan</p>
           <div class="tb-final-nums"><div><span>Pay today</span><b>${money(plan.booking)}</b></div><div class="${plan.raid ? 'is-over' : ''}"><span>${plan.raid ? 'Left of your reserve' : 'Protected for the destination'}</span><b>${money(plan.reserveLeft)}</b></div><div class="${plan.raid ? 'is-over' : ''}"><span>${plan.raid ? 'Taken from your reserve' : 'Unassigned'}</span><b>${money(plan.raid || plan.unassigned)}</b></div></div>
           <p class="tb-vac-fit ${plan.fits ? 'is-ok' : 'is-over'}">${icon(plan.fits ? 'check' : 'alert')}<span><b>Does the whole trip fit?</b> ${plan.fits
@@ -436,6 +475,7 @@ function reviewView(ctx, { data, cx, verify, user, promoError, promoCode }) {
             : `Not as planned. The booking is ${money(t.total - budget)} over your ${dollars(budget)} booking budget, so it takes ${money(plan.raid)} of the ${money(plan.keep)} you protected${plan.over ? ` and ${money(plan.over)} beyond your whole ${money(plan.vacation)}` : ''}. You would arrive with ${money(plan.arrive)}. Only you can decide that; nothing happens without the button below.`}</span></p></div>`
           : budget ? html`<div class="tb-final-nums"><div><span>Your original budget</span><b>${money(budget)}</b></div><div><span>Final price</span><b>${money(t.total)}</b></div><div class="${diff < 0 ? 'is-over' : ''}"><span>${diff < 0 ? 'Over budget' : 'You keep'}</span><b>${money(Math.abs(diff))}</b></div></div>` : html`<div class="tb-final-nums"><div><span>Final price</span><b>${money(t.total)}</b></div></div>`}
         ${recipe(t, budget)}
+        ${leak ? breakdownDetails(leak.breakdown) : ''}
       </section>
       <aside>
         <section class="tb-panel" aria-labelledby="ready-title">
@@ -466,6 +506,8 @@ function reviewView(ctx, { data, cx, verify, user, promoError, promoCode }) {
         </section>
       </aside>
     </div>
+    ${leak ? html`<div class="tb-leak-review">${savingsCheckPanel(leak.scorecard, { keep: cx.keep || 0 })}${leakCheckPanel(leak.scan, { token, cx })}</div>` : ''}
+    ${experienceReviewPanels(experience, { token, cx, promo: !!(verify.promo) })}
     <form class="tb-confirm" method="post" action="/trip/${token}/quote">
       <input type="hidden" name="cx" value="${contextParams(cx)}">
       <input type="hidden" name="approvedTotal" value="${t.total}">
