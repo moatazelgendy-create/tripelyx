@@ -1153,3 +1153,30 @@ test('deciding today and after: dated cutoffs shared by the pages and the refund
   }
   if (pv3.nextCutoff) assert.ok(after.text.includes(`Next cutoff: ${pv3.nextCutoff.component}, ${cutoffText(pv3.nextCutoff.cutoff)}.`), 'the next cutoff is named');
 });
+
+test('customizer links carry several experiences as repeated parameters, so adding a second one (or removing one of several) still decodes', async t => {
+  const app = await startApp();
+  t.after(app.close);
+  assert.equal(optimizer.contextParams({ budget: 150000 }, { activities: ['san-a3', 'san-a1'] }), 'b=1500&activities=san-a3&activities=san-a1');
+  assert.equal(optimizer.contextParams({}, { activities: [] }), 'activities=', 'removing the last experience still names the parameter');
+  const c = client(app.base);
+  const trip = await buildTrip(c);
+  const page = await c.req(`${trip.tripPath}?${trip.cx}`);
+  const adds = [...page.text.matchAll(/href="(\/trip\/[^"]+\/change\?[^"]*activities=[^"]*)"/g)].map(x => x[1].replace(/&amp;/g, '&'));
+  assert.ok(adds.length >= 2, 'the page offers experiences to add');
+  let token = trip.tripPath.split('/')[2];
+  // Add two experiences one after the other through the links the pages themselves offer (the pick may
+  // already carry one); every step is a trip that opens.
+  for (let i = 0; i < 2; i++) {
+    const have = decodeSpec(token).activities.length;
+    const cur = await c.req(`/trip/${token}?${trip.cx}`);
+    assert.equal(cur.status, 200);
+    const link = [...cur.text.matchAll(/href="(\/trip\/[^"]+\/change\?[^"]*activities=[^"]*)"/g)].map(x => x[1].replace(/&amp;/g, '&')).find(l => (l.match(/activities=[^&]+/g) || []).length === have + 1);
+    assert.ok(link, `a link adding experience ${have + 1}`);
+    const r = await c.req(link);
+    assert.equal(r.status, 303);
+    token = r.location.split('?')[0].split('/')[2];
+    assert.equal(decodeSpec(token).activities.length, have + 1, 'the token carries every chosen experience');
+    assert.equal((await c.req(r.location)).status, 200, 'the changed trip opens');
+  }
+});

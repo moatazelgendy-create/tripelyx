@@ -367,8 +367,9 @@ test('one decision away: two priced trips within $50 that trade exactly one thin
     assert.doesNotMatch(said(s).split(' | ').pop(), /I'd (pick|go with|recommend) (A|B)\b/, 'the agent takes no side');
     assert.equal(s.pending, 'options');
     assert.doesNotMatch(said(s), /I'd stop here/, 'the signature stop waits for the answer');
+    const chosen = s.decision[1].token; // the card carries letters, labels and totals; the state holds the versions
     const s2 = await say('Option B');
-    assert.equal(s2.current.token, card.options[1].token, 'the chosen version is on the canvas');
+    assert.equal(s2.current.token, chosen, 'the chosen version is on the canvas');
     assert.match(said(s2), /it is: .* matters more, and I keep that in mind for this trip \(not saved unless you ask\)/);
     assert.ok(card.options.every(o => o.label.length > 3), 'every button names what differs');
     assert.match(said(s2).split(' | ').pop(), /I'd stop here\. I checked all \d+ destinations/);

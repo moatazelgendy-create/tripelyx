@@ -541,12 +541,22 @@ test('lowestRecommended: the cheapest eligible trip graded great or good, never 
   for (const x of el) if (x.trip.total < low.total) assert.ok(!recommended(x.trip), 'nothing cheaper is recommended');
   if (recommended(saveMore.trip)) assert.ok(low.total <= saveMore.trip.total); else assert.notEqual(low.token, encodeSpec(saveMore.trip.spec));
   assert.equal(low.match, el.find(x => x.trip === low.trip).match);
-  assert.equal(low.token, encodeSpec(trip.spec), 'in this search the pick is the lowest we recommend');
-  assert.equal(grade(saveMore.trip), 'budget');
-  // A lowest that is the pick itself is not listed twice, and save-more is still dropped.
+  // Which trip that is depends on the day's inventory: the pick itself when nothing cheaper than it is
+  // recommended, otherwise the cheapest recommended trip below it; never anything else.
+  const cheaperRecommended = el.filter(x => x.trip.total < trip.total && recommended(x.trip));
+  assert.equal(low.token, encodeSpec((cheaperRecommended.length ? cheaperRecommended[0].trip : trip).spec), 'the cheapest recommended trip, the pick when nothing cheaper is recommended');
+  if (!recommended(saveMore.trip)) assert.equal(grade(saveMore.trip), 'budget');
+  // A lowest that is the pick itself is not listed twice; a cheaper lowest is listed second; save-more is
+  // dropped either way.
   const asPick = savemax.labelsFor(result.picks, { lowest: { kind: 'lowest', token: low.token, total: low.total, trip: low.trip } });
-  assert.deepEqual(asPick.map(o => o.label), ['Best value', 'Keep more comfort']);
-  assert.ok(!asPick.some(o => o.kind === 'save-more' || o.label === 'Lowest I recommend'));
+  if (low.token === encodeSpec(trip.spec)) {
+    assert.deepEqual(asPick.map(o => o.label), ['Best value', 'Keep more comfort']);
+    assert.ok(!asPick.some(o => o.label === 'Lowest I recommend'));
+  } else {
+    assert.deepEqual(asPick.map(o => o.label), ['Best value', 'Lowest I recommend', 'Keep more comfort']);
+    assert.equal(asPick[1].token, low.token);
+  }
+  assert.ok(!asPick.some(o => o.kind === 'save-more'));
   // Excluding the pick yields the next recommended trip, which may cost more than the pick: then the
   // pick is the lowest recommended and labelsFor never lists a dearer "lowest".
   const next = savemax.lowestRecommended(el, ctx, { exclude: [low.token] });

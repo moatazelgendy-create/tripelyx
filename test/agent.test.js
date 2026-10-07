@@ -295,9 +295,20 @@ test('pages: the homepage leads with the agent, a conversation has a page, a liv
     // Buttons say things: a cheaper ask, then the booking contract with its review link.
     r = await c.req(page, { method: 'POST', form: { say: 'Make it cheaper' } });
     assert.equal(r.status, 303);
-    r = await c.req(page, { method: 'POST', form: { say: 'Book it' } });
-    const booked = await c.req(page);
+    // "Make it cheaper" may leave a proposal waiting (a cheaper version to take or keep), and the savings
+    // check before the contract may find the same trip cheaper: booking waits for those answers, so the
+    // traveler keeps the trip and asks again; a kept version is never proposed twice.
+    let booked;
+    for (let i = 0; i < 3; i++) {
+      r = await c.req(page, { method: 'POST', form: { say: 'Book it' } });
+      assert.equal(r.status, 303);
+      booked = await c.req(page);
+      if (/ag-contract/.test(booked.text)) break;
+      assert.match(text(booked.text), /There is a proposal waiting\. Take it or keep your trip first|Savings check before you pay: .*then say (?:"|&quot;)book it(?:"|&quot;) again\./);
+      assert.equal((await c.req(page, { method: 'POST', form: { say: 'Keep what I have' } })).status, 303);
+    }
     assert.match(booked.text, /ag-contract/);
+    assert.ok((text(booked.text).match(/then say (?:"|&quot;)book it(?:"|&quot;) again\./g) || []).length <= 1, 'a declined savings-check proposal is not made again');
     assert.match(booked.text, /href="\/trip\/[^"]+\/review\?[^"]*seen=\d+"/);
     // Another visitor cannot read it; a bad id is not found.
     const other = await fetch(app.base + page, { redirect: 'manual' });
@@ -479,7 +490,9 @@ test('the agent’s home after booking: today, next, status, money, reservation 
     assert.match(t, /Next reservation .* to \w+ .* fare · nonstop/);
     assert.match(t, /Important actions/);
     assert.match(t, /Free cancellation of \w+ ends \w+, \d+ \w+ \d{4} \(UTC\)/, 'cutoffs are dated, from the supplier');
-    assert.match(t, /No airport transfer is in the price; the fare from the airport is not something we can quote \(needs verification\)/);
+    // The transfer line comes from the booked trip itself: the no-transfer check only when none is in the price.
+    if (b.trip && b.trip.transfer) assert.doesNotMatch(t, /No airport transfer is in the price/);
+    else assert.match(t, /No airport transfer is in the price; the fare from the airport is not something we can quote \(needs verification\)/);
     assert.doesNotMatch(t, /hours left|hurry|only \d+ left/i, 'no countdown, no scarcity');
     assert.match(conv.text, /<div class="ag-sticky" data-sticky><span><b>\$[\d,.]+<\/b> paid<\/span><span><b>\d+<\/b> days to go<\/span>/);
     assert.match(conv.text, new RegExp(`href="/booking/${b.ref}"`));
@@ -490,4 +503,42 @@ test('the agent’s home after booking: today, next, status, money, reservation 
     // The booking is untouched by any of it.
     assert.equal((await app.store.getBookingByRef(b.ref)).status, 'confirmed');
   } finally { await app.close(); }
+});
+
+test('a savings-check version the traveler keeps off is said once and never proposed again; "book it" then reaches the contract', async () => {
+  const app = await startApp();
+  const savemax = require('../server/trips/savemax');
+  const real = savemax.savingsCheck;
+  try {
+    const c = client(app.base);
+    let r = await c.req('/agent', { method: 'POST', form: { budget: '2000' } });
+    const page = r.location;
+    await c.req(page, { method: 'POST', form: { say: 'JFK' } });
+    await app.agent.jobs.drain();
+    await c.req(page, { method: 'POST', form: { say: '1' } }); // the three ways' question, answered, so nothing else is pending
+    await app.agent.jobs.drain();
+    const s = await app.agent.load(page.split('/').pop());
+    assert.ok(s.current && s.options.length > 1, 'a mission with a current trip and alternatives');
+    const other = s.options.find(o => o.token !== s.current.token);
+    // The check is held to one answer so the test does not depend on the day's prices: the same trip $30 cheaper.
+    savemax.savingsCheck = () => ({ ok: false, cheaper: { token: other.token, total: s.current.total - 3000, delta: -3000, changes: { improvements: [], tradeoffs: [], neutral: [] } }, total: s.current.total, repriced: 0, truncated: false, considered: 2, text: `A cheaper version exists: $30 less with nothing given up.` });
+    r = await c.req(page, { method: 'POST', form: { say: 'Book it' } });
+    assert.equal(r.status, 303);
+    let t = text((await c.req(page)).text);
+    assert.match(t, /Savings check before you pay: A cheaper version exists: \$30 less with nothing given up\. Take it, or keep what you have; then say (?:"|&quot;)book it(?:"|&quot;) again\./);
+    assert.doesNotMatch((await c.req(page)).text, /ag-contract/, 'the decision comes before the contract');
+    assert.equal((await c.req(page, { method: 'POST', form: { say: 'Keep what I have' } })).status, 303);
+    assert.equal((await c.req(page, { method: 'POST', form: { say: 'Book it' } })).status, 303);
+    const booked = await c.req(page);
+    t = text(booked.text);
+    assert.match(booked.text, /ag-contract/, 'the contract follows the kept trip');
+    assert.equal((t.match(/then say (?:"|&quot;)book it(?:"|&quot;) again\./g) || []).length, 1, 'the kept version is not proposed a second time');
+    assert.match(t, /Savings check before you pay: the cheaper version I found \(\$[\d,.]+\) is the one you chose not to take, so your trip stands at \$[\d,.]+\./);
+    const after = await app.agent.load(page.split('/').pop());
+    assert.equal(after.declinedCheaper, other.token);
+    assert.equal(after.current.token, s.current.token, 'the trip is unchanged');
+  } finally {
+    savemax.savingsCheck = real;
+    await app.close();
+  }
 });

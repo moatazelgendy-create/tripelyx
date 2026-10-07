@@ -83,8 +83,13 @@ test('booking API: JSON only, cookie-scoped access, full pay flow', async t => {
 test('no-JS paths: results, quote form post and manage form work without JavaScript', async t => {
   const app = await startApp();
   t.after(app.close);
-  const html = await (await fetch(app.base + '/book/yachts')).text();
-  const m = html.match(/href="(\/book\/yachts\/[^"]+)"/);
+  // The demo marks some yachts as booked on some dates: the first date from two weeks out with a free one.
+  let html, m = null;
+  for (let offset = 14; offset < 44 && !m; offset++) {
+    html = await (await fetch(`${app.base}/book/yachts?date=${addDays(today(), offset)}&duration=half_day&guests=4`)).text();
+    m = html.match(/href="(\/book\/yachts\/[^"]+)"/);
+  }
+  assert.ok(m, 'a yacht is free on some date in the next month');
   const offerHtml = await (await fetch(app.base + m[1].replace(/&amp;/g, '&'))).text();
   const action = offerHtml.match(/action="([^"]+\/quote)"/)[1];
   const hidden = [...offerHtml.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)">/g)].map(x => [x[1], x[2]]);

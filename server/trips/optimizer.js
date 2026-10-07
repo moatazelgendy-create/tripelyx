@@ -143,7 +143,15 @@ function parseContext(raw = {}) {
 
 function contextParams(ctx, extra = {}) {
   const p = { b: ctx.budget ? Math.round(ctx.budget / 100) : undefined, k: ctx.budget && ctx.keep ? Math.round(ctx.keep / 100) : undefined, ov: ctx.allowOver ? '10' : undefined, style: ctx.style && ctx.style !== 'surprise' ? ctx.style : undefined, prio: ctx.priority && ctx.priority !== 'price' ? ctx.priority : undefined, nights: ctx.nightsAsked, s: ctx.searchParams || undefined, ...extra };
-  return new URLSearchParams(Object.entries(p).filter(([, v]) => v !== undefined && v !== null && v !== '')).toString();
+  // A list (the customizer's experiences) is repeated, one parameter per item, so the route reads it
+  // back as a list; an empty list stays as one empty parameter, which means "none". Joined with commas
+  // it would reach the token as a single name and the token would not decode.
+  const out = new URLSearchParams();
+  for (const [k, v] of Object.entries(p)) {
+    if (v === undefined || v === null || v === '') continue;
+    if (Array.isArray(v)) { if (!v.length) out.append(k, ''); else for (const x of v) out.append(k, String(x)); } else out.append(k, String(v));
+  }
+  return out.toString();
 }
 
 // Honest trade-offs for a trip, from facts we have.

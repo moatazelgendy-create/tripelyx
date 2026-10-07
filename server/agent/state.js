@@ -27,7 +27,7 @@ function newState({ id, visitor = null, userId = null, now = new Date() }) {
     locks: { hotel: false, flight: false, dates: false, nights: false, dest: false, budget: false },
     // What has been built: the current trip, the three options from the last build, a pending proposal
     // the traveler has not approved, and the running or finished search job.
-    current: null, options: [], proposal: null, job: null, challenged: {}, challenger: null, compromises: [],
+    current: null, options: [], proposal: null, declinedCheaper: null, job: null, challenged: {}, challenger: null, compromises: [],
     // A real decision the search is one answer away from (two priced trips, one trade), and the
     // priced departure windows on the table after "when can I go for less?"; both answered by letter.
     decision: null, weeks: [],

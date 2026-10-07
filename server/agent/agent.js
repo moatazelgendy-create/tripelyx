@@ -542,6 +542,7 @@ class AgentService {
     if (s.proposal) {
       const p = s.proposal;
       s.proposal = null;
+      if (p.savingsCheck) s.declinedCheaper = p.token; // the savings check will not propose this version again
       this.speak(s, p.kind === 'switch' ? `Kept your first option at ${money(s.current.total)}. The better one stays in your options if you change your mind.` : `Kept your trip as it is${p.delta < 0 || p.silent ? `, at ${money(s.current.total)}` : ''}.`);
       return true;
     }
@@ -912,12 +913,15 @@ class AgentService {
       // The savings check before payment: the trip priced again, every cheaper version looked for once
       // more; a materially cheaper one with nothing given up is a decision for the traveler first.
       const sc = savemax.savingsCheck(this.inv, t, await this.settings(), cur.ctx, { now: this.now(), locks: state.effectiveLocks(s) });
-      if (!sc.ok && sc.cheaper) {
+      if (!sc.ok && sc.cheaper && sc.cheaper.token !== s.declinedCheaper) {
         const ch = sc.cheaper.changes;
-        this.propose(s, { kind: 'cheaper', token: sc.cheaper.token, total: sc.cheaper.total, delta: sc.cheaper.delta, label: 'Same trip, cheaper', improvements: changeWords(ch.improvements), tradeoffs: changeWords(ch.tradeoffs), neutral: changeWords(ch.neutral), over: false }, `Savings check before you pay: ${sc.text} Take it, or keep what you have; then say "book it" again.`);
+        this.propose(s, { kind: 'cheaper', savingsCheck: true, token: sc.cheaper.token, total: sc.cheaper.total, delta: sc.cheaper.delta, label: 'Same trip, cheaper', improvements: changeWords(ch.improvements), tradeoffs: changeWords(ch.tradeoffs), neutral: changeWords(ch.neutral), over: false }, `Savings check before you pay: ${sc.text} Take it, or keep what you have; then say "book it" again.`);
         return;
       }
-      check = sc.ok ? `${sc.text}${sc.repriced ? ` (the live price moved ${sc.repriced > 0 ? 'up' : 'down'} ${money(Math.abs(sc.repriced))} since it was built)` : ''}. ` : `${sc.text} `;
+      // The cheaper version the traveler already chose not to take is said, not proposed a second time.
+      check = sc.ok ? `${sc.text}${sc.repriced ? ` (the live price moved ${sc.repriced > 0 ? 'up' : 'down'} ${money(Math.abs(sc.repriced))} since it was built)` : ''}. `
+        : sc.cheaper && sc.cheaper.token === s.declinedCheaper ? `Savings check before you pay: the cheaper version I found (${money(sc.cheaper.total)}) is the one you chose not to take, so your trip stands at ${money(t.total)}. `
+        : `${sc.text} `;
     }
     this.speak(s, `${check}${unmet.length ? `Before you book, one thing is not what you asked for: ${joinAnd(unmet)}. ` : ''}Here is what you asked for against what you are getting. I don't charge anything: the next page re-checks the live price, and you confirm there.`, { kind: 'contract', asked: state.askedFor(s, { maps: this.maps }), getting, href: `/trip/${s.current.token}/review?${cx}`, trip: c, unmet });
   }
