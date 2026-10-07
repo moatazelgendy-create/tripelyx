@@ -37,7 +37,7 @@ const joinAnd = items => (items.length < 2 ? items.join('') : `${items.slice(0, 
 // Dates in customer words are written one way, by the formatter the pages and the engines' own sentences
 // use (trips/words), so an engine sentence the agent quotes and the agent's own words never differ and
 // never print an ISO date; a date the code reads stays ISO.
-const { longDate } = require('../trips/words');
+const { longDate, clause } = require('../trips/words');
 const { cutoffText } = require('../views/trips/common');
 const monthWords = m => new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${m}-01T00:00:00Z`));
 const stampOf = iso => `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
@@ -109,6 +109,9 @@ const NAMED_APPROVALS = [
   { re: /^move \$?([\d,]+(?:\.\d{1,2})?) to the experiences?$/, kinds: ['downsell'], intent: 'xDownsell', amount: m => Math.round(Number(m[1].replace(/,/g, '')) * 100), name: (m, amount) => `moving ${money(amount)} to the experience` },
   { re: /^open up a day$/, kinds: ['freeTime'], intent: 'xFreeTime', name: () => 'the version with a day opened up' },
   { re: /^use the better location$/, kinds: ['location'], intent: 'xLocation', name: () => 'the better location' },
+  // The FINAL EXPERIENCE CHECK's own words ("Take the rebuild, or keep what you have"): they take the rebuild it proposed and
+  // nothing else; with none on the table, "book it" runs the checks again and the check proposes it again.
+  { re: /^take the rebuild$/, kinds: ['final'], intent: 'book', name: () => 'the rebuild that passes the final check' },
   // "Add <backup>" names the weather backup on the table and nothing else: with no backup pending the
   // words are not an approval at all ("add a night" stays a longer trip).
   { re: /^add (?!back\b)(.+)$/, kinds: ['backup'], intent: 'xBackup', item: m => m[1].trim(), name: m => `adding ${m[1].trim()}`, onlyPending: true },
@@ -606,21 +609,30 @@ class AgentService {
     for (const st of s.job.steps) if (label[st.key]) st.label = label[st.key];
     s.job.previous = previous;
     s.job.reason = reason;
-    setStep(s.job, 'understand', 'done', this.describe(q, assumed), this.now());
+    // The lengths said are the lengths the build reads (xnights): a length nobody stated is open, so "I assumed 5 nights"
+    // is never said over results of 6; the sentence says it is open and which lengths the results come from.
+    const nl = this.xnights(s, q), open = nl.length > 1, rest = open ? assumed.filter(a => a !== plural(q.nights, 'night')) : assumed;
+    setStep(s.job, 'understand', 'done', this.describe(q, rest, { nights: nl }), this.now());
     const px = state.protectedId(s);
-    this.speak(s, `${reason === 'rebuild' ? 'Rebuilding' : 'Building'} around what you want to remember (${state.goalWords(this.xgoals(s))}): ${this.describe(q, assumed)}.${assumed.length ? ` I assumed ${joinAnd(assumed)}; say otherwise and I will change it.` : ''}${px ? ` Every version keeps ${this.xname(s)}, ${this.protWords(s)}.` : ''} Experience first, then the destination, the dates, the flight and the hotel.`);
+    this.speak(s, `${reason === 'rebuild' ? 'Rebuilding' : 'Building'} around what you want to remember (${state.goalWords(this.xgoals(s))}): ${this.describe(q, rest, { nights: nl })}.${open ? ` You didn\'t state a length, so it is open: I price ${joinAnd(nl.map(String))} nights, and each result says its own; say a length and I hold it.` : ''}${rest.length ? ` I assumed ${joinAnd(rest)}; say otherwise and I will change it.` : ''}${px ? ` Every version keeps ${this.xname(s)}, ${this.protWords(s)}.` : ''} Experience first, then the destination, the dates, the flight and the hotel.`);
     this.jobs.start(s.id, job => this.runExperience(s.id, job));
   }
 
-  describe(q, assumed = []) {
+  // The lengths the Experience Max build reads, as experienceSearch reads them: a stated or locked length, or fixed dates,
+  // hold q.nights; otherwise the length is open, q.nights and one more.
+  xnights(s, q) {
+    const L = state.effectiveLocks(s);
+    return s.nightsStated || L.nights || L.dates || q.nights >= 14 ? [q.nights] : [q.nights, q.nights + 1];
+  }
+  describe(q, assumed = [], { nights = [q.nights] } = {}) {
     const o = this.maps.getOrigin(q.origin);
     const d = q.dest ? this.maps.getDestination(q.dest) : null;
-    const bits = [`${plural(q.nights, 'night')}${q.style && q.style !== 'surprise' ? ` ${q.style === 'all-inclusive' ? 'all-inclusive' : q.style}` : ''} trip for ${q.travelers}`, `from ${o ? o.city : q.origin}`, d ? `to ${d.name}` : q.notCountry ? `outside ${q.notCountry}` : q.region === 'international' ? 'international' : 'anywhere'];
+    const bits = [`${nights.length > 1 ? `${nights.slice(0, -1).join(', ')} or ${plural(nights[nights.length - 1], 'night')}` : plural(q.nights, 'night')}${q.style && q.style !== 'surprise' ? ` ${q.style === 'all-inclusive' ? 'all-inclusive' : q.style}` : ''} trip for ${q.travelers}`, `from ${o ? o.city : q.origin}`, d ? `to ${d.name}` : q.notCountry ? `outside ${q.notCountry}` : q.region === 'international' ? 'international' : 'anywhere'];
     bits.push(`at or under ${money(q.budget)}${q.keep ? ` with ${money(q.keep)} protected for the destination` : ''}`);
     if (q.rules && q.rules.nonstop) bits.push('nonstop only');
     if (q.rules && q.rules.minStars) bits.push(`${q.rules.minStars}-star or better`);
     if (q.dateMode === 'exact') bits.push(`leaving ${longDate(q.depart)}`);
-    else if (q.dateMode === 'flexible') bits.push(`in ${q.month}`);
+    else if (q.dateMode === 'flexible') bits.push(`in ${monthWords(q.month)}`);
     return bits.join(', ');
   }
 
@@ -975,6 +987,10 @@ class AgentService {
     s.current = { token: p.token, total: after.total, since: this.now().toISOString() };
     s.history.push({ label: p.label || p.kind, token: p.token, total: after.total, at: this.now().toISOString() });
     s.proposal = null;
+    // A version taken on the traveler's word is their choice: the mission's status says that this version is on the canvas
+    // (views/trips/agent.js missionPanel), never "waiting for which feels like you" over a trip they already took. It is
+    // read only while this version is still on the canvas and no new set of results has been built since (`round`).
+    if (s.mission) s.mission.taken = { round: s.mission.round, token: p.token, total: after.total, label: p.label || null };
     if (p.nights) s.nights = p.nights;
     if (p.challengedAccepted) s.challenged[p.kind] = true;
     // BUILD AROUND AN EVENT: once taken, the dates are locked around it.
@@ -989,7 +1005,9 @@ class AgentService {
       this.speak(s, `Your trip: ${c.summary}, ${money(c.total)}.`, { kind: 'trip', trip: c, label: p.label || 'Your trip' });
     }
     if (freed) this.speak(s, `${freed} is no longer protected: you said to drop it.`);
-    if (p.eventLock && s.event) { const eb = X.eventBuffer(after, s.event); this.speak(s, eb.ok ? `Dates locked around ${s.event.name} on ${longDate(s.event.date)}: ${this.landWords(after)}, a day's buffer either side. Say "unlock the dates" to move them.` : `Dates locked, but ${eb.text} Say "unlock the dates" to move them.`); }
+    // The dates taken around the event say its day in the trip (the rhythm's EVENT DAY), so the traveler hears that no
+    // experience is planned on it before they ask for their days.
+    if (p.eventLock && s.event) { const eb = X.eventBuffer(after, s.event), evDay = this.eventDayOf(s, after); this.speak(s, eb.ok ? `Dates locked around ${s.event.name} on ${longDate(s.event.date)}: ${this.landWords(after)}, a day's buffer either side.${evDay ? ` ${evDay}` : ''} Say "unlock the dates" to move them.` : `Dates locked, but ${eb.text} Say "unlock the dates" to move them.`); }
     return true;
   }
 
@@ -1298,7 +1316,7 @@ class AgentService {
     ];
     const cx = optimizer.contextParams(cur.ctx, { seen: t.total });
     const unmet = this.unmet(s, t);
-    let check = '';
+    let check = '', xfail = null;
     if (s.mission) {
       // The savings check before payment: the trip priced again, every cheaper version looked for once
       // more; a materially cheaper one with nothing given up is a decision for the traveler first.
@@ -1350,13 +1368,19 @@ class AgentService {
     if (this.xmode(s)) {
       const x = await this.xo(s);
       const fc = X.finalCheck(t, x.gs, x.o);
+      // The engine's rebuild (the smallest change that passes), else one among the versions this conversation priced:
+      // the dates that cover the traveler's event. "No rebuild passes" is said only when none of them does.
+      const ex = fc.ok || fc.rebuild ? { rebuild: null, near: null } : await this.xEventRebuild(s, t, x), rb = fc.ok ? null : fc.rebuild || ex.rebuild;
       const fcard = { kind: 'final', ok: fc.ok, reasons: fc.reasons.map(r => ({ ok: r.ok, text: r.text })) };
-      if (!fc.ok && fc.rebuild && fc.rebuild.token !== s.declinedFinal && fc.rebuild.token !== s.current.token) {
-        const p = this.xproposal(s, t, fc.rebuild, { kind: 'final', label: 'Rebuild that passes the final check' });
-        this.propose(s, p, `${fc.text} Take the rebuild, or keep what you have; then say "book it" again.`, { ...fcard, proposal: p });
+      xfail = fc.ok ? null : fc;
+      if (rb && rb.token !== s.declinedFinal && rb.token !== s.current.token) {
+        // A rebuild that moves the dates onto the traveler's event locks them there once taken, as BUILD AROUND AN EVENT does.
+        const covers = !!(s.event && s.event.date && rb.trip.spec.depart !== t.spec.depart && !X.eventCollision(rb.trip, s.event));
+        const p = this.xproposal(s, t, rb, { kind: 'final', label: 'Rebuild that passes the final check', eventLock: covers || undefined });
+        this.propose(s, p, `${fc.text}${fc.rebuild ? '' : ` ${rb.text}`}${this.xover(s, p)} Take the rebuild, or keep what you have; then say "book it" again.`, { ...fcard, proposal: p });
         return;
       }
-      this.speak(s, fc.ok ? fc.text : `${fc.text.replace(/ A rebuild that passes:.*$/, '')}${fc.rebuild && fc.rebuild.token === s.declinedFinal ? ' The rebuild that passes is the one you chose not to take, so your trip stands.' : fc.rebuild ? '' : ' No rebuild inside your rules and ceiling passes it either; it is your call.'}`, fcard);
+      this.speak(s, fc.ok ? fc.text : `${fc.text.replace(/ A rebuild that passes:.*$/, '')}${rb && rb.token === s.declinedFinal ? ` The rebuild that passes (${money(rb.total)}) is the one you chose not to take, so your trip stands.` : rb ? '' : ` ${fc.noRebuild || 'No rebuild I priced inside your rules and your maximum passes this check.'}${ex.near ? ` ${ex.near}` : ''} It is your call.`}`, fcard);
       const r = X.receipt(this.inv, x.q, t, x.gs, x.o);
       this.speak(s, `WHY THIS TRIP IS BUILT THIS WAY: against ${r.baseline.label} (${money(r.baseline.total)}).`, this.xreceiptCard(r));
       const main = this.xmain(s, t, x.gs);
@@ -1364,7 +1388,13 @@ class AgentService {
     }
     const card = await this.scorecardFor(s, cur);
     this.speak(s, `Your savings check: ${card.text}`, this.scorecardCard(card));
-    this.speak(s, `${unmet.length ? `Before you book, one thing is not what you asked for: ${joinAnd(unmet)}. ` : ''}Here is what you asked for against what you are getting. I don't charge anything: the next page re-checks the live price, and you confirm there.`, { kind: 'contract', asked: state.askedFor(s, { maps: this.maps }), getting, href: `/trip/${s.current.token}/review?${cx}`, trip: c, unmet });
+    // A FINAL EXPERIENCE CHECK this trip did not pass is not what they asked for, so the contract says it (each reason it
+    // missed, the event's own line said once) and never "Everything you asked for is in this trip".
+    if (xfail) {
+      const evClash = s.event && s.event.date ? X.eventCollision(t, s.event) : null, missed = xfail.reasons.filter(r => !r.ok && !(evClash && r.text === evClash.text)).map(r => clause(r.text));
+      unmet.push(`the final experience check did not pass${missed.length ? `: ${missed.join(', ')}` : ''}`);
+    }
+    this.speak(s, `${unmet.length ? `Before you book, ${unmet.length === 1 ? 'one thing is' : `${unmet.length} things are`} not what you asked for: ${joinAnd(unmet)}. ` : ''}Here is what you asked for against what you are getting. I don't charge anything: the next page re-checks the live price, and you confirm there.`, { kind: 'contract', asked: state.askedFor(s, { maps: this.maps }), getting, href: `/trip/${s.current.token}/review?${cx}`, trip: c, unmet });
   }
 
   // What the current trip does not satisfy of the rules the traveler stated. Never silent.
@@ -1380,6 +1410,9 @@ class AgentService {
     if (s.dateMode === 'exact' && s.depart && t.spec.depart !== s.depart) out.push(`leaving ${longDate(t.spec.depart)} instead of ${longDate(s.depart)}`);
     const budget = state.bookingBudget(s);
     if (budget && t.total > budget) out.push(`the total is ${money(t.total - budget)} over your ceiling`);
+    // An event they told me about is part of what they asked for: dates that miss it are said, in words.
+    const ev = s.event && s.event.date ? X.eventCollision(t, s.event) : null;
+    if (ev) { const where = (ev.text.match(/ falls (.*?);/) || [])[1]; out.push(`${s.event.name || 'your reservation'} on ${longDate(s.event.date)} ${where ? `falls ${where}, so ` : ''}these dates don't cover it with a day's buffer`); }
     return out;
   }
 
@@ -1416,7 +1449,7 @@ class AgentService {
   stopLine(deep, q, options, { chosen = null } = {}) {
     const o = this.maps.getOrigin(q.origin);
     const up = options.find(x => x.kind === 'upgrade');
-    return `I'd stop here. I checked all ${plural(deep.destinations, 'destination')} we serve from ${o ? o.city : q.origin}: ${deep.considered} complete packages, every hotel and flight combination suppliers returned inside your rules${q.dateMode === 'anytime' ? ', on the departure dates they offered' : q.dateMode === 'flexible' ? ` in ${q.month}` : ' on your dates'}. ${deep.cheaperThanPick ? `${plural(deep.cheaperThanPick, 'cheaper package')} fit your budget; each gives something up against ${chosen ? 'the one I would have picked' : 'this one'}.` : 'Nothing cheaper fit your rules.'} ${up ? `One upgrade is worth it: +${money(up.upgrade.delta)} buys ${up.upgrade.gets}; it is in your options.` : 'The dearer ones don\'t improve what matters enough to pay for.'} ${chosen ? `You chose ${chosen} over the one I would have picked, so that is the trip on your canvas; nothing else I checked changes it.` : 'This is the strongest option I found for your current rules.'}`;
+    return `I'd stop here. I checked all ${plural(deep.destinations, 'destination')} we serve from ${o ? o.city : q.origin}: ${deep.considered} complete packages, every hotel and flight combination suppliers returned inside your rules${q.dateMode === 'anytime' ? ', on the departure dates they offered' : q.dateMode === 'flexible' ? ` in ${monthWords(q.month)}` : ' on your dates'}. ${deep.cheaperThanPick ? `${plural(deep.cheaperThanPick, 'cheaper package')} fit your budget; each gives something up against ${chosen ? 'the one I would have picked' : 'this one'}.` : 'Nothing cheaper fit your rules.'} ${up ? `One upgrade is worth it: +${money(up.upgrade.delta)} buys ${up.upgrade.gets}; it is in your options.` : 'The dearer ones don\'t improve what matters enough to pay for.'} ${chosen ? `You chose ${chosen} over the one I would have picked, so that is the trip on your canvas; nothing else I checked changes it.` : 'This is the strongest option I found for your current rules.'}`;
   }
 
   async waysFlow(s, u, cur) {
@@ -2546,7 +2579,7 @@ class AgentService {
       this.propose(s, { kind: 'switch', token: p.w.token, total: p.w.total, delta: s.current ? p.w.total - s.current.total : p.w.total - p.old.total, from: s.current ? s.current.token : p.old.token, label: p.applied ? 'Strongest way after every destination' : 'Better version of your pick', improvements: changeWords(ch.improvements), tradeoffs: changeWords(ch.tradeoffs), neutral: changeWords(ch.neutral), over: p.w.total > q.budget, nights: p.w.trip.spec.nights }, text);
     }
     const o = this.maps.getOrigin(q.origin);
-    const stop = `I'd stop here. I checked all ${plural(deep.destinations, 'destination')} we serve from ${o ? o.city : q.origin}: ${deep.considered} complete packages, every hotel and flight combination suppliers returned inside your rules${q.dateMode === 'anytime' ? ', on the departure dates they offered' : q.dateMode === 'flexible' ? ` in ${q.month}` : ' on your dates'}.`;
+    const stop = `I'd stop here. I checked all ${plural(deep.destinations, 'destination')} we serve from ${o ? o.city : q.origin}: ${deep.considered} complete packages, every hotel and flight combination suppliers returned inside your rules${q.dateMode === 'anytime' ? ', on the departure dates they offered' : q.dateMode === 'flexible' ? ` in ${monthWords(q.month)}` : ' on your dates'}.`;
     if (beaten.length || added.length) this.speak(s, `${stop} ${beaten.length ? `${beaten.length === 1 ? 'One way was' : `${beaten.length} ways were`} replaced` : ''}${beaten.length && added.length ? ' and ' : ''}${added.length ? `${plural(added.length, 'way')} added` : ''}; the set now:${m.chosen ? '' : ' Which feels more like you?'}`, this.waysCard(s, m, q, { compact: true }));
     else this.speak(s, `${stop} Nothing beat the ${fastWays.strategies.length === 1 ? 'way' : 'ways'} from the first pass, so they stand${m.chosen ? '' : '; which feels more like you?'}`);
     if (!m.chosen && m.strategies.length && !s.proposal) s.pending = 'ways';
@@ -2712,7 +2745,7 @@ class AgentService {
   // The words a lettered card's button sends: its letter and its version's own label, so the button
   // takes that version and no other, whatever is on the table when it is pressed.
   xsay(s, token) { const m = (s.xmenu || []).find(x => x.token === token); return m ? `Option ${m.letter}: ${m.label}` : null; }
-  rhythmDays(rh) { return rh.days.map(d => ({ n: d.n, date: d.date, label: d.label, items: d.items, open: !!d.open })); }
+  rhythmDays(rh) { return rh.days.map(d => ({ n: d.n, date: d.date, label: d.label, items: d.items, open: !!d.open, ...(d.event ? { event: true } : {}) })); }
   // What an earlier trip taught us, in words, only from what the traveler asked us to remember.
   prefWords(p) {
     if (!p) return [];
@@ -2841,7 +2874,7 @@ class AgentService {
     // Built around an event: the day the pick lands is said from its own flight, and the buffer only when
     // it holds (an overnight flight that lands on the day is said as the conflict it is).
     let eventLine = '';
-    if (replace && s.event && s.event.date) { const eb = X.eventBuffer(W.pick.trip, s.event); eventLine = eb.ok ? ` ${cap(s.event.name)} on ${longDate(s.event.date)}: ${this.landWords(W.pick.trip)}, a day's buffer either side.` : ` ${eb.text} Say "schedule conflicts" and I price the dates that cover it.`; }
+    if (replace && s.event && s.event.date) { const eb = X.eventBuffer(W.pick.trip, s.event), evDay = this.eventDayOf(s, W.pick.trip); eventLine = eb.ok ? ` ${cap(s.event.name)} on ${longDate(s.event.date)}: ${this.landWords(W.pick.trip)}, a day's buffer either side.${evDay ? ` ${evDay}` : ''}` : ` ${eb.text} Say "schedule conflicts" and I price the dates that cover it.`; }
     this.speak(s, `${lead ? `${lead} ` : ''}${W.signature ? `${W.signature} ` : ''}${W.reason}${W.rejected ? ` ${W.rejected.text}` : ''}${stay}${tail ? ` ${tail}` : ''}${protectLine}${eventLine} ${replace ? 'Which feels more like you?' : 'Say "our pick" (or another by name) to put it on your canvas, or keep what you have.'}`, card);
     s.pending = 'ways';
   }
@@ -3000,8 +3033,11 @@ class AgentService {
     this.propose(s, p, `FIND AN ALTERNATIVE EXPERIENCE for ${inTrip.name}: ${r.text}${prot ? ` ${inTrip.name} is ${this.protWords(s)}; the swap needs "drop ${inTrip.name}".` : ''}${this.xover(s, p)} Take it, or keep what you have.`);
   }
 
+  // The ladder is read for the trip on the canvas (X.ladder's `trip`), never for the query that found it: an assumed length
+  // or the places the build searched are not rules, so the same trip, goals, rules, locks and ceiling give the same rungs and
+  // the same "I'd stop at" here and on its memories page (whose link carries the same rules: state.memoriesContext).
   xLadder(s, cur, { q, gs, o }) {
-    const t = cur.trip, L = X.ladder(this.inv, q, gs, o), sw = X.sweetSpot(L, t);
+    const t = cur.trip, L = X.ladder(this.inv, q, gs, { ...o, trip: t }), sw = X.sweetSpot(L, t);
     if (!L.rungs.length) { this.speak(s, `EXPERIENCE LADDER: ${L.text}`); return; }
     this.xmenuSet(s, L.rungs.map(r => ({ token: r.token, total: r.total, label: `${r.label} (${r.trip.dest.name})`, kind: 'ladder' })));
     const card = { kind: 'ladder', rungs: L.rungs.map(r => ({ label: r.label, total: r.total, gain: r.gain, dest: r.trip.dest.name, letter: this.xletter(s, r.token), say: this.xsay(s, r.token), current: r.token === s.current.token })), top: L.top, stop: L.stop.total, sweet: { total: sw.total, reasons: sw.reasons, text: sw.text }, current: t.total, max: q.budget };
@@ -3076,17 +3112,26 @@ class AgentService {
   collisionList(s, col) { return col.map(c => ({ text: c.text, fixes: c.fixes.map(f => ({ text: f.text, letter: f.token ? this.xletter(s, f.token) : null, say: f.token ? this.xsay(s, f.token) : null, protected: !!f.protected })) })); }
   // THE RHYTHM (a suggested rhythm, not a schedule) with any SCHEDULE CONFLICT and its priced fixes;
   // a fix that would drop the protected experience is said, never offered.
+  // The event the traveler told me about (BUILD AROUND AN EVENT) is read by the rhythm itself: its day is an EVENT DAY that
+  // no experience takes (the engine's rule), so the day the sentence names for the main experience is never the day they
+  // already have, and "no schedule conflict" is never said over an experience pushed onto it (collisions name that).
   xRhythm(s, cur, { gs, o }, { conflictsOnly = false } = {}) {
-    const t = cur.trip, main = this.xmain(s, t, gs), rh = X.rhythm(t, gs, { main });
+    const t = cur.trip, main = this.xmain(s, t, gs), rh = X.rhythm(t, gs, { main, event: o.event });
     const col = X.collisions(t, { event: o.event, inv: this.inv, settings: o.settings, goals: gs, protect: o.protect, rules: o.rules, locks: o.locks });
     const fa = X.fatigue(t, gs, { ...o, inv: this.inv });
     this.xmenuSet(s, col.flatMap(c => c.fixes.filter(f => f.token).map(f => ({ token: f.token, total: f.total, label: f.text, kind: 'fix' }))));
     const hit = main ? rh.placed.find(x => x.activity.id === main.id) : null;
-    const conflicts = this.collisionList(s, col);
-    const tail = `${col.length ? ` ${col.map(c => c.text).join(' ')}${(s.xmenu || []).length ? ' Each priced fix has a letter.' : ''}` : conflictsOnly ? ' No schedule conflict: every experience has a full day of its own, in season.' : ''}${fa.scheduled ? ' This itinerary is very scheduled; say "give me more free time" and I open up a day.' : ''}`;
+    const conflicts = this.collisionList(s, col), evDay = this.eventDayWords(rh);
+    const tail = `${col.length ? ` ${col.map(c => c.text).join(' ')}${(s.xmenu || []).length ? ' Each priced fix has a letter.' : ''}` : conflictsOnly ? ` No schedule conflict: every experience has a full day of its own, in season.${evDay ? ` ${evDay}` : ''}` : ''}${fa.scheduled ? ' This itinerary is very scheduled; say "give me more free time" and I open up a day.' : ''}`;
     if (conflictsOnly) { this.speak(s, `SCHEDULE CONFLICT check:${tail}`, col.length ? { kind: 'collision', conflicts } : null); return; }
-    this.speak(s, `THE RHYTHM for ${plural(t.spec.nights, 'night')} in ${t.dest.name}: ${plural(rh.openDays, 'open day')}${hit ? `, ${main.name} on day ${hit.day.n} (${longDate(hit.day.date)})` : ''}. ${rh.text}${tail}`, { kind: 'rhythm', days: this.rhythmDays(rh), text: rh.text, conflicts, scheduled: fa.scheduled ? fa.reasons : null, openDays: rh.openDays });
+    this.speak(s, `THE RHYTHM for ${plural(t.spec.nights, 'night')} in ${t.dest.name}: ${plural(rh.openDays, 'open day')}${hit ? `, ${main.name} on day ${hit.day.n} (${longDate(hit.day.date)})` : ''}.${evDay ? ` ${evDay}` : ''} ${rh.text}${tail}`, { kind: 'rhythm', days: this.rhythmDays(rh), text: rh.text, conflicts, scheduled: fa.scheduled ? fa.reasons : null, openDays: rh.openDays });
   }
+  // The day of the traveler's event, from the engine's rhythm (X.rhythm with the event): said as theirs, with nothing on
+  // it, or with the one short experience that shares it only because the event's time is known and the two sit at the
+  // opposite ends of the day. Never "to itself" while something is on it; '' when no full day of the trip is the event's.
+  eventDayWords(rh) { return X.eventDayWords(rh); } // the engine's sentence, the one the Memories page says too
+  // The event day of a trip, for the lines said outside THE RHYTHM (the dates taken, the results built around it).
+  eventDayOf(s, t) { return s.event && s.event.date ? this.eventDayWords(X.rhythm(t, this.xgoals(s), { main: this.xmain(s, t, this.xgoals(s)), event: s.event })) : ''; }
 
   xProtect(s, cur, { gs, o }, target) {
     const t = cur.trip;
@@ -3240,32 +3285,76 @@ class AgentService {
     const clash = X.eventCollision(t, event);
     if (!clash) {
       s.locks.dates = true; s.dateMode = 'exact'; s.depart = t.spec.depart;
-      const col = X.collisions(t, { event, goals: gs, protect: state.protectedId(s) }).filter(c => c.kind === 'event');
-      this.speak(s, `${Name} on ${longDate(event.date)} is inside your trip: ${this.landWords(t)}, a day's buffer either side. I've locked the dates so nothing I offer moves them off it.${col.length ? ` ${col[0].text}` : ''}`);
+      // Inside the trip, the event takes its day (the rhythm's EVENT DAY): said, and an experience it pushes off its only
+      // free day is the conflict it is ('event-day'), named with the event, never left on the day they already have.
+      const col = X.collisions(t, { event, goals: gs, protect: state.protectedId(s) }).filter(c => c.kind === 'event' || c.kind === 'event-day'), evDay = this.eventDayOf(s, t);
+      this.speak(s, `${Name} on ${longDate(event.date)} is inside your trip: ${this.landWords(t)}, a day's buffer either side. I've locked the dates so nothing I offer moves them off it.${evDay ? ` ${evDay}` : ''}${col.length ? ` ${col.map(c => c.text).join(' ')}` : ''}`);
       return;
     }
     if (state.effectiveLocks(s).dates) { this.speak(s, `${clash.text} The dates are locked, so I won't move them: ${range.text} Say "unlock the dates" and I will.`); return; }
-    const keepAll = [], without = [];
-    for (let d = range.from; d <= range.to; d = addDays(d, 1)) {
+    const { keepAll, without } = await this.xEventCover(t, event, gs);
+    const pick = keepAll[0] || (without[0] && without[0].v) || null;
+    if (!pick) { this.speak(s, `${clash.text} ${range.text} No version of this trip is priced on those dates.`); return; }
+    const off = keepAll[0] ? [] : without[0].off, px = state.protectedId(s), losesPx = !!px && off.some(c => c.activity.id === px);
+    const label = `Leaving ${longDate(pick.spec.depart)}, home ${longDate(pick.flight.return)}${off.length ? `, without ${joinAnd(off.map(c => c.activity.name))}` : ''}`;
+    const p = this.xproposal(s, t, { token: encodeSpec(pick.spec), total: pick.total, trip: pick }, { kind: 'event', label, eventLock: true });
+    const offSeason = off.some(c => c.kind === 'season'), offDay = off.some(c => c.kind === 'event-day');
+    const season = off.length ? ` No date that covers it keeps every experience ${offSeason ? 'in season' : ''}${offSeason && offDay ? ' and ' : ''}${offDay ? `off the day of ${event.name}` : ''}. ${off.map(c => c.text.replace(/^SCHEDULE CONFLICT:\s*/, '')).join(' ')} So this version drops ${joinAnd(off.map(c => c.activity.name))}${losesPx ? `, ${this.whoProtected(s)}; taking it needs "drop ${this.xname(s)}"` : ''}.` : '';
+    const n = keepAll.length || without.length;
+    // The version offered here is remembered, kept or not: the final check at "book it" reads it again, so it never says
+    // that no rebuild passes while the version that covers the event, priced and offered in this conversation, does.
+    s.eventOffer = p.token;
+    this.propose(s, p, `${clash.text} ${range.text}${season} The cheapest priced version of this trip that covers it leaves ${longDate(pick.spec.depart)}: ${this.landWords(pick)}, ${money(pick.total)} (${signed(p.delta)}), ${plural(n, 'departure date')} priced.${this.xover(s, p)} Take it, or keep your dates.`);
+  }
+  // The same trip on every departure that covers the event with a day's buffer either side (eventRange, from three days
+  // out), priced; on a date one of its seasonal experiences does not run, or where the event's own day leaves one of them
+  // no free full day (the rhythm never puts an experience on the day the traveler already has), priced without it (`off`
+  // says which and why), never offered as the same trip. Cheapest first. BUILD AROUND AN EVENT and the final check at
+  // "book it" both read it.
+  async xEventCover(t, event, gs) {
+    const range = X.eventRange(event, t.spec.nights, t.flight), earliest = addDays(today(this.now()), 3), keepAll = [], without = [];
+    for (let d = range.from; range.from && d <= range.to; d = addDays(d, 1)) {
       if (d < earliest) continue;
       const v = await this.priceToken(encodeSpec({ ...t.spec, depart: d }));
       if (!v || X.eventCollision(v, event)) continue;
-      // Each experience must run on the new dates (the rhythm's own season check).
-      const off = X.collisions(v, { goals: gs }).filter(c => c.kind === 'season');
+      // Each experience must run on the new dates (the rhythm's own season check) and keep a day of its own off the event's.
+      const off = X.collisions(v, { goals: gs, event }).filter(c => c.kind === 'season' || c.kind === 'event-day');
       if (!off.length) { keepAll.push(v); continue; }
       const ids = off.map(c => c.activity.id), w = await this.priceToken(encodeSpec({ ...v.spec, activities: v.spec.activities.filter(id => !ids.includes(id)) }));
       if (w && !X.eventCollision(w, event)) without.push({ v: w, off });
     }
     const byTotal = (a, b) => a.total - b.total || (a.spec.depart < b.spec.depart ? -1 : 1);
     keepAll.sort(byTotal); without.sort((a, b) => byTotal(a.v, b.v));
-    const pick = keepAll[0] || (without[0] && without[0].v) || null;
-    if (!pick) { this.speak(s, `${clash.text} ${range.text} No version of this trip is priced on those dates.`); return; }
-    const off = keepAll[0] ? [] : without[0].off, px = state.protectedId(s), losesPx = !!px && off.some(c => c.activity.id === px);
-    const label = `Leaving ${longDate(pick.spec.depart)}, home ${longDate(pick.flight.return)}${off.length ? `, without ${joinAnd(off.map(c => c.activity.name))}` : ''}`;
-    const p = this.xproposal(s, t, { token: encodeSpec(pick.spec), total: pick.total, trip: pick }, { kind: 'event', label, eventLock: true });
-    const season = off.length ? ` No date that covers it keeps every experience in season. ${off.map(c => c.text.replace(/^SCHEDULE CONFLICT:\s*/, '')).join(' ')} So this version drops ${joinAnd(off.map(c => c.activity.name))}${losesPx ? `, ${this.whoProtected(s)}; taking it needs "drop ${this.xname(s)}"` : ''}.` : '';
-    const n = keepAll.length || without.length;
-    this.propose(s, p, `${clash.text} ${range.text}${season} The cheapest priced version of this trip that covers it leaves ${longDate(pick.spec.depart)}: ${this.landWords(pick)}, ${money(pick.total)} (${signed(p.delta)}), ${plural(n, 'departure date')} priced.${this.xover(s, p)} Take it, or keep your dates.`);
+    return { range, keepAll, without };
+  }
+  // FINAL EXPERIENCE CHECK at "book it": the rebuild is looked for among the versions this conversation can price, not the
+  // engine's search alone. When the engine has none and the trip misses the event the traveler told me about, the dates
+  // that cover it (the version offered when they told me, priced again, and every other covering date) are read by the
+  // same check, inside the same rules: the ceiling, the protected experience, the locks. The first that passes is the
+  // rebuild, said with its price and what it changes; one that passes only over the ceiling or without the protected
+  // experience is `near`, said as such and never offered as the fix.
+  async xEventRebuild(s, t, { gs, o }) {
+    const ev = s.event && s.event.date ? s.event : null;
+    if (!ev || !X.eventCollision(t, ev) || state.effectiveLocks(s).dates) return { rebuild: null, near: null };
+    const { keepAll, without } = await this.xEventCover(t, ev, gs), offered = s.eventOffer ? await this.priceToken(s.eventOffer) : null;
+    const seen = new Set(), list = [offered, ...keepAll, ...without.map(w => w.v)].filter(v => v && !X.eventCollision(v, ev) && v.spec.nights === t.spec.nights && !seen.has(encodeSpec(v.spec)) && seen.add(encodeSpec(v.spec)));
+    list.sort((a, b) => a.total - b.total || (a.spec.depart < b.spec.depart ? -1 : 1));
+    const cap = Number.isFinite(o.cap) ? o.cap : null, px = state.protectedId(s);
+    const passes = v => X.finalCheck(v, gs, { ...o, inv: null }).ok, inside = v => cap === null || v.total <= cap, keeps = v => !px || v.spec.activities.includes(px);
+    const v = list.find(x => inside(x) && keeps(x) && passes(x));
+    if (!v) {
+      const n = list.find(passes);
+      const why = !n ? null : !inside(n) ? `it is ${money(n.total - cap)} over your ${money(cap)} maximum` : `it drops ${this.xname(s)}, ${this.whoProtected(s)}`;
+      return { rebuild: null, near: n ? `The dates that cover ${ev.name} pass it (leaving ${longDate(n.spec.depart)}, home ${longDate(n.flight.return)}, ${money(n.total)}), but ${why}, so I don't offer that version as the fix.` : null };
+    }
+    const token = encodeSpec(v.spec), delta = v.total - t.total, gone = t.activities.filter(a => !v.spec.activities.includes(a.id)).map(a => a.name), kept = t.activities.filter(a => v.spec.activities.includes(a.id)).map(a => a.name);
+    const changes = X.sayDiffs(v, t).filter(d => !/\bexperiences? included instead of\b/.test(d));
+    // What it gives up is said in plain words, as the engine's rebuild says it: the experiences it drops by name, every
+    // other trade-off the pricer's comparison finds, and "gives up nothing else" only when that list is empty.
+    const lost = changeWords(classifyChanges(t, v, { date: longDate }).tradeoffs.filter(r => r.key !== 'experiences'));
+    const gives = `${gone.length ? `${kept.length ? ' and' : '; it'} gives up ${joinAnd(gone)}` : ''}${lost.length ? `; the trade-off${lost.length > 1 ? 's' : ''}: ${joinAnd(lost)}` : ''}${!gone.length && !lost.length ? (kept.length ? ' and gives up nothing else' : '; it gives up nothing else') : ''}`;
+    const text = `A rebuild that passes: ${money(v.total)} (${signed(delta)})${changes.length ? `, ${joinAnd(changes)}` : ''}${kept.length ? `; it keeps ${joinAnd(kept)}` : ''}${gives}; it covers ${ev.name} on ${longDate(ev.date)} with a day's buffer either side; a proposal, nothing applied.`;
+    return { rebuild: { token, total: v.total, trip: v, delta, text }, near: null };
   }
 
   // WHAT WAS ACTUALLY WORTH IT? after the trip: kept on the booking (the service decides when it is

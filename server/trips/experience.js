@@ -106,13 +106,22 @@ function destGoalMatch(dest, acts, hotels, goals) {
 // leaves something out, a small search over the full days finds the arrangement that places the most
 // (the main one first), so a conflict is never invented while a full day could hold the experience.
 // The experience score reads `placed` and `openDays`.
+// A locked event (BUILD AROUND AN EVENT: `event` = { name, date, slot }) takes its day: an EVENT DAY, never
+// an open one, and no experience goes on it, because the customer already has that day and an experience
+// placed on it would double-book them. The one exception is when the event's time is known and the two
+// cannot overlap: a short experience (under BIG hours) at the other end of the day, a morning one before an
+// evening event or an evening/night one after a morning event. An event of unknown time keeps its whole day.
+// An evening event the night before also bars a morning experience, as an evening experience does.
 const EVENING = a => a.slot === 'evening' || a.slot === 'night';
+const eventOf = o => (o && validEvent(o.event) ? o.event : null), evOpt = o => ({ event: eventOf(o) });
+const eventName = e => (e && e.name) || 'your reservation';
+const eventShares = (a, e) => !!(e && e.slot) && a.hours < BIG && ((EVENING({ slot: e.slot }) && a.slot === 'morning') || (e.slot === 'morning' && EVENING(a)));
 const byStrength = goals => (a, b) => goalScore(b, goals) - goalScore(a, goals) || b.hours - a.hours || b.pricePerPerson - a.pricePerPerson || a.name.localeCompare(b.name);
 const mainOf = (t, goals) => (t.activities.length ? [...t.activities].sort(byStrength(goals))[0] : null);
 // An activity named by id or by an object from another search resolves to the trip's own object, so a
 // placement never counts the same experience twice (once as the main, once as the trip's copy).
 const resolveAct = (t, x) => { if (!x) return null; const id = typeof x === 'string' ? x : x.id; return [...t.activities, ...(t.activityOptions || [])].find(a => a.id === id) || (typeof x === 'string' ? null : x); };
-function rhythm(trip, goals, { main = null } = {}) {
+function rhythm(trip, goals, { main = null, event = null } = {}) {
   const gs = goalsOf(goals), s = trip.spec, f = trip.flight, u = usableTime(trip), overnight = !!f.arrivesNextDay, fullDays = u ? u.fullDays : Math.max(0, s.nights - 1);
   const first = u ? u.firstDay.minutes : 0, last = u ? u.lastDay.minutes : 0, early = Number.isFinite(f.returnDepartMinutes) && f.returnDepartMinutes < 9 * 60;
   const mainAct = resolveAct(trip, main) || mainOf(trip, gs), order = [mainAct, ...trip.activities.filter(a => a !== mainAct).sort(byStrength(gs))].filter(Boolean);
@@ -120,8 +129,12 @@ function rhythm(trip, goals, { main = null } = {}) {
   const ai = overnight ? 1 : 0, full = days.slice(ai + 1, s.nights), lastFull = full[full.length - 1] || null, at = new Map();
   if (overnight) days[0].label = 'Overnight flight';
   days[ai].label = first >= 180 ? 'Arrive + explore' : 'Arrive'; days[s.nights].label = last >= 180 ? 'Easy morning + depart' : 'Depart'; full.forEach(d => { d.full = true; });
+  const ev = validEvent(event) ? event : null, evDay = ev ? full.find(d => d.date === ev.date) || null : null;
+  if (evDay) evDay.event = ev;
   const late = (a, d) => EVENING(a) && early && d === lastFull;
-  const fits = (a, d) => { if (d.slot || !inSeason(a, d.date)) return false; const i = days.indexOf(d), prev = days[i - 1], next = days[i + 1]; return !(a.slot === 'morning' && prev && EVENING({ slot: prev.slot })) && !(EVENING(a) && next && next.slot === 'morning'); };
+  // What ends a day late and what starts it early, the event's own slot included (an unknown time is neither).
+  const lateOn = d => EVENING({ slot: d.slot }) || !!(d.event && EVENING({ slot: d.event.slot })), earlyOn = d => d.slot === 'morning' || !!(d.event && d.event.slot === 'morning');
+  const fits = (a, d) => { if (d.slot || !inSeason(a, d.date) || (d.event && !eventShares(a, d.event))) return false; const i = days.indexOf(d), prev = days[i - 1], next = days[i + 1]; return !(a.slot === 'morning' && prev && lateOn(prev)) && !(EVENING(a) && next && earlyOn(next)); };
   const put = (a, d) => { at.set(a, d); d.slot = a.slot || 'day'; }, take = a => { at.get(a).slot = null; at.delete(a); };
   const options = a => full.filter(d => fits(a, d)).sort((x, y) => late(a, x) - late(a, y));
   for (const a of order) { const d = options(a)[0]; if (d) put(a, d); }
@@ -139,6 +152,8 @@ function rhythm(trip, goals, { main = null } = {}) {
   }
   const placed = order.filter(a => at.has(a)).map(a => ({ activity: a, day: at.get(a) })), unplaced = order.filter(a => !at.has(a));
   for (const { activity: a, day } of placed) { day.items.push(a.name); day.label = a === mainAct ? 'Main experience' : tagsOf(a).includes('food') ? 'Food + neighborhood' : 'Explore day'; }
+  // The event's day is said as the EVENT DAY with the event named among its items, never as an open day.
+  if (evDay) { evDay.label = 'Event day'; evDay.items.push(`${cap1(eventName(ev))}${ev.slot ? ` (${ev.slot})` : ''}`); }
   const access = beachAccess(trip.hotel) && gs.includes('beach'), foodOpen = gs.includes('food') && !trip.activities.some(a => tagsOf(a).includes('food'));
   let foodUsed = false;
   full.forEach((d, i) => {
@@ -151,7 +166,7 @@ function rhythm(trip, goals, { main = null } = {}) {
     else d.label = 'Open day';
   });
   const openDays = full.filter(d => d.open).length, lateThenEarly = placed.filter(p => late(p.activity, p.day)).map(p => p.activity);
-  return { days, openDays, fullDays, placed, unplaced, lateThenEarly, main: mainAct, text: 'A suggested rhythm, not a schedule: nothing here is booked for a day; times come with your vouchers.' };
+  return { days, openDays, fullDays, placed, unplaced, lateThenEarly, main: mainAct, event: ev, eventDay: evDay, text: 'A suggested rhythm, not a schedule: nothing here is booked for a day; times come with your vouchers.' };
 }
 
 // ---- the experience score ----------------------------------------------------------------------
@@ -185,10 +200,20 @@ const hotelsOk = (t, o) => t.hotelOptions.filter(h => hotelAllowed(h, { who: t.s
 const flightsOk = (t, o) => t.flightOptions.filter(f => rulesAllowFlight(f, rulesOf(o)));
 // A version that moves a locked part, a fixed date, or the length the customer stated is never a
 // suggestion; each move happens only when its lock is off.
-function crossesLock(p, t, o) {
-  const L = locksOf(o), a = p.spec, b = t.spec, fixed = L.dates || (o && o.ctx && o.ctx.dateMode === 'exact');
-  return (L.dest && a.dest !== b.dest) || (fixed && a.depart !== b.depart) || ((L.nights || L.dates || (o && o.nightsOpen === false)) && a.nights !== b.nights) || (L.hotel && a.hotel !== b.hotel) || (L.flight && (a.flight !== b.flight || a.from !== b.from));
+// `crossedLocks` names what a version moves, in words, so a reference that does (the receipt's baseline) says it.
+const LOCK_WORDS = { dest: 'the destination', dates: 'the dates', nights: 'the length', hotel: 'the hotel', flight: 'the flights' };
+function crossedLocks(p, t, o) {
+  const L = locksOf(o), a = p.spec, b = t.spec, fixed = L.dates || (o && o.ctx && o.ctx.dateMode === 'exact'), out = [];
+  if (L.dest && a.dest !== b.dest) out.push('dest');
+  if (fixed && a.depart !== b.depart) out.push('dates');
+  if ((L.nights || L.dates || (o && o.nightsOpen === false)) && a.nights !== b.nights) out.push('nights');
+  if (L.hotel && a.hotel !== b.hotel) out.push('hotel');
+  if (L.flight && (a.flight !== b.flight || a.from !== b.from)) out.push('flight');
+  return out.map(k => LOCK_WORDS[k]);
 }
+const crossesLock = (p, t, o) => crossedLocks(p, t, o).length > 0;
+// Another destination moves the hotel and the flights with it: never priced while either (or the destination) is locked.
+const destMoveBlocked = o => ['dest', 'hotel', 'flight'].filter(k => locksOf(o)[k]).map(k => LOCK_WORDS[k]);
 // "You told me the stay matters" is only said when it is true: a hotel priority, an all-inclusive or
 // luxury style, a learned "the hotel was worth it" kept with permission, or words that asked for the stay.
 function stayAskedOf(q, o = {}) {
@@ -221,16 +246,25 @@ const withPx = (sets, px, fullDays) => (px ? uniq(sets.map(x => uniq([...x, px])
 // one it cannot place must at least run on some full day), and, when `strict`, each on a full day of its
 // own, no evening experience before an early flight home, and an open day on a trip of 4 nights or more
 // ("Do not fill every day"). A schedule conflict is never a suggestion.
-function fitsSchedule(t, gs, { strict = true } = {}) {
-  const r = rhythm(t, goalsOf(gs)), fd = r.days.filter(d => d.full);
+// The event's day in words, from a rhythm drawn with the event: said as the traveler's, with nothing on it, or with the
+// one short experience that shares it only because the event's time is known and the two sit at opposite ends of the
+// day. The agent's THE RHYTHM and the Memories page say this same sentence, so the two never disagree about that day.
+function eventDayWords(rh) {
+  const d = rh && rh.eventDay;
+  if (!d) return '';
+  const ev = rh.event, E = cap1(eventName(ev)), on = `day ${d.n} (${longDate(d.date)})`, shared = rh.placed.filter(p => p.day === d).map(p => p.activity);
+  return shared.length ? `${E} has ${on}; only ${joinAnd(shared.map(a => `${a.name} (${a.hours}h, ${a.slot})`))} shares it, at the other end of the day from its ${ev.slot} time, so the two cannot overlap.` : `${E} has ${on} to itself: no experience goes on it.`;
+}
+function fitsSchedule(t, gs, { strict = true, event = null } = {}) {
+  const r = rhythm(t, goalsOf(gs), { event }), fd = r.days.filter(d => d.full);
   if (!r.unplaced.every(a => runsIn(a, fd))) return false;
   return !strict || (!r.unplaced.length && !r.lateThenEarly.length && (t.spec.nights < 4 || r.openDays >= 1));
 }
 // Why a version does not fit the schedule, in the rhythm's own facts.
-function scheduleWhy(t, gs, a = null) {
-  const r = rhythm(t, gs), fd = r.days.filter(d => d.full), off = r.unplaced.filter(x => !runsIn(x, fd));
+function scheduleWhy(t, gs, a = null, event = null) {
+  const r = rhythm(t, gs, { event }), fd = r.days.filter(d => d.full), off = r.unplaced.filter(x => !runsIn(x, fd));
   if (off.length) return `${joinAnd(off.map(x => x.name))} ${off.length === 1 ? 'does' : 'do'} not run on these dates (runs ${joinAnd(off.map(x => monthList(x.months)))})`;
-  if (r.unplaced.length) return `${joinAnd(r.unplaced.map(x => x.name))} would have no full day of ${r.unplaced.length === 1 ? 'its' : 'their'} own (${plural(fd.length, 'full day')} for ${plural(t.activities.length, 'experience')})`;
+  if (r.unplaced.length) return `${joinAnd(r.unplaced.map(x => x.name))} would have no full day of ${r.unplaced.length === 1 ? 'its' : 'their'} own (${plural(fd.length, 'full day')} for ${plural(t.activities.length, 'experience')}${r.eventDay ? `, ${longDate(r.eventDay.date)} taken by ${eventName(r.event)}` : ''})`;
   if (r.lateThenEarly.length) return `${joinAnd(r.lateThenEarly.map(x => x.name))} would sit the night before a flight home at ${hhmm(t.flight.returnDepartMinutes)}`;
   if (t.spec.nights >= 4 && r.openDays < 1) return `${a ? `with ${a.name}, ` : ''}every full day would hold an experience, and I keep one open on a trip of ${plural(t.spec.nights, 'night')}`;
   return null;
@@ -250,9 +284,10 @@ function goalSets(acts, gs, fullDays) {
 // ---- EXPERIENCE → DESTINATION → DATES → FLIGHT → HOTEL ---------------------------------------
 function experienceSearch(inv, q, goals, o = {}) {
   const gs = goalsOf(goals), settings = settingsOf(o), now = nowOf(o), locks = locksOf(o), m = memoInventory(inv), origin = m.maps.getOrigin(q.origin);
-  if (!origin) return { candidates: [], considered: 0, destinations: [], goals: gs, notes: [] };
-  const airport = origin.airports[0].code, disabled = new Set(settings.disabledDestinations || []);
-  const nightsList = o.nightsOpen === false || locks.nights || locks.dates ? [q.nights] : uniq([q.nights, q.nights + 1].filter(n => n <= 14));
+  if (!origin) return { candidates: [], considered: 0, destinations: [], goals: gs, notes: [], nights: [] };
+  // The trip's own airport when the query names one of the origin's (a ladder read for a trip flies from where it does).
+  const airport = q.from && origin.airports.some(a => a.code === q.from) ? q.from : origin.airports[0].code, disabled = new Set(settings.disabledDestinations || []);
+  const nightsList = Array.isArray(o.nightsList) && o.nightsList.length ? o.nightsList : o.nightsOpen === false || locks.nights || locks.dates ? [q.nights] : uniq([q.nights, q.nights + 1].filter(n => n <= 14));
   const open = !gs.length || gs[0] === 'surprise' || gs[0] === 'new', px = protectOf(o);
   const destinations = [], candidates = []; let considered = 0;
   for (const dest of m.maps.listDestinations()) {
@@ -275,14 +310,14 @@ function experienceSearch(inv, q, goals, o = {}) {
         const fullDays = Math.max(0, nights - 1 - (f.arrivesNextDay ? 1 : 0));
         for (const set of withPx(goalSets(onDate, gs, fullDays), px, fullDays)) for (const h of hotels) for (const transfer of transfers) {
           considered++; const t = priceTrip(m, { ...base, flight: f.id, hotel: h.id, activities: set, bags: false, transfer }, settings);
-          if (!t || !fitsSchedule(t, gs)) continue; // never a trip built on a schedule conflict or out of season
+          if (!t || !fitsSchedule(t, gs, evOpt(o))) continue; // never a trip built on a schedule conflict or out of season
           candidates.push(candidate(t, gs));
         }
       }
     }
   }
   candidates.sort((a, b) => b.score - a.score || a.total - b.total);
-  return { candidates, considered, destinations, goals: gs, notes: gs.includes('new') ? [NEW_NOTE] : [] };
+  return { candidates, considered, destinations, goals: gs, notes: gs.includes('new') ? [NEW_NOTE] : [], nights: nightsList };
 }
 
 // ---- the ladder and the sweet spot ------------------------------------------------------------
@@ -294,16 +329,24 @@ function experienceSearch(inv, q, goals, o = {}) {
 // within the ceiling is meaningfully more memorable with nothing given up. (Largest-gain-first is not
 // stable: an expensive early step can block a cheaper path to a better trip.) The label names what
 // changed, read off the two trips.
+const ORDINAL = [null, 'First', 'Second', 'Third', 'Fourth', 'Fifth'];
 function rungLabel(cur, c, gs) {
   const a = cur.trip, b = c.trip, added = b.activities.filter(x => !a.spec.activities.includes(x.id)), removed = a.activities.filter(x => !b.spec.activities.includes(x.id));
   if (removed.length || added.length > 1) return null;
   const changes = (added.length ? 1 : 0) + (b.spec.nights > a.spec.nights ? 1 : 0) + (b.spec.hotel !== a.spec.hotel ? 1 : 0) + (b.spec.flight !== a.spec.flight ? 1 : 0) + (!!b.transfer !== !!a.transfer ? 1 : 0) + (b.spec.depart !== a.spec.depart ? 1 : 0);
   if (changes !== 1) return null;
+  // One labelling rule for the ladder and MAKE IT MORE MEMORABLE (both climb here), read off the two versions, so the
+  // same step reads the same wherever it is listed: '+ Main experience' when the version had none or the added one
+  // serves a higher-ranked goal than its main; else '+ Food experience' for a food goal; else "major" only for an
+  // experience of BIG hours or more, and the ordinal counts what the label names: "Second major experience" = two
+  // experiences of BIG hours or more in the new version ("+ Major experience" for the first), "Third experience" = three
+  // in all. (An ordinal counting every experience beside the word "major" read as a third major one when only two were.)
   if (added.length) {
-    const x = added[0], m = mainOf(a, gs), n = b.activities.length, nth = n === 2 ? 'Second' : n === 3 ? 'Third' : 'Another';
+    const x = added[0], m = mainOf(a, gs), nth = n => ORDINAL[n] || 'Another';
     if (!m || goalScore(x, gs) > goalScore(m, gs)) return '+ Main experience';
     if (tagsOf(x).includes('food') && gs.includes('food')) return '+ Food experience';
-    return x.hours >= BIG ? `+ ${nth} major experience` : `+ ${nth} experience`;
+    if (x.hours >= BIG) { const n = b.activities.filter(y => y.hours >= BIG).length; return n <= 1 ? '+ Major experience' : `+ ${nth(n)} major experience`; }
+    return `+ ${nth(b.activities.length)} experience`;
   }
   if (b.spec.nights > a.spec.nights) return '+ Extra night';
   if (b.spec.hotel !== a.spec.hotel) return hotelFit(b.hotel, gs) > hotelFit(a.hotel, gs) ? '+ Better location' : null;
@@ -327,9 +370,25 @@ function climb(start, cands, gs, cap) {
   }
   return rungs;
 }
-function ladder(inv, q, goals, o = {}) {
-  const gs = goalsOf(goals), cap = capOf(q, o), res = experienceSearch(inv, q, gs, o);
-  const under = res.candidates.filter(c => cap === null || c.total <= cap);
+// The ladder read for one trip (`o.trip`: the memories page's trip, the agent's canvas trip for "Where should I stop?") is a
+// function of that trip and the stated rules only, never of how the trip was found: the page builds from the link and the
+// agent from its own query, and an assumed length ("I assumed 5 nights" for a 6-night pick) is not a rule. So the same
+// trip, goals and rules give the same "I'd stop at" on both. The trip's destination, dates, airport and party; the length
+// held when it was stated (o.nightsOpen false: q.nights, the stated nights) or locked (the trip's own); otherwise opened the
+// same way everywhere: the trip's nights and one fewer. Never one more: a ladder that opens a night above the trip puts its
+// sweet spot a night above every trip it is read for, so taking it moves it again and the ceiling becomes the target.
+// The hotel and flight locks hold. `nights` on the result is the lengths the ladder read.
+function ladderScope(inv, trip, q, o) {
+  const s = trip.spec, m = memoInventory(inv), ap = m.maps && typeof m.maps.airport === 'function' ? m.maps.airport(s.from) : null, L = locksOf(o);
+  const stated = o.nightsOpen === false && q && Number.isFinite(q.nights) ? q.nights : null;
+  const nights = L.nights || L.dates ? [s.nights] : stated !== null ? [stated] : uniq([Math.max(2, s.nights - 1), s.nights]);
+  return { q: { ...(q || {}), origin: ap ? ap.originId : q && q.origin, from: s.from, travelers: s.travelers, who: s.who, dest: s.dest, dests: null, region: null, notCountry: null, dateMode: 'exact', depart: s.depart, month: null, nights: nights[nights.length - 1] }, nights };
+}
+function ladder(inv, q0, goals, o = {}) {
+  const at = o.trip && o.trip.spec ? o.trip : null, scope = at ? ladderScope(inv, at, q0, o) : null, q = scope ? scope.q : q0, L0 = locksOf(o);
+  const gs = goalsOf(goals), cap = capOf(q, o), res = experienceSearch(inv, q, gs, scope ? { ...o, nightsList: scope.nights } : o);
+  const held = c => !at || ((!L0.hotel || c.trip.spec.hotel === at.spec.hotel) && (!L0.flight || c.trip.spec.flight === at.spec.flight));
+  const under = res.candidates.filter(c => (cap === null || c.total <= cap) && held(c));
   const qctx = { style: 'surprise', priority: 'price', rules: q.rules || null, budget: null, allowOver: 0 };
   // EXPERIENCE → DESTINATION first: a ladder is climbed in every destination that has a GOOD TRIP (the
   // cheapest eligible trip there with no real downside by decision.compromises, weight 2 or more, the
@@ -349,11 +408,11 @@ function ladder(inv, q, goals, o = {}) {
   points.sort((a, b) => a.r.total - b.r.total || b.r.score - a.r.score || (a.r.token < b.r.token ? -1 : 1));
   let best = null;
   for (const p of points) if (!best || p.r.score >= best.r.score + THRESHOLD) best = p;
-  if (!best) return { rungs: [], top: null, stop: null, text: `Nothing the inventory priced fits ${cap === null ? 'these goals' : fmt(cap)} as a trip I would recommend for ${joinAnd(gs.map(goalLabel)) || 'your goals'}.`, search: res, chains, goals: gs, cap };
+  if (!best) return { rungs: [], top: null, stop: null, text: `Nothing the inventory priced fits ${cap === null ? 'these goals' : fmt(cap)} as a trip I would recommend for ${joinAnd(gs.map(goalLabel)) || 'your goals'}.`, search: res, chains, goals: gs, cap, nights: res.nights };
   // The pick's own ladder up to it; its next rung does not fit (or would have been the pick).
   const rungs = best.rungs.slice(0, best.i + 1), stop = rungs[rungs.length - 1];
   const top = cap !== null && cap > stop.total ? { total: cap, text: 'No meaningful improvement found' } : null;
-  return { rungs, top, stop, text: `I'd stop at ${fmt(stop.total)}.`, search: res, chains, goals: gs, cap };
+  return { rungs, top, stop, text: `I'd stop at ${fmt(stop.total)}.`, search: res, chains, goals: gs, cap, nights: res.nights };
 }
 // The rung after which the next rung's gain is below the threshold, or the last rung.
 const stopIndex = rungs => { let i = 0; while (i + 1 < rungs.length && rungs[i + 1].gain >= THRESHOLD) i++; return i; };
@@ -368,7 +427,7 @@ function sweetSpot(ladderOut, trip = null) {
 
 // ---- MORE MEMORIES / OUR PICK / MORE COMFORT ---------------------------------------------------
 function experienceWays(inv, q, goals, o = {}) {
-  const gs = goalsOf(goals), cap = capOf(q, o), L = ladder(inv, q, gs, o), cands = L.search.candidates;
+  const gs = goalsOf(goals), cap = capOf(q, o), L = ladder(inv, q, gs, { ...o, trip: null }), cands = L.search.candidates;
   const dropped = [], none = { memories: null, pick: null, comfort: null, dropped, reason: L.text, rejected: null, keep: null, signature: null, ladder: L, goals: gs, considered: L.search.considered };
   if (!L.stop) { dropped.push(...['memories', 'pick', 'comfort'].map(key => ({ key, reason: L.text }))); return none; }
   const P = L.stop, pt = P.trip, main = mainOf(pt, gs), where = pt.dest.name;
@@ -383,7 +442,7 @@ function experienceWays(inv, q, goals, o = {}) {
   const keepsCore = c => sameSet(c.trip.spec.activities, pt.spec.activities), comfortKeys = ['flight', 'time', 'hotel', 'area', 'meals', 'transfer'];
   const travelKeys = ['flight', 'time', 'hotel', 'area', 'meals'], gets = (x, keys) => x.ch.improvements.some(r => keys.includes(r.key));
   const C = same.map(c => ({ c, ch: classifyChanges(pt, c.trip) })).filter(x => x.c.total > P.total && keepsCore(x.c) && !x.ch.tradeoffs.length && gets(x, comfortKeys)).sort((a, b) => gets(b, travelKeys) - gets(a, travelKeys) || a.c.total - b.c.total)[0] || null;
-  const rh = rhythm(pt, gs), way = (c, label, blurbs) => ({ ...c, label, blurbs, keep: cap === null ? null : cap - c.total });
+  const rh = rhythm(pt, gs, evOpt(o)), way = (c, label, blurbs) => ({ ...c, label, blurbs, keep: cap === null ? null : cap - c.total });
   // The location blurb is the listing's own fact, never a quality word, and none when LOCATION would move this hotel.
   const loc = gs.includes('beach') && !pt.hotel.features.beachfront ? locationCheck(inv, pt, gs, { ...o, cap }) : null;
   const pick = way(P, 'OUR PICK', [main && goalScore(main, gs) > 0 ? 'Main experience' : null, plural(pt.spec.nights, 'night'), loc && loc.verdict ? null : stayWord(pt.hotel, gs), rh.openDays >= 1 ? 'Open time' : null].filter(Boolean));
@@ -452,7 +511,7 @@ function hotelOrExperience(inv, trip, goals, o = {}) {
   for (let n = 2; n >= 1 && !b; n--) {
     const adds = bestAdditions(trip, gs, n); if (adds.length < n) continue;
     const p = price({ ...trip.spec, activities: uniq([...trip.spec.activities, ...adds.map(x => x.id)]).sort() });
-    if (!p || !fitsSchedule(p, gs)) continue;
+    if (!p || !fitsSchedule(p, gs, evOpt(o))) continue;
     b = { ...pack(p), delta: p.total - trip.total, names: adds.map(x => x.name), activities: adds, over: over(p), text: `${n === 2 ? 'Two experiences' : 'One experience'} +${fmt(p.total - trip.total)}` };
   }
   const gainA = a ? r1(experienceScore(a.trip, gs) - base) : null, gainB = b ? r1(experienceScore(b.trip, gs) - base) : null;
@@ -513,7 +572,7 @@ const tradeOff = lost => `the trade-off${lost.length > 1 ? 's' : ''}: ${joinAnd(
 function memoryTest(inv, trip, goals, o = {}, amount = 10000) {
   const gs = goalsOf(goals), price = pricer(inv, o), s = trip.spec, base = experienceScore(trip, gs), lo = Math.round(amount * 0.5), hi = Math.round(amount * 1.5), cands = [];
   const add = (kind, p, label, why) => {
-    if (!p || crossesLock(p, trip, o) || !fitsSchedule(p, gs)) return; // never across a lock or a stated length; never a schedule conflict or out of season
+    if (!p || crossesLock(p, trip, o) || !fitsSchedule(p, gs, evOpt(o))) return; // never across a lock or a stated length; never a schedule conflict or out of season
     const delta = p.total - trip.total, lost = givesUpOf(p, trip);
     if (kind !== 'free' && (delta < lo || delta > hi)) return;
     cands.push({ kind, ...pack(p), delta, gain: r1(experienceScore(p, gs) - base), label, givesUp: lost, text: `${label}, ${signed(delta)}: ${why}${lost.length ? `; ${tradeOff(lost)}` : ''}` });
@@ -558,7 +617,7 @@ function oneBigThing(inv, q, goals, o = {}) {
   for (const { a, dest } of acts.filter(x => goalScore(x.a, gs) > 0)) {
     const t = res.candidates.filter(c => c.dest === dest.id && (cap === null || c.total <= cap) && sameSet(c.trip.spec.activities, [a.id])).sort((x, y) => x.total - y.total)[0];
     if (!t) continue;
-    const rh = rhythm(t.trip, gs, { main: a }), day = rh.placed.find(p => p.activity.id === a.id).day, u = usableTime(t.trip);
+    const rh = rhythm(t.trip, gs, { main: a, ...evOpt(o) }), day = rh.placed.find(p => p.activity.id === a.id).day, u = usableTime(t.trip);
     const why = `${a.name} is the strongest single experience for what you told me: ${goalLabel(goalOf(a, gs)).toLowerCase()} ranked #${rankOf(goalOf(a, gs), gs)}, ${a.hours}h${a.hours >= BIG ? ', a full-day experience' : ''}${a.months ? `, running in ${monthList(a.months)}` : ''}. It has its own full day (${longDate(day.date)}), not your arrival or departure day${EVENING(a) && u ? `, and the flight home leaves at ${u.lastDay.depart}` : ''}; ${fmt(t.total)} in all${cap !== null ? `, ${fmt(cap - t.total)} under your ${fmt(cap)}` : ''}.`;
     return { main: a, ...t, day, why, protection: protection(inv, t.trip, a, o), rhythm: rh };
   }
@@ -570,13 +629,13 @@ function packTrip(inv, trip, goals, o = {}) {
   const gs = goalsOf(goals), cap = capOf(null, o), price = pricer(inv, o), added = [];
   let cur = trip;
   for (const a of (trip.activityOptions || []).filter(x => !trip.spec.activities.includes(x.id) && goalScore(x, gs) > 0 && runsOn(x, trip)).sort(byStrength(gs))) {
-    if (cur.activities.length + 1 > rhythm(cur, gs).fullDays - 1) break;
+    if (cur.activities.length + 1 > rhythm(cur, gs, evOpt(o)).fullDays - 1) break;
     const p = price(withAct(cur.spec, a.id));
     if (!p || (cap !== null && p.total > cap)) continue;
-    if (!fitsSchedule(p, gs) || rhythm(p, gs).openDays < 1) continue; // each on a day it runs, one day kept open
+    if (!fitsSchedule(p, gs, evOpt(o)) || rhythm(p, gs, evOpt(o)).openDays < 1) continue; // each on a day it runs, one day kept open
     cur = p; added.push(a);
   }
-  const r = rhythm(cur, gs);
+  const r = rhythm(cur, gs, evOpt(o));
   return { ...pack(cur), added, delta: cur.total - trip.total, text: `I stopped at ${cur.activities.length}: this trip has ${plural(r.fullDays, 'full day')} and I keep one open.` };
 }
 
@@ -587,21 +646,21 @@ function bigVsMany(inv, trip, goals, o = {}) {
   const px = protectOf(o), base = px && s.activities.includes(px) ? [px] : [];
   const pool = (trip.activityOptions || []).filter(x => goalScore(x, gs) > 0 && runsOn(x, trip) && !base.includes(x.id));
   const big = pool.filter(x => x.hours >= BIG).sort((x, y) => y.pricePerPerson - x.pricePerPerson)[0] || null;
-  const A0 = big && price({ ...s, activities: [...base, big.id].sort() }), A = A0 && fitsSchedule(A0, gs) ? A0 : null;
+  const A0 = big && price({ ...s, activities: [...base, big.id].sort() }), A = A0 && fitsSchedule(A0, gs, evOpt(o)) ? A0 : null;
   const a = A ? { activity: big, ...pack(A), delta: A.total - trip.total, cost: big.pricePerPerson * T } : null;
   let b = null;
   if (a) {
     const small = pool.filter(x => x.id !== big.id && x.hours < BIG), combos = [];
     for (let i = 0; i < small.length; i++) for (let j = i + 1; j < small.length; j++) { combos.push([small[i], small[j]]); for (let k = j + 1; k < small.length; k++) combos.push([small[i], small[j], small[k]]); }
     const cost = xs => xs.reduce((n, x) => n + x.pricePerPerson * T, 0);
-    const near = combos.filter(xs => Math.abs(cost(xs) - a.cost) <= a.cost * 0.15).map(xs => ({ xs, p: price({ ...s, activities: [...base, ...xs.map(x => x.id)].sort() }) })).filter(x => x.p && fitsSchedule(x.p, gs))
+    const near = combos.filter(xs => Math.abs(cost(xs) - a.cost) <= a.cost * 0.15).map(xs => ({ xs, p: price({ ...s, activities: [...base, ...xs.map(x => x.id)].sort() }) })).filter(x => x.p && fitsSchedule(x.p, gs, evOpt(o)))
       .sort((x, y) => y.xs.reduce((n, z) => n + goalScore(z, gs), 0) - x.xs.reduce((n, z) => n + goalScore(z, gs), 0) || x.p.total - y.p.total)[0];
     if (near) b = { activities: near.xs, ...pack(near.p), delta: near.p.total - trip.total, cost: cost(near.xs) };
   }
   // A big experience that is offered but does not fit this trip is named with the rhythm's reason: "none is
   // offered" would be a check that was never made.
   const off = !big && (trip.activityOptions || []).find(x => goalScore(x, gs) > 0 && x.hours >= BIG && !base.includes(x.id) && x.months);
-  const none = big ? `${big.name} (${big.hours}h) is the big experience for your goals in ${trip.dest.name}, but it does not fit this trip: ${(A0 && scheduleWhy(A0, gs, big)) || 'it could not be priced on these dates'}.`
+  const none = big ? `${big.name} (${big.hours}h) is the big experience for your goals in ${trip.dest.name}, but it does not fit this trip: ${(A0 && scheduleWhy(A0, gs, big, eventOf(o))) || 'it could not be priced on these dates'}.`
     : off ? `${off.name} (${off.hours}h) is the big experience for your goals in ${trip.dest.name}, but it does not run on these dates (runs ${monthList(off.months)}).`
       : `No big experience (${BIG}h or more) for your goals is offered in ${trip.dest.name}.`;
   const text = !a ? none : `ONE BIG MEMORY: ${big.name} (${big.hours}h, ${fmt(a.cost)} for ${T})${base.length ? ' beside the protected experience' : ' as the one experience'}, ${fmt(a.total)} (${signed(a.delta)} against your trip). ${b ? `MORE THINGS TO DO: ${joinAnd(b.activities.map(x => x.name))} (${b.activities.reduce((n, x) => n + x.hours, 0)}h in all, ${fmt(b.cost)}), ${fmt(b.total)} (${signed(b.delta)}). The two are within 15% of each other on price; your call.` : 'No two or three smaller experiences here come within 15% of its price.'}`;
@@ -623,7 +682,7 @@ function freeOverPaid(inv, trip, goals) {
 function bestDay(trip, main, o = {}) {
   const a = resolveAct(trip, main), gs = goalsOf(o.goals || []);
   if (!a) return { day: null, reasons: [{ ok: false, text: 'The main experience is not part of this trip.' }], weather: null };
-  const rh = rhythm(trip, gs, { main: a }), hit = rh.placed.find(p => p.activity === a), day = hit ? hit.day : null, u = usableTime(trip), runs = !!day || runsIn(a, rh.days.filter(d => d.full));
+  const rh = rhythm(trip, gs, { main: a, ...evOpt(o) }), hit = rh.placed.find(p => p.activity === a), day = hit ? hit.day : null, u = usableTime(trip), runs = !!day || runsIn(a, rh.days.filter(d => d.full));
   const reasons = [], push = (ok, text) => reasons.push({ ok, text });
   if (!day && runs) push(false, `No full day is free for ${a.name}: ${plural(rh.fullDays, 'full day')} and ${plural(trip.activities.length, 'experience')}.`);
   else { push(true, `Not your arrival day (${longDate(rh.days[trip.flight.arrivesNextDay ? 1 : 0].date)})`); push(true, `Not your departure day (${longDate(rh.days[trip.spec.nights].date)})`); }
@@ -631,11 +690,14 @@ function bestDay(trip, main, o = {}) {
   const month = monthOf(day ? day.date : trip.spec.depart);
   if (a.months) push(a.months.includes(month), a.months.includes(month) ? `Operating in ${MONTHS[month - 1]} (${monthList(a.months)})` : `Not operating in ${MONTHS[month - 1]}: it runs in ${monthList(a.months)}`); else push(false, 'Operating days are not in our data');
   const inv = o.inv ? memoInventory(o.inv) : null;
-  const offered = inv ? inv.activities.search({ destId: trip.spec.dest, date: trip.spec.depart, travelers: trip.spec.travelers }).some(x => x.id === a.id) : trip.activityOptions.some(x => x.id === a.id);
+  // Checked and said for the day the rhythm gives it (protection() does the same), not the day the trip leaves.
+  const offered = inv ? inv.activities.search({ destId: trip.spec.dest, date: day ? day.date : trip.spec.depart, travelers: trip.spec.travelers }).some(x => x.id === a.id) : trip.activityOptions.some(x => x.id === a.id);
+  const forDay = day ? `for ${longDate(day.date)}` : 'for these dates';
   // The demo partner's search does not read the date: "available" needs the season to hold as well.
-  push(offered && runs, !offered ? 'Not offered by the partner for these dates' : runs ? 'Available on the demo partner for these dates' : `Offered by the demo partner, but it does not run on these dates (runs ${monthList(a.months)})`);
-  const ev = o.event && day && o.event.date === day.date ? o.event : null;
-  push(!ev, ev ? `${ev.name || 'Your reservation'} is on ${longDate(ev.date)}, the same day` : `Nothing you told me is on ${day ? longDate(day.date) : 'that day'}`);
+  push(offered && runs, !offered ? `Not offered by the partner ${forDay}` : runs ? `Available on the demo partner ${forDay}` : `Offered by the demo partner, but it does not run on these dates (runs ${monthList(a.months)})`);
+  // The rhythm keeps the event's day for the event; the experience shares it only when the two cannot overlap.
+  const ev = day && day.event ? day.event : null;
+  push(true, ev ? `${cap1(eventName(ev))} is on ${longDate(ev.date)} (${ev.slot}); ${slotWords(a.slot)} experience of ${a.hours}h cannot overlap it` : `Nothing you told me is on ${day ? longDate(day.date) : 'that day'}`);
   if (EVENING(a) && u && day === rh.days[trip.spec.nights - 1] && trip.flight.returnDepartMinutes < 9 * 60) push(false, `${a.name} is an evening experience and the flight home leaves at ${hhmm(trip.flight.returnDepartMinutes)} the next morning`);
   let weather = null;
   if (a.weather) {
@@ -649,6 +711,9 @@ function bestDay(trip, main, o = {}) {
 function locationCheck(inv, trip, goals, o = {}) {
   const gs = goalsOf(goals), price = pricer(inv, o), s = trip.spec, cap = capOf(null, o);
   if (!gs.includes('beach')) return { a: null, b: null, verdict: null, text: 'Distance from the hotel to your experiences is not in our data (needs verification).', unknown: 'Distance from the hotel to your experiences is not in our data (needs verification).' };
+  // A locked hotel is never moved for its location: said, and no other hotel is priced (`unknown` carries the one line
+  // a page or the agent shows when no comparison is priced).
+  if (locksOf(o).hotel) { const line = `The hotel is locked, so no other hotel is priced for its location: ${trip.hotel.name} is ${accessWord(trip.hotel) ? `${accessWord(trip.hotel)} by its listing (${trip.hotel.area})` : `not on or near the beach by its listing (${trip.hotel.area})`}.`; return { a: null, b: null, verdict: null, locked: true, text: line, unknown: line }; }
   // A: the cheapest hotel with no beach access; B: the cheapest beachfront one (either may be the trip's own, said as
   // such). The verdict reads the beach goal and the listed location, never stars or brand, and the ceiling: a beachfront
   // version over the maximum (and dearer than this trip) is shown with `over`, never recommended; "go over" decides that.
@@ -665,7 +730,7 @@ function locationCheck(inv, trip, goals, o = {}) {
 function destinationMatch(inv, q, goals, o = {}) {
   // The finalists are each destination's own sweet spot under the ceiling (its ladder's last rung), the
   // pick's first: the destination experienceWays picks, compared on the same footing as the others.
-  const gs = goalsOf(goals), cap = capOf(q, o), L = ladder(inv, q, gs, o), res = L.search;
+  const gs = goalsOf(goals), cap = capOf(q, o), L = ladder(inv, q, gs, { ...o, trip: null }), res = L.search;
   const stops = (L.chains || []).map(c => c.rungs[c.rungs.length - 1]).filter(r => !L.stop || r.dest !== L.stop.dest).sort((a, b) => b.score - a.score || a.total - b.total);
   const finalists = [...(L.stop ? [L.stop] : []), ...stops].slice(0, 4).map(c => { const d = res.destinations.find(x => x.dest.id === c.dest); return { ...c, dest: d.dest, met: d.match.met, unmet: d.match.unmet }; });
   const pick = finalists[0] || null; if (!pick) return { finalists, why: `No destination could be built for ${joinAnd(gs.map(goalLabel)) || 'your goals'}${cap !== null ? ` at or under ${fmt(cap)}` : ''}.`, whyNot: [] };
@@ -690,10 +755,10 @@ function alternative(inv, trip, goals, wanted, o = {}) {
   const target = act ? price(withAct(s, act.id)) : wanted && wanted.spec ? wanted : null;
   const ceiling = cap === null ? null : cap, underCap = !!target && (ceiling === null || target.total <= ceiling);
   // "Fits" only when the money and the rhythm both hold it: in season on a day of its own, an open day kept.
-  const why = act && target ? scheduleWhy(target, gs, act) : null;
+  const why = act && target ? scheduleWhy(target, gs, act, eventOf(o)) : null;
   if (underCap && !why) return { fits: true, wanted: act, ...pack(target), options: [], provider: null, text: `${act ? act.name : 'That version'} fits: ${fmt(target.total)} in all.` };
   const options = [], seen = new Set([encodeSpec(s)]), nearDates = [-3, -2, -1, 1, 2, 3].map(x => addDays(s.depart, x)).filter(d => d >= addDays(today(nowOf(o)), 3));
-  const opt = (kind, p, text) => { if (!p || (ceiling !== null && p.total > ceiling) || seen.has(encodeSpec(p.spec)) || crossesLock(p, trip, o) || !fitsSchedule(p, gs)) return; seen.add(encodeSpec(p.spec)); options.push({ kind, ...pack(p), delta: p.total - trip.total, differences: sayDiffs(p, trip), text }); };
+  const opt = (kind, p, text) => { if (!p || (ceiling !== null && p.total > ceiling) || seen.has(encodeSpec(p.spec)) || crossesLock(p, trip, o) || !fitsSchedule(p, gs, evOpt(o))) return; seen.add(encodeSpec(p.spec)); options.push({ kind, ...pack(p), delta: p.total - trip.total, differences: sayDiffs(p, trip), text }); };
   if (act) {
     const kind = act.kind, goal = goalOf(act, gs);
     if (!fixed) for (const d of nearDates) opt('date', price({ ...withAct(s, act.id), depart: d }), `${act.name} leaving ${longDate(d)} instead of ${longDate(s.depart)}`);
@@ -709,7 +774,7 @@ function alternative(inv, trip, goals, wanted, o = {}) {
           const base = { dest: dest.id, from: s.from, depart, nights: s.nights, travelers: s.travelers, who: s.who };
           for (const f of m.flights.search({ from: s.from, destId: dest.id, depart, nights: s.nights, travelers: s.travelers }).filter(x => rulesAllowFlight(x, rulesOf(o)))) for (const h of m.hotels.search({ destId: dest.id, checkIn: depart, nights: s.nights, rooms: roomsFor(base) }).filter(x => hotelAllowed(x, { who: s.who, style: styleOf(o) }) && rulesAllowHotel(x, rulesOf(o)))) {
             const p = price({ ...base, flight: f.id, hotel: h.id, activities: [acts[0].id], bags: false, transfer: false });
-            if (p && (!best || p.total < best.total) && fitsSchedule(p, gs)) best = p;
+            if (p && (!best || p.total < best.total) && fitsSchedule(p, gs, evOpt(o))) best = p;
           }
         }
         if (best) opt('destination', best, `${acts[0].name} in ${dest.name} instead of ${trip.dest.name}`);
@@ -731,7 +796,8 @@ function alternative(inv, trip, goals, wanted, o = {}) {
 function sameFeeling(inv, q, goals, trip, o = {}) {
   // An explicit ask for a different trip: not held to the protected experience (another destination cannot offer it),
   // but held to the locked or fixed dates and the locked or stated length; every change is named in the differences.
-  const L = locksOf(o), fixed = L.dates || (o.ctx && o.ctx.dateMode === 'exact');
+  const L = locksOf(o), fixed = L.dates || (o.ctx && o.ctx.dateMode === 'exact'), blocked = destMoveBlocked(o);
+  if (blocked.length) return { trip: null, token: null, total: null, differences: [], locked: blocked, text: `Another destination would move ${joinAnd(blocked)} you locked, so I don't price one; with ${blocked.length === 1 ? 'that lock' : 'those locks'} off, I would.` };
   const hq = { ...q, dest: null, dests: null, ...(fixed ? { dateMode: 'exact', depart: trip.spec.depart, month: null } : {}), ...(L.nights || L.dates ? { nights: trip.spec.nights } : {}) };
   const gs = goalsOf(goals), res = experienceSearch(inv, hq, gs, { ...o, protect: null, ctx: o.ctx ? { ...o.ctx, protect: null } : null });
   const here = res.destinations.find(d => d.dest.id === trip.dest.id), need = here ? here.match.met.map(x => x.key) : gs.slice(0, 1);
@@ -798,7 +864,7 @@ function valueCheck(inv, trip, activity, goals) {
 // priced away: its fix says it stays unless the customer drops it.
 const slotWords = slot => (slot === 'night' ? 'a night' : slot === 'evening' ? 'an evening' : `a ${slot || 'day'}`);
 function collisions(trip, { event = null, inv = null, settings = null, goals = [], protect = null, rules = null, locks = {} } = {}) {
-  const gs = goalsOf(goals), rh = rhythm(trip, gs), f = trip.flight, u = usableTime(trip), out = [];
+  const gs = goalsOf(goals), rh = rhythm(trip, gs, { event }), f = trip.flight, u = usableTime(trip), out = [];
   const price = inv ? pricer(inv, { settings: settings || DEFAULT_SETTINGS }) : null;
   const laterFlights = () => (price && !(locks && locks.flight) ? (trip.flightOptions || []).filter(x => x.id !== trip.spec.flight && x.returnDepartMinutes >= 9 * 60 && rulesAllowFlight(x, rules)).map(x => price({ ...trip.spec, flight: x.id })).filter(Boolean).sort((x, y) => x.total - y.total) : []);
   const flightFix = p => ({ kind: 'flight', ...pack(p), delta: p.total - trip.total, text: `${p.flight.name} flights home at ${hhmm(p.flight.returnDepartMinutes)}: ${signed(p.total - trip.total)}` });
@@ -814,11 +880,21 @@ function collisions(trip, { event = null, inv = null, settings = null, goals = [
   // An experience with no full day of its own, named by the fact that leaves it out: a season that misses every full day
   // ('season'); free full days it cannot take, each with its reason ('slot'); or no free full day at all, a big one
   // against the arrival day and the rest together as too many. Each experience appears in one conflict only.
+  // The event's day counts as free of experiences here (none is on it), so an experience the rhythm could only have put on
+  // it is named against the event ('event-day'): an experience on the day the customer already has is a conflict, never a
+  // quiet double booking.
   if (rh.unplaced.length) {
-    const fd = rh.days.filter(d => d.full), free = fd.filter(d => !d.items.length), off = rh.unplaced.filter(a => !runsIn(a, fd)), left = rh.unplaced.filter(a => !off.includes(a));
+    const fd = rh.days.filter(d => d.full), free = fd.filter(d => !d.slot), off = rh.unplaced.filter(a => !runsIn(a, fd)), left = rh.unplaced.filter(a => !off.includes(a));
     for (const a of off) out.push({ kind: 'season', activity: a, text: `SCHEDULE CONFLICT: ${a.name} does not run on these dates: it runs in ${monthList(a.months)}, and ${fd.length ? `none of this trip's full days (${dayRange(fd)}) falls in it` : 'this trip has no full day'}.`, fixes: [without(a)] });
-    const dayWhy = (a, d) => { const i = rh.days.indexOf(d), prev = rh.days[i - 1], next = rh.days[i + 1]; const on = longDate(d.date); return !inSeason(a, d.date) ? `${on} is outside its season (${monthList(a.months)})` : a.slot === 'morning' && prev && EVENING({ slot: prev.slot }) ? `${on} follows an evening experience (${prev.items.join(', ')}), and a morning one never comes after it` : `${on} is the night before a morning experience (${next.items.join(', ')})`; };
-    if (free.length) for (const a of left) out.push({ kind: 'slot', activity: a, text: `SCHEDULE CONFLICT: ${a.name} fits no free full day: ${joinAnd(free.map(d => dayWhy(a, d)))}.`, fixes: [without(a)] });
+    const evWhy = (a, d) => `${longDate(d.date)} is the day of ${eventName(d.event)}${d.event.slot ? ` (${d.event.slot}), and ${a.hours >= BIG ? `a ${a.hours}h experience` : `${slotWords(a.slot)} experience`} could overlap it` : ', and its time is not known, so no experience goes on it'}`;
+    const dayWhy = (a, d) => {
+      const i = rh.days.indexOf(d), prev = rh.days[i - 1], next = rh.days[i + 1], on = longDate(d.date);
+      if (d.event && inSeason(a, d.date)) return evWhy(a, d);
+      if (!inSeason(a, d.date)) return `${on} is outside its season (${monthList(a.months)})`;
+      if (a.slot === 'morning' && prev && (EVENING({ slot: prev.slot }) || (prev.event && EVENING({ slot: prev.event.slot })))) return `${on} follows an evening ${EVENING({ slot: prev.slot }) ? `experience (${prev.items.filter(x => trip.activities.some(t => t.name === x)).join(', ')})` : `event (${eventName(prev.event)})`}, and a morning one never comes after it`;
+      return `${on} is the night before a morning ${next && next.slot === 'morning' ? `experience (${next.items.filter(x => trip.activities.some(t => t.name === x)).join(', ')})` : `event (${eventName(next && next.event)})`}`;
+    };
+    if (free.length) for (const a of left) out.push({ kind: free.some(d => d.event) ? 'event-day' : 'slot', activity: a, event: rh.event, text: `SCHEDULE CONFLICT: ${a.name} fits no free full day: ${joinAnd(free.map(d => dayWhy(a, d)))}.`, fixes: [without(a)] });
     else {
       const big = left.filter(a => a.hours >= BIG), rest = left.filter(a => a.hours < BIG);
       for (const a of big) out.push({ kind: 'arrival-day', activity: a, text: `SCHEDULE CONFLICT: ${a.name} needs a full day and the only day left is your arrival day (${longDate(rh.days[f.arrivesNextDay ? 1 : 0].date)}).`, fixes: [without(a)] });
@@ -836,7 +912,7 @@ function collisions(trip, { event = null, inv = null, settings = null, goals = [
 
 // ---- very scheduled ---------------------------------------------------------------------------------
 function fatigue(trip, goals, o = {}) {
-  const gs = goalsOf(goals), rh = rhythm(trip, gs), acts = trip.activities, reasons = [];
+  const gs = goalsOf(goals), rh = rhythm(trip, gs, evOpt(o)), acts = trip.activities, reasons = [];
   if (acts.length > rh.fullDays - 1) reasons.push(`${plural(acts.length, 'experience')} for ${plural(rh.fullDays, 'full day')}: more than full days minus one`);
   if (acts.filter(a => a.hours >= 8).length >= 2) reasons.push(`${acts.filter(a => a.hours >= 8).length} experiences of 8h or more`);
   if (rh.openDays === 0) reasons.push('no open day');
@@ -852,8 +928,8 @@ function surpriseOne(inv, trip, goals, rules, o = {}) {
   const gs = goalsOf(goals), cap = capOf(null, o), price = pricer(inv, { ...o, rules: rules || rulesOf(o) }), s = trip.spec;
   const pool = (trip.activityOptions || []).filter(a => !s.activities.includes(a.id) && goalScore(a, gs) === 0 && runsOn(a, trip)).sort((a, b) => b.hours - a.hours || a.pricePerPerson - b.pricePerPerson);
   for (const a of pool) {
-    const p = price(withAct(s, a.id)); if (!p || (cap !== null && p.total > cap) || !fitsSchedule(p, gs)) continue; // on a day it runs, one day kept open
-    const day = rhythm(p, gs).placed.find(x => x.activity.id === a.id).day;
+    const p = price(withAct(s, a.id)); if (!p || (cap !== null && p.total > cap) || !fitsSchedule(p, gs, evOpt(o))) continue; // on a day it runs, one day kept open
+    const day = rhythm(p, gs, evOpt(o)).placed.find(x => x.activity.id === a.id).day;
     // "In season" only from the partner's months on the day it falls on; without months, said as unknown.
     // The kinds are named as the experience's own ("its kind: adventure, nature"): a bare "(adventure, nature)"
     // after "what you asked for" reads as what the customer asked for.
@@ -882,7 +958,7 @@ function downsell(inv, trip, goals, o = {}) {
   const saved = trip.total - cheaper.total, lost = givesUpOf(cheaper, trip);
   // The best goal experience the rhythm can hold, named by its goal's rank ("ranked #1" only when it is goal #1's).
   let top = null, withExp = null;
-  for (const a of bestAdditions(trip, gs, 99)) { const p = price(withAct(cheaper.spec, a.id)); if (p && fitsSchedule(p, gs)) { top = a; withExp = p; break; } }
+  for (const a of bestAdditions(trip, gs, 99)) { const p = price(withAct(cheaper.spec, a.id)); if (p && fitsSchedule(p, gs, evOpt(o))) { top = a; withExp = p; break; } }
   const covers = withExp ? withExp.total <= trip.total : false, g = top ? goalOf(top, gs) : null, which = top ? `the ${goalLabel(g).toLowerCase()} experience you ranked #${rankOf(g, gs)}` : null;
   const text = `I found another hotel that meets your requirements for ${fmt(saved)} less: ${cheaper.hotel.name}${lost.length ? `; ${tradeOff(lost)}` : ''}.${top ? covers ? ` That ${fmt(saved)} can cover ${which}: ${top.name}, ${fmt(withExp.total)} in all.` : ` ${top.name}, ${which}, costs ${fmt(withExp.total - trip.total)} more than that saving: ${fmt(withExp.total)} with it.` : ' No goal experience that fits a free day, with one day still open, is left to add.'}`;
   return { cheaper: cheaper.hotel, saved, givesUp: lost, experience: top, ...(withExp ? pack(withExp) : pack(cheaper)), covers, hotelOnly: pack(cheaper), text };
@@ -919,20 +995,25 @@ function eventBuffer(trip, event) {
 function protection(inv, trip, main, o = {}) {
   const a = resolveAct(trip, main && main.id ? main.id : main), checked = today(nowOf(o)), checkedOn = longDate(checked), leave = longDate(trip.spec.depart); // checkedAt stays ISO data
   if (!a) return { rows: [], text: 'No main experience to check.' };
-  const m = memoInventory(inv), offered = m.activities.search({ destId: trip.spec.dest, date: trip.spec.depart, travelers: trip.spec.travelers }).find(x => x.id === a.id) || null;
-  // Availability is verified only when the partner offers it AND it runs on the day the rhythm gives it (the demo search
-  // does not read the date); the operating row only when the season holds. Out of season is a blocker.
-  const rh = rhythm(trip, goalsOf(o.goals || (o.ctx && o.ctx.goals) || []), { main: a }), hit = rh.placed.find(p => p.activity === a) || null, fd = rh.days.filter(d => d.full);
+  // Availability is checked, and said, for the day the rhythm gives the experience (the same rhythm, event and goals as
+  // the page's or the card's THE RHYTHM), never the arrival day: "available for Wed" beside "not your arrival day (Wed)"
+  // would claim a check for a day it does not take. Verified only when the partner offers it AND it runs on that day (the
+  // demo search does not read the date); without a day of its own the full days are named. Out of season is a blocker.
+  const rh = rhythm(trip, goalsOf(o.goals || (o.ctx && o.ctx.goals) || []), { main: a, ...evOpt(o) }), hit = rh.placed.find(p => p.activity === a) || null, fd = rh.days.filter(d => d.full);
+  const when = hit ? longDate(hit.day.date) : fd.length ? `these dates (${dayRange(fd)}), with no full day of its own in the rhythm yet` : leave;
+  const m = memoInventory(inv), offered = m.activities.search({ destId: trip.spec.dest, date: hit ? hit.day.date : trip.spec.depart, travelers: trip.spec.travelers }).find(x => x.id === a.id) || null;
   const runs = !a.months || !!hit || runsIn(a, fd), months = uniq((fd.length ? fd : [{ date: trip.spec.depart }]).map(d => MONTHS[monthOf(d.date) - 1]));
   const rows = [
-    { key: 'availability', value: !offered ? `not offered by the partner for ${leave}` : runs ? `available on the demo partner for ${leave} (re-checked ${checkedOn})` : `offered by the demo partner, but it does not run on these dates (runs ${monthList(a.months)})`, verified: !!offered && runs },
+    { key: 'availability', value: !offered ? `not offered by the partner for ${when}` : runs ? `available on the demo partner for ${when} (re-checked ${checkedOn})` : `offered by the demo partner, but it does not run on these dates (runs ${monthList(a.months)})`, verified: !!offered && runs, date: hit ? hit.day.date : null },
     { key: 'operating', value: a.months ? (runs ? `in season ${hit ? `on ${longDate(hit.day.date)}` : `for ${joinAnd(months)}`} (runs ${monthList(a.months)})` : `out of season for ${joinAnd(months)} (runs ${monthList(a.months)})`) : 'operating days not in our data', verified: !!a.months && runs },
-    ...[['age', 'not in our data: needs verification', false], ['restrictions', 'not in our data: needs verification', false], ['meeting', 'on the voucher; not in our data before booking', false], ['duration', `${a.hours}h`, true],
+    // A value says what the data holds; "needs verification" is the row's `verified` flag, which every page and card
+    // prints beside the value (a value that said it as well read "not in our data: needs verification (needs verification)").
+    ...[['age', 'not in our data', false], ['restrictions', 'not in our data', false], ['meeting', 'on the voucher; not in our data before booking', false], ['duration', `${a.hours}h`, true],
       ['cancellation', cancelWords(a), Number.isFinite(a.freeCancelHours)], ['transport', 'not in our data', false]].map(([key, value, verified]) => ({ key, value, verified })),
   ];
   const GAP = { availability: 'availability', operating: 'operating days', age: 'age requirements', restrictions: 'current restrictions', meeting: 'the meeting location', duration: 'the duration', cancellation: 'the cancellation terms', transport: 'transport to it' };
   const gaps = rows.filter(r => !r.verified).map(r => GAP[r.key]);
-  const text = !offered ? `The main experience could not be re-checked on ${checkedOn}: ${a.name} is not offered by the partner for ${leave}.` : !runs ? `${a.name} does not run on these dates (${dayRange(fd)}; it runs in ${monthList(a.months)}): this trip should not be built around it.` : `Never built around an unverified experience: the main experience was re-checked on ${checkedOn}. Still to verify before booking: ${joinAnd(gaps)}.`;
+  const text = !offered ? `The main experience could not be re-checked on ${checkedOn}: ${a.name} is not offered by the partner for ${when}.` : !runs ? `${a.name} does not run on these dates (${dayRange(fd)}; it runs in ${monthList(a.months)}): this trip should not be built around it.` : `Never built around an unverified experience: the main experience was re-checked on ${checkedOn}. Still to verify before booking: ${joinAnd(gaps)}.`;
   return { rows, activity: a, checkedAt: checked, blocked: !offered || !runs, text };
 }
 
@@ -940,7 +1021,7 @@ function protection(inv, trip, main, o = {}) {
 function backup(inv, trip, main, o = {}) {
   const gs = goalsOf(o.goals || []), a = resolveAct(trip, main && main.id ? main.id : main);
   if (!a || !a.weather) return null;
-  const price = pricer(inv, o), s = trip.spec, hit = rhythm(trip, gs, { main: a }).placed.find(p => p.activity === a), runsThatDay = x => (hit ? inSeason(x, hit.day.date) : runsOn(x, trip)); // the fallback for that day runs that day
+  const price = pricer(inv, o), s = trip.spec, hit = rhythm(trip, gs, { main: a, ...evOpt(o) }).placed.find(p => p.activity === a), runsThatDay = x => (hit ? inSeason(x, hit.day.date) : runsOn(x, trip)); // the fallback for that day runs that day
   const pool = (trip.activityOptions || []).filter(x => x.id !== a.id && !s.activities.includes(x.id) && !x.weather && x.kind !== a.kind && (['culture', 'relaxing'].includes(x.kind) || tagsOf(x).includes('food')) && runsThatDay(x)).sort((x, y) => goalScore(y, gs) - goalScore(x, gs) || x.pricePerPerson - y.pricePerPerson);
   if (!pool.length) return { activity: null, trip: null, token: null, total: null, delta: null, over: false, overBy: 0, overChoice: null, text: `Weather can't be guaranteed. No experience of another kind that does not depend on the weather is offered in ${trip.dest.name} as a fallback for ${a.name}.` };
   // The maximum is a ceiling, not a target: the fallback is the first for the goals whose version fits it. When the first
@@ -985,9 +1066,12 @@ function receipt(inv, q, pick, goals, o = {}) {
     if (r.delta < 0) lessOn.push({ key: r.key, label: r.label, amount: -r.delta }); else usedFor.push({ key: r.key, label: r.label, amount: r.delta });
   }
   const keep = max === null ? null : max - t.total;
+  // The baseline is a reference, never an offer: when it moves a part the customer locked it says so (`crosses`),
+  // and no page links it as a version to open.
+  const crosses = baseline === t ? [] : crossedLocks(baseline, t, o);
   const goal = `YOUR GOAL: ${gs.length ? joinAnd(gs.map((k, i) => `${goalLabel(k)} (#${i + 1})`)) : 'the most experience from the budget'}`;
   const text = `WHY THIS TRIP IS BUILT THIS WAY. ${goal}. ${lessOn.length ? `WE SPENT LESS ON: ${lessOn.map(l => `${l.label} ${fmt(l.amount)}`).join(', ')}. ` : ''}${usedFor.length ? `WE USED MONEY FOR: ${usedFor.map(l => `${l.label} ${fmt(l.amount)}`).join(', ')}. ` : ''}FINAL ${fmt(t.total)}${max !== null ? `. YOUR MAX ${fmt(max)}. KEEP ${fmt(keep)}` : ''}. Against ${label} (${fmt(baseline.total)}).`;
-  return { goal, lessOn, usedFor, final: t.total, max, keep, baseline: { ...pack(baseline), label }, text };
+  return { goal, lessOn, usedFor, final: t.total, max, keep, baseline: { ...pack(baseline), label, crosses }, text };
 }
 
 // ---- MAKE IT MORE MEMORABLE / MAKE IT BETTER FOR $0 MORE ----------------------------------------------
@@ -1007,7 +1091,7 @@ function versionsOf(inv, trip, gs, o = {}, cap = null) {
     for (const hotel of hotels) for (const activities of sets) for (const transfer of transfers) {
       const spec = { ...s, nights, hotel, flight, activities: [...activities].sort(), transfer }, key = encodeSpec(spec);
       if (seen.has(key)) continue; seen.add(key); const p = price(spec);
-      if (!p || (cap !== null && p.total > cap) || !keepsPx(p.spec, px) || !fitsSchedule(p, gs)) continue;
+      if (!p || (cap !== null && p.total > cap) || !keepsPx(p.spec, px) || !fitsSchedule(p, gs, evOpt(o))) continue;
       out.push(candidate(p, gs));
     }
   }
@@ -1021,7 +1105,7 @@ function moreMemorable(inv, trip, goals, o = {}, { zeroMore = false } = {}) {
   // nothing by classifyChanges; one with a trade-off (a fare without the carry-on, a lower-rated hotel) goes to `givesUp`, said.
   const px = protectOf(o);
   const entry = (kind, p, text, gain = null) => {
-    if (!p || p.total > trip.total || !keepsPx(p.spec, px) || crossesLock(p, trip, o) || !fitsSchedule(p, gs)) return;
+    if (!p || p.total > trip.total || !keepsPx(p.spec, px) || crossesLock(p, trip, o) || !fitsSchedule(p, gs, evOpt(o))) return;
     const g = gain === null ? r1(experienceScore(p, gs) - base) : gain, lost = givesUpOf(p, trip);
     if (g < 0) return;
     (lost.length ? givesUp : free).push({ kind, ...pack(p), delta: p.total - trip.total, gain: g, givesUp: lost, text: lost.length ? `${text}; ${tradeOff(lost)}` : text });
@@ -1067,7 +1151,7 @@ function trade(inv, trip, wanted, o = {}) {
   const remove = [];
   const step = (p, label) => { if (!p || p.total >= cur.total) return; remove.push({ label, amount: cur.total - p.total }); cur = p; };
   const over = () => cur.total > trip.total;
-  const crowded = () => !fitsSchedule(cur, gs); // a day of its own, in season, one day kept open
+  const crowded = () => !fitsSchedule(cur, gs, evOpt(o)); // a day of its own, in season, one day kept open
   // Of the cheaper versions one reduction can buy, the smallest that pays for it, else the largest:
   // a trade gives up no more than it has to.
   const least = ps => { const xs = ps.filter(Boolean).filter(p => p.total < cur.total).sort((a, b) => b.total - a.total); return xs.find(p => p.total <= trip.total) || xs[xs.length - 1] || null; };
@@ -1082,13 +1166,13 @@ function trade(inv, trip, wanted, o = {}) {
     remove.push({ label: cand.name, amount: cur.total - p.total }); cur = p;
   }
   if (!over() && !crowded()) return { remove, add, ...pack(cur), unchanged: true, text: `MAKE THE TRADE: ${want.name} in, ${remove.length ? `${joinAnd(remove.map(r => `${r.label} out (${fmt(r.amount)})`))}` : 'nothing out'}: ${fmt(cur.total)}, ${cur.total === trip.total ? 'the same total' : `${fmt(trip.total - cur.total)} under your current total`}.` };
-  if (!over()) return { remove, add, trip: null, token: null, total: cur.total, closest: pack(cur), unchanged: false, text: `No trade makes room for ${want.name}: ${scheduleWhy(cur, gs, want) || 'the rhythm cannot hold it'}, and what is left is what I keep (the main experience${protect ? ' and the protected one' : ''}).` };
+  if (!over()) return { remove, add, trip: null, token: null, total: cur.total, closest: pack(cur), unchanged: false, text: `No trade makes room for ${want.name}: ${scheduleWhy(cur, gs, want, eventOf(o)) || 'the rhythm cannot hold it'}, and what is left is what I keep (the main experience${protect ? ' and the protected one' : ''}).` };
   return { remove, add, trip: null, token: null, total: cur.total, closest: pack(cur), unchanged: false, text: `No trade keeps the total: the closest is ${signed(cur.total - trip.total)} over${remove.length ? ` (${joinAnd(remove.map(r => r.label))} out)` : ''}.` };
 }
 
 // ---- FINAL EXPERIENCE CHECK --------------------------------------------------------------------------------
 function finalCheck(trip, goals, o = {}) {
-  const gs = goalsOf(goals), rh = rhythm(trip, gs), main = mainOf(trip, gs), reasons = [];
+  const gs = goalsOf(goals), rh = rhythm(trip, gs, evOpt(o)), main = mainOf(trip, gs), reasons = [];
   const ok = (v, text) => reasons.push({ ok: v, text }), g1 = gs[0] || null;
   const hasMain = !!(main && (g1 ? matches(g1, main, gs) : true));
   const beachDay = g1 === 'beach' && beachAccess(trip.hotel) && rh.days.some(d => d.label === 'Open beach day');
@@ -1099,19 +1183,88 @@ function finalCheck(trip, goals, o = {}) {
   // every full day is said as not running; everything else the rhythm cannot hold is the conflict.
   const px = protectOf(o), col = collisions(trip, { goals: gs, event: o.event || null, protect: px }), sched = col.filter(c => c.kind !== 'season'), off = col.filter(c => c.kind === 'season').map(c => c.activity);
   ok(!sched.length, sched.length ? sched[0].text : 'No schedule conflict');
+  // The event the customer built the trip around is read off the same rhythm: its day holds no experience unless the
+  // two cannot overlap (a known time at the other end of the day), and that is said; one pushed off its day is the
+  // conflict above, never a pass.
+  if (rh.eventDay) {
+    const shared = rh.placed.filter(p => p.day === rh.eventDay).map(p => p.activity), E = cap1(eventName(rh.event)), on = longDate(rh.event.date);
+    ok(true, shared.length ? `${E} on ${on} shares its day only with ${joinAnd(shared.map(a => `${a.name} (${a.slot})`))}, which cannot overlap its ${rh.event.slot} time` : `${E} on ${on} has its day to itself: no experience is on it`);
+  }
   if (off.length) ok(false, `${joinAnd(off.map(a => a.name))} ${off.length === 1 ? 'does' : 'do'} not run on these dates (${joinAnd(off.map(a => monthList(a.months)))})`);
   if (px && !trip.spec.activities.includes(px)) ok(false, `Without ${(resolveAct(trip, px) || { name: px }).name}, the protected experience`);
   if (g1 === 'beach') ok(beachAccess(trip.hotel), beachAccess(trip.hotel) ? `Hotel location fits: ${hotelPhrase(trip.hotel, 'beach')}` : `Hotel not on or near the beach (${trip.hotel.area})`);
   else if (g1 === 'family') ok(!!trip.hotel.features.familyFriendly, trip.hotel.features.familyFriendly ? 'Family-friendly hotel' : 'The hotel is not listed as family-friendly');
   else reasons.push({ ok: true, text: 'Hotel location against your experiences: distances are not in our data (needs verification)' });
-  const pass = reasons.every(r => r.ok); let rebuild = null;
-  if (!pass && o.inv) {
-    const cands = versionsOf(o.inv, trip, gs, o, capOf(null, o)).filter(c => finalCheck(c.trip, gs, { ...o, inv: null }).ok).sort((a, b) => a.total - b.total);
-    if (cands[0]) rebuild = { ...cands[0], delta: cands[0].total - trip.total, text: `A rebuild that passes: ${fmt(cands[0].total)} (${signed(cands[0].total - trip.total)}), ${joinAnd(sayDiffs(cands[0].trip, trip)) || 'the same frame with the experiences changed'}; a proposal, nothing applied.` };
-  }
+  const pass = reasons.every(r => r.ok), rb = !pass && o.inv ? rebuildFor(o.inv, trip, gs, o) : { rebuild: null, none: null };
+  const rebuild = rb.rebuild;
   // Each reason is a sentence of its own on a page (a conflict's ends with its stop); joined here, each is a clause, so the
-  // text never reads ".." or ".;".
-  return { ok: pass, reasons, rebuild, text: pass ? 'FINAL EXPERIENCE CHECK: this trip serves what you told me.' : `FINAL EXPERIENCE CHECK: ${reasons.filter(r => !r.ok).map(r => clause(r.text)).join('; ')}.${rebuild ? ` ${rebuild.text}` : ''}` };
+  // text never reads ".." or ".;". When no rebuild keeps what the trip is for, `noRebuild` says so plainly (and what the
+  // versions that do pass give up), apart from the text, so no page or agent offers one of those as "the rebuild".
+  return { ok: pass, reasons, rebuild, noRebuild: rb.none, text: pass ? 'FINAL EXPERIENCE CHECK: this trip serves what you told me.' : `FINAL EXPERIENCE CHECK: ${reasons.filter(r => !r.ok).map(r => clause(r.text)).join('; ')}.${rebuild ? ` ${rebuild.text}` : ''}` };
+}
+// The rebuild is a version a customer with these goals would take, never just the cheapest one that passes (the cheapest
+// passes by dropping every experience and leaning on "an open beach day"): it keeps the protected experience and the main
+// one (unless the main does not run on these dates, when another goal experience may take its place), never drops every
+// experience the trip has, and is the smallest change that passes: fewest changes first (an experience out or in, the
+// length, the hotel, the flights, the dates for an event the dates miss), then the least goal value given up (goal fit ×
+// size of each experience it drops), then the fewest trade-offs, then the lower total. Locks, a stated length, fixed dates,
+// the rules and the ceiling hold; what it drops and what it gives up are said with it. When only versions that drop what
+// the trip is for pass, that is said plainly and none is offered as the rebuild.
+const subsetsOf = xs => xs.reduce((acc, x) => acc.concat(acc.map(y => [...y, x])), [[]]);
+function rebuildFor(inv, trip, gs, o) {
+  const price = pricer(inv, o), s = trip.spec, L = locksOf(o), px = protectOf(o), cap = capOf(null, o), fixed = L.dates || (o.ctx && o.ctx.dateMode === 'exact');
+  const main = mainOf(trip, gs), keepMain = main && goalScore(main, gs) > 0 && runsOn(main, trip) ? main.id : null;
+  const must = uniq([px, keepMain].filter(Boolean)), own = s.activities, name = id => (resolveAct(trip, id) || { name: id }).name;
+  const worth = id => { const a = resolveAct(trip, id); return a ? goalScore(a, gs) * (a.hours >= BIG ? 2 : 1) : 0; };
+  const adds = (trip.activityOptions || []).filter(a => !own.includes(a.id) && goalScore(a, gs) > 0 && runsOn(a, trip)).map(a => a.id);
+  const sets = [];
+  for (const x of subsetsOf(own)) {
+    const removed = own.filter(id => !x.includes(id));
+    sets.push({ acts: x, removed, added: [] });
+    if (removed.length <= 1) for (const id of adds) sets.push({ acts: [...x, id], removed, added: [id] });
+  }
+  const nightsList = L.nights || L.dates || o.nightsOpen === false ? [s.nights] : uniq([s.nights, Math.min(14, s.nights + 1)]);
+  const hotels = L.hotel ? [s.hotel] : uniq([s.hotel, ...hotelsOk(trip, o).map(h => h.id)]), flights = L.flight ? [s.flight] : uniq([s.flight, ...flightsOk(trip, o).map(f => f.id)]);
+  // The dates move only for an event the trip's dates miss, only when they are not fixed, and only to the days
+  // eventRange gives (a day's buffer either side), after today.
+  const soon = addDays(today(nowOf(o)), 1), clash = !fixed && eventCollision(trip, o.event || null);
+  const departsFor = n => { if (!clash) return [s.depart]; const r = eventRange(o.event, n, trip.flight), out = [s.depart]; for (let d = r.from; r.from && d <= r.to; d = addDays(d, 1)) if (d >= soon) out.push(d); return uniq(out); };
+  const frames = [];
+  for (const nights of nightsList) for (const depart of departsFor(nights)) for (const hotel of hotels) for (const flight of flights) {
+    const n = (nights !== s.nights) + (depart !== s.depart) + (hotel !== s.hotel) + (flight !== s.flight);
+    if (n <= 2) frames.push({ nights, depart, hotel, flight, n });
+  }
+  // A version that drops the protected experience is read only to say what the passing versions give up, never offered.
+  const passes = (p, held = true) => p && (cap === null || p.total <= cap) && (!held || keepsPx(p.spec, px)) && !crossesLock(p, trip, o) && finalCheck(p, gs, { ...o, protect: held ? px : null, inv: null }).ok;
+  // Groups of equal (changes, value given up), smallest first; the first group with a version that passes decides.
+  const search = (ok, held = true) => {
+    const combos = [];
+    for (const f of frames) for (const x of sets) if (ok(x)) combos.push({ f, x, changes: f.n + x.removed.length + x.added.length, lost: x.removed.reduce((m, id) => m + worth(id), 0) });
+    combos.sort((a, b) => a.changes - b.changes || a.lost - b.lost);
+    for (let i = 0; i < combos.length;) {
+      let j = i; while (j < combos.length && combos[j].changes === combos[i].changes && combos[j].lost === combos[i].lost) j++;
+      const found = combos.slice(i, j).map(c => ({ c, p: c.changes ? price({ ...s, nights: c.f.nights, depart: c.f.depart, hotel: c.f.hotel, flight: c.f.flight, activities: [...c.x.acts].sort() }) : null })).filter(v => passes(v.p, held))
+        .map(v => ({ ...v, tradeoffs: classifyChanges(trip, v.p).tradeoffs.length })).sort((a, b) => a.tradeoffs - b.tradeoffs || a.p.total - b.p.total)[0];
+      if (found) return found;
+      i = j;
+    }
+    return null;
+  };
+  const keeps = x => must.every(id => x.acts.includes(id)) && (x.acts.length > 0 || own.length === 0);
+  const best = search(keeps);
+  const where = `inside your rules${cap === null ? '' : ` and your ${fmt(cap)} maximum`}`;
+  if (!best) {
+    const held = must.length ? joinAnd(must.map(name)) : own.length ? 'an experience' : null, other = held ? search(x => !keeps(x), false) : null;
+    const drops = other ? (own.filter(id => !other.c.x.acts.includes(id)).length === own.length ? 'every experience in it' : joinAnd(own.filter(id => !other.c.x.acts.includes(id)).map(name))) : null;
+    return { rebuild: null, none: other ? `No rebuild I priced ${where} passes this check and keeps ${held}: the versions that pass drop ${drops}, so I don't offer one as the fix.` : `No rebuild I priced ${where} passes this check.` };
+  }
+  // The experiences it drops are named; the trade-off words then leave out their count ("2 experiences instead of 3").
+  // With nothing dropped and no trade-off, it says so in plain words ("it keeps A and B and gives up nothing else"): the
+  // changes named before it are what moves, and nothing beyond them is lost.
+  const p = best.p, x = best.c.x, delta = p.total - trip.total, lost = givesUpOf(p, trip).filter(w => !/^(\d+ experiences? instead of \d+|no experiences included)$/.test(w)), kept = own.filter(id => x.acts.includes(id)).map(name);
+  const changes = [...x.added.map(id => `with ${name(id)} added`), ...sayDiffs(p, trip).filter(d => !/\bexperiences? included instead of\b/.test(d))];
+  const text = `A rebuild that passes: ${fmt(p.total)} (${signed(delta)})${changes.length ? `, ${joinAnd(changes)}` : ''}${kept.length ? `; it keeps ${joinAnd(kept)}` : ''}${x.removed.length ? `${kept.length ? ' and' : '; it'} gives up ${joinAnd(x.removed.map(name))}` : ''}${lost.length ? `; ${tradeOff(lost)}` : ''}${!x.removed.length && !lost.length ? (kept.length ? ' and gives up nothing else' : changes.length ? '; it gives up nothing else' : '; it gives up nothing') : ''}; a proposal, nothing applied.`;
+  return { rebuild: { ...pack(p), delta, removed: x.removed.map(id => resolveAct(trip, id)), added: x.added.map(id => resolveAct(trip, id)), givesUp: lost, text }, none: null };
 }
 
 // ---- WHAT WAS ACTUALLY WORTH IT? -----------------------------------------------------------------------------
@@ -1137,7 +1290,7 @@ const FINAL_LINE = 'DON\'T JUST UPGRADE THE TRIP. UPGRADE THE MEMORY.';
 module.exports = {
   GOALS, goalLabel, goalsOf, goalScore, goalOf, destGoalMatch, experienceScore, hotelFit, beachAccess, mainOf, fitWords,
   experienceSearch, experienceWays, allocation, hotelOrExperience, memoryTest, oneBigThing, packTrip, bigVsMany, freeThings, freeOverPaid,
-  rhythm, bestDay, locationCheck, destinationMatch, alternative, sameFeeling, dupe, challengeUpgrade, valueCheck, collisions, fatigue,
+  rhythm, eventDayWords, bestDay, locationCheck, destinationMatch, alternative, sameFeeling, dupe, challengeUpgrade, valueCheck, collisions, fatigue,
   surpriseOne, surpriseCompletely, ladder, sweetSpot, downsell, eventRange, eventCollision, eventBuffer, landing, protection, backup, receipt, moreMemorable, trade, finalCheck,
-  versionsOf, fitsSchedule, sayDiffs, WORTH_IT_CHIPS, learn, PERSONALITY, BRAND_LINES, SIGNATURE_LINE, FINAL_LINE, NEW_NOTE, NO_DUPE, THRESHOLD, BIG,
+  versionsOf, fitsSchedule, sayDiffs, crossedLocks, WORTH_IT_CHIPS, learn, PERSONALITY, BRAND_LINES, SIGNATURE_LINE, FINAL_LINE, NEW_NOTE, NO_DUPE, THRESHOLD, BIG,
 };

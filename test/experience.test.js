@@ -332,6 +332,29 @@ test('ladder: GOOD TRIP then rungs with strictly rising totals and a positive ga
   }
 });
 
+// Two sweet spots for one goal (the screenshot: the agent said "I'd stop at" the 6-night pick while the memories page, built
+// from the link, read 6 and 7 nights and stopped a night higher). The ladder read for a trip is a function of the trip and the
+// stated rules only: the agent's query (an assumed length, anywhere, any date) and the page's (the link's context) agree.
+test('the ladder read for a trip: the same trip, goals and rules give the same rungs and "I\'d stop at" from any query; the length opens the same way and never above the trip', () => {
+  const P = pick, s = P.spec, oc = { ...o, cap: Q.budget, nightsOpen: true };
+  const agentQ = { ...Q }, pageQ = { ...Q, origin: inv.maps.airport(s.from).originId, dest: s.dest, dateMode: 'exact', depart: s.depart, nights: s.nights };
+  const La = X.ladder(inv, agentQ, GOALS, { ...oc, trip: P }), Lp = X.ladder(inv, pageQ, GOALS, { ...oc, trip: P });
+  assert.ok(Lp.rungs.length, 'a ladder for the trip');
+  assert.deepEqual(La.rungs.map(r => r.token), Lp.rungs.map(r => r.token)); assert.equal(La.text, Lp.text);
+  assert.equal(X.sweetSpot(La, P).text, X.sweetSpot(Lp, P).text);
+  assert.deepEqual(Lp.nights, [...new Set([Math.max(2, s.nights - 1), s.nights])], 'the trip\'s nights and one fewer');
+  for (const r of Lp.rungs) { assert.equal(r.trip.dest.id, s.dest); assert.equal(r.trip.spec.depart, s.depart); assert.ok(Lp.nights.includes(r.trip.spec.nights)); assert.ok(r.total <= Q.budget); }
+  // Taking the sweet spot never moves it a night higher: the ceiling is not a target.
+  const S = Lp.stop.trip, Ls = X.ladder(inv, { ...pageQ, nights: S.spec.nights, depart: S.spec.depart }, GOALS, { ...oc, trip: S });
+  assert.ok(Ls.stop.trip.spec.nights <= S.spec.nights); if (S.spec.nights === s.nights) assert.equal(Ls.stop.token, Lp.stop.token, 'the sweet spot read again is the same');
+  // A stated length holds on both sides; a lock on the length holds the trip's own.
+  const stated = s.nights - 1, Lh = X.ladder(inv, { ...agentQ, nights: stated }, GOALS, { ...oc, nightsOpen: false, trip: P }), Lh2 = X.ladder(inv, { ...pageQ, nights: stated }, GOALS, { ...oc, nightsOpen: false, trip: P });
+  assert.deepEqual(Lh.nights, [stated]); assert.ok(Lh.rungs.every(r => r.trip.spec.nights === stated)); assert.deepEqual(Lh.rungs.map(r => r.token), Lh2.rungs.map(r => r.token));
+  assert.deepEqual(X.ladder(inv, agentQ, GOALS, { ...oc, locks: { nights: true }, trip: P }).nights, [s.nights]);
+  // Without a trip the ladder is the search's own (the results' OUR PICK), unchanged.
+  assert.equal(X.experienceWays(inv, Q, GOALS, { ...o, trip: P }).pick.token, ways.pick.token);
+});
+
 test('receipt: the lines sum exactly to pick minus baseline; FINAL, YOUR MAX and KEEP are the priced totals', () => {
   for (const [w, q] of [[ways, Q], [X.experienceWays(inv, { ...Q, budget: 350000, vacationBudget: 350000 }, ['culture', 'food'], { ...o, cap: 350000 }), { ...Q, budget: 350000 }]]) {
     const r = audit(X.receipt(inv, q, w.pick, w.goals, { ...o, cap: q.budget }));
@@ -371,9 +394,76 @@ test('finalCheck: the rebuild passes the check; the reasons are the trip\'s fact
   const bare = price({ ...pick.spec, activities: [] }), fail = audit(X.finalCheck(bare, ['nature'], { ...o, inv }));
   assert.equal(fail.ok, false); assert.match(fail.reasons[0].text, /No experience in this trip serves nature, the goal you ranked #1/);
   assert.ok(fail.rebuild && X.finalCheck(fail.rebuild.trip, ['nature']).ok, 'the rebuild passes'); assert.equal(fail.rebuild.delta, fail.rebuild.total - bare.total); assert.match(fail.rebuild.text, /a proposal, nothing applied\.$/);
-  assert.ok(X.versionsOf(inv, bare, ['nature'], o, null).filter(c => X.finalCheck(c.trip, ['nature']).ok).every(c => c.total >= fail.rebuild.total), 'the cheapest priced version that passes');
+  // The smallest change, not the cheapest version: when one nature experience on the same flights, hotel and dates passes,
+  // the rebuild is that (the fewest trade-offs, then the lowest total), never a cheaper hotel or fare swapped in as well.
+  const adds = bare.activityOptions.filter(a => X.goalScore(a, ['nature']) > 0).map(a => price({ ...bare.spec, activities: [a.id] })).filter(p => p && p.total <= o.cap && X.finalCheck(p, ['nature']).ok);
+  if (adds.length) {
+    for (const k of ['nights', 'depart', 'hotel', 'flight']) assert.equal(fail.rebuild.trip.spec[k], bare.spec[k], `the rebuild keeps the ${k}`);
+    const least = Math.min(...adds.map(p => classifyChanges(bare, p).tradeoffs.length));
+    assert.equal(fail.rebuild.total, Math.min(...adds.filter(p => classifyChanges(bare, p).tradeoffs.length === least).map(p => p.total)));
+  }
   const beachDay = X.finalCheck(bare, ['beach']); if (bare.hotel.features.beachfront) assert.ok(beachDay.reasons[0].ok && /open beach day/i.test(beachDay.reasons[0].text));
   assert.equal(X.finalCheck(price({ ...pick.spec, nights: 2 }), GOALS).ok, false, 'fewer than two full days fails');
+});
+
+// The rebuild a customer with these goals would take (the screenshot: a three-night Cancun trip with three experiences for
+// two full days was offered "the rebuild that passes" as a cheaper hotel, other flights and no experience at all, passing only
+// through "an open beach day"). Read off the inventory: the busy trip is the search's own, crowded with its top goal experiences.
+test('finalCheck\'s rebuild keeps the main and the protected experience, never drops every experience, is the smallest change and says what it gives up', () => {
+  const oc = { ...o, cap: 400000 }, s3 = X.experienceSearch(inv, { ...Q, nights: 3, dest: 'cancun', budget: 400000 }, GOALS, { ...oc, nightsOpen: false });
+  const host = s3.candidates.find(c => X.rhythm(c.trip, GOALS).fullDays === 2).trip;
+  const top = host.activityOptions.filter(a => X.goalScore(a, GOALS) > 0 && !a.months).sort((a, b) => X.goalScore(b, GOALS) - X.goalScore(a, GOALS) || b.hours - a.hours).slice(0, 3);
+  const busy = price({ ...host.spec, activities: top.map(a => a.id).sort() }), m = X.mainOf(busy, GOALS), nameOf = id => busy.activities.find(a => a.id === id).name;
+  const fc = audit(X.finalCheck(busy, GOALS, { ...oc, inv }));
+  assert.equal(fc.ok, false, 'three experiences for two full days do not pass');
+  const rb = fc.rebuild; assert.ok(rb, 'a rebuild that keeps what the trip is for passes');
+  assert.ok(rb.trip.activities.length > 0, 'never passes by dropping every experience'); assert.ok(rb.trip.spec.activities.includes(m.id), 'the main experience stays');
+  assert.ok(X.finalCheck(rb.trip, GOALS, oc).ok && rb.total <= oc.cap);
+  // The smallest change: every same-frame version that keeps the main experience and passes changes at least as much, and of
+  // those with as few changes none gives up less goal value (goal fit × size of what it drops).
+  const frame = t => ['nights', 'depart', 'hotel', 'flight'].filter(k => t.spec[k] !== busy.spec[k]).length;
+  const out = t => busy.spec.activities.filter(id => !t.spec.activities.includes(id)), changes = t => frame(t) + out(t).length + t.spec.activities.filter(id => !busy.spec.activities.includes(id)).length;
+  const worth = t => out(t).reduce((n, id) => { const a = busy.activities.find(x => x.id === id); return n + X.goalScore(a, GOALS) * (a.hours >= X.BIG ? 2 : 1); }, 0);
+  const same = busy.spec.activities.reduce((acc, id) => acc.concat(acc.map(x => [...x, id])), [[]]).filter(x => x.length && x.includes(m.id) && x.length < busy.spec.activities.length)
+    .map(x => price({ ...busy.spec, activities: [...x].sort() })).filter(p => p && p.total <= oc.cap && X.finalCheck(p, GOALS, oc).ok);
+  assert.ok(same.length, 'opening a day on the same frame passes');
+  const fewest = Math.min(...same.map(changes)); assert.ok(changes(rb.trip) <= fewest, 'the smallest change');
+  if (changes(rb.trip) === fewest && frame(rb.trip) === 0) assert.ok(worth(rb.trip) <= Math.min(...same.filter(p => changes(p) === fewest).map(worth)), 'the least goal value given up');
+  // What it keeps and what it gives up are said, by name.
+  for (const id of out(rb.trip)) assert.match(rb.text, new RegExp(`gives up [^;]*${esc(nameOf(id))}`));
+  for (const id of busy.spec.activities.filter(x => rb.trip.spec.activities.includes(x))) assert.match(rb.text, new RegExp(`keeps [^;]*${esc(nameOf(id))}`));
+  assert.match(rb.text, /^A rebuild that passes: .*; a proposal, nothing applied\.$/); assert.equal(fc.noRebuild, null);
+  // The experience it dropped, protected: it stays as well, or no rebuild is offered and that is said plainly.
+  const dropped = out(rb.trip)[0];
+  if (dropped) {
+    const fp = audit(X.finalCheck(busy, GOALS, { ...oc, protect: dropped, inv }));
+    if (fp.rebuild) assert.ok(fp.rebuild.trip.spec.activities.includes(dropped) && fp.rebuild.trip.spec.activities.includes(m.id) && fp.rebuild.trip.activities.length > 0);
+    else assert.match(fp.noRebuild, /^No rebuild I priced inside your rules and your \$4,000 maximum passes this check/);
+  }
+});
+
+test('finalCheck: when only versions that drop the protected experience pass, no rebuild is offered and that is said plainly', () => {
+  // A protected whale-watching cruise in July does not run: every version that keeps it fails; the ones that pass drop it.
+  const gs = ['adventure'], t = build('los-cabos', ahead(7, 10), 5, ['sjd-a2', 'sjd-a3']), oc = { ...o, cap: 10000000, inv };
+  const fc = audit(X.finalCheck(t, gs, { ...oc, protect: 'sjd-a2' }));
+  assert.equal(fc.ok, false); assert.equal(fc.rebuild, null, 'never a rebuild without the protected experience');
+  assert.match(fc.noRebuild, /^No rebuild I priced inside your rules and your \$100,000 maximum passes this check and keeps Whale-watching cruise \(Dec–Apr\)[^:]*: the versions that pass drop Whale-watching cruise \(Dec–Apr\), so I don't offer one as the fix\.$/);
+  assert.ok(!/A rebuild that passes/.test(fc.text));
+  // Unprotected and no longer the main one, it may go: the rebuild keeps the ATV ride and says what it gives up.
+  const free = audit(X.finalCheck(t, gs, oc));
+  if (free.rebuild) { assert.ok(free.rebuild.trip.spec.activities.includes('sjd-a3') && X.finalCheck(free.rebuild.trip, gs).ok); assert.match(free.rebuild.text, /gives up Whale-watching cruise/); }
+});
+
+test('finalCheck: an event the dates miss gets the rebuild that covers it with the experiences kept; with the dates fixed none, said plainly', () => {
+  const t = res.candidates.find(c => c.trip.activities.length >= 1 && X.finalCheck(c.trip, GOALS).ok).trip, event = { name: 'your concert', date: addDays(t.spec.depart, t.spec.nights + 14) };
+  const oc = { ...o, cap: 400000, inv, event }, fc = audit(X.finalCheck(t, GOALS, oc));
+  assert.equal(fc.ok, false); assert.ok(fc.reasons.some(r => !r.ok && /falls after you fly home/.test(r.text)));
+  assert.ok(fc.rebuild, 'the version that covers it, inside the ceiling, is the rebuild');
+  assert.equal(X.eventCollision(fc.rebuild.trip, event), null); assert.ok(X.finalCheck(fc.rebuild.trip, GOALS, { ...o, cap: 400000, event }).ok);
+  assert.deepEqual(fc.rebuild.trip.spec.activities, t.spec.activities, 'the experiences stay'); assert.ok(fc.rebuild.total <= oc.cap);
+  assert.ok(!/\d{4}-\d{2}-\d{2}/.test(fc.rebuild.text), 'dates in words'); assert.match(fc.rebuild.text, new RegExp(esc(longDate(fc.rebuild.trip.spec.depart))));
+  const fixed = audit(X.finalCheck(t, GOALS, { ...oc, locks: { dates: true } }));
+  assert.equal(fixed.rebuild, null); assert.match(fixed.noRebuild, /^No rebuild I priced inside your rules and your \$4,000 maximum passes this check\.$/);
 });
 
 test('protection marks exactly what the data can verify; the backup only for a weather-dependent main and never weather-dependent itself', () => {
@@ -383,6 +473,8 @@ test('protection marks exactly what the data can verify; the backup only for a w
     assert.deepEqual(Object.keys(by), ['availability', 'operating', 'age', 'restrictions', 'meeting', 'duration', 'cancellation', 'transport']);
     assert.deepEqual(by, { availability: true, operating: !!m.months, age: false, restrictions: false, meeting: false, duration: true, cancellation: true, transport: false });
     assert.ok(p.rows.filter(r => !r.verified).every(r => /not in our data/.test(r.value))); assert.ok(p.text.includes(`re-checked on ${longDate(today(now))}`), p.text);
+    // The status ("Needs verification") comes from `verified`; a value that said it too read "not in our data: needs verification (needs verification)".
+    for (const r of p.rows) assert.ok(!/needs verification|\(.*verif/i.test(r.value), `${r.key}: ${r.value}`);
     const b = X.backup(inv, c.trip, m, { ...o, goals: GOALS });
     assert.equal(b === null, !m.weather);
     if (b && b.activity) { assert.ok(!b.activity.weather && b.activity.kind !== m.kind && !c.trip.spec.activities.includes(b.activity.id)); checkPacked(b); assert.equal(b.over, b.total > o.cap); assert.equal(b.text, `Weather can't be guaranteed. If ${m.name} is called off, ${b.activity.name} is the fallback I'd book that day${b.overChoice ? ` within your ${fmt(o.cap)} maximum` : ''}; it is not added unless you say so.${b.overChoice ? ` ${b.overChoice.activity.name} would be my first fallback for your goals, but with it the trip is ${fmt(b.overChoice.total - o.cap)} over your maximum; going over is your call.` : b.over ? ` With it the trip is ${fmt(b.total - o.cap)} over your ${fmt(o.cap)} maximum; going over is your call.` : ''}`); }
@@ -886,7 +978,9 @@ test('engine sentences write dates as the pages do and never stop twice: every t
   const ev = { name: 'Concert', date: addDays(pick.spec.depart, pick.spec.nights + 3) }, hit = X.eventCollision(pick, ev);
   assert.equal(hit.text, `SCHEDULE CONFLICT: Concert on ${longDate(ev.date)} falls after you fly home; the dates ${longDate(pick.spec.depart)} – ${longDate(hit.landing.home)} don't cover it with a day's buffer.`);
   assert.equal(hit.landing.home, addDays(pick.spec.depart, pick.spec.nights));
-  const pr = X.protection(inv, pick, main, o); assert.equal(pr.checkedAt, today(now)); assert.ok(pr.text.includes(`re-checked on ${longDate(today(now))}`) && pr.rows[0].value.includes(longDate(pick.spec.depart)));
+  // Availability is said for the day the rhythm gives the main experience, never the arrival day the trip leaves on.
+  const pr = X.protection(inv, pick, main, o), prDay = X.rhythm(pick, [], { main }).placed.find(p => p.activity.id === main.id).day; assert.equal(pr.checkedAt, today(now));
+  assert.ok(pr.text.includes(`re-checked on ${longDate(today(now))}`) && pr.rows[0].value.includes(longDate(prDay.date)) && !pr.rows[0].value.includes(longDate(pick.spec.depart)), pr.rows[0].value);
   const rg = X.eventRange({ name: 'Concert', date: addDays(pick.spec.depart, 3) }, pick.spec.nights); assert.ok(/^\d{4}-\d{2}-\d{2}$/.test(rg.from) && rg.text.startsWith(`Leave between ${longDate(rg.from)} and ${longDate(rg.to)} `));
   const fc = X.finalCheck(crowded, GOALS, { ...o, inv }); if (!fc.ok) assert.ok(fc.text.startsWith(`FINAL EXPERIENCE CHECK: ${fc.reasons.filter(r => !r.ok).map(r => r.text.replace(/[\s.;:,]+$/, '')).join('; ')}.`), fc.text);
 });
@@ -897,4 +991,118 @@ test('an event after the trip falls "after you fly home", never the ambiguous "a
   assert.match(where(addDays(home, 2)), /falls after you fly home;/); assert.doesNotMatch(where(addDays(home, 2)), /after you leave/);
   assert.match(where(home), /falls on your departure day;/); assert.match(where(L.date), /falls on your arrival day/);
   assert.match(where(addDays(L.date, -3)), /falls before you arrive;/); assert.equal(where(addDays(L.date, 1)), null, 'inside the trip: no conflict');
+});
+
+// A locked event (BUILD AROUND AN EVENT) takes its day. The second screenshot pass caught the 7h main experience put on the
+// concert day itself ("Isla Mujeres catamaran day on day 2", the concert day) with no conflict and "✓ No schedule conflict"
+// in the final check. Read off the inventory's own trips, every full day as the event's day and every time the agent can
+// parse (unknown, evening, morning): the EVENT DAY is never open and holds no experience unless the event's time is known
+// and the two cannot overlap (a short one at the other end of the day); an experience the event pushes off its only day is
+// a SCHEDULE CONFLICT naming the event, and the final check never passes such a trip.
+test('A: the event day is taken: never an open day, no experience on it unless the time is known and they cannot overlap; one pushed off it is a conflict and the final check fails', () => {
+  const gs = GOALS, goalsIn = t => t.activityOptions.filter(a => X.goalScore(a, gs) > 0 && a.hours >= X.BIG).sort((a, b) => b.hours - a.hours);
+  const tight = (() => { const big = goalsIn(pick).slice(0, 2).map(a => a.id); return big.length === 2 ? price({ ...pick.spec, nights: 3, activities: big.sort() }) : null; })();
+  const trips = [pick, tight, build('honolulu', ahead(11, 9), 3, ['hnl-a1']), build('paris', ahead(10, 20), 3, ['cdg-a2']), build('bali', ahead(11, 9), 4, ['dps-a1'])].filter(Boolean);
+  assert.ok(trips.length >= 4 && tight && tight.activities.length === 2, 'the fixture trips price');
+  let shared = 0, pushed = 0, checked = 0;
+  for (const t of trips) for (const day of X.rhythm(t, gs).days.filter(d => d.full)) for (const slot of [null, 'evening', 'morning']) {
+    const event = { name: 'your concert', date: day.date, slot }, rh = X.rhythm(t, gs, { event }), ed = rh.days.find(d => d.date === day.date);
+    assert.equal(ed.label, 'Event day'); assert.equal(ed.open, false, 'an event day is never an open day');
+    assert.ok(ed.items.includes(`Your concert${slot ? ` (${slot})` : ''}`), 'the event is named on its day');
+    for (const p of rh.placed.filter(x => x.day === ed)) {
+      shared++;
+      assert.ok(slot && p.activity.hours < X.BIG && ((slot === 'evening' && p.activity.slot === 'morning') || (slot === 'morning' && ['evening', 'night'].includes(p.activity.slot))), `${p.activity.name} (${p.activity.hours}h, ${p.activity.slot}) shares the ${slot || 'unknown-time'} event's day only when they cannot overlap`);
+    }
+    assert.equal(rh.placed.length + rh.unplaced.length, t.activities.length);
+    const col = X.collisions(t, { goals: gs, event, inv, settings }), fc = X.finalCheck(t, gs, { ...o, event });
+    for (const a of rh.unplaced) {
+      pushed++;
+      assert.ok(col.some(c => c.activity === a || (c.activities || []).includes(a)), `${a.name} without a day is a conflict`);
+      assert.equal(fc.ok, false, `the final check never passes ${encodeSpec(t.spec)} with ${a.name} pushed off ${longDate(day.date)}`);
+    }
+    if (!rh.unplaced.length && X.rhythm(t, gs).placed.length === t.activities.length) {
+      checked++;
+      assert.ok(fc.reasons.some(r => r.ok && r.text.startsWith(`Your concert on ${longDate(day.date)}`)), 'the final check says the event has its day');
+      if (fc.ok) assert.ok(!rh.placed.some(p => p.day === ed && !(slot && p.activity.hours < X.BIG)), 'a pass never double-books the event day');
+    }
+  }
+  assert.ok(shared > 0 && pushed > 0 && checked > 0, `every branch is read (shared ${shared}, pushed ${pushed}, checked ${checked})`);
+  // The screenshot's case: the main experience's own day becomes the event's, and the main experience moves to another full day.
+  const blind = X.rhythm(pick, gs), mDay = blind.placed.find(p => p.activity === blind.main).day, ev = { name: 'your concert', date: mDay.date, slot: null };
+  const moved = X.rhythm(pick, gs, { event: ev }), at = moved.placed.find(p => p.activity.id === blind.main.id);
+  if (at) assert.ok(at.day.date !== ev.date && at.day.full, 'the main experience moves off the concert day');
+  // Two big experiences, two full days, the concert on one: the one it pushes off is named against the event.
+  const tf = X.rhythm(tight, gs).days.filter(d => d.full), tev = { name: 'your concert', date: tf[0].date, slot: null }, tc = X.collisions(tight, { goals: gs, event: tev, inv, settings });
+  const evc = tc.find(c => c.kind === 'event-day');
+  assert.ok(evc && evc.text.includes(`${longDate(tev.date)} is the day of your concert`) && /its time is not known/.test(evc.text), evc && evc.text);
+  const tfc = X.finalCheck(tight, gs, { ...o, event: tev });
+  assert.ok(!tfc.ok && tfc.reasons.some(r => !r.ok && r.text === evc.text) && tfc.text.includes('the day of your concert'), tfc.text);
+});
+
+// B: availability is checked and said for the day the rhythm gives the experience, the same day the rhythm (and its event)
+// gives it, never the arrival day the trip leaves on; the best-day reasons say the same day.
+test('B: PROTECTION and the best day say availability for the day the rhythm gives the experience, the event read too', () => {
+  for (const t of [pick, build('honolulu', ahead(11, 9), 3, ['hnl-a1'])].filter(Boolean)) {
+    const m = X.mainOf(t, GOALS) || t.activities[0], full = X.rhythm(t, GOALS, { main: m }).days.filter(d => d.full);
+    for (const event of [null, { name: 'your concert', date: full[0].date, slot: null }]) {
+      const ox = { ...o, goals: GOALS, event }, day = X.rhythm(t, GOALS, { main: m, event }).placed.find(p => p.activity.id === m.id);
+      const av = X.protection(inv, t, m, ox).rows.find(r => r.key === 'availability'), bd = X.bestDay(t, m, { ...ox, inv });
+      assert.ok(day, `${m.name} has a day`);
+      assert.ok(av.value.includes(`for ${longDate(day.day.date)}`) && !av.value.includes(longDate(t.spec.depart)), av.value);
+      assert.equal(av.date, day.day.date);
+      assert.ok(bd.reasons.some(r => r.text === `Available on the demo partner for ${longDate(day.day.date)}`) && bd.reasons.some(r => r.text.startsWith(`Not your arrival day (${longDate(t.spec.depart)})`)), JSON.stringify(bd.reasons));
+      if (event) assert.notEqual(day.day.date, event.date, 'never the event\'s day');
+    }
+  }
+});
+
+// D: the final check's rebuild says what it gives up in plain words: "gives up nothing else" after what it keeps, never "nothing
+// is given up by the facts".
+test('D: a rebuild that drops nothing and trades nothing off says it gives up nothing, in plain words', () => {
+  let seen = 0;
+  for (const n of [3, 6, 10]) {
+    const event = { name: 'your concert', date: addDays(pick.spec.depart, pick.spec.nights + n), slot: null }, fc = X.finalCheck(pick, GOALS, { ...o, inv, goals: GOALS, event, q: Q });
+    if (!fc.rebuild) continue;
+    seen++;
+    assert.doesNotMatch(fc.rebuild.text, /by the facts/);
+    if (!fc.rebuild.removed.length && !fc.rebuild.givesUp.length) assert.match(fc.rebuild.text, /(?:and gives up nothing else|; it gives up nothing(?: else)?); a proposal, nothing applied\.$/, fc.rebuild.text);
+  }
+  assert.ok(seen, 'a rebuild that moves the dates onto the event is priced');
+});
+
+// F: one labelling rule for the ladder and MAKE IT MORE MEMORABLE: "major" only for an experience of BIG hours or more, and
+// the ordinal counts what the label names in the version the step lands on ("Second major experience" = two of BIG hours or
+// more; "Third experience" = three in all). The first pass showed "+ Third major experience" for a trip with two major ones.
+test('F: rung labels follow one rule on the ladder and in MAKE IT MORE MEMORABLE, read off the version each step lands on', () => {
+  const ORD = { Second: 2, Third: 3, Fourth: 4, Fifth: 5 };
+  let n = 0;
+  const check = (where, rungs) => rungs.forEach(r => {
+    const m = r.label.match(/^\+ (?:(Major) experience|(\w+) (major )?experience)$/); if (!m || m[2] === 'Main' || m[2] === 'Food') return;
+    n++;
+    const big = r.trip.activities.filter(a => a.hours >= X.BIG).length;
+    if (m[1]) assert.equal(big, 1, `${where}: "${r.label}" is the first experience of ${X.BIG}h or more`);
+    else if (m[3]) assert.equal(ORD[m[2]], big, `${where}: "${r.label}" counts the experiences of ${X.BIG}h or more (${big})`);
+    else assert.equal(ORD[m[2]], r.trip.activities.length, `${where}: "${r.label}" counts every experience (${r.trip.activities.length})`);
+  });
+  for (const t of [pick, price({ ...pick.spec, activities: [] }), price({ ...pick.spec, activities: pick.activityOptions.filter(a => X.goalScore(a, GOALS) > 0 && a.hours < X.BIG).slice(0, 1).map(a => a.id) })].filter(Boolean)) {
+    const ox = { ...o, q: { ...Q, dest: t.spec.dest } };
+    check('ladder', X.ladder(inv, ox.q, GOALS, { ...ox, trip: t }).rungs.slice(1)); check('more', X.moreMemorable(inv, t, GOALS, ox).paid);
+  }
+  assert.ok(n > 0, 'an experience step is labelled');
+});
+
+// G (engine side): a locked hotel or flights hold in every engine a page reads: LOCATION prices no other hotel, SAME FEELING
+// FOR LESS prices no other destination, and the receipt's baseline says the lock it crosses (a reference, never an offer).
+test('G: hotel and flight locks hold in LOCATION, SAME FEELING FOR LESS and the receipt\'s baseline', () => {
+  const t = pick, ox = { ...o, goals: GOALS, q: Q };
+  for (const locks of [{ hotel: true }, { flight: true }, { hotel: true, flight: true }]) {
+    const lo = { ...ox, locks }, loc = X.locationCheck(inv, t, ['beach'], lo), sf = X.sameFeeling(inv, Q, GOALS, t, lo), rc = X.receipt(inv, Q, t, GOALS, lo);
+    if (locks.hotel) assert.ok(!loc.a && !loc.b && !loc.verdict && /^The hotel is locked/.test(loc.unknown), loc.text);
+    assert.ok(!sf.trip && /you locked, so I don't price one/.test(sf.text), sf.text);
+    const moves = rc.baseline.trip.spec.hotel !== t.spec.hotel && locks.hotel;
+    assert.equal(rc.baseline.crosses.includes('the hotel'), !!moves);
+    for (const r of [loc, sf]) for (const v of tripsIn(r)) assert.ok((!locks.hotel || v.spec.hotel === t.spec.hotel) && (!locks.flight || v.spec.flight === t.spec.flight), 'no version moves a lock');
+  }
+  const open = X.locationCheck(inv, t, ['beach'], ox);
+  assert.ok(open.a || open.b, 'without the lock, LOCATION compares hotels');
 });

@@ -80,6 +80,8 @@ function timePanel(t, time, alts, token, cx, pto) {
 // Budget unlocks: what a little more buys, from real re-priced changes; "make it better for the same
 // money"; and the locks that let the engine re-plan everything else.
 function unlockPanel(t, unlock, { budget, diff, token, cx, reviewUrl }) {
+  // A lock set with the agent rides on the link (locked=): shown ticked and fixed here, and held by the optimize route.
+  const held = (cx && cx.locks) || {};
   const title = unlock.within.length ? `You still have ${money(diff)} available` : budget ? 'What a little more would get you' : 'Make it better';
   return html`<section class="tb-panel" id="unlock" aria-labelledby="unlock-title">
     <h2 id="unlock-title">${icon('sparkle')} ${title}</h2>
@@ -95,8 +97,8 @@ function unlockPanel(t, unlock, { budget, diff, token, cx, reviewUrl }) {
     <form class="tb-locks" method="get" action="/trip/${token}/optimize">
       ${hiddenParams(contextParams(cx))}
       <input type="hidden" name="cap" value="${budget ? 'budget' : 'same'}">
-      <label><input type="checkbox" name="lk" value="h"> ${icon('bed')} Keep ${t.hotel.name}</label>
-      <label><input type="checkbox" name="lk" value="f"> ${icon('plane')} Keep these flights</label>
+      <label><input type="checkbox" name="lk" value="h"${held.hotel ? html` checked disabled` : ''}> ${icon('bed')} Keep ${t.hotel.name}${held.hotel ? ' (locked with your agent)' : ''}</label>
+      <label><input type="checkbox" name="lk" value="f"${held.flight ? html` checked disabled` : ''}> ${icon('plane')} Keep these flights${held.flight ? ' (locked with your agent)' : ''}</label>
       <label><input type="checkbox" name="lk" value="d" checked> ${icon('calendar')} Keep these dates</label>
       <button class="btn btn-ghost" type="submit">Optimize everything else ${icon('arrow')}</button>
     </form>
@@ -404,8 +406,9 @@ function decideToday(ctx, t, token, cx, user) {
 }
 
 // `leak` is the route's savings check and money leak check on the verified trip (service.leakCheck);
-// a caller without it gets the page as before.
-function reviewView(ctx, { data, cx, verify, user, promoError, promoCode, leak = null, experience = null, pxNote = null }) {
+// a caller without it gets the page as before. `evNote` says an event the link carried that cannot belong to this trip
+// (dropped by the route: service.dropFarEvent).
+function reviewView(ctx, { data, cx, verify, user, promoError, promoCode, leak = null, experience = null, pxNote = null, evNote = null }) {
   const { trip: t, token, origin, weather } = data;
   const s = t.spec;
   const budget = cx.budget;
@@ -464,6 +467,7 @@ function reviewView(ctx, { data, cx, verify, user, promoError, promoCode, leak =
           <div><dt>Extras</dt><dd>${[t.transfer && 'Private airport transfer', (s.bags || t.flight.checkedBagIncluded) && 'Checked bags'].filter(Boolean).join(', ') || 'None'}</dd></div>
         </dl>
         ${pxNote ? html`<p class="tb-mem-main is-missing tb-tip tb-tip-warn">${icon('alert')} <span>${pxNote}</span></p>` : ''}
+        ${evNote ? html`<p class="tb-mem-main is-missing tb-tip tb-tip-warn" data-event-note>${icon('alert')} <span>${evNote}</span></p>` : ''}
         ${plan && plan.keep ? html`<div class="tb-vac-final" id="vacation"><p class="tb-recipe-title">Your vacation plan</p>
           <div class="tb-final-nums"><div><span>Pay today</span><b>${money(plan.booking)}</b></div><div class="${plan.raid ? 'is-over' : ''}"><span>${plan.raid ? 'Left of your reserve' : 'Protected for the destination'}</span><b>${money(plan.reserveLeft)}</b></div><div class="${plan.raid ? 'is-over' : ''}"><span>${plan.raid ? 'Taken from your reserve' : 'Unassigned'}</span><b>${money(plan.raid || plan.unassigned)}</b></div></div>
           <p class="tb-vac-fit ${plan.fits ? 'is-ok' : 'is-over'}">${icon(plan.fits ? 'check' : 'alert')}<span><b>Does the whole trip fit?</b> ${plan.fits

@@ -131,7 +131,8 @@ test('the goals question before the build, then EXPERIENCE MAX RESULTS: the reco
   assert.equal(page.status, 200);
   const p = text(await page.text());
   assert.ok(p.includes('Experience Max results') && p.includes('OUR PICK ★'));
-  assert.ok(p.includes(`MAIN EXPERIENCE 🔒 PROTECTED ${W.pick.main.name}`) && p.includes('say \'unprotect\' to free it'));
+  // The name set off from its sentence, the words to say quoted one way (E).
+  assert.ok(p.replace(/ :/g, ':').includes(`MAIN EXPERIENCE 🔒 PROTECTED ${W.pick.main.name}: I protected it from the results; no version I offer drops it unless you say “drop ${W.pick.main.name}”; say “unprotect” to free it.`), p);
   assert.ok(p.includes('What you want to remember Amazing beach (#1), Incredible food (#2)'));
   for (const chip of ['Hotel or experience?', 'Make $100 memorable', 'Plan my days', 'What if it rains?']) assert.ok(p.includes(chip), chip);
   assert.ok(!/Locked: [^.]*Main experience/.test(p), 'the protection is its own line, not a lock');
@@ -388,7 +389,180 @@ test('the final experience check runs after the savings and leak checks and befo
   s = await b.say('Book it');
   const k2 = s.messages.slice(from).map(m => m.card && m.card.kind).filter(Boolean);
   assert.ok(k2.indexOf('final') >= 0 && k2.indexOf('final') < k2.indexOf('contract'), k2.join());
-  assert.ok(agentTexts(s, from).some(l => l.includes('The rebuild that passes is the one you chose not to take, so your trip stands.')));
+  assert.ok(agentTexts(s, from).some(l => l.includes(`The rebuild that passes (${money(found.total)}) is the one you chose not to take, so your trip stands.`)));
+  // The check failed and the trip stands: the contract never says everything asked for is in it.
+  const ct = lastCard(s, 'contract', from);
+  assert.ok(ct.unmet.some(u => u.startsWith('the final experience check did not pass: No experience in this trip serves adventure')), ct.unmet.join(' | '));
+});
+
+// The screenshot: concert tickets on November 10, "Keep what I have", then "Book it". The check said SCHEDULE CONFLICT, then
+// "No rebuild inside your rules and ceiling passes it either" although the agent had just priced the version that covers
+// the concert under the maximum, and the contract said "Built around: your concert on 2026-11-10" and "✓ Everything you
+// asked for is in this trip." The rebuild is looked for among the versions the conversation priced (the covering dates it
+// offered included, whatever the engine's own search finds), offered with its price and what it changes, and taken only on
+// the traveler's word; "no rebuild passes" only when none does; the contract says the miss, every date in words.
+test('the final check at "book it" reads the event-covering version the conversation priced: offered as the rebuild, never "no rebuild passes"; the contract says the miss, dates in words', async t => {
+  const clock = new Date('2026-10-07T09:00:00Z');
+  const app = await startApp({}, { now: () => clock });
+  t.after(app.close);
+  const agent = app.agent, svc = app.ctx.tripService, priced = pricer(svc), ISO = /\b\d{4}-\d\d-\d\d\b/;
+  // Book it until the final check speaks, keeping the savings and leak checks' versions on the way.
+  const bookIt = async (b, from) => {
+    let s = await b.say('Book it');
+    for (let i = 0; i < 4 && s.proposal && s.proposal.kind !== 'final'; i += 1) { await b.say('Keep what I have'); s = await b.say('Book it'); }
+    return { s, said: agentTexts(s, from) };
+  };
+  const withEvent = async visitor => {
+    const b = await built(app, visitor);
+    const t0 = await svc.price(decodeSpec(b.s.current.token)), date = addDays(t0.flight.return, 14);
+    let s = await b.say(`I already have concert tickets on ${spoken(date)}`);
+    const offer = s.proposal;
+    assert.equal(offer.kind, 'event'); assert.equal(offer.total, await priced(offer.token));
+    s = await b.say('Keep what I have');
+    assert.equal(s.current.token, b.s.current.token, 'the dates were kept');
+    return { b, t0, date, offer, ev: { name: 'your concert', date } };
+  };
+  const contract = async (b, s, from) => {
+    const c = lastCard(s, 'contract', from);
+    assert.ok(c, 'the contract follows');
+    for (const [k, v] of [...c.asked, ...c.getting]) assert.doesNotMatch(String(v), ISO, `${k}: ${v}`);
+    for (const u of c.unmet) assert.doesNotMatch(u, ISO, u);
+    const page = text(await (await fetch(`${app.base}/agent/${b.id}`, { headers: { cookie: `txv=${b.visitor}` } })).text());
+    const at = page.lastIndexOf('You asked for');
+    return { c, page: page.slice(at, page.indexOf('Check the live price and book', at)) };
+  };
+
+  // 1. The engine's rebuild: the version that covers the concert, under the maximum, proposed with its price; nothing applied.
+  const A = await withEvent('v-xagent-fcev-001'); A.b.visitor = 'v-xagent-fcev-001';
+  let from = (await agent.load(A.b.id)).messages.length;
+  let { s, said } = await bookIt(A.b, from);
+  assert.ok(s.proposal && s.proposal.kind === 'final', `the rebuild is proposed: ${said.join(' | ')}`);
+  let p = s.proposal, v = await svc.price(decodeSpec(p.token));
+  assert.equal(p.total, v.total, 'priceTrip of its token'); assert.ok(p.total <= 200000, 'inside the maximum');
+  assert.equal(X.eventCollision(v, A.ev), null, 'it covers the concert with a day\'s buffer');
+  assert.ok(X.finalCheck(v, s.goals, { now: clock }).ok, 'it passes the check itself');
+  assert.ok(v.spec.activities.includes(s.mainExperience), 'it keeps the protected experience');
+  const fsaid = said.find(l => l.startsWith('FINAL EXPERIENCE CHECK'));
+  assert.ok(fsaid.includes(`A rebuild that passes: ${money(p.total)}`) && fsaid.endsWith('Take the rebuild, or keep what you have; then say "book it" again.'), fsaid);
+  assert.doesNotMatch(fsaid, /No rebuild/); assert.doesNotMatch(fsaid, ISO);
+  assert.equal(s.current.token, A.b.s.current.token, 'a proposal, nothing applied');
+  // Kept: the trip stands, said with the rebuild's price; the contract says the miss and never "Everything you asked for".
+  await A.b.say('Keep what I have');
+  from = (await agent.load(A.b.id)).messages.length;
+  ({ s, said } = await bookIt(A.b, from));
+  assert.ok(said.some(l => l.endsWith(`The rebuild that passes (${money(p.total)}) is the one you chose not to take, so your trip stands.`)), said.join(' | '));
+  let { c, page } = await contract(A.b, s, from);
+  assert.deepEqual(c.asked.find(r => r[0] === 'Built around'), ['Built around', `your concert on ${longDate(A.date)}`]);
+  assert.ok(c.unmet.some(u => u.startsWith(`your concert on ${longDate(A.date)} falls after you fly home`)), c.unmet.join(' | '));
+  assert.ok(c.unmet.includes('the final experience check did not pass'), c.unmet.join(' | '));
+  assert.ok(!page.includes('Everything you asked for is in this trip') && page.includes('Not as asked:'), page);
+  assert.ok(agentTexts(s, from).pop().startsWith(`Before you book, ${c.unmet.length} things are not what you asked for:`));
+
+  // 2. An engine that finds no rebuild (as the engine before this fix did): the version the agent itself offered for the
+  // concert is read by the same check and offered as the rebuild; taken on the traveler's word, the dates lock around it.
+  const B = await withEvent('v-xagent-fcev-002'); B.b.visitor = 'v-xagent-fcev-002';
+  const fc0 = X.finalCheck;
+  X.finalCheck = (trip, goals, o) => { const r = fc0(trip, goals, o); return r.ok || !o.inv ? r : { ...r, rebuild: null, noRebuild: 'No rebuild I priced inside your rules and your $2,000 maximum passes this check.', text: r.text.replace(/ A rebuild that passes:.*$/, '') }; };
+  try {
+    from = (await agent.load(B.b.id)).messages.length;
+    ({ s, said } = await bookIt(B.b, from));
+    assert.ok(s.proposal && s.proposal.kind === 'final', `the conversation's own version is proposed: ${said.join(' | ')}`);
+    p = s.proposal;
+    assert.equal(p.token, B.offer.token, 'the event-covering version the agent offered');
+    assert.equal(p.total, await priced(p.token)); assert.equal(p.eventLock, true);
+    const l = said.find(x => x.startsWith('FINAL EXPERIENCE CHECK'));
+    assert.ok(l.includes(`A rebuild that passes: ${money(p.total)} (${p.delta < 0 ? '−' : '+'}${money(Math.abs(p.delta))})`) && l.includes(`it covers your concert on ${longDate(B.date)} with a day's buffer either side; a proposal, nothing applied.`), l);
+    assert.doesNotMatch(l, /No rebuild/); assert.doesNotMatch(l, ISO);
+    // D: what it gives up is said in plain words: the experiences it drops by name, the pricer's trade-offs, or "gives up
+    // nothing else" when both are empty; never left unsaid, never "nothing is given up by the facts".
+    const pv = await svc.price(decodeSpec(p.token)), t1 = await svc.price(decodeSpec(B.b.s.current.token)), dropped = t1.activities.filter(a => !pv.spec.activities.includes(a.id));
+    const traded = classifyChanges(t1, pv).tradeoffs.filter(r => r.key !== 'experiences');
+    assert.doesNotMatch(l, /given up by the facts/, l);
+    if (!dropped.length && !traded.length) assert.match(l, /(?: and gives up nothing else|; it gives up nothing else); it covers your concert/, l);
+    for (const a of dropped) assert.ok(l.includes(`gives up ${a.name}`) || new RegExp(`gives up [^;]*${a.name}`).test(l), l);
+    if (traded.length) assert.match(l, /; the trade-offs?: /, l);
+  } finally { X.finalCheck = fc0; }
+  s = await B.b.say('Take the rebuild');
+  v = await svc.price(decodeSpec(p.token));
+  assert.equal(s.current.token, p.token); assert.equal(s.locks.dates, true); assert.equal(s.depart, v.spec.depart);
+  from = (await agent.load(B.b.id)).messages.length;
+  ({ s, said } = await bookIt(B.b, from));
+  assert.ok(said.includes('FINAL EXPERIENCE CHECK: this trip serves what you told me.'), said.join(' | '));
+  ({ c } = await contract(B.b, s, from));
+  assert.ok(!c.unmet.some(u => /concert|final experience check/.test(u)), c.unmet.join(' | '));
+  assert.ok(c.asked.some(([k, val]) => k === 'Leaving' && val === longDate(v.spec.depart)), 'the fixed date in words');
+
+  // 3. A maximum the covering dates cross (and no engine rebuild): nothing is offered as the fix; the engine's own sentence,
+  // then what the covering version is: priced, and its amount over the maximum.
+  const C = await withEvent('v-xagent-fcev-003'); C.b.visitor = 'v-xagent-fcev-003';
+  assert.ok(C.offer.total > C.t0.total, 'fixture: the dates that cover the concert cost more than the trip');
+  const cap = C.t0.total;
+  await agent.withState(C.b.id, st => { st.budget = cap; });
+  X.finalCheck = (trip, goals, o) => { const r = fc0(trip, goals, o); return r.ok || !o.inv ? r : { ...r, rebuild: null, noRebuild: `No rebuild I priced inside your rules and your ${money(cap)} maximum passes this check.`, text: r.text.replace(/ A rebuild that passes:.*$/, '') }; };
+  try {
+    from = (await agent.load(C.b.id)).messages.length;
+    ({ s, said } = await bookIt(C.b, from));
+  } finally { X.finalCheck = fc0; }
+  assert.ok(!s.proposal, 'nothing offered as the fix');
+  const l3 = said.find(x => x.startsWith('FINAL EXPERIENCE CHECK'));
+  assert.ok(l3.includes(`No rebuild I priced inside your rules and your ${money(cap)} maximum passes this check. The dates that cover your concert pass it`) && l3.includes(`${money(C.offer.total)}), but it is ${money(C.offer.total - cap)} over your ${money(cap)} maximum, so I don't offer that version as the fix. It is your call.`), l3);
+  assert.doesNotMatch(l3, /No rebuild inside your rules and ceiling/); assert.doesNotMatch(l3, ISO);
+  ({ c, page } = await contract(C.b, s, from));
+  assert.ok(!page.includes('Everything you asked for is in this trip'));
+});
+
+// Two sweet spots for one goal (the screenshot: "Where should I stop?" said "I'd stop at $1,530.79" and the canvas's Memories
+// page link opened a ladder that said "I'd stop at $1,652.84" with "7 nights" as a reason). The agent reads the ladder for
+// the trip on its canvas, and the link carries the rules the ladder reads (a length only when stated or locked, the dates
+// when held), so the same trip, goals and rules say the same "I'd stop at" in both places, whatever the conversation assumed
+// or the traveler took. And the build line says the lengths the build reads: never "I assumed 5 nights" over 6-night results.
+test('"Where should I stop?" and the canvas\'s Memories page say the same "I\'d stop at" for the same trip and rules; the build line says the lengths it searched', async t => {
+  const clock = new Date('2026-10-07T09:00:00Z');
+  const app = await startApp({}, { now: () => clock });
+  t.after(app.close);
+  const agent = app.agent, svc = app.ctx.tripService, priced = pricer(svc);
+  const dec = h => h.replace(/&amp;/g, '&').replace(/&#39;/g, '\'');
+  const compare = async (b, visitor, why) => {
+    await agent.withState(b.id, st => { st.proposal = null; st.pending = null; st.xmenu = []; });
+    const s = await b.say('Where should I stop?'), card = lastCard(s, 'ladder');
+    assert.ok(card && card.stop, `${why}: the ladder`);
+    const rung = (s.xmenu || []).find(x => x.total === card.stop) || null;
+    if (rung) assert.equal(rung.total, await priced(rung.token), `${why}: the stop is a priced rung`);
+    const html = await (await fetch(`${app.base}/agent/${b.id}`, { headers: { cookie: `txv=${visitor}` } })).text();
+    const href = dec((html.match(/href="(\/trip\/[^"]+\/memories\?[^"]+)"/) || [])[1] || '');
+    assert.ok(href.startsWith(`/trip/${s.current.token}/memories?`), `${why}: the link opens the canvas trip (${href})`);
+    const page = await (await fetch(app.base + href)).text();
+    const stop = (dec(page).replace(/<[^>]+>/g, ' ').match(/I'd stop at (\$[\d,]+\.\d\d)/) || [])[1];
+    assert.equal(stop, money(card.stop), `${why}: the page says the agent's "I'd stop at" (${href})`);
+    return new URLSearchParams(href.split('?')[1]);
+  };
+  const seven = async (b, s) => { const t7 = await svc.price({ ...decodeSpec(s.current.token), nights: 7 }); await agent.withState(b.id, st => { st.current = { token: encodeSpec(t7.spec), total: t7.total, since: agent.now().toISOString() }; }); };
+  // Nothing stated: the build line says the length is open and the lengths it prices; every result is one of them.
+  const a = await built(app, 'v-xagent-stop-001');
+  const line = agentTexts(a.s).find(l => l.startsWith('Building around what you want to remember'));
+  const q = agent.xctx(a.s, await agent.settings()).q, said = [q.nights, q.nights + 1];
+  assert.doesNotMatch(line, /I assumed[^.;]*\bnights\b/, line);
+  assert.ok(line.includes(`You didn't state a length, so it is open: I price ${said[0]} and ${said[1]} nights, and each result says its own; say a length and I hold it.`), line);
+  for (const w of lastCard(a.s, 'xways').ways) assert.ok(said.includes(decodeSpec(w.trip.token).nights), `${w.label}: one of the lengths said`);
+  // A 7-night trip on the canvas, nothing stated: the agent's ladder is read for it, not for the assumed length.
+  await seven(a, a.s);
+  let P = await compare(a, 'v-xagent-stop-001', 'a 7-night canvas');
+  assert.equal(P.get('nights'), null, 'no length the traveler did not state');
+  // A length that came with a version they took is not a rule either: the link carries no nights= for it.
+  await agent.withState(a.id, st => { st.nights = 7; });
+  P = await compare(a, 'v-xagent-stop-001', 'a length taken, not stated');
+  assert.equal(P.get('nights'), null);
+  // Locked: the trip's own length, on both.
+  await agent.withState(a.id, st => { st.locks.nights = true; });
+  P = await compare(a, 'v-xagent-stop-001', 'the length locked');
+  assert.equal(P.get('nights'), '7');
+  // Stated: held by the build (no "open" sentence, every result that length) and carried by the link.
+  const b = await built(app, 'v-xagent-stop-002', { from: 'two of us from NYC for 5 nights' });
+  const line2 = agentTexts(b.s).find(l => l.startsWith('Building around what you want to remember'));
+  assert.ok(!line2.includes('so it is open') && !/I assumed[^.;]*\bnights\b/.test(line2), line2);
+  for (const w of lastCard(b.s, 'xways').ways) assert.equal(decodeSpec(w.trip.token).nights, 5);
+  P = await compare(b, 'v-xagent-stop-002', 'the length stated');
+  assert.equal(P.get('nights'), '5');
 });
 
 test('WHAT WAS ACTUALLY WORTH IT? after the trip: kept on the booking chip by chip; the account remembers it only on the owner\'s yes, and the next Experience Max names it', async t => {
@@ -927,4 +1101,255 @@ test('GIVE ME ONE AMAZING THING says every loss and every other change of its ne
     for (const row of [...p.tradeoffs, ...p.neutral]) { rows++; assert.ok(said.includes(row) && said.indexOf(row) < said.lastIndexOf('Take it'), `"${row}" is said before "Take it": ${said}`); }
   }
   assert.ok(rows > 0, 'a build that changes the trip was exercised');
+});
+
+// A (the screenshot): "I already have concert tickets on November 10", the version that covers it taken, then "Plan my
+// days" put the 7h catamaran on day 2, the concert day itself, with no conflict, and the final check passed it. The
+// agent reads the engine's rhythm with the event: the event's date is the EVENT DAY, named as theirs, with no experience
+// on it (its time is not known); the take line, THE RHYTHM, the conflict check and the final check all say so.
+test('BUILD AROUND AN EVENT: the event\'s date is the rhythm\'s EVENT DAY, no experience on it, said when the dates are taken, in THE RHYTHM and at the final check', async t => {
+  const clock = new Date('2026-10-07T09:00:00Z');
+  const app = await startApp({}, { now: () => clock });
+  t.after(app.close);
+  const agent = app.agent, svc = app.ctx.tripService, V = 'v-xagent-evday-001';
+  const b = await built(app, V);
+  let s = await b.say('I already have concert tickets on November 10');
+  assert.equal(s.proposal && s.proposal.kind, 'event', 'the dates that cover it are proposed');
+  const date = s.event.date, on = longDate(date);
+  s = await b.say('Take it');
+  const trip = await svc.price(decodeSpec(s.current.token)), names = trip.activities.map(a => a.name);
+  assert.equal(X.eventCollision(trip, s.event), null, 'fixture: the trip taken covers the concert');
+  const evDay = X.rhythm(trip, s.goals, { event: s.event }).eventDay;
+  assert.ok(evDay && evDay.full, 'fixture: the concert falls on a full day of the trip');
+  const mine = `Your concert has day ${evDay.n} (${on}) to itself: no experience goes on it.`;
+  const take = agentTexts(s).find(l => l.startsWith('Dates locked around your concert'));
+  assert.ok(take && take.includes(mine), take);
+  // THE RHYTHM: the event's date is the EVENT DAY, the concert named on it, no experience; the main one on another day.
+  s = await b.say('Plan my days');
+  const c = lastCard(s, 'rhythm'), said = agentTexts(s).pop(), row = c.days.find(d => d.date === date);
+  assert.equal(row.label, 'Event day'); assert.equal(row.event, true); assert.ok(row.items.includes('Your concert'), JSON.stringify(row));
+  assert.ok(!row.items.some(i => names.includes(i)), `no experience on the concert day: ${JSON.stringify(row)}`);
+  for (const d of c.days.filter(x => x.date !== date)) assert.ok(!d.event && d.label !== 'Event day');
+  assert.ok(said.includes(mine), said);
+  const m = said.match(/ on day (\d+) \(([^)]+)\)/);
+  if (m) assert.notEqual(m[2], on, `the main experience is never placed on the concert day: ${said}`);
+  assert.ok(!said.includes(`on day ${evDay.n} (${on})`), said);
+  const page = await (await fetch(`${app.base}/agent/${b.id}`, { headers: { cookie: `txv=${V}` } })).text();
+  assert.match(page, new RegExp(`<li class="is-event" data-event="1"><span class="ag-way-num">${evDay.n}</span><div><b>Event day</b>`));
+  // The conflict check: "No schedule conflict" only with the concert's day said as its own; never over a conflict.
+  s = await b.say('Schedule conflicts');
+  const chk = agentTexts(s).pop(), col = X.collisions(trip, { event: s.event, goals: s.goals });
+  if (col.length) assert.doesNotMatch(chk, /No schedule conflict/, chk); else assert.ok(chk.includes(`No schedule conflict: every experience has a full day of its own, in season. ${mine}`), chk);
+  // The final check reads the same rhythm: it passes only with the concert's day to itself, and says so.
+  let n0 = (await agent.load(b.id)).messages.length;
+  s = await b.say('Book it');
+  for (let i = 0; i < 4 && s.proposal && s.proposal.kind !== 'final'; i += 1) { await b.say('Keep what I have'); s = await b.say('Book it'); }
+  const fc = lastCard(s, 'final', n0);
+  assert.ok(fc, 'the final check spoke');
+  assert.ok(fc.reasons.some(r => r.ok && r.text === `Your concert on ${on} has its day to itself: no experience is on it`), JSON.stringify(fc.reasons));
+  assert.equal(fc.ok, fc.reasons.every(r => r.ok));
+});
+
+// A, the other half: the event inside a trip whose full days are all taken pushes an experience off its only free day.
+// That is a SCHEDULE CONFLICT named with the event (never "No schedule conflict"), the rhythm keeps the event's day
+// clear, and the final check at "book it" does not pass the trip.
+test('an event inside the trip that leaves an experience no free day is a SCHEDULE CONFLICT naming the event; the final check does not pass it', async t => {
+  const clock = new Date('2026-10-07T09:00:00Z');
+  const app = await startApp({}, { now: () => clock });
+  t.after(app.close);
+  const agent = app.agent, svc = app.ctx.tripService;
+  const b = await built(app, 'v-xagent-evday-002');
+  const t0 = await svc.price(decodeSpec(b.s.current.token)), gs = b.s.goals;
+  // The fixture: the same trip at a length whose full days the experiences fill, and a full day for the event.
+  let fx = null;
+  for (let n = 2; n <= 8 && !fx; n += 1) {
+    const v = await svc.price({ ...t0.spec, nights: n });
+    if (!v || X.rhythm(v, gs).unplaced.length) continue;
+    for (const d of X.rhythm(v, gs).days.filter(x => x.full)) { const ev = { name: 'your concert', date: d.date, slot: null }; if (!X.eventCollision(v, ev) && X.rhythm(v, gs, { event: ev }).unplaced.length) { fx = { v, ev }; break; } }
+  }
+  assert.ok(fx, 'fixture: a length whose full days the experiences fill');
+  const off = X.rhythm(fx.v, gs, { event: fx.ev }).unplaced.map(a => a.name), on = longDate(fx.ev.date);
+  await agent.withState(b.id, st => { st.current = { token: encodeSpec(fx.v.spec), total: fx.v.total, since: agent.now().toISOString() }; st.proposal = null; st.pending = null; });
+  let s = await b.say(`I already have concert tickets on ${spoken(fx.ev.date)}`);
+  const inside = agentTexts(s).pop();
+  assert.ok(inside.includes('is inside your trip') && inside.includes(`(${on}) to itself: no experience goes on it.`), inside);
+  for (const name of off) assert.ok(inside.includes(`SCHEDULE CONFLICT: ${name} fits no free full day: ${on} is the day of your concert`), inside);
+  s = await b.say('Schedule conflicts');
+  const chk = agentTexts(s).pop();
+  assert.doesNotMatch(chk, /No schedule conflict/, chk);
+  assert.ok(off.every(name => chk.includes(`SCHEDULE CONFLICT: ${name} fits no free full day: ${on} is the day of your concert`)), chk);
+  s = await b.say('Plan my days');
+  const c = lastCard(s, 'rhythm'), row = c.days.find(d => d.date === fx.ev.date);
+  assert.equal(row.label, 'Event day'); assert.ok(!row.items.some(i => fx.v.activities.some(a => a.name === i)), JSON.stringify(row));
+  assert.ok(c.conflicts.length && c.conflicts.some(k => k.text.includes('is the day of your concert')), JSON.stringify(c.conflicts));
+  const n0 = (await agent.load(b.id)).messages.length;
+  s = await b.say('Book it');
+  for (let i = 0; i < 4 && s.proposal && s.proposal.kind !== 'final'; i += 1) { await b.say('Keep what I have'); s = await b.say('Book it'); }
+  const fc = lastCard(s, 'final', n0);
+  assert.ok(fc && fc.ok === false, `the final check does not pass a trip whose experience the concert pushes off: ${JSON.stringify(fc)}`);
+  assert.ok(!fc.reasons.some(r => r.ok && r.text === 'No schedule conflict'), JSON.stringify(fc.reasons));
+  assert.ok(fc.reasons.some(r => !r.ok && r.text.includes('is the day of your concert')), JSON.stringify(fc.reasons));
+  if (s.proposal && s.proposal.kind === 'final') {
+    const v = await svc.price(decodeSpec(s.proposal.token));
+    assert.equal(s.proposal.total, v.total, 'the rebuild is a priced total');
+    assert.equal(X.rhythm(v, gs, { event: fx.ev }).unplaced.length, 0, 'the rebuild gives every experience it keeps a day off the concert');
+  }
+  // A short experience may share the event's day only when the event's time is known and the two sit at its two ends;
+  // the agent says it as that, never "to itself".
+  const d = { n: 3, date: fx.ev.date }, shared = agent.eventDayWords({ eventDay: d, event: { name: 'your concert', date: fx.ev.date, slot: 'evening' }, placed: [{ day: d, activity: { name: 'Sunrise kayak', hours: 2, slot: 'morning' } }] });
+  assert.equal(shared, `Your concert has day 3 (${on}); only Sunrise kayak (2h, morning) shares it, at the other end of the day from its evening time, so the two cannot overlap.`);
+});
+
+// E: the mission panel sets the protected name off from its sentence and quotes every word to say one way (curly
+// double quotes), the rules list included; who protected it is said truthfully.
+test('the mission panel: the protected name is set off from its sentence, and every word to say is in the same curly quotes', async t => {
+  const app = await startApp();
+  t.after(app.close);
+  const V = 'v-xagent-panel-001', b = await built(app, V), name = b.s.mainName;
+  assert.ok(name && b.s.protectAuto, 'fixture: the results protected the main experience');
+  // The page's text as a reader sees it: text() puts a space where each tag was, so " :" is the name's own "</b>:".
+  const panel = async () => { const h = text(await (await fetch(`${app.base}/agent/${b.id}`, { headers: { cookie: `txv=${V}` } })).text()).replace(/ :/g, ':'); const at = h.indexOf('Your mission'); return h.slice(at, h.indexOf('I never relax a hard rule on my own.', at) + 40); };
+  let p = await panel();
+  assert.ok(p.includes(`MAIN EXPERIENCE 🔒 PROTECTED ${name}: I protected it from the results; no version I offer drops it unless you say “drop ${name}”; say “unprotect” to free it.`), p);
+  assert.ok(p.includes(`Main experience: ${name} (protected by me from the results; say “unprotect” to free it)`), p);
+  assert.ok(!p.includes('"') && !/'[a-z][^']*'/i.test(p), `one kind of quote in the panel: ${p}`);
+  await b.say(`Protect ${name}`);
+  p = await panel();
+  assert.ok(p.includes(`MAIN EXPERIENCE 🔒 PROTECTED ${name}: protected, as you asked; no version I offer drops it unless you say “drop ${name}”; say “unprotect” to free it.`), p);
+  assert.ok(!p.includes('"') && !/'[a-z][^']*'/i.test(p), p);
+});
+
+// G: the locks set with the agent ride on every canvas link (locked=hotel,flight), so the Memories page opened from the
+// canvas offers no version that changes the hotel or the flights the traveler locked; the review link carries them too.
+test('the canvas links carry the agent\'s locks: the Memories page from the canvas never offers a version across a hotel or flight lock', async t => {
+  const clock = new Date('2026-10-07T09:00:00Z');
+  const app = await startApp({}, { now: () => clock });
+  t.after(app.close);
+  const agent = app.agent, V = 'v-xagent-locks-001', b = await built(app, V);
+  await b.say('Lock the hotel');
+  let s = await b.say('Lock the flights');
+  assert.ok(s.locks.hotel && s.locks.flight, 'fixture: both locked');
+  const cur = decodeSpec(s.current.token), dec = h => h.replace(/&amp;/g, '&');
+  const html = dec(await (await fetch(`${app.base}/agent/${b.id}`, { headers: { cookie: `txv=${V}` } })).text());
+  const links = [...html.matchAll(/href="(\/trip\/[^"?#]+(?:\/memories)?\?[^"#]*)/g)].map(x => x[1]).filter(l => l.startsWith(`/trip/${s.current.token}`));
+  assert.ok(links.some(l => l.includes('/memories?')) && links.length >= 3, `the canvas links: ${links.join(' | ')}`);
+  for (const l of links) assert.deepEqual(optimizer.parseContext(Object.fromEntries(new URLSearchParams(l.split('?')[1]))).locks, { hotel: true, flight: true }, l);
+  // The page from the link holds them; the same page without them offers versions that move them (so the lock matters).
+  const mem = links.find(l => l.includes('/memories?'));
+  const versions = async href => [...new Set([...dec(await (await fetch(app.base + href)).text()).matchAll(/href="\/trip\/([^"?/#]+)/g)].map(x => x[1]))].map(k => { try { return decodeSpec(k); } catch (e) { return null; } }).filter(Boolean);
+  const moved = xs => xs.filter(v => v.hotel !== cur.hotel || v.flight !== cur.flight);
+  assert.deepEqual(moved(await versions(mem)).map(encodeSpec), [], 'no version across the hotel or flight lock');
+  assert.ok(moved(await versions(mem.replace(/&locked=[^&]*/, ''))).length > 0, 'fixture: without the locks the page offers versions that move them');
+  // The context the agent builds: only lock names a page can hold, from the effective locks (a fixed date is the dates).
+  const st = await agent.load(b.id);
+  const P = new URLSearchParams(optimizer.contextParams(state.memoriesContext(st, state.budgetContext(st, state.toQuery(st, { maps }).query), null)));
+  assert.equal(P.get('locked'), 'hotel,flight');
+  const fixed = { ...st, dateMode: 'exact', depart: cur.depart, locks: { ...st.locks, hotel: false, flight: false } };
+  assert.equal(new URLSearchParams(optimizer.contextParams(state.budgetContext(fixed, state.toQuery(fixed, { maps }).query))).get('locked'), 'dates', 'budget and the protected experience are never lock names on a link');
+});
+
+// The event the traveler built the trip around rides on every canvas link (ev=, evn=, and evt= when they said a time): no
+// URL parameter carried it, so the Memories page opened from the canvas drew THE RHYTHM without the EVENT DAY and put the
+// main experience on the concert's day. Now the page draws the day the agent draws, says the agent's sentence about it,
+// every link it builds carries the event on, and the review page's FINAL EXPERIENCE CHECK lists the agent's own reasons.
+test('the canvas links carry the event: the Memories page draws the EVENT DAY with no experience on it, and the review page\'s final check is the agent\'s', async t => {
+  const clock = new Date('2026-10-07T09:00:00Z');
+  const app = await startApp({}, { now: () => clock });
+  t.after(app.close);
+  const agent = app.agent, svc = app.ctx.tripService, V = 'v-xagent-evlink-001', dec = h => h.replace(/&amp;/g, '&');
+  const b = await built(app, V);
+  await b.say('I already have concert tickets on November 10');
+  let s = await b.say('Take it');
+  const ev = s.event, on = longDate(ev.date);
+  const trip = await svc.price(decodeSpec(s.current.token)), names = trip.activities.map(a => a.name);
+  const evDay = X.rhythm(trip, s.goals, { event: ev }).eventDay;
+  assert.ok(evDay && !X.eventCollision(trip, ev), 'fixture: the dates taken cover the concert, on a full day of the trip');
+  // Every canvas link to this trip carries the event, as the agent holds it (no time said, so no slot).
+  const html = dec(await (await fetch(`${app.base}/agent/${b.id}`, { headers: { cookie: `txv=${V}` } })).text());
+  const links = [...html.matchAll(/href="(\/trip\/[^"?#]+(?:\/memories)?\?[^"#]*)/g)].map(x => x[1]).filter(l => l.startsWith(`/trip/${s.current.token}`));
+  assert.ok(links.some(l => l.includes('/memories?')) && links.length >= 3, links.join(' | '));
+  for (const l of links) assert.deepEqual(optimizer.parseContext(Object.fromEntries(new URLSearchParams(l.split('?')[1]))).event, { name: 'your concert', date: ev.date, slot: null }, l);
+  const P = new URLSearchParams(optimizer.contextParams(state.memoriesContext(s, state.budgetContext(s, state.toQuery(s, { maps }).query), trip)));
+  assert.equal(P.get('ev'), ev.date); assert.equal(P.get('evn'), 'your concert'); assert.equal(P.get('evt'), null, 'a time never said is never carried');
+  // The Memories page from the canvas: the concert's day is the EVENT DAY, the concert named on it, no experience on it.
+  const mem = links.find(l => l.includes('/memories?'));
+  const rows = page => [...page.matchAll(/<li class="([^"]*)" data-day="(\d+)" data-label="([^"]*)"[^>]*>([\s\S]*?)<\/li>/g)].map(m => ({ cls: m[1].split(' '), n: Number(m[2]), label: m[3], text: text(m[4]) }));
+  const page = dec(await (await fetch(app.base + mem)).text()), days = rows(page), row = days.find(d => d.n === evDay.n);
+  assert.equal(row.label, 'Event day'); assert.ok(row.cls.includes('is-event') && row.text.includes('Your concert'), JSON.stringify(row));
+  assert.ok(!names.some(n => row.text.includes(n)), `no experience on the concert's day: ${JSON.stringify(row)}`);
+  assert.deepEqual(days.filter(d => d.cls.includes('is-event') || d.label === 'Event day').map(d => d.n), [evDay.n], 'one event day');
+  assert.ok(text(page).includes(`Your concert has day ${evDay.n} (${on}) to itself: no experience goes on it.`), 'the agent\'s sentence about the day');
+  for (const [, l] of page.matchAll(/href="(\/trip\/[^"#]+)/g)) assert.equal(new URLSearchParams(l.split('?')[1] || '').get('ev'), ev.date, `every link on the page carries the event on: ${l}`);
+  // Without the event the same page puts an experience on the concert's day: the parameter is what keeps the day free.
+  const bare = rows(dec(await (await fetch(app.base + mem.replace(/&ev(?:t|n)?=[^&]*/g, ''))).text())).find(d => d.n === evDay.n);
+  assert.ok(names.some(n => bare.text.includes(n)), `fixture: without the event an experience lands on ${on}: ${JSON.stringify(bare)}`);
+  // The review page opened with the canvas's context reads the same event: its FINAL EXPERIENCE CHECK is the agent's.
+  let n0 = (await agent.load(b.id)).messages.length;
+  s = await b.say('Book it');
+  for (let i = 0; i < 4 && s.proposal && s.proposal.kind !== 'final'; i += 1) { await b.say('Keep what I have'); n0 = (await agent.load(b.id)).messages.length; s = await b.say('Book it'); }
+  const fc = lastCard(s, 'final', n0);
+  assert.ok(fc && fc.reasons.some(r => r.text.includes(on)), `the agent's final check reads the concert: ${JSON.stringify(fc)}`);
+  const contract = s.messages.slice(n0).map(m => m.card && m.card.href).filter(h => h && h.includes('/review?'));
+  for (const h of contract) assert.equal(new URLSearchParams(h.split('?')[1]).get('ev'), ev.date, `the contract's review link carries the event: ${h}`);
+  const full = links.find(l => !l.includes('/memories?') && !l.includes('#'));
+  const rv = dec(await (await fetch(`${app.base}/trip/${s.current.token}/review?${full.split('?')[1]}&seen=${s.current.total}`)).text());
+  const at = rv.indexOf('id="final-check"'), fcs = rv.slice(at, rv.indexOf('</section>', at));
+  assert.ok(at >= 0, 'the review page has the final check');
+  assert.deepEqual([...fcs.matchAll(/<li class="([^"]*)">[\s\S]*?<span>([\s\S]*?)<\/span><\/li>/g)].map(m => ({ ok: m[1] !== 'is-miss', text: text(m[2]).trim() })), fc.reasons.map(r => ({ ok: r.ok, text: r.text })), 'the review page lists the agent\'s reasons, the concert\'s day among them');
+});
+
+// "Only show statuses that reflect actual system state": the mission status read "2 ways built, waiting for which feels like
+// you" after the traveler took the version that covers their concert, or the rebuild the final check proposed, because only
+// picking a result set the mission's signal. A version taken on their word is their choice; the status says what is on the
+// canvas now (the version's label and the canvas's own total), and a new set of results waits for a pick again.
+test('the mission status follows what the traveler did: a version they took is their choice, said with what is on the canvas, never "waiting for which feels like you"', async t => {
+  const clock = new Date('2026-10-07T09:00:00Z');
+  const app = await startApp({}, { now: () => clock });
+  t.after(app.close);
+  const agent = app.agent, svc = app.ctx.tripService;
+  const statusOf = async (id, v) => text(((await (await fetch(`${app.base}/agent/${id}`, { headers: { cookie: `txv=${v}` } })).text()).match(/<span class="ag-mission-status[^"]*">([\s\S]*?)<\/span>/) || [])[1] || '').trim();
+  const V = 'v-xagent-status-001', b = await built(app, V);
+  assert.match(await statusOf(b.id, V), /^\d+ ways? built, waiting for which feels like you$/, 'fixture: the results wait for a pick');
+  let s = await b.say('I already have concert tickets on November 10');
+  assert.equal(s.proposal && s.proposal.kind, 'event', 'fixture: the dates that cover it are proposed');
+  const p = s.proposal;
+  assert.equal(await statusOf(b.id, V), 'One decision away');
+  s = await b.say('Take it');
+  assert.equal(s.current.token, p.token, 'the version was taken');
+  const took = (await svc.price(decodeSpec(s.current.token))).total;
+  assert.equal(await statusOf(b.id, V), `Your choice is on the canvas: ${p.label} · ${money(took)}`);
+  // "Take the rebuild": the trip without its experiences fails the final check; the rebuild taken is what the status says.
+  const V2 = 'v-xagent-status-002', c = await built(app, V2, { goals: 'adventure' });
+  const bare = await svc.price({ ...decodeSpec(c.s.current.token), activities: [] });
+  await agent.withState(c.id, st => { st.current = { token: encodeSpec(bare.spec), total: bare.total, since: agent.now().toISOString() }; st.proposal = null; st.pending = null; st.locks.experience = false; st.mainExperience = null; st.mainName = null; });
+  let found = null;
+  for (let i = 0; i < 4 && !found; i += 1) { s = await c.say('Book it'); if (s.proposal && s.proposal.kind === 'final') found = s.proposal; else if (s.proposal) await c.say('Keep what I have'); }
+  assert.ok(found, 'fixture: the rebuild is proposed');
+  assert.equal(await statusOf(c.id, V2), 'One decision away', 'the rebuild waits for the traveler\'s word');
+  s = await c.say('Take the rebuild');
+  assert.equal(s.current.token, found.token, 'the rebuild was taken');
+  assert.equal(await statusOf(c.id, V2), `Your choice is on the canvas: ${found.label} · ${money((await svc.price(decodeSpec(found.token))).total)}`);
+  // A new set of results is a new question: the status waits for a pick again, never names the version taken before it.
+  await agent.withState(c.id, st => { st.mission.round += 1; });
+  assert.match(await statusOf(c.id, V2), /^\d+ ways? built, waiting for which feels like you$/);
+});
+
+// The MAIN EXPERIENCE 🔒 PROTECTED line: the protected name was bold at the panel's 16px inside a 14px sentence, so the
+// first line stood taller than the rest. The size is now set once, on the paragraph, and the name is bold at it; the
+// Playwright probe at 1280 and 390 measures every line box of the paragraph at the same height.
+test('the mission panel\'s protected line: the name is bold at its sentence\'s own size, set once on the paragraph', async t => {
+  const app = await startApp();
+  t.after(app.close);
+  const V = 'v-xagent-panel-002', b = await built(app, V), name = b.s.mainName;
+  assert.ok(name, 'fixture: the results protected the main experience');
+  const h = await (await fetch(`${app.base}/agent/${b.id}`, { headers: { cookie: `txv=${V}` } })).text();
+  const box = (h.match(/<div class="ag-protected">[\s\S]*?<\/div>/) || [''])[0];
+  const line = box.match(/<p class="([^"]*)"><b>([^<]*)<\/b>: <span class="([^"]*)">/);
+  assert.ok(line, box);
+  assert.ok(line[1].split(' ').includes('tb-small') && line[1].split(' ').includes('ag-protected-line'), `the size is the paragraph's: ${line[1]}`);
+  assert.equal(text(line[2]).trim(), name);
+  assert.ok(!line[3].split(' ').includes('tb-small'), `the sentence is never set smaller than the name inside it: ${line[3]}`);
+  const css = require('node:fs').readFileSync(require('node:path').join(__dirname, '../public/css/trips.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.match(css, /\.ag-protected-line, \.ag-protected-line b \{ font-size: 14px; line-height: 1\.5; \}/, 'one size and one line height for the name and its sentence');
+  assert.doesNotMatch(css, /\.ag-protected[^{,]*\bb\b[^{,]*\{[^}]*font-size: (?!14px)/, 'no rule sets the name at another size');
 });

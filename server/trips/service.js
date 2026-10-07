@@ -14,6 +14,7 @@ const leaks = require('./leaks');
 const experience = require('./experience');
 const { whyNot } = require('./savemax');
 const { classifyChanges } = require('./facts');
+const { longDate } = require('./words');
 const { cutoffs, isOpen, nextCutoff } = require('./deadlines');
 
 const FUNNEL = ['home_visit', 'budget_entered', 'search_started', 'results_viewed', 'trip_selected', 'checkout_started', 'payment_attempted', 'booking_confirmed'];
@@ -22,6 +23,8 @@ const FUNNEL_LABELS = {
   trip_selected: 'Trip selected', checkout_started: 'Checkout started', payment_attempted: 'Payment attempted', booking_confirmed: 'Booking confirmed',
 };
 const money = c => fmtMoney(c, 'USD');
+// How far from a trip's dates an event on a link is still read for it (service.eventFor), in days either side.
+const EVENT_NEAR_DAYS = 30;
 
 // ---- price watches: the rule a watch waits for, and whether today's price meets it ----
 // A watch speaks only when the rule the traveler set is met, judged on the total the pricer gives now
@@ -263,15 +266,18 @@ class TripService {
   // what matters most (null when they are the planner's defaults, since a default was not said), the
   // nights asked, the bag they said they travel with (`bg` on the link; null when nothing was said,
   // so a page never claims "nothing you told me asks for a checked bag" to someone who said they
-  // check one), the standing rules, and the party from the spec. A page carries no hotel or flight
-  // locks; the dates are held when the traveler stated an exact date, on the context itself
-  // (`dm=exact`: the dream flow's "I have to be there on") or in the search it came from
+  // check one), the standing rules, and the party from the spec. The locks the traveler set with the
+  // agent ride on the link (`locked=hotel,flight`: optimizer.parseContext) and reach every engine as
+  // o.locks, so a page opened from the canvas never offers a version that moves a locked hotel, flights,
+  // dates, length or destination; the dates are also held when the traveler stated an exact date, on the
+  // context itself (`dm=exact`: the dream flow's "I have to be there on") or in the search it came from
   // (`when=exact`), and the hold reaches the engine both as `dateMode` and as `locks.dates`, so no
   // page moves a date the traveler fixed. The promo is the one the page carries, so every priced
   // version moves with it and no saving is a promo's shadow.
+  linkLocks(cx) { return { ...((cx && cx.locks) || {}), ...(this.datesHeld(cx) ? { dates: true } : {}) }; }
   datesHeld(cx) {
     if (!cx) return false;
-    if (cx.dateMode === 'exact') return true;
+    if (cx.dateMode === 'exact' || (cx.locks && cx.locks.dates)) return true;
     const s = cx.searchParams ? new URLSearchParams(cx.searchParams) : null;
     return !!(s && s.get('when') === 'exact');
   }
@@ -280,7 +286,7 @@ class TripService {
   // protected experience is listed and never offered for removal on any page.
   leakOptions(trip, cx, promo = null) {
     const p = cx || {};
-    return { now: this.now(), locks: this.datesHeld(cx) ? { dates: true } : {}, promo, protect: p.protect || null, prefs: { style: p.style && p.style !== 'surprise' ? p.style : null, priority: p.priority && p.priority !== 'price' ? p.priority : null, who: trip.spec.who, bags: p.bags || null, rules: p.rules || null, nightsAsked: p.nightsAsked || null, goals: Array.isArray(p.goals) ? p.goals.slice(0, 3) : [] } };
+    return { now: this.now(), locks: this.linkLocks(cx), promo, protect: p.protect || null, prefs: { style: p.style && p.style !== 'surprise' ? p.style : null, priority: p.priority && p.priority !== 'price' ? p.priority : null, who: trip.spec.who, bags: p.bags || null, rules: p.rules || null, nightsAsked: p.nightsAsked || null, goals: Array.isArray(p.goals) ? p.goals.slice(0, 3) : [] } };
   }
   leakContext(cx) {
     const p = cx || {};
@@ -333,12 +339,15 @@ class TripService {
   // The options every experience call gets. The ceiling is the budget the link carries, never the
   // "up to 10% more" allowance: going over is the traveler's own word on a version, not a target an
   // engine builds toward. A date the traveler fixed is held (dm=exact or when=exact), a stated length
-  // is not stretched, the rules ride along, and the protected experience (px=) reaches every engine.
+  // is not stretched, the locks on the link (locked=) hold, the rules ride along, and the protected
+  // experience (px=) reaches every engine.
+  // The event the link carries (ev=, evt=, evn=) reaches every engine as o.event, as the agent's own calls get it, so the
+  // page's THE RHYTHM, SCHEDULE CONFLICT, PROTECTION, best day and FINAL EXPERIENCE CHECK keep the EVENT DAY the agent keeps.
   async experienceOptions(trip, cx, { promo = null } = {}) {
     const p = cx || {}, held = this.datesHeld(cx), px = this.offeredProtect(trip, cx);
     return {
-      now: this.now(), settings: await this.settings(), locks: held ? { dates: true } : {}, cap: p.budget || null, rules: p.rules || null, protect: px, promo,
-      nightsOpen: !p.nightsAsked, goals: experience.goalsOf(p.goals || []), ctx: { dateMode: held ? 'exact' : null, rules: p.rules || null, protect: px },
+      now: this.now(), settings: await this.settings(), locks: this.linkLocks(cx), cap: p.budget || null, rules: p.rules || null, protect: px, promo, event: this.eventFor(trip, cx),
+      nightsOpen: !p.nightsAsked && !(p.locks && p.locks.nights), goals: experience.goalsOf(p.goals || []), ctx: { dateMode: held ? 'exact' : null, rules: p.rules || null, protect: px },
     };
   }
   // A protected experience (px=) counts only when this trip's destination offers it. A link that names
@@ -354,6 +363,23 @@ class TripService {
     if (!cx || !cx.protect || this.offeredProtect(trip, cx)) return null;
     cx.protect = null;
     return `The experience this link protects is not offered in ${trip.dest.name}, so it is no longer protected and nothing on this trip is held for it.`;
+  }
+  // The event a link carries is read for a trip only when it could belong to it: its date is today or later and falls
+  // inside the trip or within EVENT_NEAR_DAYS of its dates (a trip that misses it by a few days is the SCHEDULE CONFLICT
+  // the agent says, with the dates that cover it). A date far from the trip, or already past, is a stale or edited link:
+  // reading it would plan this trip around a reservation nobody made for it. dropFarEvent() takes it off the context, so
+  // no link out of the page carries it, and returns the sentence the page says, so it is never dropped quietly.
+  eventFor(trip, cx) {
+    const e = cx && cx.event;
+    if (!e || !e.date) return null;
+    const s = trip.spec, from = addDays(s.depart, -EVENT_NEAR_DAYS), to = addDays(s.depart, s.nights + EVENT_NEAR_DAYS);
+    return e.date >= today(this.now()) && e.date >= from && e.date <= to ? e : null;
+  }
+  dropFarEvent(trip, cx) {
+    if (!cx || !cx.event || this.eventFor(trip, cx)) return null;
+    const e = cx.event, past = e.date < today(this.now());
+    cx.event = null;
+    return `The reservation this link carries (${e.name || 'your reservation'} on ${longDate(e.date)}) ${past ? 'is already past' : `is more than ${EVENT_NEAR_DAYS} days from this trip's dates`}, so this page does not plan around it, and no link from here carries it.`;
   }
   // The page's main experience is always one this trip has: the protected one while the trip has it,
   // else the strongest for the goals, so PROTECTION always covers the trip's own main experience. A
@@ -373,16 +399,17 @@ class TripService {
     const m = this.experienceMain(trip, cx, gs);
     if (!gs.length) return { goals: gs, q, ...m };
     o.q = q;
-    const hoe = X.hotelOrExperience(inv, trip, gs, o), L = X.ladder(inv, q, gs, o), main = m.main;
+    // The ladder is read for this trip (X.ladder's `trip`): the same trip, goals and rules give the agent's "I'd stop at".
+    const hoe = X.hotelOrExperience(inv, trip, gs, o), L = X.ladder(inv, q, gs, { ...o, trip }), main = m.main;
     // The budget's "I'd choose the simpler hotel" line is never said on the page that says "I'd take
     // the hotel": when HOTEL OR EXPERIENCE? picks the hotel, the allocation gets no step-up to name.
     const up = hoe.verdict === 'a' ? { hotelUp: null, inv: null } : { hotelUp: hoe.a, inv };
     return {
       goals: gs, q, ...m, amount,
-      receipt: X.receipt(inv, q, trip, gs, o), allocation: X.allocation(trip, o.cap, { ...up, o }), rhythm: X.rhythm(trip, gs, { main }),
+      receipt: X.receipt(inv, q, trip, gs, o), allocation: X.allocation(trip, o.cap, { ...up, o }), rhythm: X.rhythm(trip, gs, { main, event: o.event }),
       hotelOrExperience: hoe, memoryTest: X.memoryTest(inv, trip, gs, o, amount), bigVsMany: X.bigVsMany(inv, trip, gs, o),
       free: X.freeThings(inv, trip, gs), freeOverPaid: X.freeOverPaid(inv, trip, gs), location: X.locationCheck(inv, trip, gs, o),
-      collisions: X.collisions(trip, { inv, settings: o.settings, goals: gs, protect: o.protect, rules: o.rules, locks: o.locks }), fatigue: X.fatigue(trip, gs, { ...o, inv }),
+      collisions: X.collisions(trip, { event: o.event, inv, settings: o.settings, goals: gs, protect: o.protect, rules: o.rules, locks: o.locks }), fatigue: X.fatigue(trip, gs, { ...o, inv }),
       ladder: L, sweetSpot: X.sweetSpot(L, trip), sameFeeling: X.sameFeeling(inv, q, gs, trip, o),
       dupes: trip.activities.map(a => ({ activity: a, protected: a.id === o.protect, dupe: X.dupe(inv, trip, a, o) })),
       protection: main ? X.protection(inv, trip, main, o) : null, bestDay: main ? X.bestDay(trip, main, { ...o, inv, goals: gs }) : null, backup: main ? X.backup(inv, trip, main, { ...o, goals: gs }) : null,

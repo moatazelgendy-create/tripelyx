@@ -83,39 +83,47 @@ function receiptBlock(r, cx, { cap = null } = {}) {
   // link leaves the protection behind and says so, like every other version that can't hold it.
   const spec = own ? null : decodeSpec(r.baseline.token);
   const drops = !!(cx.protect && spec && !spec.activities.includes(cx.protect));
+  // A baseline that moves a part the traveler locked (locked= on the link) is named with its total, never linked.
+  const crosses = (r.baseline.crosses || []);
   return html`<dl class="tb-dl tb-mem-goal"><div><dt>YOUR GOAL</dt><dd>${r.goal.replace(/^YOUR GOAL: /, '')}</dd></div></dl>
     <div class="tb-leak-two tb-mem-receipt">
       <div><h3>${icon('minus')} WE SPENT LESS ON</h3>${r.lessOn.length ? html`<ul class="tb-mem-lines">${rows(r.lessOn, -1)}</ul>` : html`<p class="tb-muted tb-small">Nothing: no line of this trip is cheaper than the baseline's.</p>`}</div>
       <div><h3>${icon('plus')} WE USED MONEY FOR</h3>${r.usedFor.length ? html`<ul class="tb-mem-lines">${rows(r.usedFor, 1)}</ul>` : html`<p class="tb-muted tb-small">Nothing: no line of this trip is dearer than the baseline's.</p>`}</div>
     </div>
     <div class="tb-final-nums tb-leak-nums${r.keep !== null && r.keep < 0 ? ' is-over' : ''}"><div><span>FINAL</span><b>${money(r.final)}</b></div>${r.max !== null ? html`<div><span>YOUR MAX</span><b>${money(r.max)}</b></div><div class="${r.keep < 0 ? 'is-over' : ''}"><span>${r.keep < 0 ? 'OVER YOUR MAX' : 'KEEP'}</span><b>${money(Math.abs(r.keep))}</b></div>` : ''}</div>
-    <p class="tb-small tb-muted">Measured against ${r.baseline.label}${own ? '' : html`: <a href="${tripUrl(r.baseline.token, cx, drops ? { px: undefined } : {})}" data-total="${r.baseline.total}">see it · ${money(r.baseline.total)}</a>${overTag(r.baseline, cap)}${drops ? ' (it does not hold the protected experience, so opening it leaves the protection behind)' : ''}`}. Every line is that version's price line against this trip's, so they add up to the difference between the two totals; nothing is estimated.</p>`;
+    <p class="tb-small tb-muted">Measured against ${r.baseline.label}${own ? '' : crosses.length ? ` (${money(r.baseline.total)}; it changes ${joinAnd(crosses)} you locked, so it is a reference here, not a version to open)` : html`: <a href="${tripUrl(r.baseline.token, cx, drops ? { px: undefined } : {})}" data-total="${r.baseline.total}">see it · ${money(r.baseline.total)}</a>${overTag(r.baseline, cap)}${drops ? ' (it does not hold the protected experience, so opening it leaves the protection behind)' : ''}`}. Every line is that version's price line against this trip's, so they add up to the difference between the two totals; nothing is estimated.</p>`;
 }
 
-// PROTECTION rows for the main experience: what the data verifies, and what needs verification.
+// PROTECTION rows for the main experience: what the data verifies, and what needs verification. On a phone
+// each row stacks (the check and its status on one line, what we know under it: trips.css), so no
+// header sits over the wrong column and no status is clipped; the roles keep it a table for screen
+// readers when the rows are laid out as blocks.
 const PROTECT_LABEL = { availability: 'Availability', operating: 'Operating days', age: 'Age requirements', restrictions: 'Current restrictions', meeting: 'Meeting location', duration: 'Duration', cancellation: 'Cancellation', transport: 'Transport' };
 function protectionTable(p) {
-  return html`<table class="tb-leak-table tb-mem-protect">
-    <thead><tr><th scope="col">Check</th><th scope="col">What we know</th><th scope="col">Status</th></tr></thead>
-    <tbody>${p.rows.map(r => html`<tr class="${r.verified ? 'is-ok' : 'is-verify'}" data-key="${r.key}"><td>${PROTECT_LABEL[r.key] || r.key}</td><td>${say(r.value)}</td><td>${r.verified ? 'Verified' : 'Needs verification'}</td></tr>`)}</tbody>
+  return html`<table class="tb-mem-table tb-mem-protect" role="table">
+    <thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">Check</th><th scope="col" role="columnheader">What we know</th><th scope="col" role="columnheader">Status</th></tr></thead>
+    <tbody role="rowgroup">${p.rows.map(r => html`<tr role="row" class="${r.verified ? 'is-ok' : 'is-verify'}" data-key="${r.key}"><td role="cell">${PROTECT_LABEL[r.key] || r.key}</td><td role="cell">${say(r.value)}</td><td role="cell">${r.verified ? 'Verified' : 'Needs verification'}</td></tr>`)}</tbody>
   </table>`;
 }
 
 // FINAL EXPERIENCE CHECK: each reason with its status, then the rebuild as a link when one passes.
 // On the review page the rebuild is priced with the page's promo code (service.experienceReview), so
 // the amount beside its link is the total its review opens on, named as the one seen: "still", not
-// "dropped" because of the code.
+// "dropped" because of the code. When no rebuild keeps what the trip is for, the engine's plain words
+// say so (and what the versions that pass would drop); no link is offered as "the rebuild".
 function finalCheckBlock(fc, cx, { review = false, promo = false, cap = null } = {}) {
   const rb = fc.rebuild;
   return html`<ul class="tb-ready tb-ready-wrap tb-mem-checks">${fc.reasons.map(r => html`<li class="${r.ok ? '' : 'is-miss'}">${icon(r.ok ? 'check' : 'alert')}<span>${say(r.text)}</span></li>`)}</ul>
     <p class="tb-mem-say">${say(fc.ok ? fc.text : fc.text.replace(rb ? ` ${rb.text}` : '', ''))}</p>
+    ${!fc.ok && !rb && fc.noRebuild ? html`<p class="tb-tip tb-tip-warn" data-no-rebuild>${icon('info')} <span>${say(fc.noRebuild)}</span></p>` : ''}
     ${rb ? html`<p class="tb-mem-actions">${review ? html`<a class="btn btn-navy" href="${reviewUrl(rb.token, cx, rb.total)}" data-total="${rb.total}">See the rebuild that passes · ${money(rb.total)}</a>${overTag(rb, cap)}` : versionLink(rb, cx, 'See the rebuild that passes', { cls: 'btn btn-navy', cap })} <span class="tb-small tb-muted">${say(rb.text)}${promo ? ' Priced with your promo code, like the total on this page.' : ''}</span></p>` : ''}`;
 }
 
 // ---- the review page's experience additions ----------------------------------------------------
 // Only when the link carries goals or a protected experience (service.experienceReview): the
 // EXPERIENCE RECEIPT, the PROTECTION rows for the main experience, the FINAL EXPERIENCE CHECK (ok, or
-// the rebuild as a link re-checked on arrival) and the "very scheduled" line when fatigue says so. With
+// the rebuild as a link re-checked on arrival; a pass lists its reasons too, as the agent's card and the Memories page
+// do, so the event's day and every check the agent read are on the page) and the "very scheduled" line when fatigue says so. With
 // a promo code every version here is priced with it, as the page's own total is (each link's amount is
 // the total its review opens on, and the one it names as seen).
 function experienceReviewPanels(e, { token, cx, promo = false }) {
@@ -134,7 +142,7 @@ function experienceReviewPanels(e, { token, cx, promo = false }) {
     </section>` : ''}
     ${e.finalCheck ? html`<section class="tb-panel" id="final-check" aria-labelledby="fc-title">
       <h2 id="fc-title">${icon(e.finalCheck.ok ? 'check' : 'alert')} FINAL EXPERIENCE CHECK</h2>
-      ${e.finalCheck.ok ? html`<p class="tb-mem-say">${say(e.finalCheck.text)}</p>` : finalCheckBlock(e.finalCheck, cx, { review: true, promo, cap })}
+      ${finalCheckBlock(e.finalCheck, cx, { review: true, promo, cap })}
     </section>` : ''}
     ${e.fatigue && e.fatigue.scheduled ? html`<p class="tb-tip tb-tip-warn tb-mem-scheduled">${icon('clock')} <span>${say(e.fatigue.text)}${ft && ft.trip ? html` <a href="${reviewUrl(ft.token, cx, ft.total)}" data-total="${ft.total}">Open up a day: without ${ft.removed.name} · ${money(ft.total)}</a>${promo ? ' (with your promo code)' : ''}${overTag(ft, cap)}` : ''} <a href="${memUrl(token, cx, {}, '#schedule')}">See the schedule</a></span></p>` : ''}
   </div>`;
@@ -182,7 +190,7 @@ function worthItPanel(b, { open, error = null, sent = false, user = null, who = 
       <p><b>${sent ? 'Thanks. Here is what was kept, and where.' : 'What you told us'}</b> (${shortDate(w.at.slice(0, 10))})</p>
       <ul class="tb-list tb-small">${said.map(x => html`<li>${x}</li>`)}</ul>
       ${learned ? html`<p class="tb-small">What I take from it: ${learned}</p>` : ''}
-      <p class="tb-small">${icon(w.defaults === 'saved' ? 'check' : 'lock')} ${WHERE[w.defaults] || WHERE['not-asked']}${w.earlier && EARLIER[w.earlier] ? ` ${EARLIER[w.earlier]}` : ''}</p>
+      <p class="tb-small tb-mem-iconline">${icon(w.defaults === 'saved' ? 'check' : 'lock')}<span>${WHERE[w.defaults] || WHERE['not-asked']}${w.earlier && EARLIER[w.earlier] ? ` ${EARLIER[w.earlier]}` : ''}</span></p>
     </div>` : ''}
     ${open ? html`<details class="tb-mem-worth-form"${w ? '' : ' open'}><summary>${w ? 'Change your answer' : 'Tell me, so the next trip spends where it counts'}</summary>
       <form class="form" method="post" action="/booking/${b.ref}/worth-it">
@@ -217,8 +225,9 @@ const AMOUNTS = [10000, 25000, 50000];
 // `promo` is { code, total, off } when the link carries a code: the page prices before it, says what it
 // takes off, and its review link names the total with the code as the one seen (the review then says
 // "still", never "dropped" because the code was applied). `pxNote` says a protection the link carried
-// that this destination does not offer (dropped by the route).
-function memoriesView(ctx, { data, cx, mem: d, promo = null, promoError = null, amountNote = null, pxNote = null, user }) {
+// that this destination does not offer (dropped by the route); `evNote` says an event the link carried that cannot
+// belong to this trip (dropped by the route: service.dropFarEvent).
+function memoriesView(ctx, { data, cx, mem: d, promo = null, promoError = null, amountNote = null, pxNote = null, evNote = null, user }) {
   const { trip: t, token, origin } = data;
   const s = t.spec, gs = d.goals, cap = cx.budget || null;
   const pxGone = cx.protect ? { px: undefined } : {};
@@ -231,6 +240,7 @@ function memoriesView(ctx, { data, cx, mem: d, promo = null, promoError = null, 
     <p class="tb-muted">This trip is ${money(t.total)} all in. Below: what it gives the goals you ranked, where the money goes, and every version that could make it more memorable, each priced in full. Nothing changes on this page: every button opens that version, and you decide. Hotel stars, brands and upgrades count only when they matter to what you want to remember.</p>
     ${promo ? html`<p class="tb-tip" data-promo="${promo.code}">${icon('info')} Promo code ${promo.code} goes with you to every version you open from here: ${money(promo.off)} off this trip, so ${money(promo.total)} with it. The totals on this page are before the code; the review page applies it.</p>` : promoError ? html`<p class="tb-tip tb-tip-warn">${icon('alert')} ${promoError} The code is not carried on from here.</p>` : ''}
     ${pxNote ? html`<p class="tb-mem-main is-missing tb-tip tb-tip-warn">${icon('alert')} <span>${pxNote}</span></p>` : ''}
+    ${evNote ? html`<p class="tb-mem-main is-missing tb-tip tb-tip-warn" data-event-note>${icon('alert')} <span>${evNote}</span></p>` : ''}
     ${mainLine(d, { token, cx, trip: t })}
   </header>
   <section class="tb-panel" id="goals" aria-labelledby="goals-title">
@@ -268,10 +278,10 @@ function memoriesView(ctx, { data, cx, mem: d, promo = null, promoError = null, 
   <section class="tb-panel" id="budget" aria-labelledby="budget-title">
     <h2 id="budget-title">${icon('wallet')} YOUR EXPERIENCE BUDGET</h2>
     <p class="tb-muted">Where this trip's money goes, from its own price lines. The rows add up to the total.</p>
-    <table class="tb-leak-table tb-mem-alloc">
-      <thead><tr><th scope="col">Part of the trip</th><th scope="col" class="tb-leak-num">Amount</th></tr></thead>
-      <tbody>${al.lines.map(l => html`<tr data-cents="${l.amount}" data-key="${l.key}"><td>${l.label}</td><td class="tb-leak-num">${l.amount < 0 ? '−' : ''}${money(Math.abs(l.amount))}</td></tr>`)}</tbody>
-      <tfoot><tr class="tb-leak-total" data-total="${al.total}"><td>Total</td><td class="tb-leak-num">${money(al.total)}</td></tr>${al.keep !== null ? html`<tr><td>${al.keep < 0 ? `Over your ${money(cap)}` : `Left of your ${money(cap)}`}</td><td class="tb-leak-num">${money(Math.abs(al.keep))}</td></tr>` : ''}</tfoot>
+    <table class="tb-mem-table tb-mem-alloc">
+      <thead><tr><th scope="col">Part of the trip</th><th scope="col" class="tb-mem-num">Amount</th></tr></thead>
+      <tbody>${al.lines.map(l => html`<tr data-cents="${l.amount}" data-key="${l.key}"><td>${l.label}</td><td class="tb-mem-num">${l.amount < 0 ? '−' : ''}${money(Math.abs(l.amount))}</td></tr>`)}</tbody>
+      <tfoot><tr class="tb-mem-total" data-total="${al.total}"><td>Total</td><td class="tb-mem-num">${money(al.total)}</td></tr>${al.keep !== null ? html`<tr><td>${al.keep < 0 ? `Over your ${money(cap)}` : `Left of your ${money(cap)}`}</td><td class="tb-mem-num">${money(Math.abs(al.keep))}</td></tr>` : ''}</tfoot>
     </table>
     <p class="tb-mem-say">${say(al.text)}</p>
   </section>
@@ -279,8 +289,8 @@ function memoriesView(ctx, { data, cx, mem: d, promo = null, promoError = null, 
   <section class="tb-panel" id="rhythm" aria-labelledby="rhythm-title">
     <h2 id="rhythm-title">${icon('calendar')} THE RHYTHM</h2>
     <p class="tb-muted">${say(rh.text)}</p>
-    <ol class="tb-mem-days">${rh.days.map(day => html`<li class="${[day.open ? 'is-open' : '', mainName && day.items.includes(mainName) ? 'is-main' : ''].filter(Boolean).join(' ')}" data-day="${day.n}" data-label="${day.label}"${mainName && day.items.includes(mainName) ? html` data-main="${d.main.id}"` : ''}><span class="tb-mem-day">Day ${day.n} · ${shortDate(day.date)}</span><b>${day.label}</b>${day.items.length ? html`<small>${day.items.join(', ')}</small>` : ''}</li>`)}</ol>
-    <p class="tb-small tb-muted">${plural(rh.fullDays, 'full day')}, ${plural(rh.openDays, 'open day')}. No experience on the day you arrive or the day you fly home.${rh.unplaced.length ? ` ${joinAnd(rh.unplaced.map(a => a.name))} ${rh.unplaced.length === 1 ? 'has' : 'have'} no full day of ${rh.unplaced.length === 1 ? 'its' : 'their'} own: see SCHEDULE CONFLICT below.` : ''}</p>
+    <ol class="tb-mem-days">${rh.days.map(day => html`<li class="${[day.open ? 'is-open' : '', mainName && day.items.includes(mainName) ? 'is-main' : '', day.event ? 'is-event' : ''].filter(Boolean).join(' ')}" data-day="${day.n}" data-label="${day.label}"${mainName && day.items.includes(mainName) ? html` data-main="${d.main.id}"` : ''}${day.event ? html` data-event="${day.event.date}"` : ''}><span class="tb-mem-day">Day ${day.n} · ${shortDate(day.date)}</span><b>${day.label}</b>${day.items.length ? html`<small>${day.items.join(', ')}</small>` : ''}</li>`)}</ol>
+    <p class="tb-small tb-muted">${plural(rh.fullDays, 'full day')}, ${plural(rh.openDays, 'open day')}. No experience on the day you arrive or the day you fly home.${rh.eventDay ? ` ${X.eventDayWords(rh)}` : ''}${rh.unplaced.length ? ` ${joinAnd(rh.unplaced.map(a => a.name))} ${rh.unplaced.length === 1 ? 'has' : 'have'} no full day of ${rh.unplaced.length === 1 ? 'its' : 'their'} own: see SCHEDULE CONFLICT below.` : ''}</p>
   </section>
 
   <section class="tb-panel" id="hotel-or-experience" aria-labelledby="hoe-title">
@@ -337,7 +347,7 @@ function memoriesView(ctx, { data, cx, mem: d, promo = null, promoError = null, 
 
   <section class="tb-panel" id="schedule" aria-labelledby="sched-title">
     <h2 id="sched-title">${icon('clock')} SCHEDULE CONFLICT</h2>
-    ${d.collisions.length ? html`<ul class="tb-mem-conflicts">${d.collisions.map(c => html`<li><p class="tb-mem-say">${say(c.text)}</p>${c.fixes.length ? html`<ul class="tb-list tb-small">${c.fixes.map(f => html`<li>${f.trip && f.token ? versionLink(f, cx, say(f.text), { cls: '', cap }) : f.protected ? html`${icon('lock')} ${say(f.text)}` : say(f.text)}</li>`)}</ul>` : ''}</li>`)}</ul>`
+    ${d.collisions.length ? html`<ul class="tb-mem-conflicts">${d.collisions.map(c => html`<li><p class="tb-mem-say">${say(c.text)}</p>${c.fixes.length ? html`<ul class="tb-list tb-small">${c.fixes.map(f => html`<li>${f.trip && f.token ? versionLink(f, cx, say(f.text), { cls: '', cap }) : f.protected ? html`<span class="tb-mem-iconline">${icon('lock')}<span>${say(f.text)}</span></span>` : say(f.text)}</li>`)}</ul>` : ''}</li>`)}</ul>`
       : html`<p class="tb-tip">${icon('check')} No schedule conflict: every experience has a full day of its own, none on the day you arrive or the day you fly home.</p>`}
     <h3>${icon('sun')} GIVE ME MORE FREE TIME</h3>
     <p>${say(fa.text)}</p>
@@ -347,7 +357,7 @@ function memoriesView(ctx, { data, cx, mem: d, promo = null, promoError = null, 
 
   <section class="tb-panel" id="ladder" aria-labelledby="ladder-title">
     <h2 id="ladder-title">${icon('trend')} EXPERIENCE LADDER</h2>
-    <p class="tb-muted">${t.dest.name} on your dates, from the cheapest trip I'd still recommend for your goals: each step the cheapest priced version that is meaningfully more memorable, with nothing given up.</p>
+    <p class="tb-muted">${t.dest.name} on your dates${L.nights && L.nights.length ? `, ${L.nights.length === 1 ? plural(L.nights[0], 'night') : `${L.nights.slice(0, -1).join(', ')} or ${plural(L.nights[L.nights.length - 1], 'night')}`}` : ''}, from the cheapest trip I'd still recommend for your goals: each step the cheapest priced version that is meaningfully more memorable, with nothing given up.</p>
     ${L.rungs.length ? html`<ol class="tb-mem-ladder">${L.rungs.map(g => html`<li class="${[g === ss.rung ? 'is-sweet' : '', g.token === token ? 'is-this' : ''].filter(Boolean).join(' ')}"><span class="tb-mem-rung">${g.label}</span>${versionLink(g, cx, g.token === token ? 'This trip' : 'See it', { cls: 'tb-small' })}${g === ss.rung ? html` <b class="tb-mem-sweet">MEMORY SWEET SPOT</b>` : ''}</li>`)}${L.top ? html`<li class="is-top"><span class="tb-mem-rung">${L.top.text}</span><span class="tb-small">${money(L.top.total)}, your maximum</span></li>` : ''}</ol>
       <p class="tb-mem-say">${say(ss.text)}</p>${ss.reasons.length ? html`<ul class="tb-leak-kept">${ss.reasons.map(x => html`<li>${say(x)}</li>`)}</ul>` : ''}`
       : html`<p>${say(L.text)}</p>`}
@@ -361,7 +371,7 @@ function memoriesView(ctx, { data, cx, mem: d, promo = null, promoError = null, 
   <section class="tb-panel" id="alternative" aria-labelledby="alt-title">
     <h2 id="alt-title">${icon('search')} FIND AN ALTERNATIVE EXPERIENCE</h2>
     ${d.dupes.length ? html`<ul class="tb-mem-dupes">${d.dupes.map(x => html`<li><h3>${x.activity.name} <small>${money(x.activity.pricePerPerson)} a person</small></h3>
-      ${x.protected ? html`<p class="tb-small">${icon('lock')} The protected experience: no swap is offered for it.</p>`
+      ${x.protected ? html`<p class="tb-small tb-mem-iconline">${icon('lock')}<span>The protected experience: no swap is offered for it.</span></p>`
         : x.dupe && x.dupe.alternative ? html`<p>${x.dupe.alternative.name}: ${money(x.dupe.alternative.pricePerPerson)} a person.</p><p class="tb-small"><b>Similar:</b> ${say(joinAnd(x.dupe.similar))}. <b>Different:</b> ${say(joinAnd(x.dupe.different))}.</p>${x.dupe.trip ? html`<p class="tb-mem-actions">${versionLink(x.dupe, cx, `Swap for ${x.dupe.alternative.name}`, { cap })} ${deltaTag(x.dupe.delta)}</p>` : ''}`
         : html`<p class="tb-small tb-muted">${X.NO_DUPE}</p>`}</li>`)}</ul>`
       : html`<p class="tb-muted">No paid experience in this trip to find an alternative for.</p>`}
@@ -371,7 +381,7 @@ function memoriesView(ctx, { data, cx, mem: d, promo = null, promoError = null, 
     <h2 id="prot-title">${icon('shield')} PROTECTION</h2>
     ${d.protection ? html`<p class="tb-muted">${mainName}, ${d.protected ? 'the protected experience' : 'this trip\'s main experience'}: what our data verifies, and what needs verification before you count on it.${d.missing ? ` The protected experience, ${d.missing.name}, is not in this version, so these rows check the main experience it has.` : ''}</p>
       ${protectionTable(d.protection)}<p class="tb-small">${say(d.protection.text)}</p>
-      ${d.bestDay ? html`<ul class="tb-ready tb-ready-wrap tb-mem-checks">${d.bestDay.reasons.map(x => html`<li class="${x.ok ? '' : 'is-miss'}">${icon(x.ok ? 'check' : 'info')}<span>${say(x.text)}</span></li>`)}</ul>${d.bestDay.weather ? html`<p class="tb-small">${icon('sun')} ${say(d.bestDay.weather)}</p>` : ''}` : ''}
+      ${d.bestDay ? html`<ul class="tb-ready tb-ready-wrap tb-mem-checks">${d.bestDay.reasons.map(x => html`<li class="${x.ok ? '' : 'is-miss'}">${icon(x.ok ? 'check' : 'info')}<span>${say(x.text)}</span></li>`)}</ul>${d.bestDay.weather ? html`<p class="tb-small tb-mem-iconline">${icon('sun')}<span>${say(d.bestDay.weather)}</span></p>` : ''}` : ''}
       <h3>${icon('info')} BACKUP</h3>
       ${d.backup ? html`<p>${say(d.backup.text)}</p>${[d.backup, d.backup.overChoice].filter(v => v && v.trip).map(v => html`<p class="tb-mem-actions">${versionLink(v, cx, `See the trip with ${v.activity.name} added`, { cap })} ${deltaTag(v.delta)}</p>`)}` : html`<p class="tb-small tb-muted">${mainName} is not marked weather-dependent in our data, so no backup is suggested.</p>`}`
       : t.activities.length ? html`<p class="tb-muted">The main experience could not be checked here.</p>`

@@ -490,6 +490,9 @@ function understand(text, state, { maps, now = new Date() } = {}) {
   // it; none of those is what it asks, so they go, and only the honest answer is routed. A quote
   // from another site to beat is a challenge, not this question.
   if (intents.includes('notCompared')) { if (intents.includes('challenge')) drop('notCompared'); else for (const k of ['book', 'cheaper', 'better', 'elsewhere', 'build']) drop(k); }
+  // "Take the rebuild" is the final check's approval of the rebuild it proposed (a named approval), never a new search: the
+  // word "rebuild" in it must not start one and replace the trip.
+  if (/^\s*take the rebuild[.!]?\s*$/.test(lower)) drop('build');
   // "Show me the <alternative> version" is the biggest-leak card's chip when the words carry the
   // alternative that card shows; the card is the one on the canvas, so the label is read from it,
   // never guessed from the words.

@@ -251,7 +251,10 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
     try {
       const cx = optimizer.parseContext(req.query);
       const lk = [].concat(req.query.lk || []).filter(x => typeof x === 'string').join('').slice(0, 8);
-      const locks = { hotel: lk.includes('h'), flight: lk.includes('f'), dates: lk.includes('d') };
+      // The page's own checkboxes (lk=h, f, d) and the locks the link carries from the agent (locked=hotel,flight): a
+      // lock set with the agent holds here too, never dropped because a box was left unticked.
+      const held = cx.locks || {};
+      const locks = { hotel: lk.includes('h') || !!held.hotel, flight: lk.includes('f') || !!held.flight, dates: lk.includes('d') || !!held.dates };
       const capMode = req.query.cap === 'budget' && cx.budget ? 'budget' : 'same';
       const out = await svc.optimize(req.params.token, cx, { locks, capMode });
       await tracked(req, 'trip_optimized', { dest: out.current.trip.dest.id, improved: !!out.proposal, locks: lk, capMode });
@@ -301,6 +304,9 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
       const { promo: p, promoError } = await promoOf(cx);
       const data = await svc.trip(req.params.token, cx);
       const pxNote = svc.dropUnoffered(data.trip, cx);
+      // The event the link carries (ev=) is read only when it could belong to this trip; one that cannot is dropped from
+      // every link out of the page and said in words (service.dropFarEvent).
+      const evNote = svc.dropFarEvent(data.trip, cx);
       const coded = p ? await svc.price(data.trip.spec, { promo: p }) : null;
       const promo = coded ? { code: p.code, total: coded.total, off: data.trip.total - coded.total } : null;
       const first = [].concat(req.query.amt ?? [])[0];
@@ -309,7 +315,7 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
       const amountNote = typed && whole === null ? `I couldn't read "${typed}" as a whole-dollar amount from $10 to $10,000, so this shows $100.` : null;
       const mem = await svc.memories(data.trip, cx, { amount: (whole || 100) * 100 });
       await tracked(req, 'memories_viewed', { dest: data.trip.dest.id, total: data.trip.total, goals: mem.goals, protect: cx.protect || null });
-      send(res, memoriesView(ctx, { data, cx, mem, promo, promoError, amountNote, pxNote, user: user(req) }));
+      send(res, memoriesView(ctx, { data, cx, mem, promo, promoError, amountNote, pxNote, evNote, user: user(req) }));
     } catch (e) { next(e); }
   });
 
@@ -341,6 +347,8 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
       // A protected experience this destination does not offer protects nothing here (and never reaches
       // the quote): dropped from the context, and said on the page.
       const pxNote = svc.dropUnoffered(verify.trip, cx);
+      // An event on the link that cannot belong to this trip is dropped and said, as on the Memories page.
+      const evNote = svc.dropFarEvent(verify.trip, cx);
       // The verified code rides on every link out of this page (the money leak check's REMOVE, the
       // leaks page, the trip page), so a version opened from here is priced with it; a code the rules
       // refuse is said on the page and carried nowhere.
@@ -353,7 +361,7 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
       // Experience Max's additions (the experience receipt, the protection rows, the final experience
       // check, the "very scheduled" line), only when the link carries goals or a protected experience.
       const experience = await svc.experienceReview(verify.trip, cx, { promo: verify.promo });
-      send(res, reviewView(ctx, { data, cx, verify, user: user(req), promoError: verify.promoError, promoCode: verify.promo ? verify.promo.code : '', leak, experience, pxNote }));
+      send(res, reviewView(ctx, { data, cx, verify, user: user(req), promoError: verify.promoError, promoCode: verify.promo ? verify.promo.code : '', leak, experience, pxNote, evNote }));
     } catch (e) { next(e); }
   });
 

@@ -22,6 +22,27 @@ const { longDate } = require('../server/views/trips/common');
 const { GUIDE_CHECKED_AT } = require('../server/trips/demo-data/destinations');
 
 const money = c => format(c, 'USD');
+// The stylesheet's rules as { media, selectors, decls } (a rule inside @media carries its condition): the layout tests read
+// the rule that causes or prevents a phone layout bug; a Playwright probe at 390px checks the same pages in a browser.
+const CSS = require('node:fs').readFileSync(require('node:path').join(__dirname, '../public/css/trips.css'), 'utf8');
+function cssRules(css) {
+  const out = [];
+  const walk = (src, media) => {
+    for (let j = 0; j < src.length;) {
+      const open = src.indexOf('{', j); if (open < 0) break;
+      let depth = 1, k = open + 1; while (k < src.length && depth) { if (src[k] === '{') depth++; else if (src[k] === '}') depth--; k++; }
+      const head = src.slice(j, open).trim(), body = src.slice(open + 1, k - 1);
+      if (head.startsWith('@media')) walk(body, head);
+      else if (!head.startsWith('@')) out.push({ media, selectors: head.split(',').map(x => x.trim()), decls: Object.fromEntries(body.split(';').map(d => d.split(':')).filter(x => x.length >= 2).map(([n, ...v]) => [n.trim(), v.join(':').trim()])) });
+      j = k;
+    }
+  };
+  walk(css.replace(/\/\*[\s\S]*?\*\//g, ''), null);
+  return out;
+}
+const CSS_RULES = cssRules(CSS), PHONE = '@media (max-width: 640px)';
+// The last declaration of `prop` for exactly `sel` (outside any media query, or inside `media`).
+const decl = (sel, prop, media = null) => { const r = CSS_RULES.filter(x => x.selectors.includes(sel) && x.media === media && prop in x.decls); return r.length ? r[r.length - 1].decls[prop] : undefined; };
 const text = html => html.replace(/<script[\s\S]*?<\/script>/g, '').replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/&#39;/g, '\'').replace(/&quot;/g, '"').replace(/\s+/g, ' ');
 // The experience engine's own list (test/experience.test.js): urgency, scarcity, predictions, and a
 // guarantee unless it is denied ("the weather itself can't be guaranteed").
@@ -313,6 +334,88 @@ test('the review page: EXPERIENCE RECEIPT, EXPERIENCE PROTECTION and FINAL EXPER
   assert.equal(be.finalCheck.ok, false);
   if (be.finalCheck.rebuild && be.finalCheck.rebuild.token) await checkPriced(svc, priced(section(br.text, 'final-check')), 'rebuild');
   assert.doesNotMatch(fc, PRESSURE);
+  // The rebuild is one a customer with these goals would take: it keeps the main experience, never passes by dropping
+  // every experience, and what it gives up is said beside its link, by name.
+  const rbl = priced(section(br.text, 'final-check')).filter(l => /See the rebuild that passes/.test(l.words));
+  assert.equal(rbl.length, 1, 'the rebuild is offered as a link');
+  const rs = decodeSpec(rbl[0].token).activities;
+  assert.ok(rs.length > 0 && rs.includes(busyMain.id), `the rebuild keeps the main experience (${rbl[0].token})`);
+  for (const a of busy.trip.activities.filter(x => !rs.includes(x.id))) assert.match(fc, new RegExp(`gives up [^;]*${a.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`), `${a.name}: what it gives up is said`);
+  assert.ok(!/A rebuild that passes[^.]*0 experiences/.test(fc));
+});
+
+// Two sweet spots for one goal (the screenshot: the agent said "I'd stop at $1,530.79" for its 6-night pick, and the canvas link's
+// memories page read 6 and 7 nights and said "I'd stop at $1,652.84"). The page reads the ladder for the trip, as the engine
+// does for the agent's own query when it names the trip: the same "I'd stop at", and never a night above the trip.
+test('the memories page\'s ladder is read for the trip: the "I\'d stop at" the engine gives the agent\'s query for that trip, never a night above it', async t => {
+  const clock = fixedClock();
+  const app = await startApp({}, { now: () => clock });
+  t.after(app.close);
+  const c = client(app.base), svc = app.tripService, gs = ['beach', 'food'];
+  // The agent's results: $2,000, an assumed 5 nights, anywhere, any date; the pick goes on the canvas, its main experience protected.
+  const Q = { budget: 200000, vacationBudget: 200000, keep: 0, budgetInput: 2000, budgetType: 'total', travelers: 2, who: 'couple', origin: 'NYC', dateMode: 'anytime', depart: null, month: null, nights: 5, style: 'surprise', priority: 'price', allowOver: 0, dest: null, region: null, rules: null, dests: null, notCountry: null };
+  const o = { now: clock, settings: await svc.settings(), locks: {}, cap: Q.budget, nightsOpen: true };
+  const w = X.experienceWays(svc.inv, Q, gs, o), P = w.pick.trip, px = X.mainOf(P, gs).id;
+  const agentSays = X.sweetSpot(X.ladder(svc.inv, Q, gs, { ...o, protect: px, trip: P }), P);
+  const page = await c.req(`/trip/${w.pick.token}/memories?b=${Q.budget / 100}&mem=${gs.join('%2C')}&px=${px}`);
+  assert.equal(page.status, 200);
+  const lad = text(section(page.text, 'ladder'));
+  assert.ok(agentSays.total && lad.includes(agentSays.text), `the page: ${lad}\nthe agent's query: ${agentSays.text}`);
+  const rungs = priced(section(page.text, 'ladder'));
+  assert.ok(rungs.length > 0); await checkPriced(svc, rungs, 'ladder');
+  for (const l of rungs) assert.ok(decodeSpec(l.token).nights <= P.spec.nights, `${l.token}: never a night above the trip`);
+  assert.ok(lad.includes(`${P.dest.name} on your dates, ${P.spec.nights - 1} or ${P.spec.nights} nights,`), 'the lengths it read are said');
+});
+
+// The phone layout bugs from the screenshots, by the rule that caused each: the protected experience's pill ("included ·
+// remove (unprotects it)", nowrap) widened its row to 409px and the page to 449px; the money leak tables' phone rule hid the
+// second header of every table with that class, so PROTECTION's "What we know" vanished, STATUS sat over the wrong column and
+// "Needs verification" was clipped, and the budget table lost "Amount"; OUR PICK's KEEP box spilled past the card (1fr 1fr
+// cannot shrink below an amount); the mission kicker and title ran together ("EXPERIENCE MAXThe most experience"); icons sat
+// on a line of their own (svg is display: block site-wide). The 390px Playwright probe checks the same pages in a browser.
+test('phone layout: the protected row wraps, the protection and budget tables keep every column readable, the results card\'s boxes stay inside it, the mission title has its own line, icons sit on their line', async t => {
+  // 1. The experience rows wrap instead of widening the page.
+  assert.equal(decl('.tb-delta', 'white-space'), 'nowrap', 'a pill keeps its words together elsewhere');
+  assert.equal(decl('.tb-options-check .tb-opt > .tb-delta', 'white-space'), 'normal', 'an experience row\'s pill may wrap');
+  assert.equal(decl('.tb-options-check .tb-opt', 'flex-wrap'), 'wrap', 'the pill goes under the name when both do not fit');
+  assert.equal(decl('.tb-options', 'grid-template-columns'), 'minmax(0, 1fr)', 'a row never widens the list');
+  // 4. The leak tables' phone rule is the breakdown's own; the experience tables are not leak tables and lose no column.
+  const hidden = CSS_RULES.filter(r => r.media === PHONE && r.decls.display === 'none').flatMap(r => r.selectors);
+  assert.ok(!hidden.some(x => /^\.tb-leak-table\b/.test(x)), `no phone rule hides a column of every leak table: ${hidden.join(' | ')}`);
+  assert.ok(hidden.includes('.tb-leak-breakdown th:nth-child(2)') && hidden.includes('.tb-leak-breakdown td:nth-child(2)'), 'the breakdown hides its Kind header and cells together');
+  assert.ok(!hidden.some(x => /tb-mem/.test(x)), 'no experience table hides a column on a phone');
+  assert.equal(decl('.tb-mem-protect tr', 'display', PHONE), 'grid', 'PROTECTION stacks on a phone: the check and its status, what we know under it');
+  assert.equal(decl('.tb-mem-protect td:nth-child(2)', 'grid-column', PHONE), '1 / -1');
+  assert.ok(!CSS_RULES.some(r => r.media === PHONE && r.selectors.some(x => /tb-mem-protect (th|td)\b/.test(x)) && r.decls['white-space'] === 'nowrap'), 'no status forced onto one line it cannot fit');
+  assert.equal(decl('.tb-mem-table .tb-mem-num', 'text-align'), 'right', 'the budget amounts sit under their header');
+  // a, b, c.
+  assert.equal(decl('.ag-way-nums', 'flex-wrap'), 'wrap'); assert.equal(decl('.ag-way-nums', 'grid-template-columns'), undefined, 'TOTAL and KEEP stack when the card is narrow');
+  assert.equal(decl('.ag-mission-title', 'display'), 'block'); assert.equal(decl('.ag-mission-head .tb-kicker', 'display'), 'block');
+  assert.equal(decl('.tb-mem-iconline', 'display'), 'flex'); assert.equal(decl('.tb-mem-protect-link a', 'display'), 'inline-flex');
+
+  // The markup those rules read, from the pages themselves.
+  const clock = fixedClock();
+  const app = await startApp({}, { now: () => clock });
+  t.after(app.close);
+  const c = client(app.base), svc = app.tripService;
+  const { trip, token } = await goalTrip(app, { dest: 'cancun', acts: 1 });
+  const main = svc.experienceMain(trip, { goals: GOALS }, GOALS).main, cxq = `b=${budgetFor(trip) / 100}&mem=${GOALS.join(',')}`;
+  const tp = (await c.req(`/trip/${token}?${cxq}`)).text;
+  assert.match(tp, new RegExp(`<p class="tb-mem-protect-link"><a href="[^"]*" data-protect="${main.id}"><svg class="icon"[\\s\\S]*?</svg> Protect this experience</a>`), 'the lock inside the link, on its line');
+  const pp = (await c.req(`/trip/${token}?${cxq}&px=${main.id}`)).text;
+  const opts = pp.slice(pp.indexOf('<ul class="tb-options tb-options-check">'));
+  assert.match(opts.slice(0, opts.indexOf('</ul>')), /<li class="is-on is-protected">[\s\S]*?<span class="tb-delta tb-delta-same">included · remove \(unprotects it\)<\/span>/);
+  const mp = (await c.req(`/trip/${token}/memories?${cxq}`)).text;
+  const prot = section(mp, 'protection'), budget = section(mp, 'budget');
+  assert.match(prot, /<table class="tb-mem-table tb-mem-protect" role="table">\s*<thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">Check<\/th><th scope="col" role="columnheader">What we know<\/th><th scope="col" role="columnheader">Status<\/th><\/tr><\/thead>/);
+  assert.match(budget, /<table class="tb-mem-table tb-mem-alloc">\s*<thead><tr><th scope="col">Part of the trip<\/th><th scope="col" class="tb-mem-num">Amount<\/th><\/tr><\/thead>/);
+  assert.ok(!/tb-leak-table/.test(prot) && !/tb-leak-table/.test(budget), 'the experience tables are not leak tables');
+  for (const row of prot.match(/<tr role="row" class="is-[a-z]+"[^>]*>[\s\S]*?<\/tr>/g)) assert.equal((row.match(/<td role="cell">/g) || []).length, 3, 'three cells a row, one per header');
+  if (main.weather) assert.match(prot, /<p class="tb-small tb-mem-iconline"><svg class="icon"[^>]*>[\s\S]*?<\/svg><span>Weather-dependent: /, 'the sun on the weather line');
+  const r = await c.req('/agent', { method: 'POST', form: { budget: '2,000', mode: 'experience' } });
+  const ag = (await c.req(r.location)).text;
+  assert.match(ag, /<div class="ag-mission-head"><div><p class="tb-kicker">Your mission · Experience Max<\/p><b class="ag-mission-title">The most experience from \$2,000<\/b><\/div>/);
+  await app.agent.jobs.drain();
 });
 
 test('the memories page without free data says so, and calls nothing free', async t => {
@@ -402,7 +505,9 @@ test('WHAT WAS ACTUALLY WORTH IT? after the trip only, nothing preselected; kept
   assert.equal(b.worthIt.other, 'The boat day was the trip'); assert.equal(b.worthIt.defaults, 'not-asked');
   const d0 = await app.store.getRecord('travel_defaults', userId);
   assert.ok(!d0 || !d0.experiencePrefs, 'nothing on the account without the box');
-  const thanks = text((await owner.req(`/booking/${mine.ref}?worth=1`)).text);
+  const thanksPage = (await owner.req(`/booking/${mine.ref}?worth=1`)).text, thanks = text(thanksPage);
+  // The icon before "Kept on this booking" sits on that line (svg is display: block site-wide; the line is a flex row).
+  assert.match(thanksPage, /<p class="tb-small tb-mem-iconline"><svg class="icon"[^>]*>[\s\S]*?<\/svg><span>Kept on this booking only: you did not ask me to remember it\./);
   assert.ok(thanks.includes('Thanks. Here is what was kept, and where.'));
   assert.ok(thanks.includes('Worth it: Main experience and Free time') && thanks.includes('Not worth it: Hotel'));
   assert.ok(thanks.includes('Kept on this booking only: you did not ask me to remember it.'));
@@ -699,7 +804,9 @@ test('customer text on the memories and review pages writes dates the way the pa
   const d = await svc.memories(trip, optimizer.parseContext(Object.fromEntries(new URLSearchParams(cxq))));
   // At the source: the engine's own words carry no ISO date (the protection rows name the departure) and a sentence joined
   // into the final check's keeps one stop, so the agent, which prints them raw, says them as the pages do.
-  assert.ok(d.protection.rows.find(r => r.key === 'availability').value.includes(longDate(trip.spec.depart)));
+  // (Availability names the day the rhythm gives the main experience, or the full days when it has none: never the arrival day.)
+  const avail = d.protection.rows.find(r => r.key === 'availability').value, onDay = d.rhythm.placed.find(p => p.activity.id === d.main.id);
+  assert.ok(avail.includes(longDate(onDay ? onDay.day.date : d.rhythm.days.find(x => x.full).date)) && !avail.includes(longDate(trip.spec.depart)), avail);
   assert.doesNotMatch(d.protection.rows.find(r => r.key === 'availability').value, /\d{4}-\d{2}-\d{2}/);
   assert.ok(!d.finalCheck.ok && d.finalCheck.reasons.some(r => !r.ok && /\.$/.test(r.text)), 'a reason that ends its own sentence is joined');
   assert.doesNotMatch(d.finalCheck.text, /\.\.|\.;/, 'the engine joins it with one stop');
@@ -764,4 +871,168 @@ test('MAKE IT BETTER FOR $0 MORE: the versions that give something up have their
     await checkPriced(svc, priced(gives), `${dest} gives-up`);
   }
   assert.ok(seen > 0, 'a version that gives something up was listed');
+});
+
+// G (page side): the locks the traveler set with the agent ride on every link as `locked=hotel,flight` (the known lock names
+// only, in one order), the experience and leak pages read them into the engines' locks, and no link on the memories, leaks
+// or review page opens a version that moves a locked hotel or flights. The ceiling (b=) is carried to the cent, never
+// rounded up: $1,999.50 read back as $2,000 would let a page offer a version over the maximum.
+test('G: locked= carries the agent\'s hotel and flight locks to every page link, no page offers a version across them, and b= keeps the ceiling\'s cents', async t => {
+  const ctx = optimizer.parseContext({ b: '1999.50', locked: 'flight,bogus,hotel', mem: 'beach' });
+  assert.equal(ctx.budget, 199950, 'the cents are read');
+  assert.deepEqual(ctx.locks, { hotel: true, flight: true }, 'only the known lock names');
+  const back = new URLSearchParams(optimizer.contextParams(ctx));
+  assert.equal(back.get('b'), '1999.50'); assert.equal(back.get('locked'), 'hotel,flight');
+  assert.deepEqual(optimizer.parseContext(Object.fromEntries(back)).locks, ctx.locks, 'the round trip keeps the locks');
+  for (const cents of [200000, 199950, 199901, 10000]) assert.equal(optimizer.parseContext(Object.fromEntries(new URLSearchParams(optimizer.contextParams({ budget: cents })))).budget, cents, `${cents} cents round-trip exactly`);
+  assert.ok(optimizer.parseContext({ b: '1999.999' }).budget <= 199999, 'never rounded up');
+  assert.equal(new URLSearchParams(optimizer.contextParams({ budget: 200000, locks: ['flight', 'hotel'] })).get('locked'), 'hotel,flight', 'a list from the agent reads the same');
+  assert.equal(new URLSearchParams(optimizer.contextParams({ budget: 200000 })).get('locked'), null, 'no lock, no parameter');
+
+  const clock = fixedClock();
+  const app = await startApp({}, { now: () => clock });
+  t.after(app.close);
+  const c = client(app.base);
+  const { trip, token } = await goalTrip(app, { dest: 'cancun', acts: 1 });
+  const cxq = `b=${budgetFor(trip) / 100}&mem=${GOALS.join(',')}`;
+  for (const lk of ['hotel', 'flight', 'hotel,flight']) {
+    let moved = 0, offered = 0;
+    for (const page of ['memories', 'leaks', 'review']) {
+      const html = (await c.req(`/trip/${token}/${page}?${cxq}&locked=${lk}${page === 'review' ? '&seen=0' : ''}`)).text;
+      const links = [...html.matchAll(/href="\/trip\/([^"?\/#]+)(?:\/[a-z]+)?\?([^"#]*)/g)].map(m => ({ token: decodeURIComponent(m[1]), params: new URLSearchParams(m[2].replace(/&amp;/g, '&')) }));
+      for (const l of links) {
+        let s; try { s = decodeSpec(l.token); } catch (e) { continue; }
+        offered++;
+        assert.equal(l.params.get('locked'), lk, `${page}: every link carries the locks (${l.token})`);
+        if ((lk.includes('hotel') && s.hotel !== trip.spec.hotel) || (lk.includes('flight') && s.flight !== trip.spec.flight)) moved++;
+      }
+    }
+    assert.ok(offered > 10, `the pages link versions (${offered})`);
+    assert.equal(moved, 0, `no link moves the ${lk} the traveler locked`);
+  }
+  // Without the locks the same pages do offer other hotels or flights: the parameter is what holds them.
+  const free = (await c.req(`/trip/${token}/memories?${cxq}`)).text;
+  assert.ok([...free.matchAll(/href="\/trip\/([^"?\/#]+)\?/g)].some(m => { try { const s = decodeSpec(decodeURIComponent(m[1])); return s.hotel !== trip.spec.hotel || s.flight !== trip.spec.flight; } catch (e) { return false; } }), 'unlocked, the page compares other hotels or flights');
+  const mem = (await c.req(`/trip/${token}/memories?${cxq}&locked=hotel`)).text;
+  assert.match(text(section(mem, 'location')), /The hotel is locked, so no other hotel is priced for its location/);
+  // The trip page's own lock boxes show the agent's lock as set, and the optimize page holds it whatever the boxes say.
+  const tp = (await c.req(`/trip/${token}?${cxq}&locked=hotel`)).text;
+  assert.match(tp, /<input type="checkbox" name="lk" value="h" checked disabled> [\s\S]*?\(locked with your agent\)<\/label>/);
+  const opt = await c.req(`/trip/${token}/optimize?${cxq}&locked=hotel&lk=d&cap=budget`);
+  assert.equal(opt.status, 200);
+  for (const m of opt.text.matchAll(/href="\/trip\/([^"?\/#]+)\?/g)) { let s; try { s = decodeSpec(decodeURIComponent(m[1])); } catch (e) { continue; } assert.equal(s.hotel, trip.spec.hotel, 'the optimize page keeps the agent\'s hotel lock'); }
+});
+
+// C and E: the agent's EXPERIENCE PROTECTION card stacks on a phone as the pages' PROTECTION does (it kept three columns at
+// 390px, "What we know" a word or two a line), and a signed amount in a lettered version list never breaks after its sign
+// ("−" alone at a line's end, "$68.12" on the next). The 390px Playwright probe checks the same page in a browser.
+test('C + E: the agent\'s protection card is a stacking table on a phone; signed amounts in version lists stay on one line', async t => {
+  const AG = '@media (max-width: 720px)';
+  assert.equal(decl('.ag-protect-table tr', 'display', AG), 'grid', 'each row stacks on a phone');
+  assert.equal(decl('.ag-protect-table td:nth-child(2)', 'grid-column', AG), '1 / -1', 'what we know takes the card\'s width');
+  assert.equal(decl('.ag-protect-table td:nth-child(3)', 'grid-row', AG), '1', 'the status sits beside the check');
+  assert.match(decl('.ag-protect-table thead', 'clip-path', AG) || '', /inset/, 'the header row stays for screen readers');
+  assert.equal(decl('.ag-amt', 'white-space'), 'nowrap', 'a signed amount keeps its sign');
+  assert.equal(decl('.ag-x-list li', 'grid-template-columns', AG), '26px minmax(0, 1fr)', 'the words keep the card\'s width; the button goes under them');
+
+  const clock = fixedClock();
+  const app = await startApp({}, { now: () => clock });
+  t.after(app.close);
+  const agent = app.agent, visitor = 'v-ce-layout-0016';
+  const s0 = await agent.create({ visitor, mission: true, mode: 'experience' });
+  const say = async w => { await agent.say(s0.id, w, {}); await agent.jobs.drain(); return agent.load(s0.id); };
+  await say('$2,000'); await say('Amazing beach and incredible food'); await say('Two of us from NYC');
+  await say('Make it better for $0 more'); await say('Make $250 memorable');
+  const canvas = await app.tripService.price(decodeSpec((await agent.load(s0.id)).current.token));
+  const s = await say(`Protect ${X.mainOf(canvas, ['beach', 'food']).name}`);
+  assert.ok(s.messages.some(m => m.card && m.card.kind === 'protection'), 'the protection card is shown');
+  const c = client(app.base); c.jar.txv = visitor;
+  const page = (await c.req(`/agent/${s0.id}`)).text;
+  const card = page.slice(page.lastIndexOf('<div class="ag-card ag-protection">'));
+  assert.match(card, /<table class="ag-receipt-table ag-protect-table" role="table"><thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">Check<\/th><th scope="col" role="columnheader">What we know<\/th><th scope="col" role="columnheader" class="ag-num">Status<\/th><\/tr><\/thead>/);
+  const rows = card.slice(0, card.indexOf('</table>')).match(/<tr role="row" class="is-(?:ok|verify)" data-key="[a-z]+">[\s\S]*?<\/tr>/g);
+  assert.equal(rows.length, 8, 'every protection row'); for (const r of rows) assert.equal((r.match(/<td role="cell"/g) || []).length, 3);
+  // What the list shows (a hidden say-field repeats the label as data, never on screen).
+  const lists = [...page.matchAll(/<ol class="ag-bp-list ag-x-list">([\s\S]*?)<\/ol>/g)].map(m => m[1].replace(/<input[^>]*>/g, ''));
+  assert.ok(lists.length, 'a lettered version list is shown');
+  let amounts = 0;
+  for (const l of lists) for (const m of l.matchAll(/(<(?:span|b) class="ag-amt">)?[−+–-]\s?\$[\d,]+(?:\.\d{2})?/g)) { amounts++; assert.ok(m[1], `a signed amount sits in .ag-amt: …${l.slice(Math.max(0, m.index - 40), m.index + 20)}`); }
+  assert.ok(amounts > 0, 'the lists show signed amounts');
+});
+
+// The event on a link (ev=, evt=, evn=): the date the traveler built the trip around with the agent, the time slot only
+// when they said one, and a short name. The Memories and review pages read it into the engines' o.event, so THE RHYTHM's
+// EVENT DAY holds no experience, SCHEDULE CONFLICT and the FINAL EXPERIENCE CHECK read it, and every link the pages build
+// carries it on. Odd values are dropped, never a 500: a date that is not a calendar date, a slot outside the engine's
+// names, a name's markup; an event far from the trip, or already past, is dropped from every link and said in words.
+test('the event on a link: the pages draw its EVENT DAY with no experience on it and carry it on; odd values are dropped, never a 500; a far or past one is said', async t => {
+  const P = (q) => optimizer.parseContext(q).event;
+  assert.deepEqual(P({ ev: '2026-11-10', evt: 'Evening', evn: 'your concert' }), { name: 'your concert', date: '2026-11-10', slot: 'evening' });
+  assert.equal(P({ ev: '2026-02-30' }), null, 'not a calendar date');
+  assert.equal(P({ ev: '10 Nov 2026' }), null, 'not an ISO date');
+  assert.equal(P({ evt: 'evening', evn: 'your concert' }), null, 'no date, no event');
+  assert.deepEqual(P({ ev: ['2026-11-10', '2026-12-01'], evt: 'noon' }), { name: null, date: '2026-11-10', slot: null }, 'the first value; a slot outside the names is no slot');
+  const odd = P({ ev: '2026-11-10', evn: '<script>alert(1)</script> "Night" at the Arena, with friends & family and more words' });
+  assert.ok(odd.name.length <= 40 && !/[<>"()]/.test(odd.name), `the name keeps plain words, at most 40 characters: ${odd.name}`);
+  for (const ev of [{ name: 'your concert', date: '2026-11-10', slot: 'morning' }, { name: null, date: '2026-11-10', slot: null }]) assert.deepEqual(optimizer.parseContext(Object.fromEntries(new URLSearchParams(optimizer.contextParams({ budget: 200000, event: ev })))).event, ev, 'the round trip keeps it');
+  assert.equal(new URLSearchParams(optimizer.contextParams({ budget: 200000, event: { name: 'x', date: 'soon' } })).get('ev'), null, 'an event without a readable date is never written');
+
+  const clock = fixedClock();
+  const app = await startApp({}, { now: () => clock });
+  t.after(app.close);
+  const c = client(app.base), svc = app.tripService;
+  const { trip, token } = await goalTrip(app, { dest: 'cancun', acts: 2 });
+  const names = trip.activities.map(a => a.name), cxq = `b=${budgetFor(trip) / 100}&mem=${GOALS.join(',')}`;
+  // The event on a day the rhythm gives an experience when it is not there: the day the event must take from it.
+  const hit = X.rhythm(trip, GOALS).placed[0];
+  assert.ok(hit, 'fixture: the rhythm places an experience on a full day');
+  const date = hit.day.date, on = longDate(date), evq = `ev=${date}&evn=${encodeURIComponent('your concert')}`;
+  const rows = html => [...html.matchAll(/<li class="([^"]*)" data-day="(\d+)" data-label="([^"]*)"[^>]*>([\s\S]*?)<\/li>/g)].map(m => ({ cls: m[1].split(' '), n: Number(m[2]), label: m[3], text: text(m[4]) }));
+  const day = (html, n) => rows(html).find(d => d.n === n);
+  const evLinks = html => [...html.matchAll(/href="(\/trip\/[^"#]+)/g)].map(m => new URLSearchParams((m[1].split('?')[1] || '').replace(/&amp;/g, '&')).get('ev'));
+  const before = (await c.req(`/trip/${token}/memories?${cxq}`)).text;
+  assert.ok(names.some(n => day(before, hit.day.n).text.includes(n)), 'fixture: without the event an experience is on that day');
+  const mem = await c.req(`/trip/${token}/memories?${cxq}&${evq}`);
+  assert.equal(mem.status, 200);
+  const row = day(mem.text, hit.day.n);
+  assert.equal(row.label, 'Event day'); assert.ok(row.cls.includes('is-event') && row.text.includes('Your concert'), JSON.stringify(row));
+  assert.ok(!names.some(n => row.text.includes(n)), `no experience on the event's day: ${JSON.stringify(row)}`);
+  const page = text(mem.text);
+  assert.ok(page.includes(`Your concert on ${on} has its day to itself`) || page.includes(`${on} is the day of your concert`), 'the final check and the conflicts read the event');
+  const carried = evLinks(mem.text);
+  assert.ok(carried.length > 10 && carried.every(v => v === date), 'every link on the page carries the event on');
+  assert.doesNotMatch(page, PRESSURE); assert.doesNotMatch(page, /undefined|NaN|\bnull\b|\[object/);
+  // The review page reads it too, and its links carry it.
+  const rv = await c.req(`/trip/${token}/review?${cxq}&${evq}&seen=0`);
+  assert.equal(rv.status, 200);
+  const fc = text(section(rv.text, 'final-check'));
+  assert.ok(fc.includes(`Your concert on ${on} has its day to itself`) || fc.includes(`${on} is the day of your concert`), fc);
+  assert.ok(evLinks(rv.text).every(v => v === date), 'every link on the review page carries the event on');
+  // A slot the traveler said rides along, and a name's markup never reaches the page as markup.
+  const sl = await c.req(`/trip/${token}/memories?${cxq}&ev=${date}&evt=evening&evn=${encodeURIComponent('<b>the show</b>')}`);
+  assert.equal(sl.status, 200);
+  const shown = optimizer.parseContext({ ev: date, evn: '<b>the show</b>' }).event.name;
+  assert.ok(shown && day(sl.text, hit.day.n).text.includes(`${shown.charAt(0).toUpperCase()}${shown.slice(1)} (evening)`), `the event is named with the time said: ${JSON.stringify(day(sl.text, hit.day.n))}`);
+  assert.ok(!sl.text.includes('<b>the show</b>') && evLinks(sl.text).length && evLinks(sl.text).every(v => v === date));
+  // Odd values: dropped, the page as without an event, never a 500.
+  for (const q of ['ev=2026-02-30&evt=evening', 'ev=tomorrow&evn=x', `ev=${date}x`, 'evt=evening&evn=your+concert', 'ev=%00&evt=%3Cscript%3E']) {
+    for (const p of ['memories', 'review', 'leaks']) {
+      const r = await c.req(`/trip/${token}/${p}?${cxq}&${q}${p === 'review' ? '&seen=0' : ''}`);
+      assert.equal(r.status, 200, `${p}?${q}`);
+      assert.ok(!/\bis-event\b/.test(r.text) && evLinks(r.text).every(v => v === null), `${p}?${q}: no event read or carried`);
+    }
+  }
+  // Far from the trip, or already past: dropped from every link and said, never read as this trip's reservation.
+  const far = addDays(trip.spec.depart, trip.spec.nights + 31), past = addDays(today(clock), -1);
+  assert.ok(svc.eventFor(trip, { event: { date: addDays(trip.spec.depart, trip.spec.nights + 30) } }), 'thirty days after the trip is near');
+  assert.equal(svc.eventFor(trip, { event: { date: far } }), null, 'thirty-one days after is not');
+  for (const [d, words] of [[far, 'is more than 30 days from this trip\'s dates'], [past, 'is already past']]) {
+    for (const p of ['memories', 'review']) {
+      const r = await c.req(`/trip/${token}/${p}?${cxq}&ev=${d}&evn=your+concert${p === 'review' ? '&seen=0' : ''}`);
+      assert.equal(r.status, 200);
+      const note = (r.text.match(/<p [^>]*data-event-note[^>]*>([\s\S]*?)<\/p>/) || [])[1];
+      assert.ok(note && text(note).includes(`(your concert on ${longDate(d)}) ${words}`) && text(note).includes('so this page does not plan around it'), `${p} ${d}: ${note}`);
+      assert.ok(!/\bis-event\b/.test(r.text) && evLinks(r.text).every(v => v === null), `${p} ${d}: not read, not carried`);
+    }
+  }
 });

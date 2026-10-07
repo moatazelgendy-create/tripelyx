@@ -148,18 +148,54 @@ function budgetContext(q) {
 // traveler ranked, `mem=beach,food`, at most three, only the chips the engine knows, in the order
 // said) and `px` (the activity id of the main experience they protected): both ride on every link so
 // no page forgets what the trip is for, and a protected experience is never offered for removal.
-const BAGS = ['personal', 'carry-on', 'checked'];
+// `locked` (locked=hotel,flight) carries the parts the traveler locked with the agent (the hotel, the flights, the
+// dates, the length, the destination) to every page opened from the canvas, so no page offers a version that moves
+// one of them: the experience and leak pages read it into the engines' o.locks, and the trip pages' "lk" checkboxes
+// (the optimize page's own letters) stay separate. Only the known lock names are read, in one canonical order.
+const BAGS = ['personal', 'carry-on', 'checked'], LOCK_NAMES = ['hotel', 'flight', 'dates', 'nights', 'dest'];
+function lockList(v) {
+  const raw = Array.isArray(v) ? v : typeof v === 'string' ? v.split(',') : v && typeof v === 'object' ? Object.keys(v).filter(k => v[k]) : [];
+  const want = new Set(raw.map(x => String(x).trim().toLowerCase()));
+  return LOCK_NAMES.filter(k => want.has(k));
+}
+const parseLocks = v => Object.fromEntries(lockList(typeof v === 'string' ? v : []).map(k => [k, true]));
+// `ev`, `evt` and `evn` carry the event the traveler built the trip around with the agent (BUILD AROUND AN EVENT / A
+// RESERVATION): its date (ev=2026-11-10), its time slot only when they said one (evt=evening, one of the engine's slot
+// names) and a short name (evn=your concert). Without them a page opened from the canvas draws the rhythm with no EVENT
+// DAY and could put an experience on the day the traveler already has. The date must be a real calendar date; a slot
+// outside the known names is dropped (an unknown time keeps the whole day, never a guessed one); the name keeps letters,
+// digits and plain punctuation, at most 40 characters, and is escaped like every other value where it is shown. Anything
+// unreadable is dropped, never an error, and an event with no readable date is no event. Whether it is near enough to a
+// trip to be read is the page's call (service.eventFor), since only the page knows the trip.
+const EVENT_SLOTS = ['morning', 'day', 'evening', 'night'];
+const eventWords = v => (typeof v === 'string' ? v.normalize('NFC').replace(/[^\p{L}\p{N} '’&.,-]+/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, 40).trim() : '');
+function parseEvent(date, slot, name) {
+  const d = typeof date === 'string' ? date.trim() : '';
+  if (!isIsoDate(d)) return null;
+  const t = typeof slot === 'string' ? slot.trim().toLowerCase() : '';
+  return { name: eventWords(name) || null, date: d, slot: EVENT_SLOTS.includes(t) ? t : null };
+}
+const eventParams = e => { const ev = e && typeof e === 'object' ? parseEvent(e.date, e.slot, e.name) : null; return ev ? { ev: ev.date, evt: ev.slot || undefined, evn: ev.name || undefined } : {}; };
 function parseGoals(v) {
   if (typeof v !== 'string') return [];
   const out = [];
   for (const g of v.split(',').map(x => x.trim().toLowerCase())) if (GOAL_KEYS.includes(g) && !out.includes(g)) out.push(g);
   return out.slice(0, 3);
 }
+// b= in dollars, whole (b=2000, read as before) or with cents (b=1999.50), into cents, held to $100–$1,000,000. Cents are
+// read exactly and anything finer is cut, never rounded up: a ceiling read back higher than it was would let a page
+// offer a version over the traveler's maximum.
+function budgetCents(v) {
+  const t = typeof v === 'string' ? v.trim().replace(/[,$\s]/g, '') : null;
+  if (t && /^\d{1,9}\.\d+$/.test(t)) return Math.min(100000000, Math.max(10000, Math.floor(Number(t) * 100 + 1e-6)));
+  const d = int(v, null, 100, 1000000);
+  return d ? d * 100 : null;
+}
 function parseContext(raw = {}) {
   const r = Object.fromEntries(Object.entries(raw || {}).map(([k, v]) => [k, Array.isArray(v) ? v[0] : v]));
-  const b = int(r.b, null, 100, 1000000);
+  const b = budgetCents(r.b);
   return {
-    budget: b ? b * 100 : null, keep: b ? int(r.k, 0, 0, 1000000) * 100 : 0, allowOver: r.ov === '10' ? 10 : 0,
+    budget: b, keep: b ? int(r.k, 0, 0, 1000000) * 100 : 0, allowOver: r.ov === '10' ? 10 : 0,
     style: STYLES.includes(r.style) ? r.style : 'surprise', priority: PRIORITIES.includes(r.prio) ? r.prio : 'price',
     nightsAsked: int(r.nights, null, 2, 14) || undefined, searchParams: typeof r.s === 'string' ? r.s.slice(0, 400) : null,
     rules: parseRules(r),
@@ -169,12 +205,18 @@ function parseContext(raw = {}) {
     promo: typeof r.promo === 'string' && r.promo.trim() ? r.promo.trim().slice(0, 30) : null,
     goals: parseGoals(r.mem),
     protect: typeof r.px === 'string' && ACTIVITY_ID.test(r.px) ? r.px : null,
+    locks: parseLocks(r.locked),
+    event: parseEvent(r.ev, r.evt, r.evn),
   };
 }
 
+// The ceiling rides as dollars, with the cents when it has any (b=1999.50): rounded to whole dollars it could move up
+// (a $1,999.50 ceiling read back as $2,000), and every page would then offer versions over the real maximum. The
+// maximum is a ceiling, never a target, so it is carried exactly, never rounded up.
+const dollarsParam = c => (c % 100 ? (c / 100).toFixed(2) : String(c / 100));
 function contextParams(ctx, extra = {}) {
   const goals = parseGoals(Array.isArray(ctx.goals) ? ctx.goals.join(',') : ctx.goals);
-  const p = { b: ctx.budget ? Math.round(ctx.budget / 100) : undefined, k: ctx.budget && ctx.keep ? Math.round(ctx.keep / 100) : undefined, ov: ctx.allowOver ? '10' : undefined, style: ctx.style && ctx.style !== 'surprise' ? ctx.style : undefined, prio: ctx.priority && ctx.priority !== 'price' ? ctx.priority : undefined, nights: ctx.nightsAsked, s: ctx.searchParams || undefined, ...rulesParams(ctx.rules), dm: ctx.dateMode === 'exact' ? 'exact' : undefined, bg: BAGS.includes(ctx.bags) ? ctx.bags : undefined, dest: ctx.dest || undefined, promo: ctx.promo || undefined, mem: goals.length ? goals.join(',') : undefined, px: typeof ctx.protect === 'string' && ACTIVITY_ID.test(ctx.protect) ? ctx.protect : undefined, ...extra };
+  const p = { b: ctx.budget ? dollarsParam(ctx.budget) : undefined, k: ctx.budget && ctx.keep ? Math.round(ctx.keep / 100) : undefined, ov: ctx.allowOver ? '10' : undefined, style: ctx.style && ctx.style !== 'surprise' ? ctx.style : undefined, prio: ctx.priority && ctx.priority !== 'price' ? ctx.priority : undefined, nights: ctx.nightsAsked, s: ctx.searchParams || undefined, ...rulesParams(ctx.rules), dm: ctx.dateMode === 'exact' ? 'exact' : undefined, bg: BAGS.includes(ctx.bags) ? ctx.bags : undefined, dest: ctx.dest || undefined, promo: ctx.promo || undefined, mem: goals.length ? goals.join(',') : undefined, px: typeof ctx.protect === 'string' && ACTIVITY_ID.test(ctx.protect) ? ctx.protect : undefined, locked: lockList(ctx.locks).join(',') || undefined, ...eventParams(ctx.event), ...extra };
   // A list (the customizer's experiences) is repeated, one parameter per item, so the route reads it
   // back as a list; an empty list stays as one empty parameter, which means "none". Joined with commas
   // it would reach the token as a single name and the token would not decode.
@@ -547,4 +589,4 @@ function oneRuleAway(inventory, q, { settings, now = new Date() }) {
   return { works, notAlone };
 }
 
-module.exports = { search, dreamSearch, oneRuleAway, parseSearch, searchParams, budgetContext, parseContext, contextParams, parseGoals, parseRules, rulesParams, rulesAllowFlight, rulesAllowHotel, sameCountry, tradeoffs, scoreTrip, whyThisTrip, customizerOptions, memoInventory, activitySets, hotelAllowed, candidateDates, packagesFor, int, STYLES, PRIORITIES, WHO_DEFAULT, GOAL_KEYS };
+module.exports = { search, dreamSearch, oneRuleAway, parseSearch, searchParams, budgetContext, parseContext, contextParams, parseGoals, parseLocks, lockList, LOCK_NAMES, parseEvent, EVENT_SLOTS, parseRules, rulesParams, rulesAllowFlight, rulesAllowHotel, sameCountry, tradeoffs, scoreTrip, whyThisTrip, customizerOptions, memoInventory, activitySets, hotelAllowed, candidateDates, packagesFor, int, STYLES, PRIORITIES, WHO_DEFAULT, GOAL_KEYS };

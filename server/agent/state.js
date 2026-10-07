@@ -2,7 +2,11 @@
 // the source of truth: every answer the agent gives is built from this object plus what the engines
 // return, and every rebuild starts from it. Money is in cents. Nothing here is a travel fact.
 const { addDays, today } = require('../lib/dates');
-const { WHO_DEFAULT } = require('../trips/optimizer');
+const { WHO_DEFAULT, lockList } = require('../trips/optimizer');
+const { longDate } = require('../trips/words');
+// What the traveler said, said back in words (the contract and the mission panel are customer text): a date as the
+// pages write it, a month as "November 2026"; the state keeps the ISO value the engines read.
+const monthWords = m => (/^\d{4}-\d{2}$/.test(String(m || '')) ? new Intl.DateTimeFormat('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${m}-01T00:00:00Z`)) : m);
 
 // 'experience' is the main experience the traveler protects (Experience Max): no version the agent
 // applies on a plain approval drops it; only "drop <it>" or "unprotect" lets it go.
@@ -185,9 +189,30 @@ function toQuery(s, { maps }) {
 // chose as one they kept, and never moves a date they fixed.
 // Experience Max adds the ranked memory goals (`mem=` on every link) and the protected main
 // experience (`px=`), so every page and every engine opened from here keeps both.
+// The parts the traveler locked (and a departure they fixed) ride on the context as `locks`, so every page link built
+// from it (optimizer.contextParams: locked=hotel,flight) holds them: the Memories, leaks and review pages opened from the
+// canvas never offer a version that moves a hotel, flights, dates, length or destination locked here. Only the names a
+// page can hold are carried; the budget and the protected experience ride as b= and px=.
+// The event the traveler built the trip around (BUILD AROUND AN EVENT / A RESERVATION: name, date, the time slot only when
+// they said one) rides on the context as `event` too (optimizer.contextParams: ev=, evt=, evn=), so the Memories and review
+// pages opened from the canvas draw the same EVENT DAY the agent's own engine calls read through o.event, and never put an
+// experience on the day the traveler already has. An event still waiting for its date is not one yet and is not carried.
+function linkLocks(s) { const k = lockList(effectiveLocks(s)); return k.length ? Object.fromEntries(k.map(x => [x, true])) : null; }
+const linkEvent = s => (s.event && s.event.date ? { name: s.event.name || null, date: s.event.date, slot: s.event.slot || null } : null);
 function budgetContext(s, q) {
-  const px = protectedId(s);
-  return { budget: q.budget, keep: q.keep || 0, allowOver: q.allowOver, style: q.style, priority: q.priority, nightsAsked: s.nightsStated || s.nights ? q.nights : null, rules: q.rules, bags: s.bags || null, dest: s.destination || null, dateMode: s.dateMode === 'exact' && s.depart ? 'exact' : null, ...(s.goals && s.goals.length ? { goals: s.goals.slice(0, 3) } : {}), ...(px ? { protect: px } : {}) };
+  const px = protectedId(s), locks = linkLocks(s), event = linkEvent(s);
+  return { budget: q.budget, keep: q.keep || 0, allowOver: q.allowOver, style: q.style, priority: q.priority, nightsAsked: s.nightsStated || s.nights ? q.nights : null, rules: q.rules, bags: s.bags || null, dest: s.destination || null, dateMode: s.dateMode === 'exact' && s.depart ? 'exact' : null, ...(s.goals && s.goals.length ? { goals: s.goals.slice(0, 3) } : {}), ...(px ? { protect: px } : {}), ...(locks ? { locks } : {}), ...(event ? { event } : {}) };
+}
+// The memories page opened from the canvas reads its ladder from the link, so the link carries the rules the agent's
+// ladder reads, no more and no less: a length only when the traveler stated it (the stated one) or locked it (the trip's
+// own), and the dates held when they are fixed or locked. A length the agent assumed, or one that came with a version the
+// traveler took, is not a rule: carried as `nights=` it would hold the page to that one length while the agent opens it
+// ("N-1 or N nights"), and the two would say different sweet spots for the same trip.
+// The locks are the agent's effective ones, read again here (not only the context's), so the page holds the same hotel,
+// flights, dates, length and destination the agent's own ladder holds.
+function memoriesContext(s, ctx, trip) {
+  const nights = s.locks && s.locks.nights && trip ? trip.spec.nights : s.nightsStated ? ctx.nightsAsked : null, locks = linkLocks(s);
+  return { ...ctx, nightsAsked: nights || null, dateMode: effectiveLocks(s).dates ? 'exact' : ctx.dateMode, locks: locks || undefined, event: linkEvent(s) || undefined };
 }
 // The activity id no version may drop on a plain approval, when the traveler (or the results, said
 // aloud) protected one; null otherwise.
@@ -208,15 +233,15 @@ function missionRules(s, { maps }) {
   if (s.hotelRules.breakfast) locked.push('Breakfast included');
   if (s.transfer) locked.push('Airport transfers included');
   if (s.refundable) locked.push('Refundable');
-  if (s.dateMode === 'exact' && s.depart) locked.push(`Leaving ${s.depart}`); else if (s.dateMode === 'flexible' && s.month) preferred.push(`In ${s.month}`); else open.push('Exact dates (flexible)');
+  if (s.dateMode === 'exact' && s.depart) locked.push(`Leaving ${longDate(s.depart)}`); else if (s.dateMode === 'flexible' && s.month) preferred.push(`In ${monthWords(s.month)}`); else open.push('Exact dates (flexible)');
   if (s.destination) { const d = maps.getDestination(s.destination); (s.locks.dest ? locked : preferred).push(`Destination: ${d ? d.name : s.destination}`); } else if (s.notCountry) preferred.push(`Outside ${s.notCountry}`); else if (s.region === 'international') preferred.push('International'); else open.push('Destination');
   if (s.nights) (s.locks.nights ? locked : preferred).push(`${s.nights} nights`); else open.push('Trip length');
   if (s.style && s.style !== 'surprise') preferred.push({ beach: 'Beach', city: 'City break', adventure: 'Adventure', romantic: 'Romantic', family: 'Family', 'all-inclusive': 'All-inclusive' }[s.style] || s.style);
   if (s.priority) preferred.push({ hotel: 'The hotel matters most', flights: 'The flights matter most', longer: 'More nights matter most', activities: 'Experiences matter most', price: 'Lowest price matters most' }[s.priority]);
   if (s.bags) preferred.push({ personal: 'Personal item only', 'carry-on': 'Carry-on only', checked: 'A checked bag' }[s.bags]);
   if (s.savingsLevel === 'aggressive') preferred.push('Aggressive savings: every trade-off said, hard rules kept');
-  if (protectedId(s)) locked.push(`Main experience: ${s.mainName || s.mainExperience} (${s.protectAuto ? 'protected by me from the results; say "unprotect" to free it' : 'protected, as you asked'})`);
-  if (s.event && s.event.date) locked.push(`${s.event.name ? s.event.name.charAt(0).toUpperCase() + s.event.name.slice(1) : 'Your reservation'} on ${s.event.date}: arrive a day before, leave a day after`);
+  if (protectedId(s)) locked.push(`Main experience: ${s.mainName || s.mainExperience} (${s.protectAuto ? 'protected by me from the results; say “unprotect” to free it' : 'protected, as you asked'})`);
+  if (s.event && s.event.date) locked.push(`${s.event.name ? s.event.name.charAt(0).toUpperCase() + s.event.name.slice(1) : 'Your reservation'} on ${longDate(s.event.date)}: arrive a day before, leave a day after`);
   if (s.goals && s.goals.length) preferred.push(`What you want to remember: ${goalWords(s.goals)}`);
   for (const k of ['hotel', 'flight', 'dates', 'nights', 'dest']) if (s.locks[k]) { const w = { hotel: 'The hotel', flight: 'The flights', dates: 'The dates', nights: 'The length', dest: 'The destination' }[k]; if (!locked.some(x => x.startsWith(w))) locked.push(`${w} (locked)`); }
   if (!s.locks.hotel && !s.hotelRules.minStars && !s.hotelRules.allInclusive) open.push('Hotel and room');
@@ -252,8 +277,8 @@ function askedFor(s, { maps }) {
   if (s.notCountry) rows.push(['Region', `Outside ${s.notCountry}`]);
   else if (s.region === 'international') rows.push(['Region', 'International']);
   if (s.nights) rows.push(['Length', `${s.nights} nights`]);
-  if (s.dateMode === 'exact' && s.depart) rows.push(['Leaving', s.depart]);
-  else if (s.dateMode === 'flexible' && s.month) rows.push(['When', s.month]);
+  if (s.dateMode === 'exact' && s.depart) rows.push(['Leaving', longDate(s.depart)]);
+  else if (s.dateMode === 'flexible' && s.month) rows.push(['When', monthWords(s.month)]);
   else if (s.dateMode === 'anytime') rows.push(['Dates', 'Flexible']);
   if (s.style) rows.push(['Style', s.style === 'all-inclusive' ? 'All-inclusive' : s.style.charAt(0).toUpperCase() + s.style.slice(1)]);
   if (s.flightStops === 'nonstop') rows.push(['Flights', s.flightRule === 'hard' ? 'Nonstop only' : 'Nonstop if possible']);
@@ -271,10 +296,10 @@ function askedFor(s, { maps }) {
   // Only a protection the traveler set is something they asked for; one the results set is the agent's
   // (said on the mission panel as such), never listed under "You asked for".
   if (protectedId(s) && !s.protectAuto) rows.push(['Main experience', `${s.mainName || s.mainExperience}, protected`]);
-  if (s.event && s.event.date) rows.push(['Built around', `${s.event.name || 'your reservation'} on ${s.event.date}`]);
+  if (s.event && s.event.date) rows.push(['Built around', `${s.event.name || 'your reservation'} on ${longDate(s.event.date)}`]);
   const locks = lockedWords(s);
   if (locks.length) rows.push(['Locked', locks.join(', ')]);
   return rows;
 }
 
-module.exports = { newState, applyUpdates, nextQuestion, toQuery, budgetContext, bookingBudget, vacationBudget, rulesOf, lockedWords, effectiveLocks, missionRules, pushMessage, askedFor, protectedId, experienceMode, goalWords, LOCK_KEYS, LOCK_LABEL, GOAL_LABEL };
+module.exports = { newState, applyUpdates, nextQuestion, toQuery, budgetContext, bookingBudget, vacationBudget, rulesOf, lockedWords, effectiveLocks, missionRules, pushMessage, askedFor, memoriesContext, protectedId, experienceMode, goalWords, LOCK_KEYS, LOCK_LABEL, GOAL_LABEL };

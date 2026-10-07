@@ -310,17 +310,19 @@
 .tb-recipe-note { color: var(--muted); font-size: 13.5px; margin: 12px 0 0; }
 
 /* Customizer */
-.tb-options { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+.tb-options { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; } /* a row never widens the list past its column */
 .tb-opt { display: flex; align-items: center; gap: 14px; justify-content: space-between; padding: 12px 16px; border: 1.5px solid var(--line); border-radius: var(--radius); background: #fff; color: var(--ink); text-decoration: none; font-size: 15px; line-height: 1.4; transition: border-color .2s, background .2s; }
 .tb-opt small { color: var(--muted); }
 .tb-opt-text { flex: 1 1 auto; min-width: 0; }
 .tb-opt > .tb-delta { flex: none; }
 a.tb-opt:hover { border-color: var(--blue-500); background: var(--sky-50); }
 .tb-options .is-on .tb-opt { border-color: var(--navy-800); background: var(--blue-50); }
-.tb-options-check .tb-opt { justify-content: flex-start; }
+/* An experience row wraps instead of widening: a long pill ("included · remove (unprotects it)") goes under the name on a
+   phone and may wrap itself, so the page never scrolls sideways. */
+.tb-options-check .tb-opt { justify-content: flex-start; flex-wrap: wrap; }
 .tb-options-check .tb-opt > .icon { width: 22px; height: 22px; color: var(--blue-500); flex: none; }
-.tb-options-check .tb-opt > span:not(.tb-delta) { flex: 1; }
-.tb-options-check .tb-opt > .tb-delta { margin-left: auto; }
+.tb-options-check .tb-opt > span:not(.tb-delta) { flex: 1 1 8em; min-width: 0; }
+.tb-options-check .tb-opt > .tb-delta { margin-left: auto; white-space: normal; max-width: 100%; text-align: center; }
 .tb-stars { color: #d99a00; letter-spacing: 1px; }
 .tb-pills { display: flex; flex-wrap: wrap; gap: 8px; list-style: none; padding: 0; margin: 0; }
 .tb-pill { display: inline-flex; flex-direction: column; align-items: center; min-width: 78px; padding: 8px 12px; border: 1.5px solid var(--line); border-radius: var(--radius-sm); text-decoration: none; color: var(--ink); font-weight: 600; font-size: 14px; background: #fff; }
@@ -835,9 +837,9 @@ a.tb-pill:hover { border-color: var(--blue-500); }
 .tb-leak-head { margin-bottom: 24px; }
 .tb-leak-head h1 { font-size: 36px; margin-bottom: 6px; }
 .tb-leak-signature { font-weight: 700; color: var(--navy-800); font-size: 17px; margin: 0 0 8px; }
-.tb-leak-table { width: 100%; border-collapse: collapse; font-size: 15px; margin: 8px 0 12px; }
-.tb-leak-table th, .tb-leak-table td { text-align: left; padding: 8px 10px 8px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
-.tb-leak-table th { font-size: 12.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.tb-leak-table, .tb-mem-table { width: 100%; border-collapse: collapse; font-size: 15px; margin: 8px 0 12px; }
+.tb-leak-table th, .tb-leak-table td, .tb-mem-table th, .tb-mem-table td { text-align: left; padding: 8px 10px 8px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+.tb-leak-table th, .tb-mem-table th { font-size: 12.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
 .tb-leak-table td small { display: block; color: var(--muted); font-size: 13px; }
 .tb-leak-table .tb-leak-num { text-align: right; white-space: nowrap; }
 .tb-leak-table tfoot td { color: var(--muted); font-size: 14px; }
@@ -880,7 +882,7 @@ a.tb-pill:hover { border-color: var(--blue-500); }
 @media (max-width: 640px) {
   .tb-leak-list li, .tb-leak-two { grid-template-columns: minmax(0, 1fr); }
   .tb-leak-steps, .tb-leak-bags { display: block; overflow-x: auto; } /* the step and bag tables scroll inside their panel on a phone */
-  .tb-leak-table th:nth-child(2), .tb-leak-breakdown td:nth-child(2) { display: none; }
+  .tb-leak-breakdown th:nth-child(2), .tb-leak-breakdown td:nth-child(2) { display: none; } /* the breakdown's Kind column, header and cells together; no other table loses a column */
 }
 
 /* ---------- Experience Max (tb-mem-): spend on the memories, not the labels ---------- */
@@ -920,6 +922,8 @@ a.tb-mem-chip:hover, a.tb-mem-chip:focus-visible { border-color: var(--blue-500)
 .tb-mem-days li.is-main { background: #e3f3ea; }
 .tb-mem-days li.is-main b { color: #0c5e43; }
 .tb-mem-days li.is-open { background: var(--sky-50); }
+.tb-mem-days li.is-event { background: #fff4d6; } /* the traveler's own event day: theirs, never an open day */
+.tb-mem-days li.is-event b { color: #7a4a06; }
 .tb-mem-day { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; }
 .tb-leak-block.is-pick { background: #e3f3ea; box-shadow: inset 0 0 0 1.5px #a7d8bf; }
 .tb-mem-list li { grid-template-columns: minmax(0, 1fr) auto minmax(0, auto); }
@@ -938,6 +942,15 @@ a.tb-mem-chip:hover, a.tb-mem-chip:focus-visible { border-color: var(--blue-500)
 .tb-mem-dupes { list-style: none; padding: 0; margin: 0; display: grid; gap: 14px; }
 .tb-mem-dupes h3 { font-size: 16px; margin: 0 0 4px; }
 .tb-mem-dupes h3 small { color: var(--muted); font-weight: 500; font-size: 13.5px; }
+.tb-mem-table .tb-mem-num { text-align: right; white-space: nowrap; }
+.tb-mem-table tfoot td { color: var(--muted); font-size: 14px; }
+.tb-mem-table tfoot .tb-mem-total td { color: var(--ink); font-weight: 700; font-size: 16px; border-bottom: 0; }
+/* An icon beside a line of text stays on that line (svg is display: block site-wide): the lock before "Protect this
+   experience", the sun before the weather line, the check before "Kept on this booking". */
+.tb-mem-iconline { display: flex; align-items: flex-start; gap: 6px; }
+.tb-mem-iconline > .icon { width: 15px; height: 15px; flex: none; margin-top: .2em; }
+.tb-mem-protect-link a { display: inline-flex; align-items: center; gap: 4px; }
+.tb-mem-protect-link a .icon { width: 14px; height: 14px; }
 .tb-mem-protect tr.is-ok td:last-child { color: #0c5e43; font-weight: 600; }
 .tb-mem-protect tr.is-verify td:last-child { color: var(--warning); font-weight: 600; }
 .tb-mem-checks li.is-miss .icon { color: var(--warning); }
@@ -962,7 +975,15 @@ a.tb-mem-chip:hover, a.tb-mem-chip:focus-visible { border-color: var(--blue-500)
   .tb-mem-days { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .tb-mem-list li { grid-template-columns: minmax(0, 1fr); }
   .tb-mem-chip { font-size: 14px; padding: 6px 12px; }
-  .tb-mem-protect th:nth-child(3), .tb-mem-protect td:nth-child(3) { white-space: nowrap; }
+  /* PROTECTION stacks: the check and its status on one line, what we know under it, nothing clipped; the header row stays
+     for screen readers (the table carries its roles). */
+  .tb-mem-protect thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .tb-mem-protect, .tb-mem-protect tbody { display: block; width: 100%; }
+  .tb-mem-protect tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .tb-mem-protect td { display: block; padding: 0; border: 0; min-width: 0; overflow-wrap: anywhere; }
+  .tb-mem-protect td:nth-child(1) { grid-column: 1; grid-row: 1; font-weight: 600; }
+  .tb-mem-protect td:nth-child(2) { grid-column: 1 / -1; grid-row: 2; }
+  .tb-mem-protect td:nth-child(3) { grid-column: 2; grid-row: 1; text-align: right; }
   .tb-mem-foot .btn { width: 100%; justify-content: center; }
 }
 
@@ -1267,8 +1288,10 @@ a.tb-mem-chip:hover, a.tb-mem-chip:focus-visible { border-color: var(--blue-500)
 .ag-way-num { display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; background: var(--navy-800); color: #fff; font-weight: 700; font-size: 14px; flex: none; }
 .ag-way-line { margin: 0; color: var(--muted); font-size: 13px; }
 .ag-way .ag-trip { margin: 0; }
-.ag-way-nums { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-.ag-way-nums > div { background: #fff; border-radius: 8px; padding: 6px 8px; }
+/* TOTAL and KEEP sit side by side while both amounts fit, and stack when the card is narrower: a box never spills past
+   the card (1fr 1fr could not shrink below an amount's width). */
+.ag-way-nums { display: flex; flex-wrap: wrap; gap: 6px; }
+.ag-way-nums > div { background: #fff; border-radius: 8px; padding: 6px 8px; flex: 1 1 0; min-width: max-content; max-width: 100%; }
 .ag-way-nums span { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 700; }
 .ag-way-nums b { display: block; font-size: 17px; }
 .ag-way-nums .is-keep b { color: #0c5e43; }
@@ -1294,7 +1317,9 @@ a.tb-mem-chip:hover, a.tb-mem-chip:focus-visible { border-color: var(--blue-500)
 .ag-mission .tb-kicker { color: rgba(255, 255, 255, .7); }
 .ag-mission-head { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; flex-wrap: wrap; }
 .ag-mission-head b { font-size: 16px; }
-.ag-mission-status { font-size: 12.5px; background: rgba(255, 255, 255, .14); border-radius: 999px; padding: 4px 10px; white-space: nowrap; }
+.ag-mission-head .tb-kicker, .ag-mission-title { display: block; } /* the kicker and the title are two lines: "YOUR MISSION · EXPERIENCE MAX" then the title, never run together */
+.ag-mission-head .tb-kicker { margin: 0 0 2px; }
+.ag-mission-status { font-size: 12.5px; background: rgba(255, 255, 255, .14); border-radius: 14px; padding: 4px 10px; max-width: 100%; overflow-wrap: anywhere; } /* a status that names the version on the canvas wraps inside the panel, never past it */
 .ag-mission-status.is-running::before { content: ''; display: inline-block; width: 8px; height: 8px; border-radius: 50%; border: 2px solid #fff; border-top-color: transparent; margin-right: 6px; vertical-align: -1px; animation: spin .8s linear infinite; }
 .ag-mission-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 10px 0 0; }
 .ag-mission-facts dt { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: rgba(255, 255, 255, .7); font-weight: 700; }
@@ -1541,6 +1566,7 @@ a.tb-mem-chip:hover, a.tb-mem-chip:focus-visible { border-color: var(--blue-500)
 .ag-mission-facts .ag-mission-wide { grid-column: 1 / -1; }
 .ag-protected { margin-top: 10px; padding: 8px 10px; border-radius: 10px; background: rgba(255, 255, 255, .1); display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
 .ag-protected p { margin: 0; }
+.ag-protected-line, .ag-protected-line b { font-size: 14px; line-height: 1.5; } /* one size for the name and its sentence: even lines */
 .ag-protected .tb-kicker { width: 100%; }
 .ag-protected .tb-muted { color: rgba(255, 255, 255, .75); }
 .ag-mission .ag-protected .btn-ghost { color: #fff; border-color: rgba(255, 255, 255, .45); }
@@ -1552,6 +1578,24 @@ a.tb-mem-chip:hover, a.tb-mem-chip:focus-visible { border-color: var(--blue-500)
 .ag-x-chips { margin-top: 6px; }
 .ag-worth { margin: 0 0 12px; display: grid; gap: 6px; }
 .ag-worth .ag-chips { margin: 0; }
+/* A signed amount ("−$68.12") never breaks between its sign and its number. */
+.ag-amt { white-space: nowrap; }
+.ag-protect-table th { text-align: left; font-size: 12.5px; color: var(--muted); font-weight: 600; padding: 4px 0; }
+.ag-protect-table tr.is-ok td:last-child { color: #0c5e43; font-weight: 600; }
+.ag-protect-table tr.is-verify td:last-child { color: var(--warning); font-weight: 600; }
 @media (max-width: 720px) {
   .ag-ab .ag-contract-cols { grid-template-columns: 1fr; }
+  /* EXPERIENCE PROTECTION stacks on a phone, as the pages' PROTECTION does (.tb-mem-protect): the check and its status
+     on one line, what we know under it at the card's full width; the header row stays for screen readers. */
+  .ag-protect-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .ag-protect-table, .ag-protect-table tbody { display: block; width: 100%; }
+  .ag-protect-table tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; padding: 6px 0; border-top: 1px solid var(--line); }
+  .ag-protect-table td { display: block; padding: 0; border: 0; min-width: 0; overflow-wrap: anywhere; }
+  .ag-protect-table td + td { padding-left: 0; }
+  .ag-protect-table td:nth-child(1) { grid-column: 1; grid-row: 1; font-weight: 600; }
+  .ag-protect-table td:nth-child(2) { grid-column: 1 / -1; grid-row: 2; }
+  .ag-protect-table td:nth-child(3) { grid-column: 2; grid-row: 1; text-align: right; }
+  /* A lettered version list keeps its words at the card's width: "Take it" goes under them, not beside them. */
+  .ag-x-list li { grid-template-columns: 26px minmax(0, 1fr); }
+  .ag-x-list li > .ag-say, .ag-x-list li > span:last-child { grid-column: 2; justify-self: start; margin-left: 0; }
 }
