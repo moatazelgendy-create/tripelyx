@@ -27,11 +27,12 @@ const WHY = [
 ];
 
 // The sample stay in the device mockup: Jul 15 to 20, two guests, in the coming North Coast summer,
-// so its dates are never in the past. The mockup is an illustration, not an offer, so it shows no
-// price and no rating.
+// so its dates are never in the past (from Jul 15 on it is next year's, so not even in New Alamein,
+// three hours ahead of UTC, is the check-in already yesterday). The mockup is an illustration, not an
+// offer, so it shows no price and no rating.
 function sampleStayYear(now = new Date()) {
   const year = now.getUTCFullYear();
-  return today(now) <= `${year}-07-15` ? year : year + 1;
+  return today(now) < `${year}-07-15` ? year : year + 1;
 }
 
 // The laptop + phone composition in the Technology section is live HTML (a miniature of the real
