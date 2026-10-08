@@ -3,6 +3,7 @@
 // sessionsValidAfter, and the lead `kind`. None of them changes a page for anyone who isn't an admin.
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
@@ -10,7 +11,7 @@ const { startApp, quietLog, FIXED_NOW, fixedNow } = require('./helpers');
 const { seedUser, seedOrg, client, mutableClock, PASSWORD } = require('./business-helpers');
 const { loadConfig } = require('../server/config');
 const { MemoryStore, PostgresStore } = require('../server/booking');
-const { Accounts, PLATFORM_ADMIN, ADMIN_SEED_BEFORE, maskEmail } = require('../server/accounts');
+const { Accounts, PLATFORM_ADMIN, ADMIN_SEED_BEFORE, ADMIN_SEED, ADMIN_SEED_ID, maskEmail, seedPending } = require('../server/accounts');
 const { localPath, validatePartnerLead } = require('../server/lib/validate');
 const { Repo } = require('../server/business/repo');
 const { KINDS } = require('../server/business/constants');
@@ -28,6 +29,21 @@ const TAKEN = 'An account with this email already exists. Sign in instead.';
 /** Accounts on a store with a clock held at `iso` (register stamps createdAt with it). */
 const accountsAt = (store, iso, env = {}) => new Accounts({ store, config: loadConfig(env), now: () => new Date(iso) });
 const asReq = cookie => ({ headers: { cookie } });
+const ROOT = path.join(__dirname, '..');
+/** A session cookie for `user`, written straight to the store (an account that signed in before this boot). */
+async function storedSession(store, user) {
+  const token = `tok${sfx()}${sfx()}`;
+  await store.putRecord('session', crypto.createHash('sha256').update(token).digest('hex'), { userId: user.id, expiresAt: '2099-01-01T00:00:00.000Z' }, { userId: user.id });
+  return `txs=${token}`;
+}
+/** Boot an app on `store` with `env`; resolves to { app, admin } with the "[admin]" log lines as [level, text]. */
+async function bootOn(t, store, env) {
+  const lines = [];
+  const log = { ...quietLog, info: m => lines.push(['info', String(m)]), warn: m => lines.push(['warn', String(m)]) };
+  const app = await startApp(env, { store, log });
+  t.after(app.close);
+  return { app, admin: lines.filter(l => l[1].startsWith('[admin]')) };
+}
 
 // =============================================================================================================
 // D1: platform admins
@@ -110,7 +126,28 @@ test('D1: isPlatformAdmin needs the listed email, a record for that user id, the
   assert.equal(await accounts.isPlatformAdmin(ops), false, 'a record naming another user id');
   await store.putRecord(PLATFORM_ADMIN, ops.id, rec, { userId: ops.id });
   assert.equal(await accounts.isPlatformAdmin(ops), true);
-  assert.equal(accounts.isAdmin(ops), true, 'isAdmin is only the allow-list half');
+  // The flag a caller passes in counts for nothing: only the listed email and the record decide (a service
+  // gate must ask isPlatformAdmin, never trust actor.user.isAdmin).
+  assert.equal(await accounts.isPlatformAdmin({ ...other, isAdmin: true }), false, 'a forged isAdmin flag');
+  assert.equal(await accounts.isPlatformAdmin({ id: other.id, email: 'ops@example.com', isAdmin: true }), false, 'a forged email on another id');
+  assert.equal(await accounts.isPlatformAdmin({ id: ops.id, email: 'ops@example.com' }), true, 'the stored id and email are what count');
+});
+
+test('D1: the allow-list half alone is not a method anyone can call (isPlatformAdmin is the only admin check)', () => {
+  assert.equal(Accounts.prototype.isAdmin, undefined, 'Accounts has no isAdmin(user) answering only the email list');
+  assert.equal(typeof Accounts.prototype.isPlatformAdmin, 'function');
+  // Nothing under server/ or scripts/ calls an isAdmin(...) method: admin checks read req.user.isAdmin (set by
+  // userFromRequest from isPlatformAdmin) or call isPlatformAdmin.
+  const calls = [];
+  const walk = dir => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (e.name.endsWith('.js') && /\.isAdmin\(/.test(fs.readFileSync(full, 'utf8'))) calls.push(path.relative(ROOT, full));
+    }
+  };
+  for (const dir of ['server', 'scripts']) walk(path.join(ROOT, dir));
+  assert.deepEqual(calls, []);
 });
 
 test('D1: accounts created before the cutoff are grandfathered at boot exactly once; later ones and revoked ones never are', async t => {
@@ -135,8 +172,8 @@ test('D1: accounts created before the cutoff are grandfathered at boot exactly o
 
   const first = await boot();
   assert.deepEqual(first.admin, [
-    ['info', '[admin] platform admin: Ops Person, account created 2026-09-01'],
-    ['info', '[admin] platform admin: Edge Case, account created 2026-10-07'],
+    ['info', `[admin] platform admin: Ops Person (o***@example.com, ${ops.id}), account created 2026-09-01`],
+    ['info', `[admin] platform admin: Edge Case (e***@example.com, ${edge.id}), account created 2026-10-07`],
     ['warn', '[admin] ADMIN_EMAILS entry with no admin record: l***@example.com'],
     ['warn', '[admin] ADMIN_EMAILS entry with no admin record: n***@example.com'],
   ]);
@@ -150,6 +187,9 @@ test('D1: accounts created before the cutoff are grandfathered at boot exactly o
   assert.equal(await store.getRecord(PLATFORM_ADMIN, late.id), null, 'created exactly at the cutoff: not grandfathered');
   assert.equal(await store.getRecord(PLATFORM_ADMIN, old.id), null, 'an old account whose email is not listed: nothing');
   assert.equal((await store.listRecords(PLATFORM_ADMIN, { limit: 100 })).length, 2);
+  // The first boot wrote the grandfather list: the listed accounts created before the cutoff, nobody else.
+  const list = await store.getRecord(ADMIN_SEED, ADMIN_SEED_ID);
+  assert.deepEqual({ ...list, at: 'x' }, { userIds: [ops.id, edge.id], at: 'x', before: '2026-10-08T00:00:00Z', rev: 0 });
   const [opsCookie, lateCookie] = [await session(ops), await session(late)];
   assert.equal((await client(first.app.base, opsCookie).get('/admin')).status, 200, 'grandfathered: no visible change');
   assert.equal((await client(first.app.base, lateCookie).get('/admin')).status, 404);
@@ -159,6 +199,7 @@ test('D1: accounts created before the cutoff are grandfathered at boot exactly o
   const second = await boot();
   assert.deepEqual(second.admin, first.admin);
   assert.deepEqual(await store.listRecords(PLATFORM_ADMIN, { limit: 100 }), before, 'the records are untouched');
+  assert.deepEqual(await store.getRecord(ADMIN_SEED, ADMIN_SEED_ID), list, 'the grandfather list is written once');
   assert.deepEqual(await second.app.accounts.seedPlatformAdmins({ log: quietLog }), { granted: [], missing: ['l***@example.com', 'n***@example.com'] });
 
   // A revoked grandfathered record stays revoked on every later boot.
@@ -185,6 +226,113 @@ test('D1: the boot seed is safe when several servers boot at once, and skips acc
   assert.deepEqual(a.missing, ['o***@example.com']);
   assert.equal(await store.getRecord(PLATFORM_ADMIN, odd.id), null, 'an unreadable createdAt is never grandfathered');
   assert.equal((await store.listRecords(PLATFORM_ADMIN, { limit: 10 })).length, 1);
+  assert.deepEqual((await store.getRecord(ADMIN_SEED, ADMIN_SEED_ID)).userIds, [ops.id], 'one grandfather list');
+});
+
+/**
+ * The grandfathering is a one-time migration: an account created before the cutoff whose address is added
+ * to ADMIN_EMAILS after the first boot gets nothing at later boots. Its name may even be the owner's (the
+ * account holder chooses it); the boot log tells the accounts apart by masked email and id.
+ */
+async function lateListing(store) {
+  const owner = await accountsAt(store, '2026-05-01T08:00:00.000Z').register({ name: 'Sam Owner', email: `owner.${sfx()}@example.com`, password: PASSWORD });
+  const squat = await accountsAt(store, '2026-06-01T08:00:00.000Z').register({ name: 'Sam Owner', email: `support.${sfx()}@example.com`, password: PASSWORD });
+  const first = await accountsAt(store, FIXED_NOW, { ADMIN_EMAILS: owner.email }).seedPlatformAdmins();
+  assert.deepEqual(first, { granted: [owner.id], missing: [] });
+  const both = { ADMIN_EMAILS: `${owner.email},${squat.email}` };
+  for (let boot = 0; boot < 2; boot += 1) {
+    assert.deepEqual(await accountsAt(store, FIXED_NOW, both).seedPlatformAdmins(), { granted: [], missing: [maskEmail(squat.email)] }, `later boot ${boot}`);
+  }
+  assert.equal(await store.getRecord(PLATFORM_ADMIN, squat.id), null, 'no record for the late-listed account');
+  const accounts = accountsAt(store, FIXED_NOW, both);
+  assert.equal(await accounts.isPlatformAdmin(squat), false);
+  assert.equal(await accounts.isPlatformAdmin(owner), true);
+  assert.equal(await seedPending(store, squat), false, 'and no boot will grant it');
+  return { owner, squat, both };
+}
+
+test('D1: an old account whose address joins ADMIN_EMAILS after the first boot is never grandfathered (MemoryStore, HTTP)', async t => {
+  const store = new MemoryStore();
+  const { owner, squat, both } = await lateListing(store);
+  const { app, admin } = await bootOn(t, store, { ...both, ENABLE_BUSINESS: 'true' });
+  assert.deepEqual(admin, [
+    ['info', `[admin] platform admin: Sam Owner (${maskEmail(owner.email)}, ${owner.id}), account created 2026-05-01`],
+    ['warn', `[admin] ADMIN_EMAILS entry with no admin record: ${maskEmail(squat.email)}`],
+  ]);
+  const squatCookie = await storedSession(store, squat);
+  for (const p of ['/admin', '/admin/business']) assert.equal((await client(app.base, squatCookie).get(p)).status, 404, p);
+  assert.equal((await client(app.base, await storedSession(store, owner)).get('/admin')).status, 200);
+  // The CLI says so, and a grant is the only way in.
+  const listed = await runCli(['list'], { store, env: both });
+  assert.match(listed.out.find(l => l.includes(squat.email)), /Not an admin: no record \(grant it to give access\)\.$/);
+  assert.equal((await runCli(['grant', '--email', squat.email], { store, env: both })).code, cli.EXIT.ok);
+  assert.equal((await client(app.base, squatCookie).get('/admin')).status, 200);
+});
+
+test('D1: an old account whose address joins ADMIN_EMAILS after the first boot is never grandfathered (Postgres)', { skip: !pgUrl && 'TEST_DATABASE_URL not set' }, async () => {
+  const store = new PostgresStore({ connectionString: pgUrl, ssl: false });
+  await store.init();
+  // The grandfather list is one record per database: start this run without one, and leave none behind.
+  await store.deleteRecord(ADMIN_SEED, ADMIN_SEED_ID);
+  try {
+    const { owner } = await lateListing(store);
+    assert.deepEqual((await store.getRecord(ADMIN_SEED, ADMIN_SEED_ID)).userIds, [owner.id]);
+  } finally {
+    await store.deleteRecord(ADMIN_SEED, ADMIN_SEED_ID);
+    await store.close();
+  }
+});
+
+test('D1: revoking an account with no record before the first boot keeps the seed from ever granting it', async t => {
+  const store = new MemoryStore();
+  const env = { ADMIN_EMAILS: 'ops@example.com,boss@example.com' };
+  const ops = await accountsAt(store, '2026-06-01T08:00:00.000Z').register({ name: 'Ops Person', email: 'ops@example.com', password: PASSWORD });
+  const boss = await accountsAt(store, '2026-06-01T08:00:00.000Z').register({ name: 'Dana Boss', email: 'boss@example.com', password: PASSWORD });
+  // Before any boot, list says which old accounts the next boot will grandfather.
+  assert.equal(await seedPending(store, ops), true);
+  const before = await runCli(['list'], { store, env });
+  assert.deepEqual(before.out.slice(1), [
+    '  ops@example.com: Ops Person <ops@example.com>, account created 2026-06-01. Not an admin yet, but created before 2026-10-08, so the next boot grants it (revoke it to stop that).',
+    '  boss@example.com: Dana Boss <boss@example.com>, account created 2026-06-01. Not an admin yet, but created before 2026-10-08, so the next boot grants it (revoke it to stop that).',
+  ]);
+  const later = () => new Date('2026-10-10T12:00:00.000Z');
+  const revoked = await runCli(['revoke', '--email', 'ops@example.com'], { store, env, now: later });
+  assert.equal(revoked.code, cli.EXIT.ok);
+  assert.deepEqual(revoked.out, ['No platform admin record for Ops Person <ops@example.com>, account created 2026-06-01. Recorded it as revoked, so no boot can grant it.']);
+  assert.deepEqual(await store.getRecord(PLATFORM_ADMIN, ops.id), {
+    userId: ops.id, email: 'ops@example.com', grantedAt: '2026-10-10T12:00:00.000Z', grantedBy: 'cli', revokedAt: '2026-10-10T12:00:00.000Z',
+    note: 'Revoked before any grant, so the boot seed never grants it', rev: 0,
+  });
+  assert.equal(await seedPending(store, ops), false);
+
+  const { app } = await bootOn(t, store, env);
+  assert.equal((await client(app.base, await storedSession(store, ops)).get('/admin')).status, 404, 'revoked before the boot: never seeded');
+  assert.equal((await client(app.base, await storedSession(store, boss)).get('/admin')).status, 200, 'the other old account is grandfathered');
+  assert.equal((await store.getRecord(PLATFORM_ADMIN, ops.id)).rev, 0, 'the seed left the revoked record alone');
+  assert.match((await runCli(['list'], { store, env })).out[1], /Not an admin: revoked on 2026-10-10\.$/);
+  // A grant still works after it (compare-and-set on the revoked record).
+  assert.equal((await runCli(['grant', '--email', 'ops@example.com'], { store, env })).code, cli.EXIT.ok);
+  assert.equal(await accountsAt(store, FIXED_NOW, env).isPlatformAdmin(ops), true);
+  // revokePlatformAdmin answers null only when there is no such account.
+  assert.equal(await accountsAt(store, FIXED_NOW, env).revokePlatformAdmin('usr_NOBODYNOBODYNOBO'), null);
+});
+
+test('D1: a boot that stopped after writing the grandfather list is finished by the next boot, for accounts on it only', async () => {
+  const store = new MemoryStore();
+  const env = { ADMIN_EMAILS: 'ops@example.com,other@example.com' };
+  const ops = await accountsAt(store, '2026-06-01T08:00:00.000Z').register({ name: 'Ops Person', email: 'ops@example.com', password: PASSWORD });
+  const other = await accountsAt(store, '2026-06-01T08:00:00.000Z').register({ name: 'Other Person', email: 'other@example.com', password: PASSWORD });
+  await store.insertRecord(ADMIN_SEED, ADMIN_SEED_ID, { userIds: [ops.id], at: FIXED_NOW, before: ADMIN_SEED_BEFORE, rev: 0 }, { userId: null });
+  assert.equal(await seedPending(store, ops), true, 'on the list, no record yet');
+  assert.equal(await seedPending(store, other), false, 'not on the list');
+  assert.deepEqual(await accountsAt(store, FIXED_NOW, env).seedPlatformAdmins(), { granted: [ops.id], missing: ['o***@example.com'] });
+  assert.equal(await store.getRecord(PLATFORM_ADMIN, other.id), null);
+  assert.equal(await seedPending(store, ops), false, 'granted now');
+  // A list that is not an array grants nobody.
+  const odd = new MemoryStore();
+  const a = await accountsAt(odd, '2026-06-01T08:00:00.000Z').register({ name: 'Ops Person', email: 'ops@example.com', password: PASSWORD });
+  await odd.insertRecord(ADMIN_SEED, ADMIN_SEED_ID, { userIds: a.id, rev: 0 }, { userId: null });
+  assert.deepEqual(await accountsAt(odd, FIXED_NOW, env).seedPlatformAdmins(), { granted: [], missing: ['o***@example.com', 'o***@example.com'] });
 });
 
 // =============================================================================================================
@@ -483,7 +631,23 @@ test('platform-admin CLI: list, grant (refusing an address outside ADMIN_EMAILS)
   const nobody = await runCli(['revoke', '--email', 'nobody@example.com'], { store, env });
   assert.equal(nobody.code, cli.EXIT.refused);
   assert.match(nobody.err.join('\n'), /no account uses nobody@example\.com/);
-  assert.deepEqual((await runCli(['revoke', '--email', 'eve@example.com'], { store, env })).out, ['No platform admin record for Eve Outsider <eve@example.com>, account created 2026-10-01. Nothing to revoke.']);
+  assert.deepEqual((await runCli(['revoke', '--email', 'eve@example.com'], { store, env })).out, ['No platform admin record for Eve Outsider <eve@example.com>, account created 2026-10-01. Recorded it as revoked, so no boot can grant it.']);
+  assert.equal((await store.getRecord(PLATFORM_ADMIN, eve.id)).revokedAt, FIXED_NOW);
+});
+
+test('platform-admin CLI: the container image carries the script and everything it requires (the documented ECS run-task)', () => {
+  const dockerfile = fs.readFileSync(path.join(ROOT, 'Dockerfile'), 'utf8');
+  const copied = dockerfile.split('\n').map(l => l.trim()).filter(l => /^COPY\s/i.test(l))
+    .flatMap(l => l.replace(/^COPY\s+(--\S+\s+)*/i, '').split(/\s+/).slice(0, -1)).map(src => src.replace(/^\.\//, '').replace(/\/$/, ''));
+  const inImage = rel => copied.some(src => rel === src || rel.startsWith(`${src}/`));
+  assert.ok(inImage('scripts/platform-admin.js'), `the Dockerfile copies scripts/platform-admin.js (COPY sources: ${copied.join(', ')})`);
+  const ignored = fs.readFileSync(path.join(ROOT, '.dockerignore'), 'utf8').split('\n').map(l => l.trim()).filter(Boolean);
+  assert.ok(!ignored.some(p => p === 'scripts' || p === 'scripts/' || p === 'scripts/platform-admin.js'), '.dockerignore keeps it');
+  const source = fs.readFileSync(path.join(ROOT, 'scripts', 'platform-admin.js'), 'utf8');
+  const local = [...source.matchAll(/require\('(\.[^']+)'\)/g)].map(m => path.relative(ROOT, path.resolve(ROOT, 'scripts', m[1])));
+  assert.ok(local.length >= 4, local.join(', '));
+  for (const rel of local) assert.ok(inImage(rel), `${rel} is in the image`);
+  for (const m of source.matchAll(/require\('([^.'][^']*)'\)/g)) assert.ok(m[1].startsWith('node:'), `${m[1]}: only node built-ins beyond the copied files`);
 });
 
 test('platform-admin CLI: refuses a command line it does not understand, and the in-memory store', async () => {

@@ -8,23 +8,25 @@
 //   node scripts/platform-admin.js grant --email ops@example.com
 //   node scripts/platform-admin.js revoke --email ops@example.com [--sign-out]
 //
-// - list: every ADMIN_EMAILS address and where it stands, then any record whose email is no longer listed
-//   (those give no access).
+// - list: every ADMIN_EMAILS address and where it stands (including an old account the next boot will
+//   grandfather), then any record whose email is no longer listed (those give no access).
 // - grant: refuses an address that is not in ADMIN_EMAILS (the allow-list is still the first half of the
 //   check) and an address with no account yet (sign up first). Granting an active admin again changes nothing.
-// - revoke: sets revokedAt on the record (the record stays, for the history). With --sign-out it also signs
-//   the account out everywhere (sessionsValidAfter, I4). It works for any address, listed or not.
+// - revoke: sets revokedAt on the record (the record stays, for the history). An account with no record gets
+//   a revoked one, so the boot seed can never grant it. With --sign-out it also signs the account out
+//   everywhere (sessionsValidAfter, I4). It works for any address, listed or not.
 // Every command prints the account's name and creation date, so you can see it is the right account.
 //
 // It refuses to run on the in-memory store, where it would change nothing the site can see. On AWS, run it
-// as a one-off task of the app's task definition with a command override (the container is "web"):
+// as a one-off task of the app's task definition with a command override (the container is "web"; the
+// image must contain this file, which the Dockerfile copies to /app/scripts):
 //   aws ecs run-task --cluster <cluster> --task-definition <app task definition> --launch-type FARGATE \
 //     --network-configuration '<the service network configuration>' \
 //     --overrides '{"containerOverrides":[{"name":"web","command":["node","scripts/platform-admin.js","list"]}]}'
 // and read its output in the task's log stream.
 const { loadConfig } = require('../server/config');
 const { createStore } = require('../server/booking');
-const { Accounts, PLATFORM_ADMIN } = require('../server/accounts');
+const { Accounts, PLATFORM_ADMIN, ADMIN_SEED_BEFORE, seedPending } = require('../server/accounts');
 const { str } = require('../server/lib/validate');
 
 const USAGE = [
@@ -99,6 +101,7 @@ async function run(argv, { store, config, now = () => new Date(), out = line => 
       if (await accounts.isPlatformAdmin(user)) state = `Platform admin since ${day(rec.grantedAt)} (${rec.grantedBy})`;
       else if (rec && rec.revokedAt) state = `Not an admin: revoked on ${day(rec.revokedAt)}`;
       else if (rec) state = `Not an admin: its record is for ${rec.email} (grant it again to give access)`;
+      else if (await seedPending(store, user)) state = `Not an admin yet, but created before ${day(ADMIN_SEED_BEFORE)}, so the next boot grants it (revoke it to stop that)`;
       else state = 'Not an admin: no record (grant it to give access)';
       out(`  ${email}: ${describe(user)}. ${state}.`);
     }
@@ -130,9 +133,9 @@ async function run(argv, { store, config, now = () => new Date(), out = line => 
   // revoke
   if (!user) { err(`Refused: no account uses ${args.email}.`); return EXIT.refused; }
   const before = await store.getRecord(PLATFORM_ADMIN, user.id);
-  const rec = await accounts.revokePlatformAdmin(user.id);
-  if (!rec) out(`No platform admin record for ${describe(user)}. Nothing to revoke.`);
-  else if (before && before.revokedAt) out(`Already revoked on ${day(before.revokedAt)}: ${describe(user)}.`);
+  await accounts.revokePlatformAdmin(user.id);
+  if (!before) out(`No platform admin record for ${describe(user)}. Recorded it as revoked, so no boot can grant it.`);
+  else if (before.revokedAt) out(`Already revoked on ${day(before.revokedAt)}: ${describe(user)}.`);
   else out(`Revoked platform admin: ${describe(user)}.`);
   if (args.signOut) {
     const at = await accounts.endAllSessions(user.id);

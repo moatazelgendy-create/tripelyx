@@ -4,9 +4,11 @@
 // Security rules kept here (plan §I1, §I2, §I4):
 // - D1 platform admins: an account may open /admin and /admin/business only when its email is listed in
 //   ADMIN_EMAILS AND it has an active platform_admin record for the same email. Records come from the boot
-//   seed (accounts created before ADMIN_SEED_BEFORE, once) or from scripts/platform-admin.js. So signing up
-//   with a listed address after the cutoff gives nothing, and removing an address from ADMIN_EMAILS revokes
-//   on restart.
+//   seed or from scripts/platform-admin.js. The seed is a one-time migration: the first boot writes the
+//   grandfather list (the listed accounts created before ADMIN_SEED_BEFORE) and later boots grant only
+//   accounts on it, so adding an address to ADMIN_EMAILS later never makes an old account an admin without
+//   a grant. Signing up with a listed address after the cutoff gives nothing, and removing an address from
+//   ADMIN_EMAILS revokes on restart.
 // - D2 sign-up race: the user is written first and the email is then claimed insert-only; the loser of a
 //   race deletes its user and gets email_taken, so two accounts never share an email and a crash leaves at
 //   most an orphan user nobody can sign in to.
@@ -33,6 +35,13 @@ const EMAIL_PROOF_VIA = Object.freeze(['invite']);
  * at boot (once). Fixed on purpose: there is no environment override.
  */
 const ADMIN_SEED_BEFORE = '2026-10-08T00:00:00Z';
+/**
+ * The grandfather list (D1): one record, `platform_admin_seed` / 'v1', written insert-only by the first
+ * seedPlatformAdmins ({ userIds, at, before, rev }). It holds the user ids of the ADMIN_EMAILS accounts created
+ * before ADMIN_SEED_BEFORE at that first boot, and no boot after it grants anyone else.
+ */
+const ADMIN_SEED = 'platform_admin_seed';
+const ADMIN_SEED_ID = 'v1';
 const sha256 = s => crypto.createHash('sha256').update(s).digest('hex');
 
 async function hashPassword(password) {
@@ -57,16 +66,6 @@ class Accounts {
   }
 
   /**
-   * Is this account's email listed in ADMIN_EMAILS? Only the allow-list half of D1: never enough on its own
-   * to let anyone in (isPlatformAdmin is the check).
-   * @param {{ email: string }|null} user
-   * @returns {boolean}
-   */
-  isAdmin(user) {
-    return !!user && this.config.trips.adminEmails.includes(user.email);
-  }
-
-  /**
    * Is this account a platform admin (it may open /admin and /admin/business)? D1: its email is listed in
    * ADMIN_EMAILS and a platform_admin record exists for this user id with the same email and no revokedAt.
    * One extra read, only for listed emails.
@@ -74,29 +73,35 @@ class Accounts {
    * @returns {Promise<boolean>}
    */
   async isPlatformAdmin(user) {
-    if (!user || typeof user.id !== 'string' || !user.id || !this.isAdmin(user)) return false;
+    if (!user || typeof user.id !== 'string' || !user.id || !listedAdminEmail(this.config, user)) return false;
     return activeAdminRecord(await this.store.getRecord(PLATFORM_ADMIN, user.id), user);
   }
 
   /**
-   * At boot, give each grandfathered ADMIN_EMAILS account its platform_admin record (D1): an account whose
-   * createdAt is before ADMIN_SEED_BEFORE and which has never had a record. "Never" matters: a record that
-   * was revoked stays revoked, and a later account with a listed email is never seeded (it needs
-   * scripts/platform-admin.js grant). Idempotent, and safe when several servers boot at once (insert-only).
-   * Logs "[admin] platform admin: <name>, account created <date>" for every listed account that is a
-   * platform admin, and "[admin] ADMIN_EMAILS entry with no admin record: o***@example.com" for the rest.
+   * At boot, give each grandfathered ADMIN_EMAILS account its platform_admin record (D1), once. The first
+   * call writes the grandfather list (insert-only): the listed accounts created before ADMIN_SEED_BEFORE at
+   * that moment. Every call then grants a record to the listed accounts on that list that have never had
+   * one, so a crash halfway is finished at the next boot. "Never" matters: a record that was revoked stays
+   * revoked. An account that is not on the list is never seeded, even one created before the cutoff whose
+   * address is added to ADMIN_EMAILS later: it needs scripts/platform-admin.js grant. Idempotent, and safe
+   * when several servers boot at once (both writes are insert-only).
+   * Logs "[admin] platform admin: <name> (o***@example.com, <user id>), account created <date>" for every
+   * listed account that is a platform admin (the name is the account's own choice; the masked email and id
+   * say which account it is), and "[admin] ADMIN_EMAILS entry with no admin record: o***@example.com" for
+   * the rest.
    * @param {{ log?: { info?: Function, warn?: Function } }} [opts]
    * @returns {Promise<{ granted: string[], missing: string[] }>} user ids granted now, and masked emails with no record
    */
   async seedPlatformAdmins({ log } = {}) {
     const info = log && typeof log.info === 'function' ? m => log.info(m) : () => {};
     const warn = log && typeof log.warn === 'function' ? m => log.warn(m) : () => {};
-    const cutoff = Date.parse(ADMIN_SEED_BEFORE);
+    const listed = [];
+    for (const email of [...new Set(this.config.trips.adminEmails)]) listed.push([email, await userByEmail(this.store, email)]);
+    const onList = new Set(seedIds(await grandfatherList(this.store, this.now, listed.map(([, user]) => user))));
     const granted = [], missing = [];
-    for (const email of [...new Set(this.config.trips.adminEmails)]) {
-      const user = await userByEmail(this.store, email);
+    for (const [email, user] of listed) {
       let record = user ? await this.store.getRecord(PLATFORM_ADMIN, user.id) : null;
-      if (user && !record && Date.parse(user.createdAt) < cutoff) {
+      if (user && !record && onList.has(user.id) && createdBeforeCutoff(user)) {
         const doc = {
           userId: user.id, email: user.email, grantedAt: this.now().toISOString(), grantedBy: 'legacy-email-match',
           revokedAt: null, note: `ADMIN_EMAILS account created before ${ADMIN_SEED_BEFORE}`, rev: 0,
@@ -105,7 +110,7 @@ class Accounts {
         record = await this.store.getRecord(PLATFORM_ADMIN, user.id);
       }
       if (user && activeAdminRecord(record, user)) {
-        info(`[admin] platform admin: ${user.name}, account created ${String(user.createdAt).slice(0, 10)}`);
+        info(`[admin] platform admin: ${user.name} (${maskEmail(user.email)}, ${user.id}), account created ${String(user.createdAt).slice(0, 10)}`);
       } else {
         missing.push(maskEmail(email));
         warn(`[admin] ADMIN_EMAILS entry with no admin record: ${maskEmail(email)}`);
@@ -142,14 +147,25 @@ class Accounts {
 
   /**
    * Take platform admin away from an account: set revokedAt on its record by compare-and-set (the record
-   * stays, for the history). Idempotent.
+   * stays, for the history). An account with no record gets a revoked one (insert-only), so the boot seed
+   * can never grant it later; only a grant makes it an admin again. Idempotent.
    * @param {string} userId
-   * @returns {Promise<object|null>} the record, or null when the account never had one
+   * @returns {Promise<object|null>} the record, or null when there is no such account
    */
   async revokePlatformAdmin(userId) {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const cur = typeof userId === 'string' && userId ? await this.store.getRecord(PLATFORM_ADMIN, userId) : null;
-      if (!cur) return null;
+      if (!cur) {
+        const user = typeof userId === 'string' && userId ? await this.store.getRecord('user', userId) : null;
+        if (!user) return null;
+        const at = this.now().toISOString();
+        const doc = {
+          userId: user.id, email: user.email, grantedAt: at, grantedBy: 'cli', revokedAt: at,
+          note: 'Revoked before any grant, so the boot seed never grants it', rev: 0,
+        };
+        if (await this.store.insertRecord(PLATFORM_ADMIN, user.id, doc, { userId: user.id })) return this.store.getRecord(PLATFORM_ADMIN, user.id);
+        continue;
+      }
       if (cur.revokedAt) return cur;
       const { rev, ...rest } = cur;
       const written = await this.store.updateRecord(PLATFORM_ADMIN, userId, rev ?? 0, { ...rest, revokedAt: this.now().toISOString() });
@@ -284,6 +300,43 @@ class Accounts {
 
 const emailTaken = () => new AppError('email_taken', 'An account with this email already exists. Sign in instead.', 409, { email: 'An account with this email already exists.' });
 
+// D1, the allow-list half: is this account's email listed in ADMIN_EMAILS? Never enough on its own to let
+// anyone in, so it is not a method: isPlatformAdmin (and req.user.isAdmin) is the only admin check.
+function listedAdminEmail(config, user) {
+  return !!user && typeof user.email === 'string' && config.trips.adminEmails.includes(user.email);
+}
+
+const createdBeforeCutoff = user => Date.parse(user.createdAt) < Date.parse(ADMIN_SEED_BEFORE);
+const seedIds = seed => (seed && Array.isArray(seed.userIds) ? seed.userIds.filter(x => typeof x === 'string') : []);
+
+// The grandfather list (D1): read it, or write it the first time from these accounts (the listed ones that
+// exist; those created before the cutoff go on it) and read back whichever list won when several servers
+// boot at once.
+async function grandfatherList(store, now, users) {
+  const current = await store.getRecord(ADMIN_SEED, ADMIN_SEED_ID);
+  if (current) return current;
+  const userIds = [...new Set(users.filter(u => u && createdBeforeCutoff(u)).map(u => u.id))];
+  const doc = { userIds, at: now().toISOString(), before: ADMIN_SEED_BEFORE, rev: 0 };
+  await store.insertRecord(ADMIN_SEED, ADMIN_SEED_ID, doc, { userId: null });
+  return store.getRecord(ADMIN_SEED, ADMIN_SEED_ID);
+}
+
+/**
+ * Would the next boot's seedPlatformAdmins give this account a platform_admin record (D1)? Only when it
+ * has none and is on the grandfather list, or, before any boot has written that list, when it was created
+ * before ADMIN_SEED_BEFORE (that boot reads ADMIN_EMAILS then; the caller checks the address is listed).
+ * Reads only. For scripts/platform-admin.js list.
+ * @param {object} store
+ * @param {{ id: string, createdAt: string }|null} user
+ * @returns {Promise<boolean>}
+ */
+async function seedPending(store, user) {
+  if (!user || typeof user.id !== 'string' || !user.id || !createdBeforeCutoff(user)) return false;
+  if (await store.getRecord(PLATFORM_ADMIN, user.id)) return false;
+  const seed = await store.getRecord(ADMIN_SEED, ADMIN_SEED_ID);
+  return !seed || seedIds(seed).includes(user.id);
+}
+
 // D1: a platform_admin record that still makes this account an admin: for this user id, for the account's
 // current email, and not revoked.
 function activeAdminRecord(record, user) {
@@ -340,4 +393,7 @@ function visitorId(req, res, config) {
   return nv;
 }
 
-module.exports = { Accounts, visitorId, hashPassword, verifyPassword, maskEmail, SESSION_COOKIE, PLATFORM_ADMIN, GRANTED_BY, ADMIN_SEED_BEFORE };
+module.exports = {
+  Accounts, visitorId, hashPassword, verifyPassword, maskEmail, seedPending,
+  SESSION_COOKIE, PLATFORM_ADMIN, GRANTED_BY, ADMIN_SEED_BEFORE, ADMIN_SEED, ADMIN_SEED_ID,
+};
