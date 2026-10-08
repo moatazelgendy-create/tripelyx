@@ -3,7 +3,7 @@
 const { html, raw, jsonScript } = require('../../lib/html');
 const { icon } = require('../icons');
 const { layout } = require('../layout');
-const { pageHero } = require('../components');
+const { pageHero } = require('../pages');
 const { encodeSpec } = require('../../trips/spec');
 const { contextParams, searchParams } = require('../../trips/optimizer');
 const { money, dollars, longDate, shortDate, plural, joinAnd, cutoffText, hm, statusPill, demoBadge, budgetMeter, recipe, stepsBar } = require('./common');
@@ -16,16 +16,16 @@ const { worthItPanel } = require('./memories');
 
 function howItWorksView(ctx) {
   const body = html`
-${pageHero({ eyebrow: 'How it works', title: 'Tell us your budget.', accent: 'We’ll build the trip.', lead: 'Traditional travel sites ask where you want to go, then show you hundreds of options. Tripelyx is an AI travel agent: it asks how much you want to spend, does the searching and comparing, and shows you the best complete trips with the reasons.' })}
+${pageHero({ eyebrow: 'How it works', title: 'You set the budget.', accent: 'We build the trip.', lead: 'Traditional travel sites ask where you want to go, then show you hundreds of options. We ask how much you want to spend, do the searching and comparing, and show you the three best complete trips.' })}
 <section class="section"><div class="container tb-prose">
   <h2>1. Tell us your budget</h2><p>One number for the whole trip: flights, hotel, experiences, transfers, taxes and fees. If you want, keep part of it aside for food and spending and we build the trip around the rest, so your budget covers the vacation, not just the booking.</p>
-  <h2>2. Tell the agent what matters</h2><p>Say it in your own words, or answer the agent’s questions: who’s going, where you’re leaving from, when (exact dates, a flexible month, or anytime), and anything that must be true. It asks only what it can’t go without, and never guesses. What matters most decides how it optimizes: save the most, best value, make it easy, or make it memorable. It is one agent with four ways to weigh the same trips.</p>
+  <h2>2. A few quick questions</h2><p>Who’s going, where you’re leaving from, when (exact dates, a flexible month, or anytime), the kind of trip, and what matters most to you. One question at a time; no long forms.</p>
   <h2>3. We build and price every combination</h2><p>For every destination we check the flights, hotels, experiences and transfers available for your dates, build every sensible combination, and price each one completely. Then we keep three answers: <b>Our pick</b> (the trip we’d book: the cheapest of the near-equal strongest fits at or under your budget), <b>Save more</b> (a strong trip that leaves real money unspent) and <b>Upgrade, only if worth it</b> (it costs more and improves something real without giving anything up). When no upgrade earns its price, the third answer is “keep your money”, and we say why. Every trip comes with the reasons we picked it, its trade-offs, and a scorecard you can read.</p>
   <h2>4. Change anything</h2><p>Swap the hotel or flight, add or remove nights, experiences, bags or a transfer, move the dates. Every option shows the new total before you click. A budget meter shows exactly where you stand, and we never hide an over-budget amount.</p>
-  <h2>5. We check the price again, then you decide</h2><p>Travel prices move. Right before checkout we re-check every supplier. If the price is the same, we say so. If it dropped, you pay less. If it went up, we show the difference and ask you to approve it: a changed price is never charged automatically. Then traveler details, payment, and your confirmation with a Trip ID for everything.</p>
+  <h2>5. We check the live price, then you decide</h2><p>Travel prices move. Right before checkout we re-check every supplier. If the price is the same, we say so. If it dropped, you pay less. If it went up, we show the difference and ask you to approve it: a changed price is never charged automatically. Then traveler details, payment, and your confirmation with a Trip ID for everything.</p>
   <h2>How we make money</h2><p>A clear service fee that is always shown in the total, plus commissions and package rates from suppliers where they allow it. Our recommendations are ranked on what’s good for you (price, hotel, flight, location, your preferences), never on what earns us more, and we show when a cheaper option exists and what you’d give up.</p>
   <h2>What we never do</h2><ul><li>Call a trip “within budget” when fees push it over.</li><li>Add fees at checkout.</li><li>Invent urgency (“only 1 left!”) or fake discounts.</li><li>Change your price or your trip without telling you.</li></ul>
-  <p class="mt-28"><a class="btn btn-navy btn-lg" href="/agent">Build my trip ${icon('arrow')}</a></p>
+  <p class="mt-28"><a class="btn btn-navy btn-lg" href="/plan">Build my trip ${icon('arrow')}</a></p>
 </div></section>`;
   return layout({ title: 'How it works', active: 'how', body, ctx, canonical: '/how-it-works', description: 'How Tripelyx turns a budget into a complete trip: flights, hotel and experiences priced in full, three best fits, live price check before payment.' });
 }
@@ -59,25 +59,19 @@ const LEGAL = {
   cancellation: ['Cancellation Policy', ['Within 24 hours of booking, with departure at least 7 days away, you may cancel the whole trip for a full refund.', 'After that, each part follows its own terms: refundable hotel rates until the hotel’s deadline; flexible flight fares until the airline’s deadline; experiences and transfers until 24 hours before. Non-refundable rates and basic fares are not refundable.', 'The Tripelyx service fee is refundable only within the first 24 hours.', 'The exact terms for your trip are shown before booking and on your trip page.']],
   refunds: ['Refund Policy', ['Refunds are made to the original payment method. Processing times depend on your bank, typically 5–10 business days after we issue the refund.', 'If a supplier fails to confirm part of your trip after payment, we refund that part in full, or the whole trip if the flights cannot be confirmed.', 'Refund amounts are always shown to you before you cancel.']],
   cookies: ['Cookie Policy', ['Tripelyx uses strictly necessary cookies: a session cookie when you sign in, a per-booking access cookie after you book, and a random first-party visitor id used to count how travelers move through the planning steps. None of them track you across other sites and we use no third-party advertising cookies.']],
-  'travel-disclosures': ['Travel Disclosures', ['Flight schedules, hotel details and activity descriptions are supplied by the providers named on each trip and may change. Hotel ratings are labeled with their source and are not Tripelyx’s own assessment.', 'Weather information is based on historical climate data and is not a forecast.', 'Travel document and entry requirements change; always check official sources for your nationality before traveling.', { demoOnly: true, text: 'While the site shows demo inventory, its trips, prices and ratings are demonstration data and are not real offers.' }]],
+  'travel-disclosures': ['Travel Disclosures', ['Flight schedules, hotel details and activity descriptions are supplied by the providers named on each trip and may change. Hotel ratings are labeled with their source and are not Tripelyx’s own assessment.', 'Weather information is based on historical climate data and is not a forecast.', 'Travel document and entry requirements change; always check official sources for your nationality before traveling.', 'In this preview environment, inventory and prices are demo data for development and are not real offers.']],
 };
-
-// The date the policy text below last changed. It moves only when the text does.
-const POLICIES_UPDATED = '2026-10-08';
 
 function legalView(ctx, key) {
   const [title, paras] = LEGAL[key];
-  const c = ctx.company || ctx.config.company;
-  const demo = !!(ctx.tripService && ctx.tripService.demo);
   const body = html`
 ${pageHero({ eyebrow: 'Policies', title })}
 <section class="section"><div class="container tb-prose">
-  ${c.policiesReviewed ? '' : html`<div class="alert alert-info" role="note">${icon('info')}<span><b>${c.brandName} is in preview.</b> These policies describe how the service works today. They will be reviewed and finalized before ${c.brandName} takes real bookings and payments. The terms shown for your trip before you pay always apply.</span></div>`}
-  ${paras.filter(p => demo || !p.demoOnly).map(p => html`<p>${p.text || p}</p>`)}
-  <p>${c.brandName} is operated by ${c.legalName}.${c.jurisdiction ? ` These policies are governed by the laws of ${c.jurisdiction}.` : ''} Questions: <a href="mailto:${c.supportEmail}">${c.supportEmail}</a>.</p>
-  <p class="tb-muted tb-small">Last updated: ${longDate(POLICIES_UPDATED)}.</p>
+  <div class="alert alert-warning" role="note">${icon('alert')}<span><b>Draft for professional review.</b> This text is a placeholder written for the preview. It must be reviewed and approved by a qualified legal professional before launch and does not create any guarantee beyond the terms actually shown at booking.</span></div>
+  ${paras.map(p => html`<p>${p}</p>`)}
+  <p class="tb-muted tb-small">Last updated: ${new Date().toISOString().slice(0, 10)} (draft).</p>
 </div></section>`;
-  return layout({ title, body, ctx, canonical: `/legal/${key}`, noindex: !c.policiesReviewed });
+  return layout({ title, body, ctx, canonical: `/legal/${key}`, noindex: true });
 }
 
 function customTripView(ctx, { values = {}, errors = {}, done = false, user }) {
@@ -108,13 +102,11 @@ ${pageHero({ eyebrow: 'Custom trip', title: 'Build a trip for me.', lead: 'If th
 // ---- SEO landing pages ----
 function destinationsView(ctx, { destinations }) {
   const body = html`
-${pageHero({ eyebrow: 'Destinations', title: 'Where can your budget take you?', lead: 'Every destination we build complete trips for. The prices are examples: the cheapest complete trip for two from New York over the next five months, taxes and fees included. Open a destination to price it for your own dates and airport.' })}
+${pageHero({ eyebrow: 'Destinations', title: 'Where can your budget take you?', lead: 'Every destination we build complete trips for. Prices are the cheapest complete trip for two from New York over the next five months, taxes and fees included.' })}
 <section class="section"><div class="container">
-  ${ctx.tripService.demo ? html`<p class="tb-results-sub">${demoBadge(true, 'Demo inventory and example prices')}</p>` : ''}
-  <ul class="tb-dest-grid">${destinations.map(d => html`<li><a class="tb-dest" href="/trips-to-${d.slug}"><img src="${d.image.url}" alt="${d.image.alt}" width="400" height="250" loading="lazy"><span class="tb-dest-body"><b>${d.name}</b><small>${d.country}${d.from ? ` · example from ${money(d.from)}` : ''}</small></span></a></li>`)}</ul>
+  <ul class="tb-dest-grid">${destinations.map(d => html`<li><a class="tb-dest" href="/trips-to-${d.slug}"><img src="${d.image.url}" alt="${d.image.alt}" width="400" height="250" loading="lazy"><span class="tb-dest-body"><b>${d.name}</b><small>${d.country}${d.from ? ` · from ${money(d.from)}` : ''}</small></span></a></li>`)}</ul>
 </div></section>`;
-  // Example prices from demo inventory are not offered to search engines as if they were real.
-  return layout({ title: 'Destinations', active: 'destinations', body, ctx, canonical: '/destinations', description: 'Every destination Tripelyx builds complete trips for, with example prices for two, taxes and fees included.', noindex: ctx.tripService.demo });
+  return layout({ title: 'Destinations', active: 'destinations', body, ctx, canonical: '/destinations' });
 }
 
 function landingView(ctx, { title, eyebrow, lead, intro, result, q, originCity, canonical, budgetValue, origins, moreLinks = [] }) {
@@ -128,7 +120,7 @@ ${pageHero({ eyebrow, title, lead })}
   <p class="tb-muted mt-28">From another city: ${origins.map(o => html`<a href="?from=${o.id}">${o.city}</a> `)}</p>
   ${moreLinks.length ? html`<ul class="tb-inspo mt-28">${moreLinks.map(([h, t, s]) => html`<li><a href="${h}"><b>${t}</b><span>${s}</span></a></li>`)}</ul>` : ''}
 </div></section>`;
-  return layout({ title, body, ctx, canonical, description: lead, noindex: ctx.tripService.demo });
+  return layout({ title, body, ctx, canonical, description: lead });
 }
 
 // ---- checkout for a trip quote ----
@@ -167,7 +159,7 @@ function tripCheckoutView(ctx, { quote: q, paymentConfig }) {
   ${q.expired ? html`<div class="empty-state">${icon('clock')}<h3>This price has expired</h3><p>Prices are held for ${ctx.config.quoteTtlMinutes} minutes. Go back to re-check the live price.</p><a class="btn btn-navy btn-sm" href="/trip/${t.token}/review?${contextParams(bcx, { seen: q.total })}">Re-check the price</a></div>`
     : html`<div class="checkout-layout">
     <div>
-      <p class="alert alert-info" data-quote-timer data-expires="${q.expiresAt}">${icon('clock')}<span>${q.demo ? 'Your demo price of' : 'Your price of'} ${money(q.total)} is ${q.demo ? 'held in this checkout' : 'confirmed and held'} for <span class="timer" data-timer>${ctx.config.quoteTtlMinutes}:00</span>${q.demo ? ' (demo inventory: no supplier is holding anything)' : ''}. We check it once more when you pay; a changed price is never charged without your approval.</span></p>
+      <p class="alert alert-info" data-quote-timer data-expires="${q.expiresAt}">${icon('clock')}<span>Your price of ${money(q.total)} is confirmed and held for <span class="timer" data-timer>${ctx.config.quoteTtlMinutes}:00</span>. We check it once more when you pay; a changed price is never charged without your approval.</span></p>
       <form class="checkout-step form" data-traveler-form novalidate>
         <h2><span class="step-num">1</span> Lead traveler</h2>
         <div class="form-row">
@@ -188,7 +180,7 @@ function tripCheckoutView(ctx, { quote: q, paymentConfig }) {
       <form class="checkout-step form" data-payment-form novalidate>
         <h2><span class="step-num">3</span> Payment</h2>
         <ul class="tb-ready tb-ready-compact">
-          <li>${icon('check')} ${q.demo ? 'Demo price recalculated' : 'Price rechecked'}: ${money(q.total)}</li><li>${icon('check')} Dates ${shortDate(t.spec.depart)} – ${shortDate(t.flight.return)}</li><li>${icon('check')} ${plural(t.spec.travelers, 'traveler')}</li><li>${icon('check')} ${t.hotel.name}</li><li>${icon('check')} ${t.flight.stops ? '1-stop' : 'Nonstop'} flights</li><li>${icon('check')} Mandatory fees included</li><li>${icon('check')} Cancellation terms shown below</li>
+          <li>${icon('check')} Price rechecked: ${money(q.total)}</li><li>${icon('check')} Dates ${shortDate(t.spec.depart)} – ${shortDate(t.flight.return)}</li><li>${icon('check')} ${plural(t.spec.travelers, 'traveler')}</li><li>${icon('check')} ${t.hotel.name}</li><li>${icon('check')} ${t.flight.stops ? '1-stop' : 'Nonstop'} flights</li><li>${icon('check')} Mandatory fees included</li><li>${icon('check')} Cancellation terms shown below</li>
         </ul>
         <div data-payment-widget data-mode="${paymentConfig.mode}"></div>
         <div data-form-status role="alert" aria-live="assertive"></div>
@@ -233,8 +225,6 @@ function tripBookingView(ctx, { booking: b, cancellationPreview: preview, paymen
     pending_supplier: 'Payment received — confirming with suppliers', confirming: 'Confirming your trip', cancelled: 'This trip is canceled', expired: 'This booking expired before payment',
     failed: 'This trip couldn’t be confirmed', refund_pending: 'Refund in progress', refunded: 'Refunded',
   }[b.status] || b.status;
-  // A demo booking never reads as a real reservation: the headline and every confirmation code say demo.
-  const title = b.demo && ok ? 'Demo booking complete' : headline;
   const budget = b.budget && b.budget.budget;
   const plan = vacationPlan(t, { budget, keep: (b.budget && b.budget.keep) || 0 });
   // The saver's victory screen: what the traveler gave as a maximum, what the trip costs, what they
@@ -247,10 +237,10 @@ function tripBookingView(ctx, { booking: b, cancellationPreview: preview, paymen
   ${ok ? stepsBar(3) : ''}
   <header class="confirm-hero tb-confirm-hero">
     <div class="confirm-badge${ok ? '' : partial || ['pending_payment', 'pending_supplier', 'confirming', 'refund_pending'].includes(b.status) ? ' is-warn' : ' is-bad'}">${icon(ok ? 'check' : 'info')}</div>
-    <h1>${title}</h1>
+    <h1>${headline}</h1>
     <p>Trip ID <span class="ref">TRIP #${b.ref}</span> ${statusPill(b.status)}</p>
     ${ok && days > 0 ? html`<p class="tb-countdown">${icon('calendar')} ${days === 1 ? 'Tomorrow!' : `${days} days to go`}</p>` : ''}
-    ${b.demo ? html`<p class="demo-note">${icon('info')}This is a demo booking. The trip comes from demo inventory, the payment was a test, and no airline, hotel or other supplier was contacted, so nothing is reserved.</p>` : ''}
+    ${b.demo ? html`<p class="demo-note">${icon('info')}Demo booking — test payment, no real supplier was contacted.</p>` : ''}
   </header>
   ${v ? victoryPanel(v, { keep: (b.budget && b.budget.keep) || 0 }) : ''}
   ${notice ? html`<div class="alert alert-success mb-16" role="status">${icon('check')}<span>${notice}</span></div>` : ''}
@@ -383,7 +373,7 @@ function cancelDeadlines(preview) {
 function confirmationFor(b, kind, name) {
   const c = (b.components || []).find(x => x.kind === kind && (!name || x.name === name));
   if (!c) return b.status === 'pending_payment' ? html`<p class="tb-small tb-muted">Confirmed after payment</p>` : '';
-  return html`<p class="tb-small">${componentStatus(c)} ${c.confirmation ? html`${b.demo ? 'Demo confirmation' : 'Confirmation'} <b class="ref">${c.confirmation}</b>` : ''}</p>`;
+  return html`<p class="tb-small">${componentStatus(c)} ${c.confirmation ? html`Confirmation <b class="ref">${c.confirmation}</b>` : ''}</p>`;
 }
 
 module.exports = { howItWorksView, faqView, legalView, LEGAL, customTripView, destinationsView, landingView, tripCheckoutView, tripBookingView };

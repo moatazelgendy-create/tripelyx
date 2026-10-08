@@ -280,8 +280,7 @@ function scoreTrip(t, ctx) {
   };
 }
 
-// Plain-language reasons a trip was picked, from facts we actually have. No "below its typical price":
-// no price history exists behind that number, so it is never offered as a saving.
+// Plain-language reasons a trip was picked, from facts we actually have.
 function whyThisTrip(t, ctx) {
   const out = [];
   if (ctx.budget) {
@@ -289,12 +288,13 @@ function whyThisTrip(t, ctx) {
     out.push(diff >= 0 ? `Leaves ${fmt(diff)} of your budget unspent` : `${fmt(-diff)} over your budget (you allowed up to 10% more)`);
   }
   if (t.flight.stops === 0) out.push('Nonstop flights');
-  out.push(`${t.hotel.stars}-star hotel rated ${t.hotel.rating}/5 (${t.hotel.ratingSource})`);
+  out.push(`${t.hotel.stars}-star hotel rated ${t.hotel.rating}/5 (demo supplier rating)`);
   if (t.hotel.features.beachfront) out.push('Beachfront location');
   if (t.hotel.features.allInclusive) out.push('All-inclusive: meals and drinks included');
   else if (t.hotel.features.breakfast) out.push('Breakfast included');
   if (t.hotel.features.freeCancellation) out.push('Free cancellation on the hotel until 72 hours before');
   if (ctx.style && ctx.style !== 'surprise' && t.dest.styles.includes(ctx.style)) out.push(`A strong ${ctx.style === 'city' ? 'city break' : ctx.style} destination`);
+  if (t.typical > t.total * 1.05) out.push(`About ${Math.round((1 - t.total / t.typical) * 100)}% below this trip’s typical price (demo price history)`);
   return out.slice(0, 6);
 }
 

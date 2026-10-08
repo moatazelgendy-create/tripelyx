@@ -44,7 +44,7 @@ class MockTransferProvider extends BaseMockProvider {
         const ret = Math.round(oneWay * 2 * (1 - DATA.return_discount_pct / 100));
         const opts = [
           { id: 'ONE_WAY', name: 'One way', amount: oneWay },
-          { id: 'RETURN', name: 'Return trip', amount: ret },
+          { id: 'RETURN', name: `Return (${DATA.return_discount_pct}% off)`, amount: ret },
         ];
         return {
           id, vertical: 'transfers', provider: this.name, demo: true,

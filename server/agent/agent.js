@@ -563,9 +563,7 @@ class AgentService {
     } catch (e) {
       if (!(e instanceof AppError)) throw e;
       s.current = null;
-      this.speak(s, e.code === 'trip_expired'
-        ? 'The dates of the trip on your canvas have passed, so I cleared it. Say "build it again" and I will rebuild from what you told me.'
-        : 'Part of the trip on your canvas is no longer available from the suppliers, so I cleared it. Say "build it again" and I will rebuild from what you told me.');
+      this.speak(s, 'Part of the trip on your canvas is no longer available from the suppliers, so I cleared it. Say "build it again" and I will rebuild from what you told me.');
       return null;
     }
   }
@@ -1396,7 +1394,7 @@ class AgentService {
       const evClash = s.event && s.event.date ? X.eventCollision(t, s.event) : null, missed = xfail.reasons.filter(r => !r.ok && !(evClash && r.text === evClash.text)).map(r => clause(r.text));
       unmet.push(`the final experience check did not pass${missed.length ? `: ${missed.join(', ')}` : ''}`);
     }
-    this.speak(s, `${unmet.length ? `Before you book, ${unmet.length === 1 ? 'one thing is' : `${unmet.length} things are`} not what you asked for: ${joinAnd(unmet)}. ` : ''}Here is what you asked for against what you are getting. I don't charge anything: the next page re-checks the price, and you confirm there.`, { kind: 'contract', asked: state.askedFor(s, { maps: this.maps }), getting, href: `/trip/${s.current.token}/review?${cx}`, trip: c, unmet });
+    this.speak(s, `${unmet.length ? `Before you book, ${unmet.length === 1 ? 'one thing is' : `${unmet.length} things are`} not what you asked for: ${joinAnd(unmet)}. ` : ''}Here is what you asked for against what you are getting. I don't charge anything: the next page re-checks the live price, and you confirm there.`, { kind: 'contract', asked: state.askedFor(s, { maps: this.maps }), getting, href: `/trip/${s.current.token}/review?${cx}`, trip: c, unmet });
   }
 
   // What the current trip does not satisfy of the rules the traveler stated. Never silent.
@@ -1422,7 +1420,7 @@ class AgentService {
   generalAnswer(s, kind, cur) {
     const t = cur ? cur.trip : null;
     if (kind === 'next') {
-      this.speak(s, t ? `Next is yours to decide: say "book it" and I show you what you asked for against what you are getting, then the trip page re-checks the price and you confirm. Or keep changing it: cheaper, better, a different place.` : 'Next: tell me a budget and where you fly from, and I build the first trip.');
+      this.speak(s, t ? `Next is yours to decide: say "book it" and I show you what you asked for against what you are getting, then the trip page re-checks the live price and you confirm. Or keep changing it: cheaper, better, a different place.` : 'Next: tell me a budget and where you fly from, and I build the first trip.');
       return;
     }
     if (kind === 'cancelInfo') {

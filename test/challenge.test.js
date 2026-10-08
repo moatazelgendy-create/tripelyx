@@ -181,7 +181,7 @@ test('challenge pages: unknowns marked, no win claimed without the facts, keep m
   assert.match(text(locked.html), /Same trip for less .* We beat it\./);
 
   const home = await get('/');
-  assert.match(home.html, /href="\/challenge"/);
+  assert.match(home.html, /action="\/challenge"/);
   assert.match(text(home.html), /Challenge us/);
   // The older beat-my-quote entry still works for anyone holding the link.
   const old = await get(`/dream?${q({ dest: 'cancun', b: '1860', from: 'NYC', nights: '5', beat: '1', who: 'couple', n: '2' })}`);

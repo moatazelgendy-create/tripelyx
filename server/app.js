@@ -28,18 +28,6 @@ const { notFoundView, errorView } = require('./views/errors');
 
 const ASSET_VERSION = Date.now().toString(36);
 
-// Every page says plainly when what it shows is not real. Outside production the build is named; in
-// production the notice appears whenever trips come from demo inventory or payments are in test mode.
-function envBanner(config, tripService) {
-  if (config.appEnv !== 'production') return `${config.appEnv === 'staging' ? 'Staging' : 'Development'} build · demo inventory · payments in ${config.payment.mode} mode — no real charges`;
-  const demo = tripService ? tripService.demo : config.allowDemoInventory;
-  const parts = [
-    ...(demo ? ['the trips, prices, hotels and airlines shown are demo examples, not real offers'] : []),
-    ...(config.payment.mode !== 'live' ? ['payments are in test mode, so no card is ever charged'] : []),
-  ];
-  return parts.length ? `Preview: ${parts.join('; ')}.` : null;
-}
-
 async function createApp(config, { registryOverrides, tripOverrides, store: injectedStore, now, log = console } = {}) {
   const store = injectedStore || createStore(config);
   await store.init();
@@ -119,8 +107,9 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
     payments,
     publicConfig: publicConfig(config),
     assetVersion: ASSET_VERSION,
-    envBanner: envBanner(config, tripService),
-    company: config.company,
+    envBanner: config.appEnv === 'production' ? null
+      : `${config.appEnv === 'staging' ? 'Staging' : 'Development'} build · demo inventory · payments in ${config.payment.mode} mode — no real charges`,
+    alameinGoUrl: config.alameinGoUrl,
     log,
     trips: !!tripService,
     tripService,
@@ -142,17 +131,10 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
 
   if (config.allowDemoInventory) app.use('/media/demo', demoMediaRouter());
 
-  // Too many requests gets a real page (or JSON for the API) with a way back, never a bare line of text.
-  const limited = (req, res, next, options) => {
-    const message = 'Too many requests in a short time. Please wait a few minutes and try again.';
-    if (req.originalUrl.startsWith('/api/')) return res.status(options.statusCode).json({ error: { code: 'rate_limited', message } });
-    res.status(options.statusCode).type('html').send(String(errorView(ctx, { status: options.statusCode, code: 'rate_limited', message })));
-  };
-  const limiter = (windowMs, limit) => rateLimit({ windowMs, limit, standardHeaders: 'draft-7', legacyHeaders: false, handler: limited });
-  const apiLimiter = limiter(60 * 1000, 120);
-  const writeLimiter = limiter(10 * 60 * 1000, 40);
+  const apiLimiter = rateLimit({ windowMs: 60 * 1000, limit: 120, standardHeaders: 'draft-7', legacyHeaders: false });
+  const writeLimiter = rateLimit({ windowMs: 10 * 60 * 1000, limit: 40, standardHeaders: 'draft-7', legacyHeaders: false });
   // Searches and the downward price search price hundreds of packages per request.
-  const computeLimiter = limiter(60 * 1000, 120);
+  const computeLimiter = rateLimit({ windowMs: 60 * 1000, limit: 120, standardHeaders: 'draft-7', legacyHeaders: false });
   app.use('/api', apiLimiter, apiRouter(ctx, { writeLimiter }));
   if (tripService) {
     app.use('/admin', adminRouter(ctx, { writeLimiter }));

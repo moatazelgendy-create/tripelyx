@@ -15,7 +15,7 @@ function encodeSpec(s) {
 }
 
 function decodeSpec(token) {
-  const bad = () => new AppError('trip_not_found', 'This trip link is no longer available.', 404);
+  const bad = () => new AppError('trip_not_found', 'We couldn’t read that trip link. Please build the trip again.', 404);
   const parts = String(token || '').slice(0, 300).split('~');
   if (parts.length !== 9) throw bad();
   const [dest, from, depart, nights, tw, hotel, flight, bt, acts] = parts;

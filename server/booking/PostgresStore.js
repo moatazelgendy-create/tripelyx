@@ -170,12 +170,6 @@ class PostgresStore {
     await this.pool.query('INSERT INTO tx_partner_leads (id, data) VALUES ($1, $2)', [lead.id, lead]);
     return lead;
   }
-
-  // Contact support and business messages (stored in the table the partner form always used).
-  async listPartnerLeads({ limit = 500 } = {}) {
-    const { rows } = await this.pool.query('SELECT data FROM tx_partner_leads ORDER BY created_at DESC LIMIT $1', [limit]);
-    return rows.map(r => r.data);
-  }
 }
 
 module.exports = { PostgresStore };

@@ -163,7 +163,7 @@ function rowText(row, { theirDest, ours }) {
     case 'dates': return [row.theirs ? longDate(row.theirs) : unknown, ours ? `${longDate(row.ours.depart)} – ${longDate(row.ours.back)}` : null];
     case 'dest': return [theirDest.name, ours ? ours.dest.name : null];
     case 'flight': return [WORD.flight[row.theirs], ours ? `${row.ours.stops ? `${row.ours.stops} stop` : 'Nonstop'}, ${hm(row.ours.durationMinutes)} each way, ${row.ours.name} fare` : null];
-    case 'hotel': return [row.theirs ? `${row.theirs}-star` : unknown, ours ? `${row.ours.name} · ${row.ours.stars}-star · ${row.ours.rating}/5 (${row.ours.ratingSource}) · ${row.ours.area}` : null];
+    case 'hotel': return [row.theirs ? `${row.theirs}-star` : unknown, ours ? `${row.ours.name} · ${row.ours.stars}-star · ${row.ours.rating}/5 · ${row.ours.area}` : null];
     case 'meals': return [WORD.meals[row.theirs], ours ? MEAL_WORD[row.ours] : null];
     case 'bags': return [WORD.bags[row.theirs], ours ? BAG_WORD[row.ours] : null];
     case 'transfer': return [WORD.transfer[row.theirs], ours ? (row.ours ? 'Included, both ways' : 'Not included') : null];

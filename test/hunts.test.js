@@ -190,7 +190,7 @@ test('list is newest first and every summary number is arithmetic on stored fact
     assert.deepEqual((await app.hunts.list(bob)).map(h => h.id), [c.id]);
     assert.deepEqual(await app.hunts.list(null), []);
     assert.equal((await app.hunts.get(ada, a.id)).id, a.id);
-    const notFound = p => assert.rejects(p, e => e.name === 'AppError' && e.code === 'hunt_not_found' && e.status === 404);
+    const notFound = p => assert.rejects(p, e => e.name === 'AppError' && e.code === 'not_found' && e.status === 404);
     await notFound(app.hunts.get(bob, a.id));
     await notFound(app.hunts.get(ada, 'hnt_nothing'));
     await notFound(app.hunts.get(null, a.id));

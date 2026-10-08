@@ -67,11 +67,9 @@ function searchForm(meta, values, lookups, errors = {}, { idPrefix = 'f', bind =
   </form>`;
 }
 
-// Demo inventory's ratings and review counts are invented: the score says "demo rating" and no review
-// count is shown. A real provider's count is shown as the provider states it.
 function ratingBadge(offer) {
   if (!offer.rating) return '';
-  return html`<div class="rating-badge"><span class="score">${offer.rating.score.toFixed(1)}</span><span><b>${ratingWord(offer.rating.score)}</b> <span class="reviews">${offer.demo ? 'demo rating' : `${offer.rating.count.toLocaleString('en-US')} reviews`}</span></span></div>`;
+  return html`<div class="rating-badge"><span class="score">${offer.rating.score.toFixed(1)}</span><span><b>${ratingWord(offer.rating.score)}</b> <span class="reviews">${offer.rating.count.toLocaleString('en-US')} reviews</span></span></div>`;
 }
 
 function chipsFor(offer) {
@@ -88,8 +86,7 @@ function resultCard(vertical, offer, query) {
   const avail = offer.options.filter(o => o.available);
   const best = (avail.length ? avail : offer.options).reduce((a, b) => (a.price.amount <= b.price.amount ? a : b));
   const free = offer.cancellation.type !== 'non_refundable';
-  // "Only N left" only from a real provider's stated count, never from demo inventory's invented one.
-  const few = !offer.demo && avail.length && best.remaining !== undefined && best.remaining !== null && best.remaining <= 3;
+  const few = avail.length && best.remaining !== undefined && best.remaining !== null && best.remaining <= 3;
   return html`<article class="result">
     <a class="result-media" href="${url}" tabindex="-1" aria-hidden="true"><img src="${offer.media[0] ? offer.media[0].url : ''}" alt="" loading="lazy" width="400" height="250">${(offer.badges || [])[0] ? html`<span class="media-badge">${offer.badges[0]}</span>` : ''}</a>
     <div class="result-body">
@@ -113,7 +110,7 @@ function resultCard(vertical, offer, query) {
         ${best.total && best.total.amount !== best.price.amount ? html`<div class="price-total"><b>${money(best.total.amount, best.total.currency)}</b> total</div>` : ''}
         <div class="price-note">before taxes &amp; fees</div>
       </div>
-      <a class="btn btn-navy btn-sm" href="${url}" aria-label="View ${offer.title}">View details ${icon('arrow')}</a>
+      <a class="btn btn-navy btn-sm" href="${url}" aria-label="View ${offer.title}">View deal ${icon('arrow')}</a>
     </div>
   </article>`;
 }
@@ -317,14 +314,14 @@ function offerView(ctx, { vertical, offer, query, error, selected = {} }) {
         <legend class="sr-only">Options</legend>
         ${offer.options.map(o => html`<label class="option${o.available ? '' : ' is-disabled'}">
           <input type="radio" name="optionId" value="${o.id}"${o.id === chosen ? raw(' checked') : ''}${o.available ? '' : raw(' disabled')} required>
-          <span><b>${o.name}</b><small>${o.available ? (o.description || '') : 'Not available for your search'}${!offer.demo && o.available && o.remaining !== undefined && o.remaining > 0 && o.remaining <= 3 ? ` · only ${o.remaining} left` : ''}</small></span>
+          <span><b>${o.name}</b><small>${o.available ? (o.description || '') : 'Not available for your search'}${o.available && o.remaining !== undefined && o.remaining > 0 && o.remaining <= 3 ? ` · only ${o.remaining} left` : ''}</small></span>
           <span class="option-price"><b>${money(o.price.amount, o.price.currency)}</b><small>${UNIT_LABEL[offer.fromPrice.unit] || ''}</small>${o.total && o.total.amount !== o.price.amount ? html`<small>${money(o.total.amount, o.total.currency)} total</small>` : ''}</span>
         </label>`)}
       </fieldset>
       ${slots ? html`<div class="offer-section"><h2>Start time</h2><div class="slots" role="radiogroup" aria-label="Start time">${slots.map(s => {
         const ok = s.remaining >= (query.participants || 1);
         const isSel = selected.slot ? selected.slot === s.time : firstSlot && firstSlot.time === s.time;
-        return html`<label class="slot"><input type="radio" name="slot" value="${s.time}"${isSel && ok ? raw(' checked') : ''}${ok ? '' : raw(' disabled')} required><span>${s.time}<small>${!s.remaining ? 'Full' : offer.demo ? 'Available' : `${s.remaining} left`}</small></span></label>`;
+        return html`<label class="slot"><input type="radio" name="slot" value="${s.time}"${isSel && ok ? raw(' checked') : ''}${ok ? '' : raw(' disabled')} required><span>${s.time}<small>${s.remaining ? `${s.remaining} left` : 'Full'}</small></span></label>`;
       })}</div></div>` : ''}
       <button class="btn btn-navy btn-lg btn-block" type="submit"${firstAvailable ? '' : raw(' disabled')}><span class="btn-label">${firstAvailable ? 'Continue to checkout' : 'Sold out'}</span> ${icon('arrow')}</button>
       <p class="secure-note">${icon('lock')}Final price with taxes is shown before you pay.</p>
@@ -444,15 +441,14 @@ function bookingView(ctx, { booking: b, cancellationPreview: preview, payment, n
   return layout({ title: `Booking ${b.ref}`, body, ctx, scripts: ['/js/book.js'] });
 }
 
-function manageView(ctx, { error, notice = null, ref = '', email = '' } = {}) {
+function manageView(ctx, { error, ref = '', email = '' } = {}) {
   const body = html`
 <div class="container">
   <div class="confirm-hero"><div class="confirm-badge is-warn">${icon('search')}</div><h1>Manage your booking</h1><p>Enter your booking reference and the email you booked with.</p></div>
   <form class="form-card form confirm-card" method="post" action="/manage">
     ${error ? html`<div class="alert alert-error" role="alert">${icon('alert')}<span>${error}</span></div>` : ''}
-    ${notice && !error ? html`<div class="alert alert-info" role="status">${icon('info')}<span>${notice}</span></div>` : ''}
     <div class="form-row">
-      <div class="field"><label for="m-ref">Booking reference</label><input id="m-ref" name="ref" value="${ref}" required maxlength="20" autocomplete="off" placeholder="Your Trip ID"></div>
+      <div class="field"><label for="m-ref">Booking reference</label><input id="m-ref" name="ref" value="${ref}" required maxlength="20" autocomplete="off" placeholder="TX-XXXXXXXX"></div>
       <div class="field"><label for="m-email">Email</label><input id="m-email" name="email" type="email" value="${email}" required maxlength="120" autocomplete="email"></div>
     </div>
     <button class="btn btn-navy btn-lg" type="submit">Find booking ${icon('arrow')}</button>

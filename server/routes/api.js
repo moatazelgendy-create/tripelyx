@@ -3,7 +3,7 @@
 const express = require('express');
 const { AppError } = require('../lib/errors');
 const { id } = require('../lib/ids');
-const { validateMessage } = require('../lib/validate');
+const { validatePartnerLead } = require('../lib/validate');
 const { VERTICALS } = require('../verticals');
 const { readCookies, bookingCookieName, setBookingCookie } = require('../lib/cookies');
 
@@ -88,17 +88,12 @@ function apiRouter(ctx, { writeLimiter }) {
     } catch (e) { next(e); }
   });
 
-  // Contact support and For travel businesses. The message is saved and support is told at once (the
-  // admin outbox and the Messages tab), so nothing a traveler sends goes unread.
-  r.post(['/messages', '/partners'], writeLimiter, requireJson, async (req, res, next) => {
+  r.post('/partners', writeLimiter, requireJson, async (req, res, next) => {
     try {
       // A hidden honeypot field: humans never fill it, form bots usually do.
       if (req.body && req.body.website) return res.status(201).json({ ok: true });
-      const msg = { id: id('msg'), ...validateMessage(req.body), createdAt: new Date().toISOString() };
-      await ctx.store.savePartnerLead(msg);
-      if (ctx.tripService) {
-        await ctx.tripService.notifier.send({ to: 'support', audience: 'admin', subject: `${msg.kind === 'partner' ? 'Business enquiry' : 'Support message'}: ${msg.type || 'no topic'}`, body: `${msg.name} <${msg.email}>: ${msg.message.slice(0, 200)}`, ref: msg.id });
-      }
+      const lead = { id: id('lead'), ...validatePartnerLead(req.body), createdAt: new Date().toISOString() };
+      await ctx.store.savePartnerLead(lead);
       res.status(201).json({ ok: true });
     } catch (e) { next(e); }
   });

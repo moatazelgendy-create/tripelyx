@@ -55,10 +55,6 @@ function adminRouter(ctx, { writeLimiter }) {
     } catch (e) { next(e); }
   });
 
-  r.get('/messages', async (req, res, next) => {
-    try { send(res, admin.messagesView(ctx, { messages: await store.listPartnerLeads({ limit: 500 }) })); } catch (e) { next(e); }
-  });
-
   r.get('/requests', async (req, res, next) => {
     try { send(res, admin.requestsView(ctx, { requests: await store.listRecords('trip_request', { limit: 500 }), notice: req.query.ok ? 'Saved.' : null })); } catch (e) { next(e); }
   });

@@ -191,8 +191,6 @@ class TripService {
 
   async trip(token, ctx = {}) {
     const spec = decodeSpec(token);
-    // A link to a trip whose dates have passed is no longer a trip anyone can book.
-    if (spec.depart < today(this.now())) throw new AppError('trip_expired', 'This trip link is no longer available: its dates have passed.', 410);
     const t = requireTrip(await this.price(spec));
     const scores = optimizer.scoreTrip(t, ctx);
     return {
@@ -256,14 +254,10 @@ class TripService {
   async verify(token, seen, { promoCode } = {}) {
     const promo = await this.promo(promoCode);
     const spec = decodeSpec(token);
-    // A trip whose dates have passed cannot be quoted, and is not "unavailable from a supplier" either.
-    if (spec.depart < today(this.now())) throw new AppError('trip_expired', 'This trip link is no longer available: its dates have passed.', 410);
+    if (spec.depart < today(this.now())) return { available: false }; // a trip that has already left cannot be quoted
     const t = await this.price(spec, { promo });
     if (!t) return { available: false };
-    // With no earlier price to compare (no `seen`), the status is just "priced": never "still", which
-    // would claim a comparison that was not made.
-    if (!(Number.isFinite(seen) && seen > 0)) return { available: true, trip: t, promo, status: 'priced', diff: 0 };
-    const diff = t.total - seen;
+    const diff = Number.isFinite(seen) && seen > 0 ? t.total - seen : 0;
     return { available: true, trip: t, promo, status: diff === 0 ? 'same' : diff < 0 ? 'cheaper' : 'higher', diff: Math.abs(diff) };
   }
 
@@ -624,10 +618,7 @@ class TripService {
     const visitor = null;
     if (type === 'payment_attempted' || type === 'booking_confirmed') await this.track(type, { visitor, userId: b.userId, data: { ref: b.ref, total: b.total, dest: b.quote.trip.dest.id } });
     if (type === 'booking_confirmed') {
-      // A demo booking says so in the subject: nothing was reserved and the payment was a test.
-      await this.notifier.send(b.demo
-        ? { to: b.traveler.email, subject: `Demo booking complete · TRIP #${b.ref}`, body: `${b.quote.offer.title}. Demo total ${money(b.total)}. This was a demo: nothing was reserved with any supplier and no card was charged.`, ref: b.ref }
-        : { to: b.traveler.email, subject: `Your trip is confirmed · TRIP #${b.ref}`, body: `${b.quote.offer.title}. Total paid ${money(b.total)}.`, ref: b.ref });
+      await this.notifier.send({ to: b.traveler.email, subject: `Your trip is confirmed · TRIP #${b.ref}`, body: `${b.quote.offer.title}. Total paid ${money(b.total)}.`, ref: b.ref });
     }
     if (type === 'partially_confirmed' || type === 'booking_failed') {
       const alert = { id: id('alr'), ref: b.ref, type, message: type === 'partially_confirmed' ? 'Part of this trip could not be confirmed. Manual intervention needed.' : 'Booking failed after payment; the payment was refunded automatically.', open: true, at: this.now().toISOString() };

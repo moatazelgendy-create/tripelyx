@@ -101,25 +101,23 @@ async function checkPriced(svc, links, label) {
   }
 }
 
-test('the homepage: one number and one primary button above the fold; WHAT MATTERS MOST? as four submit buttons with name=mode in the help-me path; each mode starts the mission in it', async t => {
+test('the homepage: WHAT DO YOU WANT FROM THIS TRIP? as four submit buttons with name=mode, the primary button unchanged, BUILD ME AN EXPERIENCE with its promise; each mode starts the mission in it', async t => {
   const app = await startApp();
   t.after(app.close);
   const c = client(app.base);
   const home = await c.req('/');
   assert.equal(home.status, 200);
   noInline('/', home.text);
-  const hero = home.text.match(/<form class="ag-hero-form ag-hero-number" method="post" action="\/agent">[\s\S]*?<\/form>/)[0];
-  assert.match(hero, /<button class="btn btn-blue btn-lg" type="submit">Show me what my money can do/, 'the primary button, with no mode');
-  assert.doesNotMatch(hero, /name="mode"/, 'no competing buttons above the fold');
-  const path = home.text.match(/<div class="tb-path" id="figure-it-out">[\s\S]*?<\/form>/)[0];
-  assert.match(path, /<legend>What matters most\?<\/legend>/);
+  const form = home.text.match(/<form class="ag-hero-form ag-hero-number" method="post" action="\/agent">[\s\S]*?<\/form>/)[0];
+  assert.match(form, /<legend class="ag-hero-entry-q">WHAT DO YOU WANT FROM THIS TRIP\?<\/legend>/);
   assert.deepEqual(ENTRY_MODES.map(m => [m[0], m[1]]), [['save', 'SAVE THE MOST'], ['value', 'BEST VALUE'], ['easy', 'MAKE IT EASY'], ['experience', 'MAKE IT MEMORABLE']]);
-  for (const [value, label] of ENTRY_MODES) assert.match(path, new RegExp(`<button class="btn btn-white tb-mode" type="submit" name="mode" value="${value}">[\\s\\S]*?${label}</button>`), label);
-  assert.match(path, /name="budget"/);
-  assert.doesNotMatch(home.text, /BUILD ME AN EXPERIENCE/, 'one way in per mode: MAKE IT MEMORABLE is Experience Max');
+  for (const [value, label] of ENTRY_MODES) assert.match(form, new RegExp(`<button class="btn btn-white ag-hero-mode" type="submit" name="mode" value="${value}">[\\s\\S]*?${label}</button>`), label);
+  assert.match(form, /<button class="btn btn-blue btn-lg" type="submit">Show me what my money can do/, 'the primary button stays, with no mode');
+  assert.match(form, /<button class="btn btn-blue" type="submit" name="mode" value="experience">[\s\S]*?BUILD ME AN EXPERIENCE<\/button> <span class="ag-hero-promise">SPEND ON THE MEMORIES\. NOT THE LABELS\.<\/span>/);
+  assert.ok(form.indexOf('Show me what my money can do') < form.indexOf('WHAT DO YOU WANT FROM THIS TRIP?') && form.indexOf('WHAT DO YOU WANT FROM THIS TRIP?') < form.indexOf('BUILD ME AN EXPERIENCE'));
   // The page's own promises deny pressure in words the blunt regex would catch ("no made-up 'only 2
   // left'"); the sweep covers what this slice adds.
-  assert.doesNotMatch(text(hero + path), PRESSURE);
+  assert.doesNotMatch(text(form), PRESSURE);
   // Each way in starts the mission in its mode; BEST VALUE, the primary button and an unknown mode are
   // the mission as it is, and a mode without the number starts no mission.
   for (const [mode, want] of [['save', 'save'], ['easy', 'easy'], ['experience', 'experience'], ['value', null], ['', null], ['luxury', null]]) {

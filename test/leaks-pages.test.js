@@ -347,8 +347,7 @@ test('the verified promo code travels with every link; a stated bag is never a l
   const cxq = 'b=5000&nights=5&style=beach';
   const review = await c.req(`/trip/${token}/review?${cxq}&seen=0&promo=SAVE20`);
   assert.equal(review.status, 200);
-  // No earlier price was named (seen=0), so the page states the price and claims no comparison.
-  assert.ok(text(review.text).includes(`Your price is ${money(coded.total)}.`));
+  assert.ok(text(review.text).includes(`your price is still ${money(coded.total)}`));
   // The check's control: its token prices, with the code, to the total it names; the link carries the code.
   const ctl = review.text.match(/<a class="btn btn-navy" href="([^"]+)" data-found="([^"]+)">([^<]+)<\/a>/);
   assert.ok(ctl, 'the check finds the experience nothing stated asks for');

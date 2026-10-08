@@ -200,14 +200,11 @@ function noDeadEnd(q, result, originCity, relax = null) {
     ...(!relax && q.priority !== 'price' ? [['Relax one rule: lowest price first', `/trips?${searchParams({ ...q, priority: 'price' })}`]] : []),
     ...(!relax && !q.allowOver ? [['Allow up to 10% more', `/trips?${searchParams({ ...q, allowOver: 10 })}`]] : []),
     ...(q.keep ? [['Protect less for the destination', without(['k'])]] : []),
-    ['Change airport', without(['from'])],
     ['Increase budget', without(['b', 'k'])],
-    // Keep every rule as it is and let the Savings Hunter watch for a trip that fits.
-    ['Keep my rules and watch', `/hunts/new?${new URLSearchParams({ budget: String(Math.round(q.budget / 100)), from: q.origin || '', travelers: String(q.travelers), who: q.who || '', nights: String(q.nights), ...(q.style && q.style !== 'surprise' ? { style: q.style } : {}) })}`],
     ['Ask a trip specialist', `/custom-trip?budget=${q.budgetInput}&from=${encodeURIComponent(originCity)}&travelers=${q.travelers}`],
   ];
   return html`<div class="tb-advisor">
-    <h2>We couldn’t build a trip under your current rules for ${dollars(q.budget)}${result.cheapest ? html`. Trips start at <b>${money(result.cheapest)}</b>` : ''}.</h2>
+    <h2>We couldn’t build a trip that meets all your rules for ${dollars(q.budget)}${result.cheapest ? html`. Trips start at <b>${money(result.cheapest)}</b>` : ''}.</h2>
     ${q.keep ? html`<p class="tb-collision">${icon('lock')} Your vacation budget is ${dollars(q.vacationBudget)}. You protect ${dollars(q.keep)} for the destination, which leaves ${dollars(q.budget)} for the booking${result.cheapest ? `, and the cheapest complete trip we built is ${money(result.cheapest)}` : ''}. We don’t spend your reserve to make a booking fit; you can.</p>` : ''}
     ${works.length ? html`<h3 class="tb-relax-title">${icon('sparkle')} One rule away</h3>
     <p>We re-ran your search with exactly one rule relaxed at a time. These are the ones that really get there, each re-priced in full:</p>
@@ -332,8 +329,11 @@ function resultsView(ctx, { result, relax = null, originCity, user }) {
     <a class="tb-flex-opt${!q.allowOver ? ' is-on' : ''}" href="/trips?${searchParams({ ...q, allowOver: 0 })}" ${!q.allowOver ? raw('aria-current="true"') : ''}>${icon('lock')} Stay under my budget</a>
     <a class="tb-flex-opt${q.allowOver ? ' is-on' : ''}" href="/trips?${searchParams({ ...q, allowOver: 10 })}" ${q.allowOver ? raw('aria-current="true"') : ''}>${icon('trend')} I can spend up to 10% more</a>
   </div>
-  <div>
-    <div>
+  <div class="tb-building-wrap" data-results>
+    <ol class="tb-building tb-building-page" data-building aria-live="polite">
+      <li>Finding destinations within your budget…</li><li>Checking flight options…</li><li>Finding the best hotels…</li><li>Optimizing your ${dollars(q.budget)}…</li><li>Deciding what’s worth your money…</li>
+    </ol>
+    <div data-results-body>
       ${picks.length ? decisionBand(picks, q, cx, result.keepMoney, result) : ''}
       ${picks.length ? html`<div class="tb-cards">${picks.map((p, i) => tripCard(p, q, cx, { over: p.trip.total > q.budget, rank: i, vs: best.trip }))}${keepCard ? keepMoneyCard(result.keepMoney, best, q, cx) : ''}</div>` : ''}
       ${over.length ? html`<p class="tb-over-note">${icon('info')} Trips marked “over your ${q.keep ? 'booking budget' : 'budget'}” use the extra 10% you allowed${q.keep ? ', which would come out of what you protected' : ''}. Switch to “Stay under my budget” to hide them.</p>` : ''}

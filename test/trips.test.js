@@ -469,7 +469,7 @@ test('money and time: weekdays are a second budget, never a claim about anyone�
   const c = client(app.base);
   const none = await c.req(`/trips?${new URLSearchParams({ ...QUERY, b: '300' })}`);
   assert.equal(none.status, 200);
-  assert.match(none.text, /couldn’t build a trip under your current rules for \$300/);
+  assert.match(none.text, /couldn’t build a trip that meets all your rules for \$300/);
   // Every single-rule change is answered once: offered with its real price under "One rule away"
   // or named as not enough alone; the remaining links change the search in other ways.
   for (const offer of ['Change dates', 'Increase budget', 'Ask a trip specialist']) assert.match(none.text, new RegExp(offer));
@@ -479,7 +479,7 @@ test('money and time: weekdays are a second budget, never a claim about anyone�
   const home = await c.req('/');
   assert.match(home.text, /Or say it in your own words/);
   assert.match(home.text, /every total includes taxes and fees/);
-  assert.match(home.text, /Show me what my money can do/);
+  assert.match(home.text, /Build my best trip/);
   assert.match(home.text, /Your maximum is a ceiling, not a target\./);
 });
 
@@ -538,10 +538,10 @@ test('Journey B: a dream destination gets the gap and real single-change closers
   assert.match(await missing.text(), /How much do you want to spend\?/);
 });
 
-test('pages render without inline scripts or styles; the planner flag turns it all off and leaves a pre-launch home', async t => {
+test('pages render without inline scripts or styles; corporate site moves to /company; flag turns it all off', async t => {
   const app = await startApp();
   t.after(app.close);
-  const paths = ['/', '/plan', '/plan?b=1500', '/plan?b=1500&k=0&from=SFO&who=family', `/trips?${new URLSearchParams(QUERY)}`, '/how-it-works', '/faq', '/legal/terms', '/legal/privacy', '/custom-trip', '/destinations', '/trips-to-cancun', '/beach-vacations', '/trips-under-1500', '/trips-under-2000?region=international', '/signin', '/signup', '/about', '/contact', '/partners', '/book/hotels', '/robots.txt', '/sitemap.xml'];
+  const paths = ['/', '/plan', '/plan?b=1500', '/plan?b=1500&k=0&from=SFO&who=family', `/trips?${new URLSearchParams(QUERY)}`, '/how-it-works', '/faq', '/legal/terms', '/legal/privacy', '/custom-trip', '/destinations', '/trips-to-cancun', '/beach-vacations', '/trips-under-1500', '/trips-under-2000?region=international', '/signin', '/signup', '/company', '/about', '/book/hotels', '/robots.txt', '/sitemap.xml'];
   for (const p of paths) {
     const res = await fetch(app.base + p);
     assert.equal(res.status, 200, p);
@@ -550,10 +550,11 @@ test('pages render without inline scripts or styles; the planner flag turns it a
     assert.ok(!/<script(?![^>]*\bsrc=)(?![^>]*application\/json)[^>]*>/.test(body), `${p} has an inline script`);
   }
   const home = await (await fetch(app.base + '/')).text();
-  assert.match(home, /How much do you want to spend\?/);
-  assert.match(home, /No destination required\./);
-  assert.match(home, /Example · demo inventory/);
-  assert.match(home, /What one number builds/);
+  assert.match(home, /How much do you<br>want to spend\?/);
+  assert.match(home, /Surprise me/i);
+  assert.match(home, /Demo inventory/);
+  assert.match(home, /Three answers\. One budget\. You choose, or keep talking\./);
+  assert.match(home, /Our pick/);
   assert.match(home, /Challenge us/);
   assert.match(home, /I have to be there on/);
   assert.equal((await fetch(app.base + '/trips-under-7')).status, 404);
@@ -564,12 +565,8 @@ test('pages render without inline scripts or styles; the planner flag turns it a
 
   const off = await startApp({ ENABLE_TRIPS: 'false' });
   t.after(off.close);
-  const offHome = await (await fetch(off.base + '/')).text();
-  assert.match(offHome, /isn’t taking trips right now/);
-  assert.match(offHome, /go@tripelyx\.com/);
-  assert.ok(!/Travel technology|href="\/plan"|href="\/my-trips"/.test(offHome), 'no corporate copy and no links into the planner while it is off');
+  assert.match(await (await fetch(off.base + '/')).text(), /Travel technology/);
   assert.equal((await fetch(off.base + '/plan')).status, 404);
-  for (const p of ['/how-it-works', '/faq', '/legal/privacy', '/about', '/contact']) assert.equal((await fetch(off.base + p)).status, 200, `${p} works with the planner off`);
   const prod = await startApp({ APP_ENV: 'production', ENABLE_TRIPS: 'true', ALLOW_DEMO_INVENTORY: 'false', DATABASE_URL: 'memory', PAYMENT_MODE: 'test', HTTPS_ONLY: 'true', DATABASE_ENV: 'production' }).catch(e => e);
   if (!(prod instanceof Error)) { t.after(prod.close); assert.equal((await fetch(prod.base + '/plan')).status, 404, 'mock trip inventory is refused where demo data is not allowed'); }
 });
@@ -586,7 +583,7 @@ test('the full journey: account, search, customize, price check, quote, pay, My 
   assert.equal(ok.status, 303); assert.equal(ok.location, '/my-trips');
   assert.ok(c.jar.txs, 'session cookie set');
   assert.equal((await c.req('/signup', { method: 'POST', form: { name: 'Ada', email: 'ada@example.com', password: 'correct horse battery' } })).status, 409);
-  assert.match((await c.req('/my-trips')).text, /Your trips, Ada/);
+  assert.match((await c.req('/my-trips')).text, /Welcome back, Ada/);
 
   // Search and customize: every change re-prices the whole trip server-side.
   const trip = await buildTrip(c);
@@ -633,12 +630,7 @@ test('the full journey: account, search, customize, price check, quote, pay, My 
   assert.equal(b.components.length, 2 + b.trip.activities.length + (b.trip.transfer ? 1 : 0), 'flights, hotel, and one component per experience and transfer');
   assert.ok(b.components.every(x => x.status === 'confirmed' && x.confirmation));
   const bookingPage = await c.req(`/booking/${booking.ref}`);
-  // Demo inventory: the page never reads as a real reservation.
-  assert.match(bookingPage.text, /<h1>Demo booking complete<\/h1>/);
-  assert.doesNotMatch(bookingPage.text, /Your trip is booked/);
-  assert.match(bookingPage.text, /no airline, hotel or other supplier was contacted, so nothing is reserved/);
-  assert.match(bookingPage.text, /Demo confirmation <b class="ref">/);
-  assert.doesNotMatch(bookingPage.text, />Confirmation <b/);
+  assert.match(bookingPage.text, /Your trip is booked/);
   assert.match(bookingPage.text, new RegExp(`TRIP #${booking.ref}`));
   assert.match(bookingPage.text, /under your \$1,500 budget/);
 
@@ -1076,8 +1068,8 @@ test('deciding today and after: dated cutoffs shared by the pages and the refund
   }
   if (soonTrip.flight.refundable) assert.ok(soonItems.some(i => i.cutoff && !isOpen(i, soonNow)), 'the refundable fare closes 7 days out, so five days out it has passed');
   assert.doesNotMatch(soon.text, /the 24-hour rule applies|Free to cancel before/);
-  // A trip that has already left cannot be quoted: its link says so instead of "unavailable".
-  await assert.rejects(app.tripService.verify(encodeSpec({ ...soonSpec, depart: addDays(today(), -1) }), 0), e => e.code === 'trip_expired' && e.status === 410);
+  // A trip that has already left cannot be quoted.
+  assert.equal((await app.tripService.verify(encodeSpec({ ...soonSpec, depart: addDays(today(), -1) }), 0)).available, false);
 
   // After booking: what the booking covers, what it leaves out, what we never price; the full-refund
   // window dated 24 hours after booking; then each part's cutoff, the same ones the refund follows.

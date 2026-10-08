@@ -59,7 +59,7 @@ function compareView(ctx, { items, cx, mode = 'compare', all = false, locks = {}
         : html`<a class="btn btn-navy" href="${tripUrl(c)}">Choose this trip ${icon('arrow')}</a>`}</td>`)}</tr></tfoot>
     </table>
   </div>
-  <p class="tb-muted tb-small">${optimize ? 'Locked parts never change without you. ' : ''}Every price is rechecked before you pay; nothing is charged until you confirm.</p>
+  <p class="tb-muted tb-small">${optimize ? 'Locked parts never change without you. ' : ''}Prices are live and rechecked before you pay; nothing is charged until you confirm.</p>
 </div>`;
   return layout({ title: optimize ? 'Before and after' : 'Compare trips', active: 'plan', body, ctx, scripts: ['/js/trips.js'], noindex: true });
 }

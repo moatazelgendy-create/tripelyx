@@ -9,7 +9,7 @@ const savemax = require('../trips/savemax');
 const state = require('../agent/state');
 const { agentView, agentStartView, agentLive } = require('../views/trips/agent');
 const { bookingHome } = require('../agent/home');
-const { linkGoneView, LINK_GONE } = require('../views/errors');
+const { notFoundView } = require('../views/errors');
 
 const send = (res, view) => res.type('html').send(String(view));
 
@@ -31,7 +31,7 @@ function agentRouter(ctx, { writeLimiter, computeLimiter, sameOrigin }) {
     let s = await agent.load(req.params.id);
     if (!agent.owns(s, { visitor: req.visitor, user: user(req) })) {
       if (s && s.userId && !req.user && req.visitor && s.visitor === req.visitor && !live) { res.redirect(303, `/signin?next=${encodeURIComponent(`/agent/${s.id}`)}`); return null; }
-      send(res.status(404), linkGoneView(ctx, LINK_GONE.agent_not_found()));
+      send(res.status(404), notFoundView(ctx));
       return null;
     }
     // A conversation started before signing in becomes the account's once its owner signs in, so a

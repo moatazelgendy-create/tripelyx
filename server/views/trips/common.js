@@ -104,7 +104,7 @@ const SCORE_HELP = {
   hotel: 'Hotel: from the star class and the supplier’s guest rating.',
   flight: 'Flight: nonstop scores higher than one stop, flexible fares higher than basic, very long journeys a little lower.',
   location: 'Location: from the hotel’s area in supplier data, with a lift for beachfront stays on beach trips.',
-  value: 'Value: this trip’s price against the inventory’s reference price for the same parts. It ranks trips; it is not a saving, and no price history is behind it.',
+  value: 'Value: this trip’s price compared with its typical price for the same parts.',
 };
 
 function scorecard(scores, demo) {
@@ -113,7 +113,7 @@ function scorecard(scores, demo) {
     <div class="tb-score-match"><b>${scores.match}%</b><span>overall match</span></div>
     <ul>${rows.map(([k, l]) => html`<li><span>${l}</span><meter min="0" max="10" value="${scores.card[k]}" aria-label="${l} score">${scores.card[k]}</meter><b>${scores.card[k].toFixed(1)}</b></li>`)}</ul>
     <details class="tb-score-how"><summary>How we score trips</summary><ul>${rows.map(([k]) => html`<li>${SCORE_HELP[k]}</li>`)}</ul>
-      <p>The overall match weighs these with your answers (what matters most to you, the trip style). How much Tripelyx earns on a trip is never part of the score.${demo ? ' Ratings and reference prices come from demo data in this preview.' : ''}</p></details>
+      <p>The overall match weighs these with your answers (what matters most to you, the trip style). How much Tripelyx earns on a trip is never part of the score.${demo ? ' Ratings and typical prices come from demo data in this preview.' : ''}</p></details>
   </div>`;
 }
 

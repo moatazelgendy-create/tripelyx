@@ -6,7 +6,7 @@ const { icon } = require('../icons');
 const { layout } = require('../layout');
 const { money, dollars, longDate, shortDate, plural, statusPill, demoBadge } = require('./common');
 
-const TABS = [['/admin', 'Overview'], ['/admin/bookings', 'Bookings'], ['/admin/requests', 'Trip requests'], ['/admin/messages', 'Messages'], ['/admin/settings', 'Business rules'], ['/admin/promos', 'Promo codes'], ['/admin/outbox', 'Outbox']];
+const TABS = [['/admin', 'Overview'], ['/admin/bookings', 'Bookings'], ['/admin/requests', 'Trip requests'], ['/admin/settings', 'Business rules'], ['/admin/promos', 'Promo codes'], ['/admin/outbox', 'Outbox']];
 
 function shell(ctx, { title, active, body, notice }) {
   const page = html`
@@ -116,15 +116,6 @@ function requestsView(ctx, { requests, notice }) {
   return shell(ctx, { title: 'Custom trip requests', active: '/admin/requests', body, notice });
 }
 
-// Contact support and business messages, newest first. Older partner leads have no kind or trip.
-function messagesView(ctx, { messages }) {
-  const at = m => (m.createdAt || '').replace('T', ' ').slice(0, 16);
-  const body = messages.length ? html`<table class="tb-table"><thead><tr><th>Received</th><th>From</th><th>About</th><th>Message</th></tr></thead><tbody>
-    ${messages.map(m => html`<tr><td>${at(m)}</td><td>${m.name}<br><small><a href="mailto:${m.email}">${m.email}</a></small>${m.company ? html`<br><small>${m.company}</small>` : ''}</td><td>${m.kind === 'partner' ? 'Business' : m.kind === 'support' ? 'Support' : 'Partner form'}${m.type ? html`<br><small>${m.type}</small>` : ''}${m.trip ? html`<br><small><a href="/trip/${m.trip}">Open the trip</a></small>` : ''}</td><td class="tb-wrap">${m.message}</td></tr>`)}
-  </tbody></table>` : html`<p class="tb-muted">No messages yet.</p>`;
-  return shell(ctx, { title: 'Messages', active: '/admin/messages', body });
-}
-
 function settingsView(ctx, { settings: s, destinations, notice, error }) {
   const body = html`
   ${error ? html`<div class="alert alert-error" role="alert">${icon('alert')}<span>${error}</span></div>` : ''}
@@ -177,4 +168,4 @@ function outboxView(ctx, { messages }) {
   return shell(ctx, { title: 'Notification outbox', active: '/admin/outbox', body });
 }
 
-module.exports = { overviewView, bookingsView, bookingDetailView, requestsView, messagesView, settingsView, promosView, outboxView };
+module.exports = { overviewView, bookingsView, bookingDetailView, requestsView, settingsView, promosView, outboxView };

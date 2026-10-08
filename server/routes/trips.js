@@ -4,7 +4,7 @@ const { AppError } = require('../lib/errors');
 const { addDays, today, isIsoDate, daysBetween } = require('../lib/dates');
 const { str } = require('../lib/validate');
 const optimizer = require('../trips/optimizer');
-const { encodeSpec } = require('../trips/spec');
+const { encodeSpec, decodeSpec } = require('../trips/spec');
 const { publicTrip, requireTrip } = require('../trips/pricing');
 const { WATCH_DEFAULT_RULE } = require('../trips/service');
 const { homeView } = require('../views/trips/home');
@@ -20,13 +20,10 @@ const { authView, myTripsView } = require('../views/trips/account');
 const { leaksView } = require('../views/trips/leaks');
 const { memoriesView } = require('../views/trips/memories');
 const pages = require('../views/trips/pages');
-const { notFoundView, linkGoneView } = require('../views/errors');
+const { notFoundView } = require('../views/errors');
 
 const send = (res, view) => res.type('html').send(String(view));
-// Accents are dropped first, so Reykjavík is /trips-to-reykjavik. The old form (accents turned into
-// dashes, /trips-to-reykjav-k) still answers with a permanent redirect.
-const slug = s => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-const oldSlug = s => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 const SAMPLE_ORIGIN = 'NYC';
 
 // Browsers send Sec-Fetch-Site on form posts; a cross-site post to a state-changing page is refused.
@@ -72,13 +69,22 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
   r.get('/', async (req, res, next) => {
     try {
       await tracked(req, 'home_visit');
-      // The one example (P36): what $2,000 builds for two from San Francisco, priced by the engine.
       const example = await cached('home:example', 600000, async () => {
-        const result = await svc.sample({ b: '2000', k: '0', from: 'SFO', who: 'couple', when: 'anytime', nights: '5', style: 'beach', prio: 'price' });
+        const result = await svc.sample({ b: '1500', k: '0', from: 'SFO', who: 'couple', when: 'anytime', nights: '5', style: 'beach', prio: 'hotel' });
         return { ...result, originCity: originCity('SFO'), params: optimizer.searchParams(result.query) };
       });
+      const levels = await cached('home:levels', 600000, async () => {
+        const out = [];
+        for (const b of [500, 1000, 1500, 2000, 3000, 5000]) {
+          const result = await svc.sample({ b: String(b), k: '0', from: SAMPLE_ORIGIN, who: 'couple', when: 'anytime', nights: b <= 500 ? '2' : b <= 1000 ? '3' : '5', style: 'surprise', prio: 'price' });
+          const byDest = new Map();
+          for (const p of [...result.picks, ...result.closest]) if (p.trip.total <= b * 100 && !byDest.has(p.trip.dest.id)) byDest.set(p.trip.dest.id, p.trip);
+          out.push({ budget: b, originCity: originCity(SAMPLE_ORIGIN), destinations: result.eligibleDestinations, cheapest: result.cheapest, examples: [...byDest.values()].slice(0, 3).map(t => ({ name: t.dest.name, slug: slug(t.dest.name), total: t.total })) });
+        }
+        return out;
+      });
       const dreamDestinations = svc.inv.maps.listDestinations().sort((a, b) => a.name.localeCompare(b.name));
-      send(res, homeView(ctx, { example, dreamDestinations, origins: svc.inv.maps.listOrigins(), user: user(req), recent: await svc.recentTrip(user(req)) }));
+      send(res, homeView(ctx, { example, levels, dreamDestinations, origins: svc.inv.maps.listOrigins(), user: user(req), recent: await svc.recentTrip(user(req)) }));
     } catch (e) { next(e); }
   });
 
@@ -106,7 +112,7 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
   r.get('/dream', async (req, res, next) => {
     try {
       const dest = svc.inv.maps.getDestination(String(req.query.dest || '').slice(0, 40));
-      if (!dest) return res.redirect(303, '/#search');
+      if (!dest) return res.redirect(303, '/#tb-dream-title');
       const raw = { who: 'couple', style: 'surprise', prio: 'hotel', k: '0', ...req.query };
       // "I have to be there": an optional fixed departure date from the homepage form.
       const t0 = today();
@@ -201,11 +207,7 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
       const was = typeof req.query.pxwas === 'string' && main.protected ? data.trip.activityOptions.find(a => a.id === req.query.pxwas && a.id !== main.main.id) || null : null;
       const switched = was ? { from: was, to: main.main } : null;
       send(res, tripView(ctx, { data, cx, user: user(req), saved, named: ['high', 'low'].includes(req.query.named) ? req.query.named : null, promo, promoError, main, pxNote, switched }));
-    } catch (e) {
-      // A part no supplier offers any more: rebuild around the same search, as the review page does.
-      if (e instanceof AppError && e.code === 'trip_unavailable') return send(res.status(410), unavailableView(ctx, { token: req.params.token, cx: optimizer.parseContext(req.query) }));
-      next(e);
-    }
+    } catch (e) { next(e); }
   });
 
   r.get('/trip/:token/change', (req, res, next) => {
@@ -330,9 +332,7 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
       for (const tok of tokens) {
         try { items.push({ ...(await svc.trip(tok, cx)), label: wanted.get(tok) || null }); } catch (e) { if (!(e instanceof AppError)) throw e; }
       }
-      // One trip still opens: show it. None: the link is gone, said plainly with a way forward.
-      if (items.length === 1) return res.redirect(303, `/trip/${items[0].token}?${optimizer.contextParams(cx)}`);
-      if (!items.length) return send(res.status(410), linkGoneView(ctx));
+      if (items.length < 2) return send(res.status(410), unavailableView(ctx, { token: tokens[0], cx }));
       send(res, compareView(ctx, { items, cx, mode: 'compare', all: req.query.all === '1' }));
     } catch (e) { next(e); }
   });
@@ -402,11 +402,20 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
     } catch (e) { next(e); }
   });
 
+  r.get('/api/trips/:token/price', async (req, res, next) => {
+    try {
+      const t = await svc.price(decodeSpec(req.params.token));
+      if (!t) throw new AppError('trip_unavailable', 'Part of this trip is no longer available.', 410);
+      res.setHeader('Cache-Control', 'no-store');
+      const p = publicTrip(t);
+      res.json({ token: encodeSpec(t.spec), total: p.total, perTraveler: p.perTraveler, perNight: p.perNight, lines: p.lines, demo: p.demo });
+    } catch (e) { next(e); }
+  });
+
   // ---- accounts ----
   r.get('/signin', (req, res) => send(res, authView(ctx, { mode: 'signin', next: str(req.query.next, 300) })));
   r.get('/signup', (req, res) => send(res, authView(ctx, { mode: 'signup', next: str(req.query.next, 300) })));
-  // Only a path on this site: "//host" and "/\\host" are other sites to a browser, so any backslash is refused.
-  const safeNext = n => (typeof n === 'string' && /^\/(?![\/\\])/.test(n) && !n.includes('\\') ? n.slice(0, 300) : '/my-trips');
+  const safeNext = n => (typeof n === 'string' && /^\/(?!\/)/.test(n) ? n.slice(0, 300) : '/my-trips');
   r.post('/signin', writeLimiter, sameOrigin, form, async (req, res, next) => {
     try {
       const u = await accounts.authenticate(req.body);
@@ -484,7 +493,13 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
     } catch (e) { next(e); }
   });
 
-  // How it works, FAQ and the policies are in the pages router, so they are served even with the planner off.
+  // ---- info pages ----
+  r.get('/how-it-works', (req, res) => send(res, pages.howItWorksView(ctx)));
+  r.get('/faq', (req, res) => send(res, pages.faqView(ctx)));
+  r.get('/legal/:key', (req, res) => {
+    if (!pages.LEGAL[req.params.key]) return send(res.status(404), notFoundView(ctx));
+    send(res, pages.legalView(ctx, req.params.key));
+  });
   r.get('/custom-trip', (req, res) => send(res, pages.customTripView(ctx, { values: { budget: str(req.query.budget, 20), from: str(req.query.from, 80), travelers: str(req.query.travelers, 10), dest: str(req.query.dest, 60), name: req.user ? req.user.name : '', email: req.user ? req.user.email : '' }, user: user(req) })));
   r.post('/custom-trip', writeLimiter, sameOrigin, form, async (req, res, next) => {
     try { await svc.createRequest(req.body, user(req)); send(res, pages.customTripView(ctx, { done: true, user: user(req) })); } catch (e) {
@@ -513,13 +528,10 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
   });
   r.get('/trips-to-:slug', (req, res, next) => {
     const d = svc.inv.maps.listDestinations().find(x => slug(x.name) === req.params.slug);
-    if (!d) {
-      const moved = svc.inv.maps.listDestinations().find(x => oldSlug(x.name) === req.params.slug);
-      return moved ? res.redirect(301, `/trips-to-${slug(moved.name)}`) : send(res.status(404), notFoundView(ctx));
-    }
+    if (!d) return send(res.status(404), notFoundView(ctx));
     landing(req, res, next, { title: `Trips to ${d.name}`, eyebrow: `${d.name}, ${d.country}`, lead: `${d.blurb} Tell us your budget and we’ll build the complete trip: flights, hotel and experiences, with every tax and fee in the price.`, intro: `Complete ${d.name} trips priced in full.`, canonical: `/trips-to-${req.params.slug}`, budget: 3000, raw: { dest: d.id, b: '3000' }, moreLinks: [[`/dream?dest=${d.id}&b=1500&from=${SAMPLE_ORIGIN}`, `${d.name} for $1,500?`, 'See how close we can get'], ['/destinations', 'All destinations', 'Where else your budget can go']] });
   });
-  r.get('/beach-vacations', (req, res, next) => landing(req, res, next, { title: 'Beach vacations by budget', eyebrow: 'Beach', lead: 'Tell us what you want to spend and we’ll find the beach trip that fits: flights, a hotel on or near the sand, and the extras, priced in full.', intro: 'The best beach trips for $1,500.', canonical: '/beach-vacations', budget: 1500, raw: { style: 'beach' }, moreLinks: [['/trips-under-1000', 'Trips under $1,000', ''], ['/trips-under-2000', 'Trips under $2,000', '']] }));
+  r.get('/beach-vacations', (req, res, next) => landing(req, res, next, { title: 'Beach vacations by budget', eyebrow: 'Beach', lead: 'Tell us what you want to spend and we’ll find the beach trip that fits: flights, a hotel on or near the sand, and the extras, priced in full.', intro: 'The three best beach trips for $1,500.', canonical: '/beach-vacations', budget: 1500, raw: { style: 'beach' }, moreLinks: [['/trips-under-1000', 'Trips under $1,000', ''], ['/trips-under-2000', 'Trips under $2,000', '']] }));
   r.get('/trips-under-:n', (req, res, next) => {
     const n = Number(req.params.n);
     if (![500, 1000, 1500, 2000, 3000, 5000].includes(n)) return send(res.status(404), notFoundView(ctx));
@@ -530,13 +542,10 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
     landing(req, res, next, { title: `Trips under $${n.toLocaleString('en-US')}`, eyebrow: 'Budget inspiration', lead: `Complete trips (flights, hotel and more) for under $${n.toLocaleString('en-US')}, taxes and fees included. Change the budget to see what else is possible.`, intro: `What $${n.toLocaleString('en-US')} really buys${raw.style ? ` for a ${raw.style} trip` : ''}.`, canonical: `/trips-under-${n}`, budget: n, raw, moreLinks: [500, 1000, 1500, 2000, 3000, 5000].filter(x => x !== n).slice(0, 3).map(x => [`/trips-under-${x}`, `Trips under $${x.toLocaleString('en-US')}`, '']) });
   });
 
-  r.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nDisallow: /trip/\nDisallow: /trips?\nDisallow: /trips$\nDisallow: /compare\nDisallow: /plan\nDisallow: /checkout/\nDisallow: /booking/\nDisallow: /admin\nDisallow: /my-trips\n${config.publicBaseUrl ? `Sitemap: ${config.publicBaseUrl}/sitemap.xml\n` : ''}`));
+  r.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nDisallow: /trip/\nDisallow: /trips\nDisallow: /compare\nDisallow: /plan\nDisallow: /checkout/\nDisallow: /booking/\nDisallow: /admin\nDisallow: /my-trips\n${config.publicBaseUrl ? `Sitemap: ${config.publicBaseUrl}/sitemap.xml\n` : ''}`));
   r.get('/sitemap.xml', (req, res) => {
     const base = config.publicBaseUrl || '';
-    // Pages whose content is prices are listed only once the prices are real: demo inventory's example
-    // prices are not offered to search engines (those pages are noindex while it is on).
-    const priced = svc.demo ? [] : ['/destinations', '/beach-vacations', ...[1000, 1500, 2000, 3000, 5000].map(n => `/trips-under-${n}`), ...svc.inv.maps.listDestinations().map(d => `/trips-to-${slug(d.name)}`)];
-    const urls = ['/', '/agent', '/challenge', '/how-it-works', '/faq', '/about', '/contact', '/partners', ...priced];
+    const urls = ['/', '/how-it-works', '/faq', '/destinations', '/beach-vacations', '/about', '/contact', ...[500, 1000, 1500, 2000, 3000, 5000].map(n => `/trips-under-${n}`), ...svc.inv.maps.listDestinations().map(d => `/trips-to-${slug(d.name)}`)];
     res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.map(u => `  <url><loc>${base}${u}</loc></url>`).join('\n')}\n</urlset>\n`);
   });
 

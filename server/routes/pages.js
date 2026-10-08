@@ -1,12 +1,12 @@
 const express = require('express');
+const { homeView } = require('../views/home');
 const { refine, parseRefine } = require('../booking/refine');
-const { partnersView, aboutView, contactView, prelaunchView } = require('../views/pages');
-const { howItWorksView, faqView, legalView, LEGAL } = require('../views/trips/pages');
+const { brandsView, technologyView, partnersView, aboutView, contactView } = require('../views/pages');
 const { bookView, bookIndexView, offerView, checkoutView, bookingView, manageView, defaultsFor } = require('../views/book');
 const { notFoundView } = require('../views/errors');
 const { tripCheckoutView, tripBookingView } = require('../views/trips/pages');
 const { worthItOpen } = require('../trips/service');
-const { getVertical } = require('../verticals');
+const { VERTICALS, getVertical } = require('../verticals');
 const { AppError } = require('../lib/errors');
 const { readCookies, bookingCookieName, setBookingCookie } = require('../lib/cookies');
 
@@ -21,28 +21,16 @@ function pagesRouter(ctx, { writeLimiter }) {
 
   r.use((req, res, next) => { res.setHeader('Cache-Control', 'no-cache'); next(); });
 
-  // With the trip planner on, the trips router owns "/"; with it off, "/" says who we are and how to reach us.
-  if (!ctx.trips) r.get('/', (req, res) => send(res, prelaunchView(ctx)));
-  // The old corporate pages (brands, technology, the corporate homepage) are gone; their addresses
-  // lead to the pages that replaced them.
-  r.get(['/company', '/brands'], (req, res) => res.redirect(301, '/about'));
-  r.get('/technology', (req, res) => res.redirect(301, '/partners'));
+  // With Travel by Budget on, the trips router owns "/" and the corporate homepage moves to /company.
+  r.get(ctx.trips ? '/company' : '/', (req, res) => {
+    const verticals = VERTICALS.filter(v => enabled(v.key)).map(v => ({ meta: v, values: defaultsFor(v), lookups: lookupsFor(v.key) }));
+    send(res, homeView(ctx, { verticals }));
+  });
+  r.get('/brands', (req, res) => send(res, brandsView(ctx)));
+  r.get('/technology', (req, res) => send(res, technologyView(ctx)));
   r.get('/partners', (req, res) => send(res, partnersView(ctx)));
   r.get('/about', (req, res) => send(res, aboutView(ctx)));
-  // ?trip= carries the trip a traveler was looking at into the message, so support sees the same trip.
-  r.get('/contact', (req, res) => {
-    const trip = typeof req.query.trip === 'string' && /^[A-Za-z0-9~._-]{3,400}$/.test(req.query.trip) ? req.query.trip : null;
-    send(res, contactView(ctx, { trip }));
-  });
-  // Addresses people type or other sites use for pages that live elsewhere here.
-  const ALIASES = { '/help': '/faq', '/support': '/contact', '/terms': '/legal/terms', '/privacy': '/legal/privacy', '/cookies': '/legal/cookies', '/refunds': '/legal/refunds', '/cancellation': '/legal/cancellation', ...(ctx.trips ? { '/login': '/signin', '/register': '/signup', '/account': '/my-trips' } : {}) };
-  for (const [from, to] of Object.entries(ALIASES)) r.get(from, (req, res) => res.redirect(301, to));
-  r.get('/how-it-works', (req, res) => send(res, howItWorksView(ctx)));
-  r.get('/faq', (req, res) => send(res, faqView(ctx)));
-  r.get('/legal/:key', (req, res) => {
-    if (!Object.prototype.hasOwnProperty.call(LEGAL, req.params.key)) return send(res.status(404), notFoundView(ctx));
-    send(res, legalView(ctx, req.params.key));
-  });
+  r.get('/contact', (req, res) => send(res, contactView(ctx)));
 
   r.get('/book', (req, res) => send(res, bookIndexView(ctx)));
 
@@ -111,15 +99,12 @@ function pagesRouter(ctx, { writeLimiter }) {
     try {
       const quote = await engine.getQuote(req.params.quoteId);
       res.setHeader('Cache-Control', 'no-store');
-      const booked = await engine.bookedFrom(quote);
-      if (booked) throw new AppError('already_booked', `This trip is already booked (Trip ID ${booked.ref}). Nothing more was charged.`, 409, { ref: booked.ref });
       const view = quote.vertical === 'trips' ? tripCheckoutView : checkoutView;
       send(res, view(ctx, { quote, paymentConfig: ctx.payments.clientConfig() }));
     } catch (err) { next(err); }
   });
 
-  // ?ref= prefills the reference (from an "already booked" page or a booking link opened on another device).
-  r.get('/manage', (req, res) => send(res, manageView(ctx, { ref: /^[A-Z0-9-]{4,20}$/i.test(String(req.query.ref || '')) ? String(req.query.ref).toUpperCase() : '' })));
+  r.get('/manage', (req, res) => send(res, manageView(ctx)));
   r.post('/manage', writeLimiter, form, async (req, res, next) => {
     const ref = String(req.body.ref || '').trim().toUpperCase();
     const email = String(req.body.email || '').trim();
@@ -163,7 +148,7 @@ function pagesRouter(ctx, { writeLimiter }) {
       }
       send(res, bookingView(ctx, { ...data, notice }));
     } catch (err) {
-      if (err instanceof AppError && err.code === 'booking_not_found') return send(res.status(404), manageView(ctx, { ref: String(req.params.ref).toUpperCase().slice(0, 20), notice: 'To open this booking here, enter the email you booked with.' }));
+      if (err instanceof AppError && err.code === 'booking_not_found') return send(res.status(404), manageView(ctx, { ref: String(req.params.ref).toUpperCase().slice(0, 20) }));
       next(err);
     }
   });

@@ -1,9 +1,9 @@
 # Tripelyx
 
-Tripelyx is an AI travel agent and travel decision platform: "Tell us your budget. We'll build the
-trip." The **Travel by Budget** planner and agent build complete trips (flights, hotel, experiences,
-transfers) priced in full around one budget, on top of a provider-agnostic booking platform for
-hotels, flights, cars, cruises, yachts, transfers, activities and experiences. Everything runs today on **isolated demo
+**Travel by Budget**: a budget-first trip planner ("How much do you want to spend?") that builds
+complete trips (flights, hotel, experiences, transfers) priced in full and shows the three best fits,
+plus the Tripelyx corporate site and a provider-agnostic booking platform for hotels, flights, cars,
+cruises, yachts, transfers, activities and experiences. Everything runs today on **isolated demo
 inventory** and a **test-mode payment processor**; real suppliers and a real payment processor plug in
 later by adding adapters, without touching the trip engine, booking engine, routes or UI.
 
@@ -25,14 +25,8 @@ Test cards at checkout: `4242 4242 4242 4242` (success), `5555 5555 5555 4444` (
 
 ## Travel by Budget
 
-The planner is on by default outside production (`ENABLE_TRIPS`) and is the homepage; with it off,
-`/` is a pre-launch page that says who we are and how to reach us. Admin access is given by email
-(`ADMIN_EMAILS`).
-
-Company facts (brand, legal entity, support email, and the address, phone, hours and jurisdiction
-once confirmed) live in one place, `server/company.js`, and can be set from the environment
-(`.env.example`, Company section). A fact with no confirmed value is shown nowhere. The policy pages
-say the service is in preview until `POLICIES_REVIEWED=true`, and live payments are refused until then.
+The planner is on by default outside production (`ENABLE_TRIPS`) and becomes the homepage; the
+corporate homepage moves to `/company`. Admin access is given by email (`ADMIN_EMAILS`).
 
 | Route | What it is |
 | --- | --- |
@@ -58,7 +52,7 @@ say the service is in preview until `POLICIES_REVIEWED=true`, and live payments 
 
 ```
 server/trips/
-  demo-data/            invented origins, destinations, hotels, activities (labeled demo; see below)
+  demo-data/            invented origins, destinations, hotels, activities (labeled demo everywhere)
   integrations/         maps, weather, flights, hotels, activities, transfers, notifications
                         (types.d.ts = the interfaces; mock.js = demo; index.js = where real adapters register)
   spec.js               the shareable trip token (destination, dates, travelers, hotel, flight, extras)
@@ -189,13 +183,13 @@ waits for data we don't have or belongs after booking:
 
 | Route | What it is |
 | --- | --- |
-| `/about`, `/contact`, `/partners` | About Tripelyx (company history kept to its own section), Contact support (`?trip=` carries the trip into the message), For travel businesses. Messages are saved, support is told in the outbox, and admins read them under Messages. `/company` and `/brands` redirect to `/about`, `/technology` to `/partners` |
-| `/how-it-works`, `/faq`, `/legal/:key` | Served with the planner on or off |
+| `/company` | Corporate homepage (served at `/` when `ENABLE_TRIPS=false`) |
+| `/brands`, `/technology`, `/partners`, `/about`, `/contact` | Site pages (partner form stores leads) |
 | `/book`, `/book/:vertical` | Search per vertical, server-rendered with JS-enhanced loading states |
 | `/book/:vertical/:offerId` | Offer details and options; "Reserve" creates a time-limited quote |
 | `/checkout/:quoteId` | Traveler details and payment (test mode) |
 | `/booking/:ref`, `/manage` | Booking confirmation, cancellation, lookup by reference + email |
-| `/api/*` | JSON API used by the UI (search, offers, quotes, bookings, pay, cancel, messages) |
+| `/api/*` | JSON API used by the UI (search, offers, quotes, bookings, pay, cancel, partners) |
 
 ## Architecture
 
@@ -291,21 +285,10 @@ deployments on `staging`.
 
 ## Demo data isolation
 
-- Demo inventory lives only in `server/providers/mock/demo-data/` (the `/book` verticals) and
-  `server/trips/demo-data/` (the trip planner and the agent), and is served only by mock providers.
-- Every page says when what it shows is not real. Outside production a banner names the build; in
-  production a "Preview" notice is on every page whenever trips come from demo inventory or payments
-  are in test mode (`envBanner` in `server/app.js`).
-- Demo prices and bookings say "demo" where they appear: the review page ("priced from the demo
-  inventory; no real supplier was contacted"), checkout ("demo price … no supplier is holding
-  anything"), the booking page ("Demo booking complete", "Demo confirmation"), destination and landing
-  pages ("example" prices, `noindex`, left out of the sitemap). Ratings name their source. No saving is
-  claimed against a "typical" price, because no price history is behind it.
-- Demo inventory never shows scarcity, discounts or review counts ("only N left", "Selling fast",
-  "% off"): those appear only when a real provider states them.
-- Demo bookings get `DEMO-` references; demo images are generated SVGs under `/media/demo/`, mounted
-  only when demo inventory is allowed. The "Failhotel" failure hook (exercises a partial booking) is
-  off in production.
+- Demo inventory lives only in `server/providers/mock/demo-data/` and is served only by mock providers.
+- Demo bookings get `DEMO-` references and a "Demo inventory" label; non-production pages show an
+  environment banner; demo images are generated SVGs under `/media/demo/`, mounted only when demo
+  inventory is allowed.
 - Production refuses mock providers unless `ALLOW_DEMO_INVENTORY=true`, and never with live payments.
 - Trip inventory follows the same rule: `TRIP_*_PROVIDER=mock` is refused where demo inventory is not
   allowed, so the planner simply switches off instead of serving invented trips.
@@ -332,6 +315,6 @@ deployments on `staging`.
 
 ## Assets
 
-The coast photograph (`public/img/coast-hero.*`) was supplied with the original site; illustrations,
-icons and demo images are original. The Inter font is bundled under the SIL Open Font License
+Photography is derived from Alamein Go's own `public/hero-beach.jpg`; illustrations, icons, device
+mockups and demo images are original. The Inter font is bundled under the SIL Open Font License
 (see `public/fonts/OFL.txt`).

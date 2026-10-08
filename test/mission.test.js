@@ -241,7 +241,7 @@ test('pages: the homepage asks for one number, a budget starts a mission, the ca
     const c = client(app.base);
     const home = await c.req('/');
     assert.match(home.text, /How much do you.*want to spend\?/s);
-    assert.match(home.text, /SAVE THE MOST/);
+    assert.match(home.text, /Save me the most/);
     assert.match(home.text, /No destination required/);
     const start = await c.req('/agent', { method: 'POST', form: { budget: '1,500' } });
     assert.equal(start.status, 303);

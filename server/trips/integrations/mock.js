@@ -168,7 +168,7 @@ class MockFlights {
 }
 
 class MockHotels {
-  constructor({ now, failureHook = false }) { this.kind = 'mock'; this.now = now; this.failureHook = failureHook; }
+  constructor({ now }) { this.kind = 'mock'; this.now = now; }
   search({ destId, checkIn, nights, rooms }) {
     const d = DESTINATIONS.find(x => x.id === destId);
     if (!d) return [];
@@ -187,10 +187,9 @@ class MockHotels {
     });
   }
   // Demo failure hook: a lead traveler named "Failhotel" makes the hotel step fail, so the
-  // partially-confirmed path can be exercised end to end in development and staging. Never in
-  // production, where a traveler with that surname would otherwise see a booking fail.
+  // partially-confirmed path can be exercised end to end in development and staging.
   async book(h, { traveler } = {}) {
-    if (this.failureHook && traveler && /^failhotel$/i.test(traveler.lastName)) throw new Error('demo hotel rejected the booking');
+    if (traveler && /^failhotel$/i.test(traveler.lastName)) throw new Error('demo hotel rejected the booking');
     return { status: 'confirmed', confirmation: `HT${(hash32(h.id + h.checkIn + Math.random()) % 900000 + 100000)}` };
   }
 }

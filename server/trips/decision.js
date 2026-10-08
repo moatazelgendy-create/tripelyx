@@ -58,16 +58,17 @@ function compromises(t, ctx = {}, time = usableTime(t)) {
 function biggestWin(t, ctx = {}) {
   const budget = ctx.budget, prio = ctx.priority || 'price', style = ctx.style || 'surprise';
   const diff = budget ? budget - t.total : null;
-  if (prio === 'hotel' && t.hotel.stars >= 4) return `a ${t.hotel.stars}-star hotel rated ${t.hotel.rating}/5 (${t.hotel.ratingSource}), which is what you said mattered most`;
+  if (prio === 'hotel' && t.hotel.stars >= 4) return `a ${t.hotel.stars}-star hotel rated ${t.hotel.rating}/5, which is what you said mattered most`;
   if (prio === 'flights' && t.flight.stops === 0) return 'nonstop flights, which is what you said mattered most';
   if (prio === 'longer' && ctx.nightsAsked && t.spec.nights > ctx.nightsAsked) return `${plural(t.spec.nights - ctx.nightsAsked, 'extra night')} over what you asked for`;
   if (prio === 'activities' && t.activities.length >= 2) return `${plural(t.activities.length, 'experience')} already in the price`;
   if (prio === 'price' && diff !== null && diff >= budget * 0.15) return `${fmt(diff)} of your budget left over`;
   if (t.hotel.features.beachfront && ['beach', 'romantic', 'surprise', 'all-inclusive', 'family'].includes(style) && t.dest.styles.includes('beach')) return `a beachfront ${t.hotel.stars}-star hotel`;
   if (t.hotel.features.allInclusive) return 'meals and drinks included at the resort';
+  if (t.typical > t.total * 1.1) return `a price about ${Math.round((1 - t.total / t.typical) * 100)}% below typical for these parts${t.demo ? ' (demo price history)' : ''}`;
   if (diff !== null && diff >= budget * 0.1) return `${fmt(diff)} of your budget left over`;
   if (t.flight.stops === 0) return `nonstop flights and a ${t.hotel.stars}-star hotel`;
-  return `a ${t.hotel.stars}-star hotel rated ${t.hotel.rating}/5 (${t.hotel.ratingSource}), every fee in the price`;
+  return `a ${t.hotel.stars}-star hotel rated ${t.hotel.rating}/5, every fee in the price`;
 }
 
 const GRADES = {
