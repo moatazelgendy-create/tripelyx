@@ -1,5 +1,17 @@
 // Customer accounts: email + password (scrypt), server-side sessions in the store, and a session cookie
 // that is HttpOnly and SameSite=Lax (Secure on HTTPS sites). Only a hash of the session token is stored.
+//
+// Security rules kept here (plan §I1, §I2, §I4):
+// - D1 platform admins: an account may open /admin and /admin/business only when its email is listed in
+//   ADMIN_EMAILS AND it has an active platform_admin record for the same email. Records come from the boot
+//   seed (accounts created before ADMIN_SEED_BEFORE, once) or from scripts/platform-admin.js. So signing up
+//   with a listed address after the cutoff gives nothing, and removing an address from ADMIN_EMAILS revokes
+//   on restart.
+// - D2 sign-up race: the user is written first and the email is then claimed insert-only; the loser of a
+//   race deletes its user and gets email_taken, so two accounts never share an email and a crash leaves at
+//   most an orphan user nobody can sign in to.
+// - I4 sessions: a session records when it was issued; an account's sessionsValidAfter (set when it is
+//   signed out everywhere) ends every session issued before it. Without it, every session counts as before.
 const crypto = require('node:crypto');
 const { promisify } = require('node:util');
 const { AppError } = require('../lib/errors');
@@ -16,6 +28,11 @@ const PLATFORM_ADMIN = 'platform_admin';
 const GRANTED_BY = Object.freeze(['legacy-email-match', 'cli', 'test']);
 /** How an account proved its email at sign-up (D5): an invite link sent to that address. */
 const EMAIL_PROOF_VIA = Object.freeze(['invite']);
+/**
+ * D1 grandfather cutoff: an ADMIN_EMAILS account created before this moment gets its platform_admin record
+ * at boot (once). Fixed on purpose: there is no environment override.
+ */
+const ADMIN_SEED_BEFORE = '2026-10-08T00:00:00Z';
 const sha256 = s => crypto.createHash('sha256').update(s).digest('hex');
 
 async function hashPassword(password) {
@@ -39,29 +56,62 @@ class Accounts {
     this.now = now;
   }
 
+  /**
+   * Is this account's email listed in ADMIN_EMAILS? Only the allow-list half of D1: never enough on its own
+   * to let anyone in (isPlatformAdmin is the check).
+   * @param {{ email: string }|null} user
+   * @returns {boolean}
+   */
   isAdmin(user) {
     return !!user && this.config.trips.adminEmails.includes(user.email);
   }
 
   /**
-   * Is this account a platform admin (it may open /admin and /admin/business)? Today: its email is listed in
-   * ADMIN_EMAILS, exactly as before. Stage 1S adds the second half of D1: a platform_admin record for this
-   * user id with the same email and no revokedAt.
+   * Is this account a platform admin (it may open /admin and /admin/business)? D1: its email is listed in
+   * ADMIN_EMAILS and a platform_admin record exists for this user id with the same email and no revokedAt.
+   * One extra read, only for listed emails.
    * @param {{ id: string, email: string }|null} user
    * @returns {Promise<boolean>}
    */
   async isPlatformAdmin(user) {
-    return this.isAdmin(user);
+    if (!user || typeof user.id !== 'string' || !user.id || !this.isAdmin(user)) return false;
+    return activeAdminRecord(await this.store.getRecord(PLATFORM_ADMIN, user.id), user);
   }
 
   /**
-   * At boot, give each grandfathered ADMIN_EMAILS account its platform_admin record (D1). STUB from Stage 0:
-   * does nothing yet (Stage 1S builds it). Idempotent.
+   * At boot, give each grandfathered ADMIN_EMAILS account its platform_admin record (D1): an account whose
+   * createdAt is before ADMIN_SEED_BEFORE and which has never had a record. "Never" matters: a record that
+   * was revoked stays revoked, and a later account with a listed email is never seeded (it needs
+   * scripts/platform-admin.js grant). Idempotent, and safe when several servers boot at once (insert-only).
+   * Logs "[admin] platform admin: <name>, account created <date>" for every listed account that is a
+   * platform admin, and "[admin] ADMIN_EMAILS entry with no admin record: o***@example.com" for the rest.
    * @param {{ log?: { info?: Function, warn?: Function } }} [opts]
    * @returns {Promise<{ granted: string[], missing: string[] }>} user ids granted now, and masked emails with no record
    */
   async seedPlatformAdmins({ log } = {}) {
-    return { granted: [], missing: [] };
+    const info = log && typeof log.info === 'function' ? m => log.info(m) : () => {};
+    const warn = log && typeof log.warn === 'function' ? m => log.warn(m) : () => {};
+    const cutoff = Date.parse(ADMIN_SEED_BEFORE);
+    const granted = [], missing = [];
+    for (const email of [...new Set(this.config.trips.adminEmails)]) {
+      const user = await userByEmail(this.store, email);
+      let record = user ? await this.store.getRecord(PLATFORM_ADMIN, user.id) : null;
+      if (user && !record && Date.parse(user.createdAt) < cutoff) {
+        const doc = {
+          userId: user.id, email: user.email, grantedAt: this.now().toISOString(), grantedBy: 'legacy-email-match',
+          revokedAt: null, note: `ADMIN_EMAILS account created before ${ADMIN_SEED_BEFORE}`, rev: 0,
+        };
+        if (await this.store.insertRecord(PLATFORM_ADMIN, user.id, doc, { userId: user.id })) granted.push(user.id);
+        record = await this.store.getRecord(PLATFORM_ADMIN, user.id);
+      }
+      if (user && activeAdminRecord(record, user)) {
+        info(`[admin] platform admin: ${user.name}, account created ${String(user.createdAt).slice(0, 10)}`);
+      } else {
+        missing.push(maskEmail(email));
+        warn(`[admin] ADMIN_EMAILS entry with no admin record: ${maskEmail(email)}`);
+      }
+    }
+    return { granted, missing };
   }
 
   /**
@@ -123,14 +173,26 @@ class Accounts {
     if (typeof password !== 'string' || password.length < 10) errors.password = 'Use at least 10 characters.';
     else if (password.length > 200) errors.password = 'That password is too long.';
     if (Object.keys(errors).length) throw new AppError('invalid_account', 'Check the highlighted fields.', 422, errors);
-    if (await this.store.getRecord('user_email', u.email)) {
-      throw new AppError('email_taken', 'An account with this email already exists. Sign in instead.', 409, { email: 'An account with this email already exists.' });
-    }
+    // A fast pre-check; the insert-only claim below is what decides a race (D2).
+    if (await this.store.getRecord('user_email', u.email)) throw emailTaken();
     const proof = emailProof === null || emailProof === undefined ? null : checkEmailProof(emailProof);
     const user = { id: id('usr'), ...u, passwordHash: await hashPassword(password), profile: {}, createdAt: this.now().toISOString() };
     if (proof) user.emailProof = proof;
+    // The user first, then the email link insert-only: whoever inserts the link owns the email. Writing the
+    // link first could point it at a user that never gets written, which would lock the email forever.
     await this.store.putRecord('user', user.id, user, { userId: user.id });
-    await this.store.putRecord('user_email', u.email, { userId: user.id });
+    let claimed;
+    try {
+      claimed = await this.store.insertRecord('user_email', u.email, { userId: user.id });
+    } catch (e) {
+      await this.store.deleteRecord('user', user.id).catch(() => false);
+      throw e;
+    }
+    if (!claimed) {
+      // Another sign-up claimed the email between the pre-check and here: drop this account.
+      await this.store.deleteRecord('user', user.id).catch(() => false);
+      throw emailTaken();
+    }
     return user;
   }
 
@@ -160,8 +222,10 @@ class Accounts {
 
   async createSession(res, user) {
     const token = crypto.randomBytes(32).toString('base64url');
-    const expiresAt = new Date(this.now().getTime() + SESSION_DAYS * 86400000).toISOString();
-    await this.store.putRecord('session', sha256(token), { userId: user.id, expiresAt }, { userId: user.id });
+    const now = this.now();
+    const expiresAt = new Date(now.getTime() + SESSION_DAYS * 86400000).toISOString();
+    // issuedAt lets signing an account out everywhere (sessionsValidAfter) end this session (I4).
+    await this.store.putRecord('session', sha256(token), { userId: user.id, issuedAt: now.toISOString(), expiresAt }, { userId: user.id });
     const attrs = [`${SESSION_COOKIE}=${token}`, 'Path=/', 'HttpOnly', 'SameSite=Lax', `Max-Age=${SESSION_DAYS * 86400}`];
     if (this.config.httpsOnly) attrs.push('Secure');
     res.append('Set-Cookie', attrs.join('; '));
@@ -179,18 +243,82 @@ class Accounts {
     const s = await this.store.getRecord('session', sha256(token));
     if (!s || new Date(s.expiresAt) < this.now()) return null;
     const user = await this.store.getRecord('user', s.userId);
-    if (!user) return null;
+    if (!user || !sessionCurrent(s, user)) return null;
     const { passwordHash, ...safe } = user; // eslint-disable-line no-unused-vars
     return { ...safe, isAdmin: await this.isPlatformAdmin(user) };
   }
 
-  async updateProfile(userId, profile) {
-    const user = await this.store.getRecord('user', userId);
-    if (!user) return null;
-    user.profile = { ...(user.profile || {}), ...profile };
-    await this.store.putRecord('user', userId, user, { userId });
-    return user.profile;
+  /**
+   * Sign an account out everywhere (I4): set its sessionsValidAfter to now, so every session issued before
+   * this moment stops counting (scripts/platform-admin.js revoke --sign-out). The user record is written by
+   * compare-and-set, like updateProfile, so neither can drop the other's change.
+   * @param {string} userId
+   * @returns {Promise<string|null>} the sessionsValidAfter written, or null when there is no such account
+   */
+  async endAllSessions(userId) {
+    const at = this.now().toISOString();
+    const written = await this.casUser(userId, user => ({ ...user, sessionsValidAfter: at }));
+    return written ? at : null;
   }
+
+  async updateProfile(userId, profile) {
+    const written = await this.casUser(userId, user => ({ ...user, profile: { ...(user.profile || {}), ...profile } }));
+    return written ? written.profile : null;
+  }
+
+  // Read the user, apply fn to it and write it back by compare-and-set on its rev (a record without one
+  // counts as 0), retrying a few times when another write got there first. Null when the user is missing.
+  async casUser(userId, fn) {
+    if (typeof userId !== 'string' || !userId) return null;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const user = await this.store.getRecord('user', userId);
+      if (!user) return null;
+      const rev = Number.isInteger(user.rev) ? user.rev : 0;
+      const { rev: _rev, ...next } = fn(user); // eslint-disable-line no-unused-vars
+      const written = await this.store.updateRecord('user', userId, rev, next);
+      if (written) return written;
+    }
+    throw new AppError('conflict', 'Someone else just changed this. Try again.', 409);
+  }
+}
+
+const emailTaken = () => new AppError('email_taken', 'An account with this email already exists. Sign in instead.', 409, { email: 'An account with this email already exists.' });
+
+// D1: a platform_admin record that still makes this account an admin: for this user id, for the account's
+// current email, and not revoked.
+function activeAdminRecord(record, user) {
+  return !!record && record.userId === user.id && record.email === user.email && (record.revokedAt === null || record.revokedAt === undefined);
+}
+
+// The account an email belongs to (the same lookup authenticate makes), or null. Accounts-internal: Business
+// asks emailInUse and never sees a user record.
+async function userByEmail(store, email) {
+  const key = str(email, 120).toLowerCase();
+  if (!key) return null;
+  const link = await store.getRecord('user_email', key);
+  const user = link && typeof link.userId === 'string' && link.userId ? await store.getRecord('user', link.userId) : null;
+  return user && user.email === key ? user : null;
+}
+
+// I4: does this session still count for this account? Always, when the account was never signed out
+// everywhere. Otherwise only when it was issued at or after sessionsValidAfter; a session with no issuedAt
+// (made before sessions recorded it) or an unreadable date counts as issued before.
+function sessionCurrent(session, user) {
+  if (user.sessionsValidAfter === undefined || user.sessionsValidAfter === null) return true;
+  const issued = Date.parse(session.issuedAt), after = Date.parse(user.sessionsValidAfter);
+  return Number.isFinite(issued) && Number.isFinite(after) && issued >= after;
+}
+
+/**
+ * An email as the logs show it: the first character, then "***@" and the domain ("o***@example.com").
+ * @param {string} email
+ * @returns {string}
+ */
+function maskEmail(email) {
+  const s = String(email || '');
+  const at = s.lastIndexOf('@');
+  if (at < 1) return '***';
+  return `${Array.from(s)[0]}***${s.slice(at)}`;
 }
 
 // The emailProof register() stores: { via, orgId, at } with known values only (a programming error otherwise).
@@ -212,4 +340,4 @@ function visitorId(req, res, config) {
   return nv;
 }
 
-module.exports = { Accounts, visitorId, hashPassword, verifyPassword, SESSION_COOKIE, PLATFORM_ADMIN, GRANTED_BY };
+module.exports = { Accounts, visitorId, hashPassword, verifyPassword, maskEmail, SESSION_COOKIE, PLATFORM_ADMIN, GRANTED_BY, ADMIN_SEED_BEFORE };

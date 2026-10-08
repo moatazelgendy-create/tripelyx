@@ -2,7 +2,7 @@
 const express = require('express');
 const { AppError } = require('../lib/errors');
 const { addDays, today, isIsoDate, daysBetween } = require('../lib/dates');
-const { str } = require('../lib/validate');
+const { str, localPath } = require('../lib/validate');
 const optimizer = require('../trips/optimizer');
 const { encodeSpec, decodeSpec } = require('../trips/spec');
 const { publicTrip, requireTrip } = require('../trips/pricing');
@@ -415,7 +415,8 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
   // ---- accounts ----
   r.get('/signin', (req, res) => send(res, authView(ctx, { mode: 'signin', next: str(req.query.next, 300) })));
   r.get('/signup', (req, res) => send(res, authView(ctx, { mode: 'signup', next: str(req.query.next, 300) })));
-  const safeNext = n => (typeof n === 'string' && /^\/(?!\/)/.test(n) ? n.slice(0, 300) : '/my-trips');
+  // Where to go after signing in or up: a same-site path only (lib/validate localPath, D10), else My Trips.
+  const safeNext = n => localPath(n, '/my-trips');
   r.post('/signin', writeLimiter, sameOrigin, form, async (req, res, next) => {
     try {
       const u = await accounts.authenticate(req.body);
