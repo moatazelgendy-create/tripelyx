@@ -1162,12 +1162,14 @@ test('interfaces: every Stage 0 Business module loads with its frozen exports, a
   for (const [mod, names] of Object.entries(EXPECTED)) assert.deepEqual(Object.keys(require(`../server/business/${mod}`)).sort(), names, mod);
 
   const m = name => require(`../server/business/${name}`);
-  // Stage 1P built lifecycle, approver, alternatives, diff, explain and policy/*; Stage 1I built dto, search, recheck,
-  // inventory and demo/*: their stubs left this list.
-  const stubs = [
-    () => m('csv').csvCell('x'), () => m('csv').toCsv([], []), () => m('reports').outOfPolicyShare([]), () => m('reports').reportTiles({}),
-  ];
-  for (const fn of stubs) assert.throws(fn, NOT_BUILT, String(fn));
+  // Stage 1 built every module (1P: lifecycle, approver, alternatives, diff, explain, policy/*; 1I: dto, search, recheck,
+  // inventory, demo/*; 1W-a: team; 1W-b: requests, budgets, policies, reports, csv), each with its own test file.
+  // No Stage 0 stub is left anywhere under server/business.
+  const fs = require('node:fs');
+  const walk = dir => fs.readdirSync(dir, { withFileTypes: true })
+    .flatMap(e => e.isDirectory() ? walk(`${dir}/${e.name}`) : e.name.endsWith('.js') ? [`${dir}/${e.name}`] : []);
+  const businessDir = require('node:path').join(__dirname, '../server/business');
+  for (const file of walk(businessDir)) assert.doesNotMatch(fs.readFileSync(file, 'utf8'), NOT_BUILT, file);
 
   // The frozen data that is final in Stage 0.
   assert.equal(m('csv').CSV_COLUMNS.length, 21);
@@ -1249,8 +1251,15 @@ test('interfaces: the service facade carries exactly the frozen method list, one
   const svc = new BusinessService({ repo, config, now: fixed, log: quietLog, accounts: null, ...deps });
   for (const k of Object.keys(deps)) assert.equal(svc[k], deps[k], k);
   assert.equal(svc.repo, repo);
-  // Stage 1W-a built team.js (test/business-team.test.js covers it): its methods left this loop.
-  for (const name of SERVICE_METHODS.filter(n => METHOD_MODULE[n] !== 'team')) await assert.rejects(svc[name]({ user: null }), NOT_BUILT, name);
+  // Every method is built (Stage 1W-a: team; 1W-b: policies, budgets, requests, reports, csv). An actor with no user is
+  // refused as not found (actor.loadActor). The two switcher reads answer empty, and a token lookup with no token is a
+  // gone invite.
+  const EMPTY = { listCompaniesFor: [], membership: null };
+  for (const name of SERVICE_METHODS) {
+    if (name in EMPTY) assert.deepEqual(await svc[name]({ user: null }), EMPTY[name], name);
+    else if (name === 'inviteByToken') await assert.rejects(svc[name]({ user: null }), e => e.code === 'invite_gone' && e.status === 410, name);
+    else await assert.rejects(svc[name]({ user: null }), e => e.code === 'not_found' && e.status === 404, name);
+  }
   const bare = new BusinessService({ repo, config, now: fixed });
   assert.deepEqual([bare.inventory, bare.composer, bare.policy, bare.alternatives, bare.explainer, bare.accounts], [null, null, null, null, null, null]);
 });
