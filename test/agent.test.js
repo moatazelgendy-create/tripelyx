@@ -3,7 +3,7 @@
 // agent never books, never invents a fact and never claims a win it cannot support.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { startApp } = require('./helpers');
+const { startApp, clock } = require('./helpers');
 const { loadConfig } = require('../server/config');
 const { createTripIntegrations } = require('../server/trips/integrations');
 const optimizer = require('../server/trips/optimizer');
@@ -12,7 +12,7 @@ const state = require('../server/agent/state');
 const { decodeSpec } = require('../server/trips/spec');
 const { money } = require('../server/views/trips/common');
 
-const inv = createTripIntegrations(loadConfig({ APP_ENV: 'development' }));
+const inv = createTripIntegrations(loadConfig({ APP_ENV: 'development' }), { now: clock });
 const maps = inv.maps;
 const text = html => html.replace(/<script[\s\S]*?<\/script>/g, '').replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ');
 
@@ -79,10 +79,10 @@ test('the trip object: a ceiling, a protected reserve, standing rules and locks 
   assert.deepEqual(assumed, ['two travelers', 'flexible dates']);
   assert.equal(q.rules.nonstop, true); assert.equal(q.rules.minStars, 4);
   // Rules are kept by the optimizer: every package obeys them, and the URL round-trips them.
-  const r = optimizer.search(inv, q, { settings: require('../server/trips/pricing').DEFAULT_SETTINGS });
+  const r = optimizer.search(inv, q, { settings: require('../server/trips/pricing').DEFAULT_SETTINGS, now: clock() });
   assert.ok(r.picks.length);
   for (const p of r.picks) { assert.equal(p.trip.flight.stops, 0); assert.ok(p.trip.hotel.stars >= 4); }
-  const back = optimizer.parseSearch(Object.fromEntries(new URLSearchParams(optimizer.searchParams(q))), { maps }).query;
+  const back = optimizer.parseSearch(Object.fromEntries(new URLSearchParams(optimizer.searchParams(q))), { maps, now: clock() }).query;
   assert.deepEqual(back.rules, q.rules);
   // A soft rule steers the ranking instead of filtering.
   state.applyUpdates(s, { flightStops: 'nonstop', flightRule: 'soft' });

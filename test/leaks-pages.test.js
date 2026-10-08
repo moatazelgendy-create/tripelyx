@@ -8,7 +8,7 @@
 // No dollar figure is hard-coded: every number is read from the inventory or priced by the service.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { startApp } = require('./helpers');
+const { startApp, fixedNow } = require('./helpers');
 const { encodeSpec, decodeSpec } = require('../server/trips/spec');
 const { lineAmount, classifyChanges } = require('../server/trips/facts');
 const { addDays, today } = require('../server/lib/dates');
@@ -26,7 +26,7 @@ const CARD = { type: 'test_card', number: '4242424242424242', expMonth: '12', ex
 const TRAVELER = { firstName: 'Ada', lastName: 'Lovelace', email: 'ada@example.com' };
 const QUERY = { b: '2000', k: '0', from: 'NYC', who: 'couple', when: 'anytime', nights: '5', style: 'beach', prio: 'price' };
 // A fixed hour, so a test that runs near midnight UTC never prices two days.
-function fixedClock() { const d = new Date(); d.setUTCHours(9, 0, 0, 0); return d; }
+function fixedClock() { const d = fixedNow(); d.setUTCHours(9, 0, 0, 0); return d; }
 const sum = xs => xs.reduce((n, x) => n + x, 0);
 const cents = (html, re = /data-cents="(-?\d+)"/g) => [...html.matchAll(re)].map(m => Number(m[1]));
 
@@ -340,7 +340,7 @@ test('the verified promo code travels with every link; a stated bag is never a l
   t.after(app.close);
   const c = client(app.base), svc = app.tripService;
   const { loaded, token } = await loadedTrip(app);
-  await app.store.putRecord('promo', 'SAVE20', { code: 'SAVE20', type: 'amount', value: 2000, minTotal: 0, expiresAt: null, active: true, createdAt: new Date().toISOString(), by: 'test' });
+  await app.store.putRecord('promo', 'SAVE20', { code: 'SAVE20', type: 'amount', value: 2000, minTotal: 0, expiresAt: null, active: true, createdAt: clock.toISOString(), by: 'test' });
   const promo = await svc.promo('SAVE20');
   const coded = await svc.price(loaded.spec, { promo });
   assert.ok(coded.total < loaded.total, 'the code takes something off');

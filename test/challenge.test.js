@@ -2,27 +2,28 @@
 // of four honest states, and the platform is allowed to lose.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { startApp } = require('./helpers');
+const { startApp, clock } = require('./helpers');
 const { loadConfig } = require('../server/config');
 const { createTripIntegrations } = require('../server/trips/integrations');
 const { DEFAULT_SETTINGS } = require('../server/trips/pricing');
 const { addDays, today } = require('../server/lib/dates');
 const challenge = require('../server/trips/challenge');
 
-const inv = createTripIntegrations(loadConfig({ APP_ENV: 'development' }));
+const inv = createTripIntegrations(loadConfig({ APP_ENV: 'development' }), { now: clock });
+const now = clock();
 const maps = inv.maps;
-const DEPART = addDays(today(), 60);
+const DEPART = addDays(today(now), 60);
 const PARIS = { dest: 'paris', from: 'nyc', depart: DEPART, nights: '6', who: 'couple', n: '2', total: '3,200', flight: 'stops', stars: '3', meals: 'none', bags: 'carry-on', transfer: 'no', cancel: 'nonrefundable', taxes: 'included' };
 const CANCUN = { dest: 'cancun', from: 'NYC', depart: DEPART, nights: '5', who: 'couple', n: '2', total: '1860', flight: 'nonstop', stars: '4', meals: 'all-inclusive', bags: 'checked', transfer: 'no', cancel: 'nonrefundable', taxes: 'included' };
 const text = html => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
 const run = (raw, mode) => {
-  const { challenger, missing } = challenge.parseChallenger(raw, { maps });
+  const { challenger, missing } = challenge.parseChallenger(raw, { maps, now });
   assert.deepEqual(missing, []);
-  return challenge.runChallenge(inv, challenger, DEFAULT_SETTINGS, { mode });
+  return challenge.runChallenge(inv, challenger, DEFAULT_SETTINGS, { mode, now });
 };
 
 test('the trip to beat: what is not given stays unknown, never guessed; the essentials are required', () => {
-  const { challenger: ch, missing } = challenge.parseChallenger({ dest: 'cancun', from: 'nyc', nights: '5', total: '$1,860' }, { maps });
+  const { challenger: ch, missing } = challenge.parseChallenger({ dest: 'cancun', from: 'nyc', nights: '5', total: '$1,860' }, { maps, now });
   assert.deepEqual(missing, []);
   assert.equal(ch.total, 186000);
   assert.equal(ch.origin, 'NYC');
@@ -32,25 +33,25 @@ test('the trip to beat: what is not given stays unknown, never guessed; the esse
   assert.equal(ch.stars, null);
   assert.deepEqual(challenge.unknownsOf(ch), ['dates', 'flight', 'stars', 'meals', 'bags', 'transfer', 'cancel', 'taxes']);
   // Garbage is not quietly turned into a value.
-  const bad = challenge.parseChallenger({ dest: 'atlantis', from: 'zzz', nights: '99', total: '12', flight: 'teleport', stars: '7', lock: ['dest', 'bogus'] }, { maps });
+  const bad = challenge.parseChallenger({ dest: 'atlantis', from: 'zzz', nights: '99', total: '12', flight: 'teleport', stars: '7', lock: ['dest', 'bogus'] }, { maps, now });
   assert.deepEqual(bad.missing, ['dest', 'from', 'nights', 'total']);
   assert.equal(bad.challenger.flight, challenge.UNKNOWN); assert.equal(bad.challenger.stars, null);
   assert.deepEqual(bad.challenger.locks, ['dest']);
   // A date outside the bookable window is treated as unknown rather than silently moved.
-  const past = challenge.parseChallenger({ ...CANCUN, depart: '2020-01-01' }, { maps }).challenger;
+  const past = challenge.parseChallenger({ ...CANCUN, depart: '2020-01-01' }, { maps, now }).challenger;
   assert.equal(past.depart, null);
   // The URL round-trips without losing anything the traveler typed, locks included.
   const p = new URLSearchParams(challenge.challengerParams({ ...ch, locks: ['nights', 'dest'] }));
   assert.deepEqual(p.getAll('lock'), ['nights', 'dest']);
   assert.equal(p.get('total'), '1860');
-  assert.equal(challenge.parseChallenger(Object.fromEntries(p), { maps }).challenger.total, 186000);
+  assert.equal(challenge.parseChallenger(Object.fromEntries(p), { maps, now }).challenger.total, 186000);
 });
 
 test('a fair fight: our version carries everything theirs is known to include, and locks stick', () => {
-  const ch = challenge.parseChallenger(CANCUN, { maps }).challenger;
+  const ch = challenge.parseChallenger(CANCUN, { maps, now }).challenger;
   const floor = challenge.floorOf(ch);
   assert.equal(floor.nonstop, true); assert.equal(floor.stars, 4); assert.equal(floor.meals, 2); assert.equal(floor.bags, 2);
-  const pkgs = challenge.comparablePackages(inv, ch, DEFAULT_SETTINGS, { dests: [maps.getDestination('cancun')], nightsList: [5] });
+  const pkgs = challenge.comparablePackages(inv, ch, DEFAULT_SETTINGS, { dests: [maps.getDestination('cancun')], nightsList: [5], now });
   assert.ok(pkgs.length > 0);
   for (const t of pkgs) {
     assert.equal(t.flight.stops, 0);
@@ -61,13 +62,13 @@ test('a fair fight: our version carries everything theirs is known to include, a
     assert.equal(t.spec.depart, DEPART);
   }
   // Unknown attributes impose nothing: cheaper, lesser versions are allowed into the comparison.
-  const loose = challenge.parseChallenger({ ...CANCUN, flight: 'unknown', stars: 'unknown', meals: 'unknown', bags: 'unknown' }, { maps }).challenger;
-  const loosePkgs = challenge.comparablePackages(inv, loose, DEFAULT_SETTINGS, { dests: [maps.getDestination('cancun')], nightsList: [5] });
+  const loose = challenge.parseChallenger({ ...CANCUN, flight: 'unknown', stars: 'unknown', meals: 'unknown', bags: 'unknown' }, { maps, now }).challenger;
+  const loosePkgs = challenge.comparablePackages(inv, loose, DEFAULT_SETTINGS, { dests: [maps.getDestination('cancun')], nightsList: [5], now });
   assert.ok(loosePkgs.length > pkgs.length);
   assert.ok(Math.min(...loosePkgs.map(t => t.total)) < Math.min(...pkgs.map(t => t.total)));
   // A transfer floor and a refundable floor are honored too.
-  const strict = challenge.parseChallenger({ ...PARIS, transfer: 'yes', cancel: 'refundable' }, { maps }).challenger;
-  for (const t of challenge.comparablePackages(inv, strict, DEFAULT_SETTINGS, { dests: [maps.getDestination('paris')], nightsList: [6] })) {
+  const strict = challenge.parseChallenger({ ...PARIS, transfer: 'yes', cancel: 'refundable' }, { maps, now }).challenger;
+  for (const t of challenge.comparablePackages(inv, strict, DEFAULT_SETTINGS, { dests: [maps.getDestination('paris')], nightsList: [6], now })) {
     assert.ok(t.transfer, 'transfer included'); assert.ok(t.flight.refundable && t.hotel.refundable, 'refundable fare and rate');
   }
 });
@@ -118,12 +119,12 @@ test('four verdicts only: we beat it, a different trade-off, your deal wins, we 
   const locked = run({ ...PARIS, lock: 'dest' }, 'surprise');
   assert.equal(locked.modes.surprise, null);
   // A mode that finds nothing within their money falls back to the plain cheaper version, said as such.
-  const dearNights = challenge.parseChallenger({ ...PARIS, lock: 'nights' }, { maps }).challenger;
-  const moreLocked = challenge.runChallenge(inv, dearNights, DEFAULT_SETTINGS, { mode: 'more' });
+  const dearNights = challenge.parseChallenger({ ...PARIS, lock: 'nights' }, { maps, now }).challenger;
+  const moreLocked = challenge.runChallenge(inv, dearNights, DEFAULT_SETTINGS, { mode: 'more', now });
   assert.equal(moreLocked.modes.more, null);
   assert.equal(moreLocked.fallback, 'less');
   assert.equal(moreLocked.verdict.state, 'beat');
-  assert.throws(() => challenge.runChallenge(inv, dearNights, DEFAULT_SETTINGS, { mode: 'magic' }), /beat it/);
+  assert.throws(() => challenge.runChallenge(inv, dearNights, DEFAULT_SETTINGS, { mode: 'magic', now }), /beat it/);
 });
 
 test('challenge pages: unknowns marked, no win claimed without the facts, keep my deal on a loss', async t => {

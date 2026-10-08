@@ -7,7 +7,7 @@
 // pressure, predict or claim a search that did not happen.
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
-const { startApp } = require('./helpers');
+const { startApp, clock: testClock } = require('./helpers');
 const optimizer = require('../server/trips/optimizer');
 const decision = require('../server/trips/decision');
 const { classifyChanges } = require('../server/trips/facts');
@@ -18,7 +18,7 @@ const { format } = require('../server/lib/money');
 const hunter = require('../server/trips/hunter');
 
 const fmt = cents => format(cents, 'USD');
-const now = new Date();
+const now = testClock();
 let app, inv, settings;
 before(async () => {
   app = await startApp();
@@ -699,7 +699,7 @@ function serviceRun(hunt, I, S, at) {
 const lowerFirst = s => `${s.charAt(0).toLowerCase()}${s.slice(1)}`;
 
 test('day to day: the dates asked move with the calendar, the record stays the best while it qualifies, every change of the record is said, and a departure inside three days leaves the window with a plain line', async () => {
-  const day0 = new Date();
+  const day0 = testClock();
   day0.setUTCHours(9, 0, 0, 0);
   const clock = { value: day0 };
   const at = days => new Date(day0.getTime() + days * 86400000);

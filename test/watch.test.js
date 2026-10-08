@@ -3,7 +3,7 @@
 // the rule is met, the route that reads the rule as typed, and the saved trip that carries no rule.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { startApp } = require('./helpers');
+const { startApp, clock } = require('./helpers');
 const { ruleText, watchMet, watchRule, WATCH_DEFAULT_RULE } = require('../server/trips/service');
 const { encodeSpec, decodeSpec } = require('../server/trips/spec');
 const { addDays, today } = require('../server/lib/dates');
@@ -264,10 +264,10 @@ test('the "Alert" pill appears only when the rule is met, with the exact amounts
   // A watch on a trip that can no longer be priced keeps trip and alert null, and the row says so without a pill.
   const spec = decodeSpec(trip.token);
   const goneToken = encodeSpec({ ...spec, hotel: 'no-such-hotel' });
-  await app.store.putRecord('watch', 'wch_gone', { id: 'wch_gone', kind: 'watch', token: goneToken, budget: null, priceAtSave: 99900, title: 'Gone trip', savedAt: new Date().toISOString(), rule: { kind: 'any-drop' } }, { userId });
+  await app.store.putRecord('watch', 'wch_gone', { id: 'wch_gone', kind: 'watch', token: goneToken, budget: null, priceAtSave: 99900, title: 'Gone trip', savedAt: clock().toISOString(), rule: { kind: 'any-drop' } }, { userId });
   // A watch saved before rules existed carries none: it reads as the $100 drop. Its dates have passed, so it cannot alert.
-  const pastToken = encodeSpec({ ...spec, depart: addDays(today(), -10) });
-  await app.store.putRecord('watch', 'wch_past', { id: 'wch_past', kind: 'watch', token: pastToken, budget: null, priceAtSave: 999900, title: 'Past trip', savedAt: new Date().toISOString() }, { userId });
+  const pastToken = encodeSpec({ ...spec, depart: addDays(today(clock()), -10) });
+  await app.store.putRecord('watch', 'wch_past', { id: 'wch_past', kind: 'watch', token: pastToken, budget: null, priceAtSave: 999900, title: 'Past trip', savedAt: clock().toISOString() }, { userId });
   rows = await svc.listSaved(user, 'watch');
   const gone = rows.find(r => r.id === 'wch_gone');
   assert.equal(gone.trip, null); assert.equal(gone.alert, null); assert.equal(gone.ruleText, 'Alert when the same trip gets cheaper');

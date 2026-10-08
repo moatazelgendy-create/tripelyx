@@ -2,7 +2,7 @@
 // budget to a confirmed trip, including price-change protection, partial bookings and the admin center.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { startApp } = require('./helpers');
+const { startApp, clock: testClock } = require('./helpers');
 const { loadConfig } = require('../server/config');
 const { encodeSpec, decodeSpec } = require('../server/trips/spec');
 const { priceTrip, publicTrip, DEFAULT_SETTINGS } = require('../server/trips/pricing');
@@ -17,7 +17,8 @@ const { lineDiff, lineAmount, LINE_LABEL } = require('../server/trips/facts');
 const { money: fmtMoney, longDate, cutoffText, joinAnd } = require('../server/views/trips/common');
 const { daysBetween } = require('../server/lib/dates');
 
-const inv = createTripIntegrations(loadConfig({ APP_ENV: 'development' }));
+const inv = createTripIntegrations(loadConfig({ APP_ENV: 'development' }), { now: testClock });
+const now = testClock();
 const QUERY = { b: '1500', k: '0', from: 'SFO', who: 'couple', when: 'anytime', nights: '5', style: 'beach', prio: 'hotel' };
 const CARD = { type: 'test_card', number: '4242424242424242', expMonth: '12', expYear: '35', cvc: '123', name: 'Ada Lovelace' };
 
@@ -82,9 +83,9 @@ test('pricing: lines add up, taxes and fees are inside the total, internals neve
 
 test('optimizer: our pick, save more, an upgrade only if worth it (or keep your money); margin is not an input', () => {
   const settings = DEFAULT_SETTINGS;
-  const { query, missing } = optimizer.parseSearch(QUERY, { maps: inv.maps });
+  const { query, missing } = optimizer.parseSearch(QUERY, { maps: inv.maps, now });
   assert.deepEqual(missing, []);
-  const r = optimizer.search(inv, query, { settings });
+  const r = optimizer.search(inv, query, { settings, now });
   assert.ok(r.picks.length >= 2 && r.picks.length <= 3, 'two or three answers');
   assert.deepEqual(r.picks.slice(0, 2).map(p => p.kind), ['our-pick', 'save-more']);
   assert.match(r.picks[0].why[0], /^Leaves \$[\d,]+ of your budget unspent$/);
@@ -128,19 +129,19 @@ test('optimizer: our pick, save more, an upgrade only if worth it (or keep your 
   };
   check(r, query.budget, query.budget, '$1500 hotel');
   for (const b of [900, 1200, 1500, 2500, 4000]) for (const prio of ['hotel', 'price', 'flights']) {
-    const res = optimizer.search(inv, { ...query, budget: b * 100, priority: prio }, { settings });
+    const res = optimizer.search(inv, { ...query, budget: b * 100, priority: prio }, { settings, now });
     check(res, b * 100, b * 100, `$${b} ${prio}`);
   }
   for (const b of [900, 1500]) {
-    const res = optimizer.search(inv, { ...query, budget: b * 100, allowOver: 10 }, { settings });
+    const res = optimizer.search(inv, { ...query, budget: b * 100, allowOver: 10 }, { settings, now });
     check(res, b * 100, Math.round(b * 100 * 1.1), `$${b} +10%`);
   }
 
-  const over = optimizer.search(inv, { ...query, allowOver: 10 }, { settings });
+  const over = optimizer.search(inv, { ...query, allowOver: 10 }, { settings, now });
   for (const p of over.picks) assert.ok(p.trip.total <= Math.round(query.budget * 1.1));
 
   // A budget nothing fits: no dead end, the closest trips are shown with their over-budget amount.
-  const tight = optimizer.search(inv, { ...query, budget: 30000 }, { settings });
+  const tight = optimizer.search(inv, { ...query, budget: 30000 }, { settings, now });
   assert.equal(tight.picks.length, 0);
   assert.ok(tight.closest.length > 0 && tight.cheapest > 30000);
 
@@ -150,15 +151,15 @@ test('optimizer: our pick, save more, an upgrade only if worth it (or keep your 
   assert.deepEqual(a, b);
 
   // The planner asks only what is still missing.
-  assert.deepEqual(optimizer.parseSearch({ b: '1500' }, { maps: inv.maps }).missing, ['keep', 'from', 'who', 'when', 'style', 'prio']);
-  assert.deepEqual(optimizer.parseSearch({ b: '1500', k: '200', from: 'SFO', who: 'family', when: 'anytime', style: 'beach', prio: 'hotel' }, { maps: inv.maps }).missing, ['n']);
-  assert.equal(optimizer.parseSearch({ b: '1500', k: '300' }, { maps: inv.maps }).query.budget, 120000, 'money kept aside comes off the trip budget');
+  assert.deepEqual(optimizer.parseSearch({ b: '1500' }, { maps: inv.maps, now }).missing, ['keep', 'from', 'who', 'when', 'style', 'prio']);
+  assert.deepEqual(optimizer.parseSearch({ b: '1500', k: '200', from: 'SFO', who: 'family', when: 'anytime', style: 'beach', prio: 'hotel' }, { maps: inv.maps, now }).missing, ['n']);
+  assert.equal(optimizer.parseSearch({ b: '1500', k: '300' }, { maps: inv.maps, now }).query.budget, 120000, 'money kept aside comes off the trip budget');
 });
 
 test('decision layer: verdicts, usable vacation time, unlocks and make-it-better only ever tell the truth', () => {
   const settings = DEFAULT_SETTINGS;
-  const { query } = optimizer.parseSearch(QUERY, { maps: inv.maps });
-  const r = optimizer.search(inv, query, { settings });
+  const { query } = optimizer.parseSearch(QUERY, { maps: inv.maps, now });
+  const r = optimizer.search(inv, query, { settings, now });
   const best = r.picks[0];
 
   // A verdict within budget says what we'd do; over budget it is never called a fit, whatever the match.
@@ -177,7 +178,7 @@ test('decision layer: verdicts, usable vacation time, unlocks and make-it-better
   assert.match(short.compromise, /shorter than you asked/);
 
   // Usable time comes from the flight schedule: the dawn Basic fare costs the whole last day.
-  const spec = { dest: 'cancun', from: 'SFO', depart: addDays(today(), 60), nights: 5, travelers: 2, who: 'couple', hotel: 'cun-2', flight: 'basic', activities: [], bags: false, transfer: false };
+  const spec = { dest: 'cancun', from: 'SFO', depart: addDays(today(now), 60), nights: 5, travelers: 2, who: 'couple', hotel: 'cun-2', flight: 'basic', activities: [], bags: false, transfer: false };
   const basic = priceTrip(inv, spec, settings);
   const nonstop = priceTrip(inv, { ...spec, flight: 'nonstop' }, settings);
   const tb = decision.usableTime(basic), tn = decision.usableTime(nonstop);
@@ -194,8 +195,8 @@ test('decision layer: verdicts, usable vacation time, unlocks and make-it-better
   assert.equal(bcnSaver.firstDay.minutes, 14 * 60, 'at the hotel at 1:51 AM: the arrival day is a full day');
   assert.equal(bcnSaver.fullDays, 3, 'the night in the air costs one of the full days, not two');
   assert.ok(bcnSaver.usableMinutes > bcnBasic.usableMinutes, 'a dawn-return Basic fare is not sold as more vacation than the overnight one');
-  assert.ok(!decision.timeAlternatives(bcn('saver'), optimizer.customizerOptions(inv, bcn('saver'), settings)).some(a => a.flight.id === 'basic'));
-  const options = optimizer.customizerOptions(inv, basic, settings);
+  assert.ok(!decision.timeAlternatives(bcn('saver'), optimizer.customizerOptions(inv, bcn('saver'), settings, now)).some(a => a.flight.id === 'basic'));
+  const options = optimizer.customizerOptions(inv, basic, settings, now);
   const alts = decision.timeAlternatives(basic, options);
   assert.ok(alts.length > 0);
   for (const a of alts) { assert.ok(a.gain >= 60); assert.equal(a.total, basic.total + a.delta); }
@@ -214,14 +215,14 @@ test('decision layer: verdicts, usable vacation time, unlocks and make-it-better
     assert.ok(decision.compromises(o.trip, ctx).filter(c => c.w >= 3).length <= decision.compromises(p.trip, ctx).filter(c => c.w >= 3).length);
   };
   for (const p of r.picks) {
-    const same = decision.optimizeAround(inv, p.trip, settings, r.ctx, { cap: p.trip.total, locks: { dates: true } });
+    const same = decision.optimizeAround(inv, p.trip, settings, r.ctx, { cap: p.trip.total, locks: { dates: true }, now });
     if (same) {
       assert.ok(same.trip.total <= p.trip.total);
       assert.equal(same.trip.spec.depart, p.trip.spec.depart);
       assert.equal(same.trip.spec.nights, p.trip.spec.nights);
       checkBetter(same, p, r.ctx);
     }
-    const locked = decision.optimizeAround(inv, p.trip, settings, r.ctx, { cap: query.budget, locks: { hotel: true, flight: true } });
+    const locked = decision.optimizeAround(inv, p.trip, settings, r.ctx, { cap: query.budget, locks: { hotel: true, flight: true }, now });
     if (locked) {
       assert.equal(locked.trip.spec.hotel, p.trip.spec.hotel);
       assert.equal(locked.trip.spec.flight, p.trip.spec.flight);
@@ -230,21 +231,21 @@ test('decision layer: verdicts, usable vacation time, unlocks and make-it-better
       checkBetter(locked, p, r.ctx);
     }
   }
-  assert.equal(decision.optimizeAround(inv, basic, settings, r.ctx, { cap: 1, locks: {} }), null, 'nothing fits under $0.01');
+  assert.equal(decision.optimizeAround(inv, basic, settings, r.ctx, { cap: 1, locks: {}, now }), null, 'nothing fits under $0.01');
   // A price-first traveler is never sold a strip-down as "better": cheaper with only downgrades is null.
   for (const style of ['beach', 'city']) {
-    const pq = optimizer.parseSearch({ ...QUERY, b: '1200', style, prio: 'price' }, { maps: inv.maps }).query;
-    const pr = optimizer.search(inv, pq, { settings });
+    const pq = optimizer.parseSearch({ ...QUERY, b: '1200', style, prio: 'price' }, { maps: inv.maps, now }).query;
+    const pr = optimizer.search(inv, pq, { settings, now });
     for (const p of pr.picks) {
-      const o = decision.optimizeAround(inv, p.trip, settings, pr.ctx, { cap: p.trip.total, locks: { dates: true } });
+      const o = decision.optimizeAround(inv, p.trip, settings, pr.ctx, { cap: p.trip.total, locks: { dates: true }, now });
       if (o) checkBetter(o, p, pr.ctx);
     }
   }
   // Optimizing around an all-inclusive trip never proposes a hotel that isn't all-inclusive.
-  const aq = optimizer.parseSearch({ ...QUERY, b: '2000', style: 'all-inclusive', prio: 'price' }, { maps: inv.maps }).query;
-  const ar = optimizer.search(inv, aq, { settings });
+  const aq = optimizer.parseSearch({ ...QUERY, b: '2000', style: 'all-inclusive', prio: 'price' }, { maps: inv.maps, now }).query;
+  const ar = optimizer.search(inv, aq, { settings, now });
   for (const p of ar.picks) for (const opts of [{ cap: p.trip.total, locks: { dates: true } }, { cap: aq.budget, locks: {} }]) {
-    const o = decision.optimizeAround(inv, p.trip, settings, ar.ctx, opts);
+    const o = decision.optimizeAround(inv, p.trip, settings, ar.ctx, { ...opts, now });
     if (o) assert.ok(o.trip.hotel.features.allInclusive, `${p.trip.dest.name}: ${o.trip.hotel.name} is not all-inclusive`);
   }
   // classifyChanges reads direction from the facts: a transfer removed is a trade-off, never an improvement.
@@ -348,7 +349,7 @@ test('decide-for-me pages: our call, compare, before and after, the reality chec
   const cannot = await c.req('/dream?beat=1&dest=paris&b=900&from=NYC&nights=5');
   assert.match(cannot.text, /Honestly, we can’t beat it/);
   assert.match(cannot.text, /keep it/);
-  const fixed = await c.req(`/dream?dest=cancun&b=2400&from=SFO&depart=${addDays(today(), 40)}`);
+  const fixed = await c.req(`/dream?dest=cancun&b=2400&from=SFO&depart=${addDays(today(now), 40)}`);
   assert.equal(fixed.status, 200);
   assert.match(fixed.text, /fixed dates/);
   assert.match((await c.req('/dream?dest=cancun&b=2400&from=SFO&depart=2020-01-01')).text, /any dates/);
@@ -362,11 +363,11 @@ test('name your price: searches downward, stops at the cheapest strong version, 
   // Engine invariants over a few travelers: the ladder descends, paying less never buys a better
   // version, every number is a priced package, and every answer is at or under the named price.
   for (const [extra, frac] of [[{ prio: 'price' }, 0.9], [{ prio: 'flights', from: 'NYC', b: '2500', nights: '6', style: 'city' }, 0.97], [{ prio: 'activities', who: 'family', n: '4', b: '3000', style: 'family' }, 0.85]]) {
-    const { query } = optimizer.parseSearch({ ...QUERY, ...extra }, { maps: inv.maps });
-    const r = optimizer.search(inv, query, { settings });
+    const { query } = optimizer.parseSearch({ ...QUERY, ...extra }, { maps: inv.maps, now });
+    const r = optimizer.search(inv, query, { settings, now });
     const trip = r.picks[0].trip;
     const target = Math.round(trip.total * frac);
-    const out = decision.nameYourPrice(inv, trip, settings, r.ctx, target);
+    const out = decision.nameYourPrice(inv, trip, settings, r.ctx, target, { now });
     assert.ok(out.considered > 0);
     assert.equal(out.ladder[0].total, trip.total);
     for (let i = 1; i < out.ladder.length; i++) {
@@ -387,10 +388,10 @@ test('name your price: searches downward, stops at the cheapest strong version, 
     assert.ok(out.floor === null || out.floor.label === 'strong');
     assert.ok(!out.recommended || !out.floor || out.floor.total <= out.recommended.total, 'the floor is the cheapest version we recommend');
     if (out.floor) for (const tgt of [out.floor.total, out.floor.total + 1000, out.floor.total + 1999]) {
-      const o = decision.nameYourPrice(inv, trip, settings, r.ctx, tgt);
+      const o = decision.nameYourPrice(inv, trip, settings, r.ctx, tgt, { now });
       assert.ok(!o.recommended || o.recommended.total <= tgt, `"we got there" is never above the ${tgt} named`);
     }
-    const none = decision.nameYourPrice(inv, trip, settings, r.ctx, 30000);
+    const none = decision.nameYourPrice(inv, trip, settings, r.ctx, 30000, { now });
     assert.equal(none.recommended, null); assert.equal(none.anyway, null);
     assert.ok(none.cheapest && none.cheapest.total > 30000, 'an impossible price gets the real cheapest version, not a dead end');
   }
@@ -413,7 +414,7 @@ test('name your price: searches downward, stops at the cheapest strong version, 
     // whatever the demo calendar holds on the day the tests run.
     const probeCtx = optimizer.parseContext(Object.fromEntries(new URLSearchParams(qs)));
     const probeTrip = priceTrip(inv, decodeSpec(tripPath.split('/').pop()), settings);
-    const probe = decision.nameYourPrice(inv, probeTrip, settings, probeCtx, total - 1);
+    const probe = decision.nameYourPrice(inv, probeTrip, settings, probeCtx, total - 1, { now });
     const fracs = [0.97, 0.8, 0.5, ...(probe.floor ? [probe.floor.total / total] : []), ...(probe.cheapest ? [probe.cheapest.total / total, (probe.cheapest.total - 10000) / total] : [])].filter(f => f > 0.01 && f < 1);
     for (const frac of fracs) {
       const res = await c.req(`${tripPath}/price?${qs}&target=${Math.round(total * frac / 100)}`);
@@ -446,16 +447,16 @@ test('name your price: searches downward, stops at the cheapest strong version, 
 
 test('money and time: weekdays are a second budget, never a claim about anyone’s calendar; no search dead-ends', async t => {
   const mondays = [];
-  for (let d = addDays(today(), 20); mondays.length < 1; d = addDays(d, 1)) if (new Date(`${d}T00:00:00Z`).getUTCDay() === 1) mondays.push(d);
+  for (let d = addDays(today(now), 20); mondays.length < 1; d = addDays(d, 1)) if (new Date(`${d}T00:00:00Z`).getUTCDay() === 1) mondays.push(d);
   const monday = mondays[0], friday = addDays(monday, 4), saturday = addDays(monday, 5);
   assert.equal(decision.weekdaysAway(monday, 4), 5, 'Monday to Friday');
   assert.equal(decision.weekdaysAway(friday, 2), 1, 'Friday to Sunday');
   assert.equal(decision.weekdaysAway(saturday, 1), 0, 'Saturday to Sunday');
   assert.equal(decision.weekdaysAway(friday, 3), 2, 'Friday to Monday');
   const settings = DEFAULT_SETTINGS;
-  const { query } = optimizer.parseSearch(QUERY, { maps: inv.maps });
-  const trip = optimizer.search(inv, query, { settings }).picks[0].trip;
-  const options = optimizer.customizerOptions(inv, trip, settings);
+  const { query } = optimizer.parseSearch(QUERY, { maps: inv.maps, now });
+  const trip = optimizer.search(inv, query, { settings, now }).picks[0].trip;
+  const options = optimizer.customizerOptions(inv, trip, settings, now);
   const base = decision.weekdaysAway(trip.spec.depart, trip.spec.nights);
   for (const a of decision.ptoAlternatives(trip, options)) {
     assert.ok(a.weekdays < base && a.saves === base - a.weekdays, 'only ever fewer weekdays');
@@ -767,16 +768,16 @@ test('the whole vacation: money protected for the destination travels with the t
 
   // A vacation budget with a reserve is a booking budget of the difference: a $1,900 booking is
   // never "within" a $2,000 vacation that protects $400.
-  const { query } = optimizer.parseSearch({ ...QUERY, b: '2000', k: '400' }, { maps: inv.maps });
+  const { query } = optimizer.parseSearch({ ...QUERY, b: '2000', k: '400' }, { maps: inv.maps, now });
   assert.equal(query.vacationBudget, 200000); assert.equal(query.keep, 40000); assert.equal(query.budget, 160000);
-  const r = optimizer.search(inv, query, { settings });
+  const r = optimizer.search(inv, query, { settings, now });
   assert.ok(r.picks.length);
   assert.ok(r.picks.every(p => p.trip.total <= 160000));
   assert.equal(r.ctx.keep, 40000);
 
   // The plan is the traveler's numbers and the booking's price, nothing estimated.
   const t0 = r.picks[0].trip;
-  const options = optimizer.customizerOptions(inv, t0, settings);
+  const options = optimizer.customizerOptions(inv, t0, settings, now);
   const plan = vacationPlan(t0, r.ctx, options);
   assert.equal(plan.vacation, 200000); assert.equal(plan.keep, 40000); assert.equal(plan.booking, t0.total);
   assert.equal(plan.unassigned, 160000 - t0.total); assert.equal(plan.raid, 0); assert.equal(plan.arrive, 200000 - t0.total);
@@ -803,21 +804,21 @@ test('the whole vacation: money protected for the destination travels with the t
   // reserve offer is always exercised rather than depending on one day's prices.
   const probes = [{ ...QUERY, b: '900', k: '0', who: 'family', n: '4', nights: '7' }];
   for (const [style, prio, nights, k] of [['beach', 'hotel', '7', '300'], ['surprise', 'longer', '4', '500'], ['city', 'flights', '5', '300'], ['surprise', 'hotel', '4', '1800'], ['beach', 'price', '5', '100']]) {
-    const base = optimizer.search(inv, optimizer.parseSearch({ ...QUERY, b: '9000', k: '0', style, prio, nights }, { maps: inv.maps }).query, { settings });
+    const base = optimizer.search(inv, optimizer.parseSearch({ ...QUERY, b: '9000', k: '0', style, prio, nights }, { maps: inv.maps, now }).query, { settings, now });
     if (base.cheapestEligible) probes.push({ ...QUERY, style, prio, nights, k, b: String(Math.floor(base.cheapestEligible.trip.total / 100) - 50 + Number(k)) });
   }
   let keepOffers = 0, noFit = 0;
   for (const raw of probes) {
-    const nq = optimizer.parseSearch(raw, { maps: inv.maps }).query;
-    const nr = optimizer.search(inv, nq, { settings });
+    const nq = optimizer.parseSearch(raw, { maps: inv.maps, now }).query;
+    const nr = optimizer.search(inv, nq, { settings, now });
     if (nr.picks.length) continue;
     noFit++;
-    const relax = optimizer.oneRuleAway(inv, nq, { settings });
+    const relax = optimizer.oneRuleAway(inv, nq, { settings, now });
     const candidates = (nq.dateMode !== 'anytime') + (nq.nights > 2) + (nq.nights > 3) + (nq.style !== 'surprise') + (nq.priority !== 'price') + (!nq.allowOver) + (nq.keep > 0);
     assert.equal(relax.works.length + relax.notAlone.length, candidates, 'no rule is dropped silently');
     for (const w of relax.works) {
-      const rq = optimizer.parseSearch(Object.fromEntries(new URLSearchParams(w.params)), { maps: inv.maps }).query;
-      const rr = optimizer.search(inv, rq, { settings });
+      const rq = optimizer.parseSearch(Object.fromEntries(new URLSearchParams(w.params)), { maps: inv.maps, now }).query;
+      const rr = optimizer.search(inv, rq, { settings, now });
       assert.ok(rr.picks.length, `${w.key}: the page it links to has trips`);
       assert.equal(rr.picks[0].trip.total, w.total, `${w.key}: the price named is the pick on that page`);
       if (w.key === 'over') assert.ok(w.over > 0 && w.total <= Math.round(nq.budget * 1.1));
@@ -975,8 +976,8 @@ test('deciding today and after: dated cutoffs shared by the pages and the refund
   const app = await startApp({ ADMIN_EMAILS: 'ops@example.com' });
   t.after(app.close);
   const c = client(app.base);
-  const { query } = optimizer.parseSearch(QUERY, { maps: inv.maps });
-  const r = optimizer.search(inv, query, { settings });
+  const { query } = optimizer.parseSearch(QUERY, { maps: inv.maps, now });
+  const r = optimizer.search(inv, query, { settings, now });
   const ours = r.picks.find(p => p.kind === 'our-pick'), save = r.picks.find(p => p.kind === 'save-more');
   assert.ok(ours && save, 'our pick and save more');
   const results = await c.req(`/trips?${new URLSearchParams(QUERY)}`);
@@ -1013,7 +1014,7 @@ test('deciding today and after: dated cutoffs shared by the pages and the refund
   assert.equal((cmp.text.match(/tb-compare-line/g) || []).length, lines.filter(l => l.delta !== 0).length, 'only lines that differ by default');
 
   // Nothing fits: what blocks it is the cheapest priced trip's own lines, and the flights' share of the budget.
-  const tight = optimizer.search(inv, { ...query, budget: 40000 }, { settings });
+  const tight = optimizer.search(inv, { ...query, budget: 40000 }, { settings, now });
   assert.equal(tight.picks.length, 0);
   const cheap = tight.closest[0].trip;
   const nofit = await c.req(`/trips?${new URLSearchParams({ ...QUERY, b: '400' })}`);
@@ -1039,7 +1040,7 @@ test('deciding today and after: dated cutoffs shared by the pages and the refund
   assert.match(review.text, /No\. Nothing holds this price before checkout, and we don’t predict where it goes/);
   assert.match(review.text, new RegExp(`held for ${app.config.quoteTtlMinutes} minutes at checkout`));
   const pt = priceTrip(inv, decodeSpec(trip.tripPath.split('/')[2]), settings);
-  const days = daysBetween(today(), pt.spec.depart);
+  const days = daysBetween(today(now), pt.spec.depart);
   assert.ok(days >= 14, 'an anytime search departs at least two weeks out');
   assert.match(review.text, new RegExp(`If you book today, you can cancel everything within 24 hours for a full refund: you leave in ${days} days, so the 24-hour rule applies`));
   const dated = cutoffs(pt).items.filter(i => i.cutoff).sort((x, y) => Date.parse(x.cutoff) - Date.parse(y.cutoff));
@@ -1056,7 +1057,7 @@ test('deciding today and after: dated cutoffs shared by the pages and the refund
   assert.match((await c.req(`${trip.tripPath}?${trip.cx}`)).text, /Cancellation and changes[\s\S]*Free to cancel by/);
 
   // A trip leaving in five days: no 24-hour window, a cutoff already passed is said plainly and never shown as a green date.
-  const soonSpec = { ...decodeSpec(trip.tripPath.split('/')[2]), depart: addDays(today(), 5) };
+  const soonSpec = { ...decodeSpec(trip.tripPath.split('/')[2]), depart: addDays(today(now), 5) };
   const soon = await c.req(`/trip/${encodeSpec(soonSpec)}/review?${trip.cx}&seen=0`);
   assert.equal(soon.status, 200);
   const soonTrip = priceTrip(inv, soonSpec, settings);
@@ -1074,7 +1075,7 @@ test('deciding today and after: dated cutoffs shared by the pages and the refund
   if (soonTrip.flight.refundable) assert.ok(soonItems.some(i => i.cutoff && !isOpen(i, soonNow)), 'the refundable fare closes 7 days out, so five days out it has passed');
   assert.doesNotMatch(soon.text, /the 24-hour rule applies|Free to cancel before/);
   // A trip that has already left cannot be quoted.
-  assert.equal((await app.tripService.verify(encodeSpec({ ...soonSpec, depart: addDays(today(), -1) }), 0)).available, false);
+  assert.equal((await app.tripService.verify(encodeSpec({ ...soonSpec, depart: addDays(today(now), -1) }), 0)).available, false);
 
   // After booking: what the booking covers, what it leaves out, what we never price; the full-refund
   // window dated 24 hours after booking; then each part's cutoff, the same ones the refund follows.
@@ -1127,7 +1128,7 @@ test('deciding today and after: dated cutoffs shared by the pages and the refund
 
   // Before payment the covers panel says what the booking will cover once paid. With the clock moved
   // past the window, the booking page says it closed, dates each part's own cutoff and names the next.
-  let clock = new Date();
+  let clock = testClock();
   const app2 = await startApp({ ADMIN_EMAILS: 'ops@example.com' }, { now: () => clock });
   t.after(app2.close);
   const c2 = client(app2.base);

@@ -9,7 +9,7 @@
 // and what the customer refused is remembered past the page.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { startApp, quietLog } = require('./helpers');
+const { startApp, quietLog, fixedNow } = require('./helpers');
 const { loadConfig } = require('../server/config');
 const { HuntService, ACCEPTANCE, NOTIFY_KINDS, THRESHOLDS, REFRESH_MAX_AGE_MINUTES, MAX_OPPORTUNITIES, intervalWords, monthClosed } = require('../server/trips/hunts');
 const { OutboxNotifier } = require('../server/trips/integrations/notifications');
@@ -21,7 +21,7 @@ const PRESSURE = /\b(hurry|limited|selling out|last chance|act now|almost gone|d
 
 // A fixed hour of the day, so moving the clock by minutes never crosses midnight UTC (the searches
 // are judged on the calendar day).
-function fixedClock() { const d = new Date(); d.setUTCHours(9, 0, 0, 0); return d; }
+function fixedClock() { const d = fixedNow(); d.setUTCHours(9, 0, 0, 0); return d; }
 const minutes = n => n * 60000;
 
 const INPUT = { budget: 300000, origin: 'NYC', travelers: 2, who: 'couple', dateMode: 'anytime', minNights: 4, maxNights: 4, style: 'beach', threshold: 'recommend' };
