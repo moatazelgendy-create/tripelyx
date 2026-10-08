@@ -530,9 +530,10 @@ const methods = {
 
   /**
    * The invite landing (GET /business/invite/:token; anyone holding the link). Reads by sha256(token) with
-   * repo.get (a token lookup). Writes nothing. Signed out, 'join' or 'signin' comes from
-   * this.accounts.emailInUse(invite.email) (Business never reads the accounts' user or user_email records:
-   * Repo refuses any kind but biz_*).
+   * repo.get (a token lookup). Writes nothing. Signed out, the state is always 'join' (the page offers both
+   * "Create your account" and "Already have an account? Sign in"): the landing never looks the invited email up,
+   * so holding a link tells nobody whether that address has a Tripelyx account. POST /join answers "This email
+   * already has an account. Sign in instead." behind bizAuthIp, as /business/start does.
    * @param {import('./types').UserActor} actor actor.user may be null (signed out)
    * @param {string} token
    * @returns {Promise<import('./types').InviteLanding>}
@@ -548,7 +549,7 @@ const methods = {
     if (user && await this.membership({ user }, org.id)) state = 'member';
     else if (org.status === 'pending') state = 'pending_company';
     else if (user) state = String(user.email || '').toLowerCase() === inv.email ? 'accept' : 'other_email';
-    else state = (await this.accounts.emailInUse(inv.email)) ? 'signin' : 'join';
+    else state = 'join';
     if (state === 'accept') {
       // The landing never offers an accept that acceptInvite would refuse (a removed member's older invite).
       const existing = await this.repo.getIn(KINDS.member, memberId(org.id, user.id), org.id);

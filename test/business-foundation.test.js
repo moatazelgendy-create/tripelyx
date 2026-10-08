@@ -1707,7 +1707,7 @@ test('interfaces: fakeInventory providers refuse provider-contract queries; over
   assert.equal(seam.hotels, hotels);
 });
 
-test('interfaces: accounts.emailInUse tells the invite landing whether to offer join or sign in', async () => {
+test('interfaces: accounts.emailInUse answers the same lookup register and authenticate make (the invite landing no longer asks it)', async () => {
   const store = new MemoryStore();
   const accounts = new Accounts({ store, config: loadConfig({}), now: fixed });
   await accounts.register({ name: 'Dana Lee', email: 'dana@acme.example', password: 'correct horse battery' });

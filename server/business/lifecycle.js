@@ -149,12 +149,15 @@ function noteText(raw) {
   return chars.length > NOTE_MAX_CHARS ? chars.slice(0, NOTE_MAX_CHARS).join('').trimEnd() : s.trim();
 }
 
-/** What `returned` records when a re-check moved the price (a pending request sent back, or a draft on submit). */
+/**
+ * What `returned` records when a re-check found a change (a pending request sent back, or a draft on submit):
+ * 'unavailable' when an option is gone, 'price_changed' when the total moved, and 'terms_changed' when the
+ * total is the same but the fare or room terms changed (recheck.js compares terms as well as totals).
+ */
 function returnedBy(request, recheck, now) {
-  return {
-    at: now, why: recheck.status === 'unavailable' ? 'unavailable' : 'price_changed', fromCents: request.totalCents,
-    toCents: Number.isSafeInteger(recheck.newTotalCents) ? recheck.newTotalCents : null,
-  };
+  const toCents = Number.isSafeInteger(recheck.newTotalCents) ? recheck.newTotalCents : null;
+  const why = recheck.status === 'unavailable' ? 'unavailable' : toCents === request.totalCents ? 'terms_changed' : 'price_changed';
+  return { at: now, why, fromCents: request.totalCents, toCents };
 }
 
 function needDraft(event) {
@@ -167,7 +170,7 @@ function needDraft(event) {
  * - swap:    next = { ...event.draft, updatedAt }; history 'swapped' with savedCents = request.totalCents −
  *            event.draft.totalCents and note = the alternative's label. originalTotalCents never changes.
  * - submit:  a departure date before today (org time zone) → throws 422 'too_late'. With opts.recheck.status
- *            'changed'|'unavailable': next = { ...event.draft, returned { at now, why 'price_changed'|'unavailable',
+ *            'changed'|'unavailable': next = { ...event.draft, returned { at now, why 'price_changed'|'terms_changed'|'unavailable',
  *            fromCents request.totalCents, toCents recheck.newTotalCents|null }, updatedAt: opts.now }, outcome
  *            'repriced' (event.draft required). Otherwise by opts.evaluation.status:
  *            within and budget fits → status 'approved', approval { mode 'auto', approverId null, pool false,
@@ -179,7 +182,7 @@ function needDraft(event) {
  *            outcome 'submitted'. blocked → throws 422 'policy_blocked'. evaluation is stored with evaluatedAt now.
  * - cancel:  status 'cancelled'; request.budget is left as it was. outcome 'cancelled'.
  * - approve: recheck changed/unavailable → status 'draft', { ...event.draft }, returned { at now, why
- *            'price_changed'|'unavailable', fromCents request.totalCents, toCents recheck.newTotalCents },
+ *            'price_changed'|'terms_changed'|'unavailable', fromCents request.totalCents, toCents recheck.newTotalCents },
  *            approval null, submittedAt null, expiresAt null; history by { system: 'policy' }, outcome 'returned'.
  *            Otherwise status 'approved', approval.decidedBy actor, decidedAt now, decidedAs ('assigned' when
  *            actor is approval.approverId; 'pool' when opts.pooled and approval.pool; else 'override' when the

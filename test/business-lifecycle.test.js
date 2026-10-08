@@ -250,6 +250,10 @@ test('submit: auto approval inside policy and budget; pending outside it, with r
   assert.deepEqual([repriced.outcome, repriced.next, repriced.history.action, repriced.history.to], ['repriced', {
     ...structuredClone(DRAFT), returned: { at: NOW, why: 'price_changed', fromCents: 252000, toCents: 260000 }, updatedAt: NOW,
   }, 'repriced', 'draft']);
+  // The terms changed at the same total (recheck.js compares terms too): returned says so, never a price change.
+  const TERMS = Object.freeze({ ...CHANGED, newTotalCents: 252000 });
+  const reterm = transition(req, { type: 'submit', reason: null, approver: null, budget: null, draft: { ...DRAFT, totalCents: 252000 } }, as(M.traveler, { recheck: TERMS }));
+  assert.deepEqual([reterm.outcome, reterm.next.returned], ['repriced', { at: NOW, why: 'terms_changed', fromCents: 252000, toCents: 252000 }]);
   const vanished = transition(req, { type: 'submit', reason: null, approver: null, budget: null, draft: DRAFT }, as(M.traveler, { recheck: GONE }));
   assert.deepEqual([vanished.outcome, vanished.next.returned], ['repriced', { at: NOW, why: 'unavailable', fromCents: 252000, toCents: null }]);
   // The next submit clears it again (the traveler has seen the new price).
@@ -358,6 +362,8 @@ test('approve and deny: who may decide, notes, the budget, and a price change re
   assert.deepEqual([back.history.by, back.history.action, back.history.to, back.outcome], [{ system: 'policy' }, 'returned', 'draft', 'returned']);
   const gone = approve(M.lead, { recheck: GONE });
   assert.deepEqual(gone.next.returned, { at: NOW, why: 'unavailable', fromCents: 252000, toCents: null });
+  const termsOnly = approve(M.lead, { recheck: { ...CHANGED, newTotalCents: 252000 } }, { draft: DRAFT });
+  assert.deepEqual(termsOnly.next.returned, { at: NOW, why: 'terms_changed', fromCents: 252000, toCents: 252000 }, 'same total: the terms changed');
   assert.throws(() => approve(M.lead, { recheck: undefined }), /recheck/);
   assert.equal(deny(M.lead, 'Please pick the Classic fare.', { recheck: undefined }).outcome, 'denied', 'deny needs no recheck');
 });

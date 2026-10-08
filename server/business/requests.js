@@ -160,6 +160,9 @@ function destination(r) {
   return segs.length ? segs[segs.length - 1].to.city : r.query.to;
 }
 const tripOf = r => `${r.travelerName}'s trip to ${destination(r)}`;
+// What a re-check found, in the audit's words: a price is named only when the totals differ (a terms-only change
+// at the same total is 'changed' too, recheck.js).
+const changedWhat = (rc, r, gone, price, terms) => (rc.status === 'unavailable' ? gone : rc.newTotalCents === r.totalCents ? terms : price);
 
 /** Σ the components that price (an unavailable one counts 0, as evaluateTrip counts it). */
 const rowsTotal = rows => COMPONENTS.reduce((n, c) => n + (rows[c] && Number.isInteger(rows[c].totalCents) ? rows[c].totalCents : 0), 0);
@@ -855,7 +858,7 @@ const methods = {
           cas: [{ kind: KINDS.request, id: r.id, rev: revOf(r), fn: applyTransition(this, event, opts, 'repriced') }],
           inserts: [auditInsert(this.repo, {
             orgId: a.org.id, actor: me, action: 'request.repriced', target,
-            summary: `${rc.status === 'unavailable' ? 'An option on' : 'The price of'} ${tripOf(r)} changed before it was sent, so the trip was updated`,
+            summary: `${changedWhat(rc, r, 'An option on', 'The price of', 'The terms of')} ${tripOf(r)} changed before it was sent, so the trip was updated`,
             changes: [{ path: 'totalCents', before: r.totalCents, after: draft.totalCents }],
           })],
         }).catch(asRace);
@@ -1056,7 +1059,7 @@ const methods = {
           cas: [{ kind: KINDS.request, id: r.id, rev: revOf(r), fn: applyTransition(this, event, opts, 'returned') }],
           inserts: [auditInsert(this.repo, {
             orgId: a.org.id, actor: me, action: 'request.returned', target,
-            summary: `${tripOf(r)} went back to ${r.travelerName} to confirm, because ${rc.status === 'unavailable' ? 'an option is no longer available' : 'the price changed'}`,
+            summary: `${tripOf(r)} went back to ${r.travelerName} to confirm, because ${changedWhat(rc, r, 'an option is no longer available', 'the price changed', 'the fare or room terms changed')}`,
             changes: [{ path: 'totalCents', before: r.totalCents, after: draft.totalCents }],
           })],
         }).catch(asRace);

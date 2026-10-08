@@ -364,11 +364,15 @@ function rowCard(group, { timeZone, input = null, level = 3, priceToBeatCents = 
 // Cheaper alternatives (§G3)
 
 const CHEAPEST_WITHIN_LABEL = 'Cheapest option inside your policy';
+// The small pin badge, shown only when the pinned card's heading is not already CHEAPEST_WITHIN_LABEL
+// (alternatives.buildAlternatives gives the pinned one that label, so its heading says it once).
+const PIN_BADGE = 'Cheapest inside policy';
 
 /**
  * One cheaper alternative: label, saving, new total, badge, what you give up, the explainer's note, and
  * "Use this option" (POST swap) when `action` is given. Amounts come from the alternative's own numbers;
- * the label and note never hold one.
+ * the label and note never hold one. The heading is alt.label, said once: a pinned card whose label is
+ * already CHEAPEST_WITHIN_LABEL gets no badge; any other pinned card gets the small PIN_BADGE.
  * @param {import('../../business/types').Alternative} alt
  * @param {{ timeZone: string, pricedAt?: string|null, action?: string|null, rev?: number|string|null,
  *   pinned?: boolean, level?: number }} opts pricedAt: defaults to the alternative's outbound row's
@@ -378,7 +382,7 @@ function altCard(alt, { timeZone, pricedAt = null, action = null, rev = null, pi
   const ev = alt.evaluation || { status: null, violations: [] };
   const give = (alt.giveUps || []).filter(Boolean);
   return html`<article class="bz-card bz-alt${pinned ? ' is-pinned' : ''}" data-price-source="demo">
-    ${pinned ? html`<p class="bz-alt-pin">${icon('shield')}<span>${CHEAPEST_WITHIN_LABEL}</span></p>` : ''}
+    ${pinned && alt.label !== CHEAPEST_WITHIN_LABEL ? html`<p class="bz-alt-pin">${icon('shield')}<span>${PIN_BADGE}</span></p>` : ''}
     ${heading(level, html` class="bz-alt-title"`, alt.label)}
     <p class="bz-alt-save">Saves ${amount(alt.savesCents)} vs your pick (demo price)</p>
     <p class="bz-alt-total">New trip total: ${amount(alt.totalCents)}</p>
@@ -589,6 +593,6 @@ module.exports = {
   policyBadge, statusPill, violationList, limitsBar, rowCard, altCard, alternativesPanel,
   dataTable, emptyState, notice, errorBox, actionBar,
   pageHead, tabs, pager, kvList, checklist, verdict, outsideToggle, copyLink, charCount, budgetBar,
-  DEMO_RIBBON, NO_SUPPLIER, BADGES, PILLS, CHEAPEST_WITHIN_LABEL, ALT_HEADING, ALT_SUB, ALT_TRUNCATED, ALT_NONE,
+  DEMO_RIBBON, NO_SUPPLIER, BADGES, PILLS, CHEAPEST_WITHIN_LABEL, PIN_BADGE, ALT_HEADING, ALT_SUB, ALT_TRUNCATED, ALT_NONE,
   UNAVAILABLE,
 };

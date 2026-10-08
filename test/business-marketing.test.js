@@ -10,7 +10,10 @@ const { startApp, FIXED_NOW } = require('./helpers');
 const { seedUser } = require('./business-helpers');
 const { MemoryStore } = require('../server/booking/MemoryStore');
 const { layout } = require('../server/views/layout');
-const { LEAD_TYPES, leadForm } = require('../server/views/pages');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const { LEAD_TYPES, LEAD_SUCCESS, leadForm } = require('../server/views/pages');
 const mk = require('../server/views/business/marketing');
 
 const now = () => new Date(FIXED_NOW);
@@ -174,7 +177,7 @@ test('/business, with Business on, is a corporate page with the homepage section
 
   // The form: id business-form, the company sizes, the hidden kind, and the confirmed email.
   const form = sectionOf(main, 'business-form');
-  assert.match(form, /<form class="form-card form" data-lead-form novalidate>/);
+  assert.ok(form.includes(`<form class="form-card form" data-lead-form data-success="${LEAD_SUCCESS.business}" novalidate>`), 'its own thank-you line');
   assert.match(form, /<label for="lf-type">Company size<\/label>/);
   assert.deepEqual([...form.matchAll(/<option>([^<]*)<\/option>/g)].map(m => m[1]), COMPANY_SIZES);
   assert.equal(page.text.split(KIND_INPUT).length - 1, 1, 'one kind input on the page, in the business form');
@@ -298,7 +301,55 @@ test('layout() adds page stylesheets after the site and trip styles; only the bu
     const form = String(leadForm(kind));
     assert.doesNotMatch(form, /name="kind"/, `${kind}: no kind input`);
     // Otherwise the same form: only the select and the kind input differ.
-    const strip = s => s.replace(/<label for="lf-type">[^<]*<\/label>\s*<select[\s\S]*?<\/select>/, '').replace(KIND_INPUT, '');
+    assert.match(form, /^<form class="form-card form" data-lead-form novalidate>/, `${kind}: no data-success, exactly as before`);
+    const strip = s => s.replace(/<label for="lf-type">[^<]*<\/label>\s*<select[\s\S]*?<\/select>/, '').replace(KIND_INPUT, '')
+      .replace(` data-success="${LEAD_SUCCESS.business}"`, '');
     assert.equal(strip(form), strip(business), `${kind}: the same form as before`);
   }
+});
+
+// Lead decision on the 1V need: the corporate forms keep forms.js's original thank-you line; only the Business
+// form carries data-success, and its text has no em dash.
+test('forms.js shows the form\'s own data-success line (the Business form, no em dash) and keeps the corporate thank-you as it was', async () => {
+  const js = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'forms.js'), 'utf8');
+  assert.deepEqual(Object.keys(LEAD_SUCCESS), ['business']);
+  assert.doesNotMatch(LEAD_SUCCESS.business, /[\u2013\u2014]/);
+  assert.doesNotMatch(LEAD_SUCCESS.business, PRESSURE);
+  async function send(success) {
+    const status = { innerHTML: 'old', children: [], appendChild(c) { this.children.push(c); } };
+    const btn = { disabled: false };
+    let submit = null;
+    let posted = null;
+    const form = {
+      elements: {},
+      querySelector: sel => (sel === '[data-form-status]' ? status : sel === 'button[type=submit]' ? btn : null),
+      querySelectorAll: () => [],
+      getAttribute: name => (name === 'data-success' ? success : null),
+      addEventListener: (type, fn) => { if (type === 'submit') submit = fn; },
+      reset() {},
+    };
+    const document = { querySelectorAll: sel => (sel === '[data-lead-form]' ? [form] : []), createElement: () => ({ className: '', textContent: '' }) };
+    class FormData { entries() { return Object.entries({ name: 'Ana', email: 'ana@example.com', message: 'Twelve of us travel each month.' }); } }
+    const fetch = async (url, opts) => { posted = { url, body: JSON.parse(opts.body) }; return { ok: true, json: async () => ({ ok: true }) }; };
+    vm.runInNewContext(js, { document, FormData, fetch });
+    assert.equal(typeof submit, 'function');
+    submit({ preventDefault() {} });
+    await new Promise(r => setTimeout(r, 20));
+    assert.equal(posted.url, '/api/partners');
+    assert.equal(btn.disabled, false);
+    return status;
+  }
+  const corporate = await send(null);
+  assert.equal(corporate.innerHTML, '<div class="alert alert-success">Thanks \u2014 your message is in. We\u2019ll be in touch soon.</div>', 'unchanged');
+  assert.deepEqual(corporate.children, []);
+  const business = await send(LEAD_SUCCESS.business);
+  assert.equal(business.innerHTML, '', 'cleared when the send starts, then only the form\'s own line');
+  assert.deepEqual(business.children.map(c => [c.className, c.textContent]), [['alert alert-success', LEAD_SUCCESS.business]]);
+  // The /business page renders that attribute; /partners and /contact do not (test/preserve.test.js holds their HTML).
+  const app = await startApp({ ...LIVE }, { store: new MemoryStore(), now });
+  try {
+    const page = await (await fetch(`${app.base}/business`)).text();
+    assert.ok(page.includes(`data-success="${LEAD_SUCCESS.business}"`));
+    for (const p of ['/partners', '/contact']) assert.doesNotMatch(await (await fetch(`${app.base}${p}`)).text(), /data-success/, p);
+  } finally { await app.close(); }
 });

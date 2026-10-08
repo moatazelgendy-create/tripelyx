@@ -107,6 +107,10 @@
 
 /**
  * `biz_org`, id org_… (the only kind with no owner scope). Inserted by createCompany, then changed by CAS.
+ * As company members see it (getOrg, saveSettings, acceptInvite, exportCompany), statusBy and statusNote are always
+ * null and settingsRev is left out; only the platform admin's own view (platformSetStatus) carries them.
+ * A confirmed ('active') company whose name changes beyond case, spacing and punctuation (nameKey) goes back to
+ * 'pending' in the same commit as the rename, until Tripelyx confirms it again (not with config.business.selfServe).
  * @typedef {object} Org
  * @property {string} id
  * @property {string} name NFKC text ≤ 80, never containing "tripelyx"
@@ -124,6 +128,9 @@
  * @property {string|null} statusBy platform admin user id of the last status change
  * @property {string|null} statusAt
  * @property {string|null} statusNote required for a suspension
+ * @property {number} [settingsRev] the org rev written by the last settings change (saveSettings); absent means 0.
+ *   A settings form is stale (409) only when its rev is below this or above rev, so joins, removals and status
+ *   changes in between leave an open settings form current.
  * @property {number} rev
  */
 
@@ -271,8 +278,11 @@
 /** A budget hold on an approved request. @typedef {{ budgetId: string, periodKey: PeriodKey, cents: number }} RequestBudget */
 
 /**
- * Set when an automatic re-check sent a pending request back to draft (or a draft's price moved on submit).
- * @typedef {{ at: string, why: 'price_changed'|'unavailable', fromCents: number, toCents: number|null }} RequestReturned
+ * Set when an automatic re-check sent a pending request back to draft (or a draft's price or terms moved on
+ * submit). why: 'price_changed' the total moved (toCents ≠ fromCents); 'terms_changed' the same total but the
+ * fare or room terms changed (toCents === fromCents: never say the price changed); 'unavailable' an option is
+ * gone (toCents null).
+ * @typedef {{ at: string, why: 'price_changed'|'terms_changed'|'unavailable', fromCents: number, toCents: number|null }} RequestReturned
  */
 
 /** @typedef {{ at: string, by: string, name: string, text: string }} RequestMessage by = user id; text 2..1000 */
@@ -716,7 +726,9 @@
 
 /**
  * diff.compareTrips(a, b): "Requested vs cheapest option inside policy". rows list only what differs,
- * in a declared order (carrier, times, stops, cabin, fare, bags, refunds, hotel, room, stars, dates).
+ * in a declared order (diff.DIFF_FIELDS: carrier, times, stops, cabin, fare, bags, refunds, changes, hotel, room,
+ * stars, hotelRefunds, dates), one row per field and flight leg that differs. 'changes' is the fare's change
+ * terms and 'hotelRefunds' the hotel's cancellation terms.
  * @typedef {object} TripComparison
  * @property {Array<{ label: string, a: string|null, b: string|null }>} rows
  * @property {{ a: number, b: number, delta: number }} totalCents delta = b − a
@@ -981,9 +993,10 @@
 
 /**
  * service.inviteByToken({ user }, token): the invite landing. state:
- *   'join'            signed out, no account with the email (this.accounts.emailInUse(invite.email) false)
- *                     → create an account to join
- *   'signin'          signed out, an account already uses the email (emailInUse true) → sign in to join
+ *   'join'            signed out (whether or not an account uses the email: the landing never looks it up, so a
+ *                     link never reveals whether an address has an account) → "Create your account" (the /join
+ *                     form) plus "Already have an account? Sign in" (/business/signin?next=<this landing>).
+ *                     POST /join answers "This email already has an account. Sign in instead." behind bizAuthIp.
  *   'accept'          signed in with the invited email → join
  *   'other_email'     signed in with another email → refused (copy in plan §B6)
  *   'member'          already an active member → link to the workspace
@@ -993,7 +1006,7 @@
  * @property {{ id: string, name: string, status: OrgStatus }} org
  * @property {{ publicId: string, email: string, emailMasked: string, role: Role, roleLabel: string,
  *   departmentName: string|null, invitedByName: string, expiresAt: string }} invite
- * @property {'join'|'signin'|'accept'|'other_email'|'member'|'pending_company'} state
+ * @property {'join'|'accept'|'other_email'|'member'|'pending_company'} state
  */
 
 /**

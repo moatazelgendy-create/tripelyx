@@ -185,9 +185,14 @@ const LEAD_TYPES = {
   contact: ['Topic', ['General enquiry', 'Partnerships', 'Press', 'Careers', 'Booking support']],
 };
 
+// A form's own thank-you line, shown by /js/forms.js from data-success after a send. Only the Business enquiry
+// form has one; every other form keeps forms.js's original text and exactly its original markup.
+const LEAD_SUCCESS = { business: 'Thanks, your message is in. We’ll be in touch soon.' };
+
 function leadForm(kind) {
   const [typeLabel, types, leadKind] = LEAD_TYPES[kind] || LEAD_TYPES.contact;
-  return html`<form class="form-card form" data-lead-form novalidate>
+  const success = Object.prototype.hasOwnProperty.call(LEAD_SUCCESS, kind) ? LEAD_SUCCESS[kind] : '';
+  return html`<form class="form-card form" data-lead-form${success ? html` data-success="${success}"` : ''} novalidate>
     <div class="form-row">
       <div class="field"><label for="lf-name">Your name</label><input id="lf-name" name="name" autocomplete="name" required maxlength="100"><p class="field-error" data-error-for="name"></p></div>
       <div class="field"><label for="lf-company">Company</label><input id="lf-company" name="company" autocomplete="organization" maxlength="120"></div>
@@ -251,4 +256,4 @@ ${pageHero({ eyebrow: 'Contact', title: 'Let’s talk.', lead: 'Questions about 
   return layout({ title: 'Contact', active: 'contact', body, ctx, scripts: ['/js/forms.js'], corporate: true });
 }
 
-module.exports = { brandsView, technologyView, partnersView, aboutView, contactView, pageHero, leadForm, LEAD_TYPES };
+module.exports = { brandsView, technologyView, partnersView, aboutView, contactView, pageHero, leadForm, LEAD_TYPES, LEAD_SUCCESS };

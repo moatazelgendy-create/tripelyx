@@ -251,7 +251,7 @@ test('listCompaniesFor, membership and getOrg: active memberships in index order
 // ---------------------------------------------------------------------------------------------------
 // Invites
 
-test('invites: the token is shown once and stored only as a hash; the landing picks join, sign in, accept, other email or member; accepting needs the invited email (D5)', async t => {
+test('invites: the token is shown once and stored only as a hash; the landing picks join (always, signed out), accept, other email or member; accepting needs the invited email (D5)', async t => {
   const { app, svc, repo, company, join, member, org, audits } = await setup();
   t.after(app.close);
   const olivia = await seedUser(app, { name: 'Olivia Owner' });
@@ -274,7 +274,12 @@ test('invites: the token is shown once and stored only as a hash; the landing pi
   assert.equal(invited.summary, 'Olivia Owner invited a***@example.com as Employee', 'audit entries never carry a full email');
   assert.ok(!JSON.stringify(await audits(acme.id)).includes(made.token));
 
-  // The landing.
+  // The landing. Signed out it is always 'join' and never looks the invited email up (lead decision on 1W-a
+  // finding 15), so a link never tells its holder whether an address has a Tripelyx account.
+  const asked = [];
+  app.accounts.emailInUse = async function spy(e) { asked.push(e); return Object.getPrototypeOf(this).emailInUse.call(this, e); };
+  t.after(() => { delete app.accounts.emailInUse; });
+  assert.equal(svc.accounts, app.accounts);
   const landing = await svc.inviteByToken({ user: null }, made.token);
   assert.deepEqual(landing.org, { id: acme.id, name: 'Acme Inc', status: 'active' });
   assert.deepEqual(landing.invite, {
@@ -283,8 +288,10 @@ test('invites: the token is shown once and stored only as a hash; the landing pi
   });
   assert.equal(landing.state, 'join', 'signed out, and no account uses the email');
   const ana = await seedUser(app, { name: 'Ana Analyst', email: 'ana@example.com' });
-  assert.equal((await svc.inviteByToken({ user: null }, made.token)).state, 'signin');
-  assert.equal((await svc.inviteByToken({}, made.token)).state, 'signin');
+  const withAccount = await svc.inviteByToken({ user: null }, made.token);
+  assert.deepEqual(withAccount, landing, 'an account now uses the email, and the signed-out landing is exactly the same');
+  assert.equal((await svc.inviteByToken({}, made.token)).state, 'join');
+  assert.deepEqual(asked, [], 'the landing never asks accounts.emailInUse');
   assert.equal((await svc.inviteByToken({ user: ana.user }, made.token)).state, 'accept');
   const bob = await seedUser(app, { name: 'Bob', email: 'bob@example.com' });
   assert.equal((await svc.inviteByToken({ user: bob.user }, made.token)).state, 'other_email');
@@ -1175,8 +1182,8 @@ test('a bare service on a MemoryStore (no app) runs the team methods, and reads 
   assert.equal((await svc.inviteByToken({ user: null }, token)).state, 'pending_company', 'a pending company needs no account lookup');
   await svc.platformSetStatus(admin, org.id, { status: 'active', rev: org.rev });
   assert.equal((await svc.inviteByToken({ user: bo }, token)).state, 'accept');
-  // Signed out on a confirmed company, the landing asks accounts; without one it fails, never answers wrongly.
-  await assert.rejects(svc.inviteByToken({ user: null }, token), TypeError);
+  // Signed out on a confirmed company the landing is 'join' and needs no account lookup (this accounts has no emailInUse).
+  assert.equal((await svc.inviteByToken({ user: null }, token)).state, 'join');
   await svc.acceptInvite({ user: bo }, token);
   assert.deepEqual((await svc.listCompaniesFor({ user: bo })).map(c => c.id), [org.id]);
   const view = await svc.listMembers(ownerActor);

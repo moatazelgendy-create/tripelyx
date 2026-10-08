@@ -214,9 +214,9 @@ class Accounts {
 
   /**
    * Does an account already use this email? The same lookup register's email_taken check and authenticate
-   * make (lib/validate str, at most 120 characters, lowercased). For the Business invite landing, which
-   * shows "Create your account to join" or "Sign in to join" (types.InviteLanding 'join' or 'signin') to the
-   * holder of an invite for this address; never answer it to anyone else.
+   * make (lib/validate str, at most 120 characters, lowercased). The Business invite landing no longer asks it
+   * (a signed-out landing is always 'join'); never answer it to anyone but the holder of an invite for this
+   * address.
    * @param {unknown} email
    * @returns {Promise<boolean>}
    */

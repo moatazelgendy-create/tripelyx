@@ -505,8 +505,21 @@ test('altCard and alternativesPanel: saving, new total, give-ups, the swap form,
   const order = [...panel.matchAll(/name="altId" value="([^"]+)"/g)].map(m => m[1]);
   assert.deepEqual(order, [alts[1].id, alts[0].id, ...alts.slice(2).map(a => a.id)], 'the cheapest inside policy first, then the stored order');
   assert.equal((panel.match(/class="bz-card bz-alt is-pinned"/g) || []).length, 1);
-  assert.ok(panel.includes(`<span>${parts.CHEAPEST_WITHIN_LABEL}</span>`));
+  // A pinned card whose heading is not the cheapest-inside-policy label gets the small pin badge.
+  assert.ok(panel.includes(`<p class="bz-alt-pin"><svg`) && panel.includes(`<span>${parts.PIN_BADGE}</span>`));
+  assert.equal(parts.PIN_BADGE, 'Cheapest inside policy');
   assert.match(panel, /<h3 class="bz-alt-title">/, 'cards one level under the panel');
+
+  // Lead decision on 1P finding 11: buildAlternatives labels the pinned one CHEAPEST_WITHIN_LABEL, so the card says
+  // it once, in its heading, with no badge repeating it.
+  assert.equal(parts.CHEAPEST_WITHIN_LABEL, require('../server/business/alternatives').CHEAPEST_WITHIN_LABEL);
+  const labelled = alts.map((a, i) => (i === 1 ? { ...a, label: parts.CHEAPEST_WITHIN_LABEL } : a));
+  const once = String(parts.alternativesPanel({ alternatives: labelled, cheapestWithin: labelled[1] }, { timeZone: TZ }));
+  assert.equal(once.split(parts.CHEAPEST_WITHIN_LABEL).length - 1, 1, 'the label is printed once');
+  assert.match(once, new RegExp(`<h3 class="bz-alt-title">${parts.CHEAPEST_WITHIN_LABEL}</h3>`));
+  assert.doesNotMatch(once, /bz-alt-pin/);
+  assert.ok(!once.includes(parts.PIN_BADGE));
+  assert.equal((once.match(/class="bz-card bz-alt is-pinned"/g) || []).length, 1, 'still pinned first and marked');
 
   const none = String(parts.alternativesPanel({ alternatives: [] }, { timeZone: TZ }));
   assert.ok(none.includes(parts.ALT_NONE));
