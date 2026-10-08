@@ -712,6 +712,8 @@ test('admin control center: hidden from non-admins, rules and promo codes change
   assert.equal((await guest.req('/admin')).status, 404);
   const admin = client(app.base);
   await admin.req('/signup', { method: 'POST', form: { name: 'Ops Person', email: 'ops@example.com', password: 'correct horse battery' } });
+  // D1: a listed email signed up after boot is an admin only once its platform_admin record is granted.
+  await app.accounts.grantPlatformAdmin((await app.store.getRecord('user_email', 'ops@example.com')).userId, { by: 'test' });
   for (const p of ['/admin', '/admin/bookings', '/admin/requests', '/admin/settings', '/admin/promos', '/admin/outbox']) assert.equal((await admin.req(p)).status, 200, p);
 
   // Promo codes show as their own line; the original price is never inflated.
