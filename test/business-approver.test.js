@@ -84,6 +84,16 @@ test('the pool: active owners and travel admins but the traveler, earliest joine
   assert.deepEqual(resolveApprover(traveler, byId([owner, foreign, traveler])).poolIds, ['u_owner']);
 });
 
+test('the same company means the same orgId on both records: a record or a traveler with none is never trusted', () => {
+  const traveler = member('u_t', 'employee', { approverId: 'u_x' });
+  const noOrg = { ...member('u_x', 'owner'), orgId: undefined };
+  assert.deepEqual(resolveApprover(traveler, byId([traveler, noOrg])), { approverId: null, pool: false, poolIds: [], rule: null, skipped: [{ userId: 'u_x', reason: 'not_member' }] });
+  const homeless = { ...traveler, orgId: undefined };
+  assert.deepEqual(resolveApprover(homeless, byId([homeless, member('u_x', 'owner', { orgId: 'org_b' }), owner])), {
+    approverId: null, pool: false, poolIds: [], rule: null, skipped: [{ userId: 'u_x', reason: 'not_member' }],
+  });
+});
+
 test('nobody else: rule null (a company of one); never the traveler, even an owner', () => {
   const solo = member('u_owner', 'owner', { approverId: 'u_owner', managerId: 'u_owner' });
   assert.deepEqual(resolveApprover(solo, byId([solo])), {

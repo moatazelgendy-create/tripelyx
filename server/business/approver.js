@@ -10,7 +10,9 @@
 //   4. nobody → rule null (submit answers 422 'no_approver' with the single-person copy).
 // Valid = an active member of the company, holding approval.decide (roles.can), and not the traveler.
 // Why a candidate is passed over, checked in this order: not_member (no record, or a record of another
-// company), removed (not active), is_traveler, cannot_approve (the role lacks approval.decide).
+// company: the same company means both the traveler and the record carry the same orgId, so a record or a
+// traveler without one is never trusted), removed (not active), is_traveler, cannot_approve (the role lacks
+// approval.decide).
 // The result is snapshotted on the request at submit (approval.approverId, pool, poolIds, rule).
 const roles = require('./roles');
 
@@ -30,7 +32,7 @@ function resolveApprover(traveler, membersById) {
   if (!traveler || typeof traveler.userId !== 'string' || !traveler.userId) throw new TypeError('[business] resolveApprover needs the traveler member');
   const members = membersById && typeof membersById === 'object' ? membersById : {};
   const member = userId => (Object.hasOwn(members, userId) ? members[userId] : null);
-  const sameOrg = m => !traveler.orgId || !m.orgId || m.orgId === traveler.orgId;
+  const sameOrg = m => typeof traveler.orgId === 'string' && traveler.orgId !== '' && m.orgId === traveler.orgId;
   const why = userId => {
     const m = member(userId);
     if (!m || m.userId !== userId || !sameOrg(m)) return 'not_member';

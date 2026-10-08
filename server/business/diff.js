@@ -8,14 +8,20 @@
 // adds 1h 50m" · "No free changes" · "Refunds nothing (yours refunds 70%)" · "1 checked bag instead of 2" ·
 // "4-star instead of 5-star" · "Your trip moves 1 day later" · "Nothing else changes". No amounts (the saving
 // is shown by the view), no em dash. On a return trip each flight line names its leg ("Return: leaves 07:05
-// instead of 13:40"). Times are local wall-clock times at each airport; a 'dates' shift is taken out before
-// arrival times are compared, so the same flight a day later is not "24h later".
+// instead of 13:40"; a cabin or fare name keeps its capital: "Outbound: Economy instead of Business"). Times
+// are local wall-clock times at each airport; a 'dates' shift is taken out before arrival times are compared,
+// so the same flight a day later is not "24h later". The date shift comes first in giveUps.
+// Another hotel always says so ("Stays at Kestrel Yard Hotel instead of Aldermoor House"), and its room is
+// compared with the pick's room (name, bed, how many it sleeps) like a room in the same hotel, so "Nothing
+// else changes" means only the price (or nothing a traveler gives up) changed.
 //
-// compareTrips rows follow DIFF_FIELDS order (dates first), one row per field and flight leg that differs.
+// compareTrips rows follow DIFF_FIELDS order, the TripComparison typedef's declared order (carrier, times,
+// stops, cabin, fare, bags, refunds, hotel, room, stars, dates) with the fare terms ('changes') after refunds
+// and the hotel cancellation ('hotelRefunds') after stars; one row per field and flight leg that differs.
 const { CABIN_RANK, CABIN_LABELS } = require('./constants');
 
 /** The compared fields, in row order. */
-const DIFF_FIELDS = Object.freeze(['dates', 'carrier', 'times', 'stops', 'cabin', 'fare', 'bags', 'refunds', 'changes', 'hotel', 'room', 'stars', 'hotelRefunds']);
+const DIFF_FIELDS = Object.freeze(['carrier', 'times', 'stops', 'cabin', 'fare', 'bags', 'refunds', 'changes', 'hotel', 'room', 'stars', 'hotelRefunds', 'dates']);
 
 const DAY_MS = 86400000;
 const MONEY = /[$€£¥]|\bUSD\b/;
@@ -38,7 +44,9 @@ function shortDate(date) {
   const d = new Date(`${date}T00:00:00Z`);
   return `${WEEKDAYS[d.getUTCDay()]} ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`;
 }
-const lowerFirst = s => s.charAt(0).toLowerCase() + s.slice(1);
+/** The first words a leg prefix lowercases ("Outbound: leaves …"); cabin and fare names keep their capital. */
+const LOWER_AFTER_LEG = /^(?:Flies|Leaves|Arrives|Refunds|No)\b/;
+const afterLeg = s => (LOWER_AFTER_LEG.test(s) ? s.charAt(0).toLowerCase() + s.slice(1) : s);
 
 const first = row => row.segments[0];
 const last = row => row.segments[row.segments.length - 1];
@@ -103,11 +111,19 @@ const FLIGHT_GIVE_UPS = {
 
 /** Hotel give-ups for one field. */
 const HOTEL_GIVE_UPS = {
-  hotel: (p, q) => (q.offerId !== p.offerId && q.area && p.area && q.area !== p.area ? [`${q.area} instead of ${p.area}`] : []),
+  hotel: (p, q) => {
+    if (q.offerId === p.offerId) return [];
+    const out = [q.name && p.name && q.name !== p.name ? `Stays at ${q.name} instead of ${p.name}` : 'Another hotel'];
+    if (q.area && p.area && q.area !== p.area) out.push(`${q.area} instead of ${p.area}`);
+    return out;
+  },
+  // The room, in the same hotel or another one.
   room: (p, q) => {
-    if (q.offerId !== p.offerId || q.optionId === p.optionId) return [];
-    const out = [`${q.room.name} instead of ${p.room.name}`];
-    if (q.room.sleeps < p.room.sleeps) out.push(`Sleeps ${q.room.sleeps} instead of ${p.room.sleeps}`);
+    const a = p.room || {}, b = q.room || {};
+    const out = [];
+    if (b.name && a.name && b.name !== a.name) out.push(`${b.name} instead of ${a.name}`);
+    if (b.bed && a.bed && b.bed !== a.bed) out.push(`${b.bed} instead of ${a.bed}`);
+    if (Number.isInteger(b.sleeps) && Number.isInteger(a.sleeps) && b.sleeps < a.sleeps) out.push(`Sleeps ${b.sleeps} instead of ${a.sleeps}`);
     return out;
   },
   stars: (p, q) => (q.stars < p.stars ? [`${q.stars}-star instead of ${p.stars}-star`] : []),
@@ -132,16 +148,15 @@ function giveUps(pick, alt) {
   const start = tripStart(pick), moved = tripStart(alt);
   const shift = start && moved ? daysBetween(start, moved) : 0;
   const twoLegs = !!(pick.back || alt.back);
+  // The date shift first (it changes the whole trip), then the other fields in DIFF_FIELDS order.
+  if (shift) out.push(`Your trip moves ${plural(Math.abs(shift), 'day')} ${shift > 0 ? 'later' : 'earlier'}`);
   for (const field of DIFF_FIELDS) {
-    if (field === 'dates') {
-      if (shift) out.push(`Your trip moves ${plural(Math.abs(shift), 'day')} ${shift > 0 ? 'later' : 'earlier'}`);
-      continue;
-    }
+    if (field === 'dates') continue;
     if (FLIGHT_GIVE_UPS[field]) {
       for (const c of ['out', 'back']) {
         const p = pick[c], q = alt[c];
         if (!p || !q || p.key === q.key) continue;
-        for (const line of FLIGHT_GIVE_UPS[field](p, q, shift)) out.push(twoLegs ? `${c === 'out' ? 'Outbound' : 'Return'}: ${lowerFirst(line)}` : line);
+        for (const line of FLIGHT_GIVE_UPS[field](p, q, shift)) out.push(twoLegs ? `${c === 'out' ? 'Outbound' : 'Return'}: ${afterLeg(line)}` : line);
       }
     } else if (HOTEL_GIVE_UPS[field]) {
       const p = pick.hotel, q = alt.hotel;

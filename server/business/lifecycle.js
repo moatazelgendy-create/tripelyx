@@ -13,8 +13,9 @@
 //   draft             submit    pending                     out of policy (outOfPolicy 'approval') or budget-only; reason
 //                                                           ≥ org.settings.reasonMinChars and ≤ 500, no card number;
 //                                                           approver resolved (else 422 no_approver)
-//   draft             submit    (refused 422, stays draft)  blocked
-//   draft             submit    draft (re-priced)           recheck changed or unavailable: event.draft is written
+//   draft             submit    (refused 422, stays draft)  blocked, or the departure date has passed (org time zone)
+//   draft             submit    draft (re-priced)           recheck changed or unavailable: event.draft is written,
+//                                                           with `returned` (why, from and to)
 //   draft, pending    cancel    cancelled                   traveler
 //   approved          cancel    cancelled                   traveler before the departure date (org time zone), or
 //                                                           approval.override; the service releases the budget hold
@@ -34,22 +35,26 @@
 //   'request_expired'    409  pending and now ≥ expiresAt, for any event but 'expire'
 //   'alternative_gone'   410  swap to an alternative the request no longer lists
 //   'departed'           409  the traveler cancels an approved trip on or after its departure date
-//   'not_found'          404  the actor is not someone this event allows (the route gate normally stops them first)
+//   'not_found'          404  the actor is not someone this event allows (the route gate normally stops them first),
+//                             or opts.member is not the actor's own record in the request's company
 //   'self_approval'      422  the decider is the traveler (every role, Owner included)
 //   'policy_blocked'     422  submit of a blocked trip
 //   'reason_too_short'   422  reason.text shorter than org.settings.reasonMinChars (or longer than 500)
 //   'card_number'        422  a card number in a reason, note or message (cards.hasCardNumber)
 //   'no_approver'        422  nobody can approve (single-person company copy)
-//   'too_late'           422  the computed expiresAt is not after now (the trip leaves too soon to wait)
+//   'too_late'           422  submit: the departure date has passed in the company's time zone, or the computed
+//                             expiresAt is not after now (the trip leaves too soon to wait)
 //   'note_required'      422  deny or override without a note of at least 10 characters
 //   'over_budget'        422  approve past the budget without ackOverBudget
 //   'invalid_message'    422  message text outside 2..1000 characters
 //   'too_many_messages'  409  the request already holds 50 messages
 //
 // Settled details:
-// - Checks run in this order: terminal → invalid_transition; pending past expiresAt (any event but expire) →
-//   request_expired; the event's own from-status; who may act (self_approval comes before not_found for
-//   approve and deny); the event's fields.
+// - Checks run in this order: the acting member (when opts.member is given it must be the actor's own record,
+//   userId equal to actor.userId, in the request's company, orgId equal to request.orgId; else not_found, so
+//   a record from elsewhere learns nothing about the request) → terminal → invalid_transition; pending past
+//   expiresAt (any event but expire) → request_expired; the event's own from-status; who may act
+//   (self_approval comes before not_found for approve and deny); the event's fields.
 // - submit and approve need opts.recheck (the service always prices again); deny, cancel, expire and message
 //   do not. submit needs opts.evaluation unless the recheck re-priced the draft.
 // - A submit whose evaluation says within but whose total no longer fits event.budget goes the pending way
@@ -57,11 +62,16 @@
 // - An approver resolution naming the traveler (it never should) counts as nobody: 422 no_approver, and the
 //   traveler is never written into poolIds.
 // - 'assigned' needs the actor to be approval.approverId and still hold approval.decide; 'pool' needs
-//   opts.pooled, approval.pool and approval.decide; anyone else needs approval.override, on a request that is
-//   not their own. The same override rule lets someone else cancel an approved trip; it never lets the
-//   traveler cancel their own after departure.
+//   opts.pooled, approval.pool, the actor in approval.poolIds and approval.decide; anyone else needs
+//   approval.override, on a request that is not their own. The same override rule lets someone else cancel an
+//   approved trip; it never lets the traveler cancel their own after departure. A message follows the same
+//   rules (the traveler, then assigned, pool or override).
+// - submit refuses a trip whose departure date is before today in the company's time zone (422 too_late),
+//   before the price check and whatever the evaluation says, so a stale draft is never approved by policy.
+//   Leaving today inside policy is approved by policy; outside it, it is too late to wait (expiresAt).
 // - Texts (reason, notes, messages) are cleaned with validate.text (NFKC, invisible characters removed),
-//   then measured; a decider's note is kept to its first 1,000 characters. A reason category outside
+//   then measured; a decider's note is kept to its first 1,000 characters (whole characters: an emoji is never
+//   cut in half, and a lone surrogate is removed, so the note is always storable). A reason category outside
 //   REASON_CATEGORIES is stored as null.
 // - submit clears `returned` (the traveler has seen the new price), and a within submit clears `reason`.
 const { AppError } = require('../lib/errors');
@@ -101,6 +111,8 @@ function ms(iso, what) {
 
 const isPastExpiry = (request, nowMs) => request.status === 'pending' && typeof request.expiresAt === 'string' && nowMs >= Date.parse(request.expiresAt);
 const holds = (member, perm) => !!member && member.status === 'active' && roles.can(member.role, perm);
+/** Is the actor one of the request's pool, by the pool link (opts.pooled) and the request's own poolIds? */
+const inPool = (a, me, pooled) => pooled === true && a.pool === true && Array.isArray(a.poolIds) && a.poolIds.includes(me);
 const copy = x => (x === undefined || x === null ? null : structuredClone(x));
 
 /** How the actor may decide (or message) this pending request: 'assigned', 'pool', 'override' or null. */
@@ -108,11 +120,18 @@ function decidedAs(request, actor, member, pooled) {
   const a = request.approval || {};
   const me = actor && actor.userId;
   if (!me || me === request.travelerId) return null;
-  if (member && member.userId && member.userId !== me) return null;
   if (a.approverId && me === a.approverId && holds(member, 'approval.decide')) return 'assigned';
-  if (pooled === true && a.pool === true && holds(member, 'approval.decide')) return 'pool';
+  if (inPool(a, me, pooled) && holds(member, 'approval.decide')) return 'pool';
   if (holds(member, 'approval.override')) return 'override';
   return null;
+}
+
+/** opts.member, when given, must be the actor's own record in the request's company (see the header). */
+function checkMember(request, actor, member) {
+  if (member === null || member === undefined) return;
+  const me = actor && actor.userId;
+  if (typeof member !== 'object' || typeof member.userId !== 'string' || typeof me !== 'string' || member.userId !== me
+    || typeof member.orgId !== 'string' || !member.orgId || member.orgId !== request.orgId) throw notFound();
 }
 
 /** The budget hold an approval writes: the request's whole total against that budget. */
@@ -121,9 +140,22 @@ function hold(request, budget) {
 }
 const overBudget = (request, budget) => !!budget && Number.isFinite(budget.remainingCents) && request.totalCents > budget.remainingCents;
 
-/** A decider's note (deny, approval) cleaned and kept to NOTE_MAX_CHARS, like any free text: '' when none. */
+/** A decider's note (deny, approval) cleaned and kept to NOTE_MAX_CHARS whole characters: '' when none. */
 const NOTE_MAX_CHARS = 1000;
-const noteText = raw => v.text(raw, NOTE_MAX_CHARS, { multiline: true });
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+function noteText(raw) {
+  const s = v.text(raw, NOTE_MAX_CHARS * 4, { multiline: true }).replace(LONE_SURROGATE, '');
+  const chars = Array.from(s);
+  return chars.length > NOTE_MAX_CHARS ? chars.slice(0, NOTE_MAX_CHARS).join('').trimEnd() : s.trim();
+}
+
+/** What `returned` records when a re-check moved the price (a pending request sent back, or a draft on submit). */
+function returnedBy(request, recheck, now) {
+  return {
+    at: now, why: recheck.status === 'unavailable' ? 'unavailable' : 'price_changed', fromCents: request.totalCents,
+    toCents: Number.isSafeInteger(recheck.newTotalCents) ? recheck.newTotalCents : null,
+  };
+}
 
 function needDraft(event) {
   if (!event.draft || typeof event.draft !== 'object') throw new TypeError(`[business] a re-priced ${event.type} needs event.draft`);
@@ -134,8 +166,10 @@ function needDraft(event) {
  * Apply one event to a request.
  * - swap:    next = { ...event.draft, updatedAt }; history 'swapped' with savedCents = request.totalCents −
  *            event.draft.totalCents and note = the alternative's label. originalTotalCents never changes.
- * - submit:  with opts.recheck.status 'changed'|'unavailable': next = { ...event.draft, updatedAt: opts.now },
- *            outcome 'repriced' (event.draft required). Otherwise by opts.evaluation.status:
+ * - submit:  a departure date before today (org time zone) → throws 422 'too_late'. With opts.recheck.status
+ *            'changed'|'unavailable': next = { ...event.draft, returned { at now, why 'price_changed'|'unavailable',
+ *            fromCents request.totalCents, toCents recheck.newTotalCents|null }, updatedAt: opts.now }, outcome
+ *            'repriced' (event.draft required). Otherwise by opts.evaluation.status:
  *            within and budget fits → status 'approved', approval { mode 'auto', approverId null, pool false,
  *            poolIds [], rule null, decidedBy { system: 'policy' }, decidedAt now, decidedAs null, note '',
  *            overBudgetAck false }, budget { budgetId, periodKey, cents: totalCents } when event.budget,
@@ -168,6 +202,7 @@ function transition(request, event, opts) {
   const now = o.now;
   const nowMs = ms(now, 'opts.now');
   const { actor = null, member = null, pooled = false, org = null } = o;
+  checkMember(request, actor, member);
   const from = request.status;
   if (TERMINAL.includes(from)) throw invalidTransition();
   if (event.type !== 'expire' && isPastExpiry(request, nowMs)) {
@@ -195,9 +230,18 @@ function transition(request, event, opts) {
     case 'submit': {
       if (from !== 'draft') throw invalidTransition();
       if (!isTraveler) throw notFound();
+      if (!org || !org.timezone) throw new TypeError('[business] submit needs opts.org');
+      const departDate = request.query && request.query.departDate;
+      if (typeof departDate !== 'string' || departDate < tz.localDate(org.timezone, nowMs)) {
+        throw err('too_late', "This trip's departure date has passed. Plan it again with new dates.", 422);
+      }
       if (!o.recheck || typeof o.recheck.status !== 'string') throw new TypeError('[business] submit needs opts.recheck');
       if (o.recheck.status !== 'same') {
-        return { next: { ...needDraft(event), updatedAt: now }, history: line('repriced', 'draft'), outcome: 'repriced' };
+        return {
+          next: { ...needDraft(event), returned: returnedBy(request, o.recheck, now), updatedAt: now },
+          history: line('repriced', 'draft'),
+          outcome: 'repriced',
+        };
       }
       const ev = o.evaluation;
       if (!ev || typeof ev.status !== 'string') throw new TypeError('[business] submit needs opts.evaluation');
@@ -216,7 +260,7 @@ function transition(request, event, opts) {
           outcome: 'auto_approved',
         };
       }
-      if (!org || !org.settings) throw new TypeError('[business] submit needs opts.org');
+      if (!org.settings) throw new TypeError('[business] submit needs opts.org');
       const min = org.settings.reasonMinChars;
       const text = v.text(event.reason && event.reason.text, REASON_MAX_CHARS + 1, { multiline: true });
       if (text.length < min || text.length > REASON_MAX_CHARS) {
@@ -254,7 +298,7 @@ function transition(request, event, opts) {
       if (from === 'approved') {
         if (!org || !org.timezone) throw new TypeError('[business] cancelling an approved trip needs opts.org');
         const beforeDeparture = tz.localDate(org.timezone, nowMs) < request.query.departDate;
-        const override = !isTraveler && holds(member, 'approval.override') && (!member.userId || member.userId === (actor && actor.userId));
+        const override = !isTraveler && holds(member, 'approval.override');
         if (!(isTraveler && beforeDeparture) && !override) {
           if (isTraveler) throw err('departed', 'This trip has already started, so it can no longer be cancelled here.', 409);
           throw notFound();
@@ -289,10 +333,7 @@ function transition(request, event, opts) {
         return {
           next: {
             ...(event.draft ? copy(event.draft) : {}), status: 'draft', approval: null, submittedAt: null, expiresAt: null, updatedAt: now,
-            returned: {
-              at: now, why: o.recheck.status === 'unavailable' ? 'unavailable' : 'price_changed', fromCents: request.totalCents,
-              toCents: Number.isSafeInteger(o.recheck.newTotalCents) ? o.recheck.newTotalCents : null,
-            },
+            returned: returnedBy(request, o.recheck, now),
           },
           history: { ...line('returned', 'draft'), by: { ...POLICY } },
           outcome: 'returned',
@@ -324,8 +365,8 @@ function transition(request, event, opts) {
       if (!['draft', 'pending', 'approved'].includes(from)) throw invalidTransition();
       const a = request.approval || {};
       const me = actor && actor.userId;
-      const allowed = isTraveler || (!!me && !!a.approverId && me === a.approverId) || (!!me && pooled === true && a.pool === true)
-        || (!!me && holds(member, 'approval.override') && (!member.userId || member.userId === me));
+      const allowed = isTraveler || (!!me && !!a.approverId && me === a.approverId && holds(member, 'approval.decide'))
+        || (!!me && inPool(a, me, pooled) && holds(member, 'approval.decide')) || (!!me && holds(member, 'approval.override'));
       if (!allowed) throw notFound();
       const text = v.text(event.text, MESSAGE_CHARS[1] + 1, { multiline: true });
       if (text.length < MESSAGE_CHARS[0] || text.length > MESSAGE_CHARS[1]) throw err('invalid_message', 'Write 2 to 1,000 characters.', 422);

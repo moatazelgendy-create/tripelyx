@@ -199,7 +199,8 @@ function rollUp(violations, outOfPolicy) {
 const byRule = (a, b) => RULE_ORDER[a.rule] - RULE_ORDER[b.rule];
 
 function advanceText(days, min) {
-  const planned = days <= 0 ? 'Planned for the same day' : `Planned ${plural(days, 'day')} ahead`;
+  if (days < 0) return `This date has already passed. Your policy asks for ${plural(min, 'day')} ahead.`;
+  const planned = days === 0 ? 'Planned for the same day' : `Planned ${plural(days, 'day')} ahead`;
   return `${planned}. Your policy asks for ${min}.`;
 }
 

@@ -10,7 +10,9 @@
 //
 // The guard, beyond FORBIDDEN_TEXT (checked on the NFKC form, so fullwidth digits count): any Unicode digit,
 // number sign or currency symbol, spelled-out large numbers and percentages, and currency words drop the text
-// too, so no explainer can state an amount in any spelling. Notes and summaries are cut by whole characters
+// too, so no explainer can state an amount in any spelling. So do the owner's copy rules: the PRESSURE words
+// (test/experience-pages.test.js), scarcity, popularity and rating claims ("seats left", "sells out",
+// "rated", "reviews", "popular", "best"), and em or en dashes. Notes and summaries are cut by whole characters
 // (never half a surrogate pair), with control characters turned into spaces, so the output is always storable.
 // The explainer gets a fresh, frozen copy of the input holding only the ExplainInput fields.
 
@@ -32,11 +34,18 @@ const ALSO_FORBIDDEN = [
   /\b(?:dollars?|cents?|bucks?|euros?|pounds? sterling|dirhams?|riyals?|lira|liras|EGP|AED|SAR|GBP|EUR|usd)\b/i,
 ];
 
+/** Copy Tripelyx never writes, so no explainer may either: pressure, scarcity, popularity, ratings, long dashes. */
+const PRESSURE_TEXT = [
+  /\b(hurry|limited|selling out|last chance|act now|almost gone|don[’']t miss|only \d+ left|ending soon|book now|still available|prices? (?:will|may) (?:rise|go up)|countdown|typically|usually|predict|(?<!(?:can[’']t be|cannot be|never|not) )guarantee[ds]?\b|identical)\b/i,
+  /\b(?:left|sells? out|sold out|selling fast|going fast|rising|rated|ratings?|reviews?|reviewed|popular|popularity|best|bestsellers?|trending|in demand|high demand|most booked|travell?ers love)\b/i,
+  /[\u2013\u2014]/,
+];
+
 const KINDS = ['fare', 'flight', 'stops', 'cabin', 'dates', 'room', 'hotel', 'all_within'];
 
 const forbidden = s => {
   const n = s.normalize('NFKC');
-  return FORBIDDEN_TEXT.test(n) || ALSO_FORBIDDEN.some(re => re.test(n));
+  return FORBIDDEN_TEXT.test(n) || ALSO_FORBIDDEN.some(re => re.test(n)) || PRESSURE_TEXT.some(re => re.test(n));
 };
 
 /** A storable string: lone surrogates removed, control characters spaced out, cut to max whole characters. */
@@ -75,7 +84,7 @@ const KIND_NOTES = {
   dates: 'The same trip moved to nearby dates',
   room: 'Another room in the same hotel',
   hotel: 'Another hotel in the same city',
-  all_within: 'Every part of the trip swapped for its cheapest option inside your policy',
+  all_within: 'The parts of your trip outside your policy swapped for their cheapest options inside it',
 };
 
 /** What the give-ups add up to, in words with no numbers. */
@@ -87,6 +96,7 @@ function costs(giveUps) {
   if (any(/no changes|no free changes/i)) out.push('stricter change rules');
   if (any(/^(outbound: |return: )?(leaves|arrives)/i)) out.push('different times');
   if (any(/-star instead of/i)) out.push('fewer stars');
+  if (any(/^sleeps /i)) out.push('a smaller room');
   if (any(/can't be cancelled|free cancellation ends/i)) out.push('stricter cancellation');
   return out;
 }
@@ -138,8 +148,9 @@ class RuleExplainer {
 
 /**
  * Make an explainer's output safe to show: keep known ids only (missing ones appended in input order, no
- * duplicates); drop any note or summary matching FORBIDDEN_TEXT; cut notes to NOTE_MAX and the summary to
- * SUMMARY_MAX characters; non-string values become ''.
+ * duplicates); drop any note or summary matching FORBIDDEN_TEXT (or any other spelling of an amount, or
+ * pressure, scarcity, popularity or rating copy, or a long dash: see the header); cut notes to NOTE_MAX and
+ * the summary to SUMMARY_MAX characters; non-string values become ''.
  * @param {unknown} out what the explainer returned
  * @param {import('./types').ExplainInput} input
  * @returns {import('./types').ExplainOutput}

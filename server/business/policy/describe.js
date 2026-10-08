@@ -22,6 +22,10 @@
 //   { key: 'hotel.priceToBeat', text: 'Price to Beat:', cents: 26400, suffix: 'a night (the lower of your limit and the middle rate of this search)' }
 // When the outbound and return legs of a search end up with different flight caps (each leg's median is its
 // own), the bar has one item per leg ('flight.out.short', 'flight.back.short') instead of one "each way" item.
+// Advance days come from the haul band of every flight row in the search, route overrides included (a route
+// override sets the cap and cabin; its band's advance days still apply, as evaluate checks them). One
+// 'flight.advance' item when every band in the search asks the same; otherwise one item per band that asks
+// for any ('flight.advance.short': "Flights under 6 hours: plan 7 days ahead", 'flight.advance.long').
 const { format } = require('../../lib/money');
 const { CABIN_LABELS, TIER_LABELS } = require('../constants');
 const { flightCap, hotelCap, priceToBeat } = require('./evaluate');
@@ -134,6 +138,23 @@ function legCaps(rules, leg) {
 
 const ORDER = ['short', 'long', 'route'];
 
+/** The advance-days items for the haul bands the search's flight rows fall in (see the header). */
+function advanceItems(rules, legs) {
+  const f = rules.flights;
+  const seen = new Set();
+  for (const leg of legs) {
+    for (const row of (leg && Array.isArray(leg.rows) ? leg.rows : [])) if (row && row.kind === 'flight') seen.add(flightCap(rules, row, null).haul);
+  }
+  const hauls = ['short', 'long'].filter(h => seen.has(h));
+  const days = h => (h === 'long' ? f.longHaul : f.shortHaul).minAdvanceDays;
+  const asking = hauls.filter(h => days(h) > 0);
+  if (!asking.length) return [];
+  if (asking.length === hauls.length && new Set(asking.map(days)).size === 1) {
+    return [{ key: 'flight.advance', text: `Plan ${plural(days(asking[0]), 'day')} ahead`, cents: null, suffix: '' }];
+  }
+  return asking.map(h => ({ key: `flight.advance.${h}`, text: `${haulPhrase(h, f.longHaulMinutes)}: plan ${plural(days(h), 'day')} ahead`, cents: null, suffix: '' }));
+}
+
 /**
  * The "Your limits for this search" bar: the cap of each haul band the search's rows fall in (route
  * overrides included), the advance-days rule, the hotel city's cap and the Price to Beat.
@@ -165,8 +186,7 @@ function limitsBar(rules, ctx, search) {
       if (b) items.push(flightItem(k, b, 'back'));
     }
   }
-  const advances = [...new Set([...out.values(), ...back.values()].filter(c => c.key !== 'route').map(c => c.advance))].filter(n => n > 0).sort((x, y) => y - x);
-  if (advances.length) items.push({ key: 'flight.advance', text: `Plan ${plural(advances[0], 'day')} ahead`, cents: null, suffix: '' });
+  items.push(...advanceItems(rules, [legs.out, legs.back]));
   const hq = search && search.query && search.query.hotel;
   if (legs.hotel && hq) {
     const cap = hotelCap(rules, { city: hq.city, country: hq.country });

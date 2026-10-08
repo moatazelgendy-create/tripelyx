@@ -192,6 +192,11 @@ test('flight.advance and hotel.advance: min − 1 is out, min and min + 1 within
   assert.equal(evaluateComponent(flight({ date: '2026-10-12' }), ctx(r)).violations[0].text, 'Planned 3 days ahead. Your policy asks for 7.');
   assert.equal(evaluateComponent(flight({ date: '2026-10-10' }), ctx(r)).violations[0].text, 'Planned 1 day ahead. Your policy asks for 7.');
   assert.equal(evaluateComponent(flight({ date: '2026-10-09' }), ctx(r)).violations[0].text, 'Planned for the same day. Your policy asks for 7.');
+  // A date already past is never "the same day".
+  assert.deepEqual(pick(evaluateComponent(flight({ date: '2026-10-01' }), ctx(r)), 'flight.advance'), [{ rule: 'flight.advance', limit: 7, actual: -8, severity: 'approval', component: 'out' }]);
+  assert.equal(evaluateComponent(flight({ date: '2026-10-01' }), ctx(r)).violations[0].text, 'This date has already passed. Your policy asks for 7 days ahead.');
+  assert.equal(evaluateComponent(flight({ date: '2026-10-08' }), ctx({ ...r, flights: { ...r.flights, shortHaul: { ...r.flights.shortHaul, minAdvanceDays: 1 } } })).violations[0].text,
+    'This date has already passed. Your policy asks for 1 day ahead.');
   // In Africa/Cairo (UTC+3 on these dates): 23:30 local on 9 Oct and 00:30 local on 10 Oct are both 9 Oct in UTC.
   const lateEvening = tz.localToUtc('Africa/Cairo', '2026-10-09T23:30');
   const afterMidnight = tz.localToUtc('Africa/Cairo', '2026-10-10T00:30');
@@ -704,11 +709,36 @@ test('limitsBar: each band in the search with its cap, advance days, the hotel c
   o.flights.routeOverrides = [{ from: 'CAI', to: 'LHR', bothWays: false, cap: { mode: 'fixed', amountCents: 90000 }, maxCabin: 'premium' }];
   o.trip.maxTotalCents = 200000;
   const oneWay = describeMod.limitsBar(o, ctx(o), { query: fx.query({ returnDate: null, hotel: false }), legs: { out: search.legs.out, back: null, hotel: null } });
+  // A route override sets the cap and cabin; the band's advance days still apply (evaluate checks them).
   assert.deepEqual(oneWay.items, [
     { key: 'flight.route', text: 'Flights between CAI and LHR: up to Premium economy, up to', cents: 90000, suffix: '' },
+    { key: 'flight.advance', text: 'Plan 7 days ahead', cents: null, suffix: '' },
     { key: 'trip.cap', text: 'Trip total: up to', cents: 200000, suffix: '' },
   ]);
-  for (const item of [...bar.items, ...split.items, ...oneWay.items]) assert.ok(!PRESSURE.test(`${item.text} ${item.suffix}`) && !/\u2014/.test(`${item.text} ${item.suffix}`));
+  const routed = describeMod.limitsBar(o, ctx(o), { query: fx.query({ hotel: false }), legs: { out: { rows: [flight({ date: '2026-10-12' })], benchmark: null }, back: null, hotel: null } });
+  assert.deepEqual(routed.items.map(i => i.text), ['Flights between CAI and LHR: up to Premium economy, up to', 'Plan 7 days ahead', 'Trip total: up to']);
+  assert.deepEqual(evaluateComponent(flight({ date: '2026-10-12' }), ctx(o)).violations.map(v => v.rule), ['flight.advance'], 'the rule the bar states is the rule evaluate applies');
+  // Short and long flights in one search, with different advance days: one item per band, never only the larger.
+  const mixed = describeMod.limitsBar(r, ctx(r), { query: fx.query({ returnDate: null, hotel: false }), legs: {
+    out: { rows: [flight({ totalCents: 44200 }), flight({ n: 3, stops: 1, minutes: 430, totalCents: 52000 })], benchmark: median }, back: null, hotel: null,
+  } });
+  assert.deepEqual(mixed.items.filter(i => /ahead/.test(i.text)), [
+    { key: 'flight.advance.short', text: 'Flights under 6 hours: plan 7 days ahead', cents: null, suffix: '' },
+    { key: 'flight.advance.long', text: 'Flights of 6 hours or more: plan 14 days ahead', cents: null, suffix: '' },
+  ]);
+  // A route whose flights fall in both bands names both bands' advance days.
+  const both = describeMod.limitsBar(o, ctx(o), { query: fx.query({ returnDate: null, hotel: false }), legs: { out: { rows: [flight(), flight({ n: 3, stops: 1, minutes: 430 })], benchmark: null }, back: null, hotel: null } });
+  assert.deepEqual(both.items.filter(i => /ahead/.test(i.text)).map(i => i.key), ['flight.advance.short', 'flight.advance.long']);
+  // The same advance days in every band: one item. No advance days in a band: nothing for it.
+  const same = defaultPolicy('standard');
+  same.flights.longHaul.minAdvanceDays = 7;
+  assert.deepEqual(describeMod.limitsBar(same, ctx(same), { query: fx.query({ returnDate: null, hotel: false }), legs: { out: { rows: [flight(), flight({ n: 3, stops: 1, minutes: 430 })], benchmark: median }, back: null, hotel: null } })
+    .items.filter(i => /ahead/.test(i.text)).map(i => [i.key, i.text]), [['flight.advance', 'Plan 7 days ahead']]);
+  const shortOnly = defaultPolicy('standard');
+  shortOnly.flights.longHaul.minAdvanceDays = 0;
+  assert.deepEqual(describeMod.limitsBar(shortOnly, ctx(shortOnly), { query: fx.query({ returnDate: null, hotel: false }), legs: { out: { rows: [flight(), flight({ n: 3, stops: 1, minutes: 430 })], benchmark: median }, back: null, hotel: null } })
+    .items.filter(i => /ahead/.test(i.text)).map(i => [i.key, i.text]), [['flight.advance.short', 'Flights under 6 hours: plan 7 days ahead']]);
+  for (const item of [...bar.items, ...split.items, ...oneWay.items, ...mixed.items]) assert.ok(!PRESSURE.test(`${item.text} ${item.suffix}`) && !/\u2014/.test(`${item.text} ${item.suffix}`));
 });
 
 test('createPolicyEngine: all 17 methods delegate to the real modules', () => {

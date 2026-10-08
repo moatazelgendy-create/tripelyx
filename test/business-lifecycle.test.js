@@ -7,6 +7,7 @@ const lc = require('../server/business/lifecycle');
 const { createPolicyEngine } = require('../server/business/policy');
 const { AppError } = require('../server/lib/errors');
 const { CARD_MESSAGE } = require('../server/business/cards');
+const { jsonProblem } = require('../server/booking/MemoryStore');
 
 const { transition, effectiveStatus, expiresAt, EVENTS, TERMINAL } = lc;
 const NOW = '2026-10-09T09:00:00.000Z';
@@ -245,8 +246,26 @@ test('submit: auto approval inside policy and budget; pending outside it, with r
   // Blocked, re-priced, the wrong person, missing inputs.
   assert.deepEqual(refusal(() => submit({ text: REASON }, MANAGER, { evaluation: BLOCKED })), ['policy_blocked', 422]);
   const repriced = transition(req, { type: 'submit', reason: { text: REASON }, approver: MANAGER, budget: null, draft: DRAFT }, as(M.traveler, { recheck: CHANGED, evaluation: OUT }));
-  assert.deepEqual([repriced.outcome, repriced.next, repriced.history.action, repriced.history.to], ['repriced', { ...structuredClone(DRAFT), updatedAt: NOW }, 'repriced', 'draft']);
-  assert.equal(transition(req, { type: 'submit', reason: null, approver: null, budget: null, draft: DRAFT }, as(M.traveler, { recheck: GONE })).outcome, 'repriced');
+  // The price moved on submit: the draft is written with `returned` (the Request typedef), from and to.
+  assert.deepEqual([repriced.outcome, repriced.next, repriced.history.action, repriced.history.to], ['repriced', {
+    ...structuredClone(DRAFT), returned: { at: NOW, why: 'price_changed', fromCents: 252000, toCents: 260000 }, updatedAt: NOW,
+  }, 'repriced', 'draft']);
+  const vanished = transition(req, { type: 'submit', reason: null, approver: null, budget: null, draft: DRAFT }, as(M.traveler, { recheck: GONE }));
+  assert.deepEqual([vanished.outcome, vanished.next.returned], ['repriced', { at: NOW, why: 'unavailable', fromCents: 252000, toCents: null }]);
+  // The next submit clears it again (the traveler has seen the new price).
+  assert.equal(transition({ ...req, ...vanished.next }, LEGAL.submit[0], as(M.traveler, { recheck: SAME, evaluation: OUT })).next.returned, null);
+  // A trip whose departure date has passed (in the company's time zone) is refused, inside policy or not,
+  // before the price check; leaving today inside policy is still approved by policy.
+  const gone = request('draft', { query: { ...req.query, departDate: '2026-10-08' } });
+  for (const [ev, extra] of [[WITHIN, { recheck: SAME }], [OUT, { recheck: SAME }], [WITHIN, { recheck: CHANGED }]]) {
+    const err = (() => { try { transition(gone, { type: 'submit', reason: { text: REASON }, approver: MANAGER, budget: BUDGET, draft: DRAFT }, as(M.traveler, { evaluation: ev, ...extra })); } catch (e) { return e; } return null; })();
+    assert.deepEqual(err && [err.code, err.status, err.message], ['too_late', 422, "This trip's departure date has passed. Plan it again with new dates."], `${ev.status} ${extra.recheck.status}`);
+  }
+  const today = request('draft', { query: { ...req.query, departDate: '2026-10-09' } });
+  assert.equal(transition(today, { type: 'submit', reason: null, approver: null, budget: BUDGET, draft: null }, as(M.traveler, { recheck: SAME, evaluation: WITHIN })).outcome, 'auto_approved');
+  // 21:30 UTC on the 8th is already the 9th in Cairo: a trip on the 8th has left.
+  assert.deepEqual(refusal(() => transition(request('draft', { query: { ...req.query, departDate: '2026-10-08' } }), { type: 'submit', reason: null, approver: null, budget: null, draft: null }, as(M.traveler, { now: '2026-10-08T21:30:00.000Z', recheck: SAME, evaluation: WITHIN }))), ['too_late', 422]);
+  assert.equal(transition(request('draft', { query: { ...req.query, departDate: '2026-10-08' } }), { type: 'submit', reason: null, approver: null, budget: null, draft: null }, as(M.traveler, { now: '2026-10-08T20:30:00.000Z', recheck: SAME, evaluation: WITHIN })).outcome, 'auto_approved', '23:30 on the 8th in Cairo');
   assert.throws(() => transition(req, { type: 'submit', reason: null, approver: null, budget: null, draft: null }, as(M.traveler, { recheck: CHANGED })), /draft/);
   assert.deepEqual(refusal(() => transition(req, LEGAL.submit[0], { ...LEGAL.submit[1], actor: ref(M.lead), member: M.lead })), ['not_found', 404]);
   assert.throws(() => transition(req, LEGAL.submit[0], as(M.traveler, { evaluation: OUT })), /recheck/);
@@ -308,6 +327,14 @@ test('approve and deny: who may decide, notes, the budget, and a price change re
   // Notes: cleaned, card numbers refused, kept to 1,000 characters.
   assert.deepEqual(refusal(() => approve(M.lead, {}, { note: CARD })), ['card_number', 422]);
   assert.equal(approve(M.lead, {}, { note: 'y'.repeat(1500) }).next.approval.note.length, 1000);
+  // Cut by whole characters: an emoji at the boundary is kept whole or dropped whole, never halved.
+  for (const [note, kept] of [[`${'a'.repeat(999)}\u{1F600} trailing`, `${'a'.repeat(999)}\u{1F600}`], [`${'a'.repeat(1000)}\u{1F600}`, 'a'.repeat(1000)], [`ok\uD83D a lone half\uDE00`, 'ok a lone half']]) {
+    for (const res of [approve(M.lead, {}, { note }), deny(M.lead, note)]) {
+      assert.equal(res.next.approval.note, kept);
+      assert.equal(res.history.note, kept);
+      assert.equal(jsonProblem({ ...req, ...res.next, history: [res.history] }, 'next'), null, 'storable');
+    }
+  }
   // Deny: a note is always required.
   assert.deepEqual(refusal(() => deny(M.lead, 'No.')), ['note_required', 422]);
   assert.deepEqual(refusal(() => deny(M.lead, `${'​'.repeat(12)}No.`)), ['note_required', 422]);
@@ -358,6 +385,42 @@ test('message: the traveler, the approver, the pool or an override holder; 2 to 
   assert.deepEqual(refusal(() => send(M.traveler, 'One more', {}, full)), ['too_many_messages', 409]);
   assert.equal(send(M.traveler, 'One more', {}, { ...full, messages: full.messages.slice(1) }).next.messages.length, 50);
   assert.equal(send(M.traveler, 'Hello there', {}, request('approved')).outcome, 'message');
+});
+
+test('the acting member is the actor, in this company; the pool is the request\'s own; messages need the right to decide', () => {
+  const req = deepFreeze(request('pending'));
+  const approveAs = (m, extra = {}, r = req) => transition(r, { type: 'approve', note: 'Approved after the call today.', ackOverBudget: false, budget: null, draft: null }, { ...as(m, { recheck: SAME }), ...extra });
+  assert.equal(approveAs(M.owner).next.approval.decidedAs, 'override', 'the real owner may override');
+  // An owner of another company, a record with no user id or no company, a record that is someone else's: 404.
+  assert.deepEqual(refusal(() => approveAs({ ...M.owner, orgId: 'org_other' })), ['not_found', 404], 'another company');
+  const noUser = { ...M.owner };
+  delete noUser.userId;
+  assert.deepEqual(refusal(() => approveAs(noUser, { actor: { userId: 'u_y', name: 'y', role: 'employee' } })), ['not_found', 404], 'no user id');
+  const noOrg = { ...M.owner };
+  delete noOrg.orgId;
+  assert.deepEqual(refusal(() => approveAs(noOrg)), ['not_found', 404], 'no company');
+  assert.deepEqual(refusal(() => approveAs(M.owner, {}, request('pending', { orgId: undefined }))), ['not_found', 404], 'a request with no company');
+  assert.deepEqual(refusal(() => approveAs(M.owner, { actor: ref(M.admin) })), ['not_found', 404], 'someone else\'s record');
+  // The traveler's own events too, and an approved trip's override cancel.
+  assert.deepEqual(refusal(() => transition(request('draft'), { type: 'cancel' }, { ...as(M.traveler), member: { ...M.traveler, orgId: 'org_other' } })), ['not_found', 404]);
+  assert.deepEqual(refusal(() => transition(request('approved'), { type: 'cancel' }, { ...as(M.admin), member: { ...M.admin, orgId: 'org_other' } })), ['not_found', 404]);
+  // Pool: opts.pooled alone is not enough; the actor must be one of the request's poolIds.
+  const pooledReq = deepFreeze(request('pending', { approval: { ...req.approval, approverId: null, pool: true, poolIds: ['u_admin'], rule: 'admin' } }));
+  const poolApprove = (m, r = pooledReq) => transition(r, { type: 'approve', note: '', ackOverBudget: false, budget: null, draft: null }, as(m, { recheck: SAME, pooled: true }));
+  assert.equal(poolApprove(M.admin).next.approval.decidedAs, 'pool');
+  assert.deepEqual(refusal(() => poolApprove(M.boss)), ['not_found', 404], 'a manager outside the pool');
+  assert.deepEqual(refusal(() => poolApprove(M.admin, request('pending', { approval: { ...pooledReq.approval, poolIds: undefined } }))), ['note_required', 422], 'no poolIds: only as an override');
+  // Messages: the assigned approver and pool members must still be able to decide; the pool is the request's.
+  const say = (m, extra = {}, r = req) => transition(r, { type: 'message', text: 'Hello there' }, as(m, extra));
+  assert.equal(say(M.lead).outcome, 'message');
+  assert.equal(say(M.admin, { pooled: true }, pooledReq).outcome, 'message');
+  assert.deepEqual(refusal(() => say(M.emp, { pooled: true }, pooledReq)), ['not_found', 404], 'an employee with a pool flag');
+  assert.deepEqual(refusal(() => say(M.boss, { pooled: true }, pooledReq)), ['not_found', 404], 'a manager outside the pool');
+  assert.deepEqual(refusal(() => say({ ...M.lead, status: 'removed' })), ['not_found', 404], 'a removed approver');
+  assert.deepEqual(refusal(() => say({ ...M.lead, role: 'employee' })), ['not_found', 404], 'an approver who can no longer decide');
+  assert.deepEqual(refusal(() => say({ ...M.lead, orgId: 'org_other' })), ['not_found', 404], 'another company');
+  // A system event carries no member.
+  assert.equal(transition(req, { type: 'expire' }, { now: req.expiresAt, actor: { system: 'clock' }, member: null, org: ORG }).outcome, 'expired');
 });
 
 test('the error table: every code with its status, the copy plain, the card message shared', () => {

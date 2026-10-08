@@ -71,8 +71,20 @@ function leftOut(pick = PICK) {
     otherCity, otherDestination,
     droppedReturn: v('all_within', 'trip', { back: null }),
     unknownKind: { ...c.fare, change: { ...c.fare.change, kind: 'magic' } },
+    // Changes hidden in the rows under the pick's own query: the query alone says nothing moved.
+    flightOnAnotherDay: v('flight', 'out', { out: flight({ n: 2, date: '2026-11-13', fare: 'FLEX', cabin: 'business', totalCents: 80000 }) }),
+    shorterStay: v('hotel', 'hotel', { hotel: hotel({ n: 2, name: 'Fixture Court London', nights: 3, nightlyCents: 25000 }) }),
+    roomForFewerNights: v('room', 'hotel', { hotel: hotel({ n: 1, room: 'STD', nights: 3, nightlyCents: 22000 }) }),
+    flightAndLowerCabin: v('flight', 'out', { out: flight({ n: 2, depart: '13:40', fare: 'FLEX', totalCents: 45000 }) }),
+    stopsAndLowerCabin: v('stops', 'out', { out: flight({ n: 3, stops: 1, minutes: 330, fare: 'FLEX', totalCents: 46000 }) }),
+    fareAndLowerCabin: v('fare', 'out', { out: asOffer(flight({ n: 1, fare: 'CLASSIC', totalCents: 44000 }), pick.rows.out) }),
+    unchangedLegMoved: v('room', 'hotel', { out: asOffer(flight({ n: 1, date: '2026-11-13', fare: 'FLEX', cabin: 'business', totalCents: 90000 }), pick.rows.out), hotel: c.room.rows.hotel }),
+    allWithinOnAnotherDay: v('all_within', 'trip', { out: flight({ n: 1, date: '2026-11-13', fare: 'CLASSIC', totalCents: 45000 }) }),
   };
 }
+
+/** `row` under `as`'s offer id (the same itinerary, as a provider would key it). */
+const asOffer = (row, as) => ({ ...row, offerId: as.offerId, key: `f.${as.offerId}|${row.optionId}` });
 
 function shiftedQuery(q, days) {
   const n = structuredClone(q);
@@ -173,6 +185,61 @@ test('dates only when the traveler said the dates can move; the give-up says how
   assert.deepEqual(buildAlternatives({ pick: flexPick, candidates: [c, b, a], evaluate: evaluator() }).alternatives.map(x => x.change.days).slice(2), [2]);
 });
 
+test('a dates alternative is the whole trip moved together by change.days, and nothing else', () => {
+  const flexPick = fx.pick(PICK_ROWS, query({ datesFlexible: true }));
+  const moved = (days, changes = {}, o = {}) => variant(flexPick, 'dates', 'trip', { ...datesRows(flexPick, days), ...changes }, { q: shiftedQuery(flexPick.query, days), days, ...o });
+  const returnLater = structuredClone(flexPick.query);
+  Object.assign(returnLater, { returnDate: '2026-11-17' });
+  returnLater.hotel.checkOut = '2026-11-17';
+  const shrunk = structuredClone(flexPick.query);
+  Object.assign(shrunk, { departDate: '2026-11-13', returnDate: '2026-11-15' });
+  Object.assign(shrunk.hotel, { checkIn: '2026-11-13', checkOut: '2026-11-15' });
+  const cases = {
+    wrongDirection: moved(-3, {}, { days: 2 }),
+    daysMismatch: moved(1, {}, { days: 3 }),
+    tooFar: moved(4),
+    returnOnly: variant(flexPick, 'dates', 'trip', { back: flight({ leg: 'back', n: 1, date: '2026-11-17', fare: 'FLEX', totalCents: 30000 }) }, { q: returnLater, days: 1 }),
+    shrunkStay: variant(flexPick, 'dates', 'trip', {
+      out: flight({ n: 1, date: '2026-11-13', fare: 'FLEX', cabin: 'business', totalCents: 80000 }),
+      back: flight({ leg: 'back', n: 1, date: '2026-11-15', fare: 'FLEX', totalCents: 40000 }),
+      hotel: hotel({ n: 1, room: 'DLX', roomName: 'Deluxe room', checkIn: '2026-11-13', nights: 2, nightlyCents: 25000 }),
+    }, { q: shrunk, days: 1 }),
+    otherHotel: moved(1, { hotel: hotel({ n: 3, name: 'Fixture Lodge London', stars: 3, room: 'DLX', checkIn: '2026-11-13', nightlyCents: 12000 }) }),
+    otherRoom: moved(1, { hotel: hotel({ n: 1, room: 'STD', checkIn: '2026-11-13', nightlyCents: 12000 }) }),
+    lowerCabin: moved(1, { out: flight({ n: 1, date: '2026-11-13', fare: 'FLEX', totalCents: 45000 }) }),
+    otherFare: moved(1, { out: flight({ n: 1, date: '2026-11-13', fare: 'LIGHT', cabin: 'business', totalCents: 60000 }) }),
+    moreStops: moved(1, { out: flight({ n: 3, date: '2026-11-13', stops: 1, minutes: 330, fare: 'FLEX', cabin: 'business', totalCents: 60000 }) }),
+  };
+  for (const [name, v] of Object.entries(cases)) {
+    assert.ok(v.totalCents < flexPick.totalCents - MIN_SAVING_CENTS, `${name} is cheaper`);
+    assert.deepEqual(buildAlternatives({ pick: flexPick, candidates: [v], evaluate: evaluator() }).alternatives, [], name);
+  }
+  // The same trip three days earlier on another carrier at another time is still the same trip moved.
+  const otherCarrier = moved(-3, { out: flight({ n: 5, date: '2026-11-09', carrier: 'ZG', depart: '10:15', fare: 'FLEX', cabin: 'business', totalCents: 80000 }) });
+  assert.deepEqual(buildAlternatives({ pick: flexPick, candidates: [otherCarrier], evaluate: evaluator() }).alternatives.map(a => a.label), ['Leave three days earlier']);
+});
+
+test('the all_within label claims only what is true: inside your policy only when it is, cheapest only when pinned', () => {
+  const c = candidates();
+  // Within policy, but a cheaper within-policy option (the cabin change) is pinned.
+  const dearAll = variant(PICK, 'all_within', 'trip', { out: flight({ n: 4, depart: '13:40', fare: 'CLASSIC', totalCents: 49500 }) });
+  const res = buildAlternatives({ pick: PICK, pickEval: evaluator()(PICK), candidates: [c.cabin, dearAll], evaluate: evaluator(), truncated: false });
+  assert.deepEqual(res.alternatives.map(a => [a.kind, a.evaluation.status, a.label]), [
+    ['cabin', 'within', CHEAPEST_WITHIN_LABEL], ['all_within', 'within', 'Every part inside your policy'],
+  ]);
+  // Out of policy (it overruns the department budget): no claim about being inside the policy.
+  const budget = { remainingCents: 50000, periodKey: '2026-Q4', periodLabel: 'Q4 2026', departmentName: 'Engineering' };
+  const tight = v => evaluateTrip(v.rows, ctx(rules()), { budget });
+  const over = buildAlternatives({ pick: PICK, pickEval: tight(PICK), candidates: [c.all_within], evaluate: tight, truncated: false });
+  assert.deepEqual(over.alternatives.map(a => [a.kind, a.evaluation.status, a.evaluation.violations.map(x => x.rule)]), [['all_within', 'out', ['budget']]]);
+  assert.equal(over.noneWithin, true);
+  assert.equal(over.alternatives[0].label, 'Other options for the parts outside your policy');
+  assert.doesNotMatch(over.alternatives[0].label, /inside your policy|cheapest/i);
+  // It swaps only what was outside the policy: an all_within that also changes a part inside it is left out.
+  const alsoHotel = variant(PICK, 'all_within', 'trip', { out: c.all_within.rows.out, hotel: c.hotel.rows.hotel });
+  assert.deepEqual(buildAlternatives({ pick: PICK, pickEval: evaluator()(PICK), candidates: [alsoHotel], evaluate: evaluator() }).alternatives, []);
+});
+
 test('noneWithin, truncated from the composer, and duplicate candidates kept once', () => {
   const c = candidates();
   const outOnly = buildAlternatives({ pick: PICK, candidates: [c.fare, c.hotel, c.room], evaluate: evaluator(), truncated: true });
@@ -211,12 +278,18 @@ test('the 200-candidate ranking takes under 20 ms (real evaluateTrip and give-up
     }));
   }
   const input = { pick: PICK, candidates: list, evaluate: evaluator(), truncated: false };
-  buildAlternatives(input); // warm up
+  for (let i = 0; i < 3; i++) buildAlternatives(input); // warm up
+  // Best of 15 runs, each timed by the wall clock and by this process's CPU time, keeping the lower: when the
+  // full suite shares the machine with other work, the wall clock also counts time this process spent waiting
+  // for a CPU, which is not the ranking's cost. A slow ranking is slow by both measures.
   let best = Infinity;
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 15; i++) {
+    const cpu = process.cpuUsage();
     const t = process.hrtime.bigint();
     const res = buildAlternatives(input);
-    best = Math.min(best, Number(process.hrtime.bigint() - t) / 1e6);
+    const wallMs = Number(process.hrtime.bigint() - t) / 1e6;
+    const used = process.cpuUsage(cpu);
+    best = Math.min(best, wallMs, (used.user + used.system) / 1000);
     assert.equal(res.alternatives.length, MAX_ALTERNATIVES);
     assert.equal(res.truncated, true);
   }
@@ -271,6 +344,14 @@ test('RuleExplainer: a note per alternative and a summary, with no digits, curre
   }
   const fare = await new explain.RuleExplainer().explain({ violations: [], alternatives: [{ id: 'f', kind: 'fare', withinPolicy: true, savingsRank: 1, giveUps: ['1 checked bag instead of 2', 'No free changes'] }], noneWithin: false });
   assert.equal(fare.notes.f, 'Same flight on a cheaper fare: you keep your times, with fewer bags and stricter change rules. It fits your policy.');
+  // all_within swaps only the parts outside the policy, and says so.
+  const all = await new explain.RuleExplainer().explain({ violations: [], alternatives: [{ id: 'w', kind: 'all_within', withinPolicy: true, savingsRank: 1, giveUps: ['Outbound: leaves 07:05 instead of 13:40'] }], noneWithin: false });
+  assert.equal(all.notes.w, 'The parts of your trip outside your policy swapped for their cheapest options inside it, with different times. It fits your policy.');
+  // Another hotel never "changes nothing else": the hotel and its room show in the give-ups, and the note follows.
+  const grand = hotel({ n: 1, stars: 4, room: 'DLX', roomName: 'Deluxe room', sleeps: 2, bed: 'King bed' });
+  const court = hotel({ n: 2, name: 'Fixture Court London', stars: 4, room: 'SGL', roomName: 'Single room', sleeps: 1, bed: 'Single bed' });
+  const swapped = await new explain.RuleExplainer().explain({ violations: [], alternatives: [{ id: 'h', kind: 'hotel', withinPolicy: true, savingsRank: 1, giveUps: diff.giveUps({ hotel: grand }, { hotel: court }) }], noneWithin: false });
+  assert.equal(swapped.notes.h, 'Another hotel in the same city, with a smaller room. It fits your policy.');
   const none = await new explain.RuleExplainer().explain({ violations: [{ rule: 'budget' }], alternatives: [], noneWithin: true });
   assert.deepEqual(none, { order: [], notes: {}, summary: 'No cheaper option inside your policy turned up in this search. You can still request approval with a reason.' });
   // Every note fits the guard's length.
@@ -280,7 +361,7 @@ test('RuleExplainer: a note per alternative and a summary, with no digits, curre
   }
 });
 
-test('guardExplanation: drops any amount in any spelling, keeps every id once, cuts long text whole', () => {
+test('guardExplanation: drops any amount in any spelling, keeps every id once, cuts long text whole', async () => {
   const input = { alternatives: [{ id: 'a' }, { id: 'b' }, { id: 'c' }] };
   const out = explain.guardExplanation({
     order: ['c', 'zzz', 'c', 'a', 7],
@@ -292,6 +373,15 @@ test('guardExplanation: drops any amount in any spelling, keeps every id once, c
     assert.equal(explain.guardExplanation({ notes: { a: bad } }, input).notes.a, '', bad);
   }
   assert.equal(explain.guardExplanation({ notes: { a: 'Same flight, fewer bags' } }, input).notes.a, 'Same flight, fewer bags');
+  // Pressure, scarcity, popularity and rating claims, and long dashes, are dropped like amounts.
+  for (const bad of ['Only a few seats left', 'Book now before it sells out!', 'Rated best by travelers.', 'Hurry, prices are rising fast.', 'Last chance on this fare',
+    'Limited availability', 'Same flight \u2014 fewer bags', 'Same flight \u2013 fewer bags', 'Popular with travelers', 'Great reviews', 'Selling fast', 'Seats are going fast',
+    'This one usually sells out', 'Guaranteed lower price', 'High demand on this route', 'Travelers love this hotel', 'A top-rated hotel', 'Still available today']) {
+    assert.equal(explain.guardExplanation({ notes: { a: bad }, summary: bad }, input).notes.a, '', bad);
+    assert.equal(explain.guardExplanation({ notes: { a: bad }, summary: bad }, input).summary, '', bad);
+  }
+  const evil = await explain.createExplainer({ business: { explainer: 'rules' } }, { explainer: { name: 'x', explain: async () => ({ order: ['a'], notes: { a: 'Only a few seats left \u2014 book now!' }, summary: 'Hurry, last chance.' }) } }).explain(input);
+  assert.deepEqual([evil.notes.a, evil.summary], ['', '']);
   const long = explain.guardExplanation({ notes: { a: 'é'.repeat(400), b: `${'x'.repeat(159)}😀😀` }, summary: 'word '.repeat(100) }, input);
   assert.equal(Array.from(long.notes.a).length, explain.NOTE_MAX);
   assert.equal(long.notes.b, `${'x'.repeat(159)}😀`, 'never half a surrogate pair');
@@ -348,7 +438,7 @@ test('createExplainer: unknown names refuse at boot; a throwing or slow explaine
 test('giveUps: one line per thing that gets worse, never a price; legs prefixed on a return trip', () => {
   const p = flight({ fare: 'FLEX' });
   assert.deepEqual(diff.giveUps({ out: p }, { out: flight({ fare: 'LIGHT' }) }), ['No checked bag instead of 2', '7 kg cabin bag instead of 10 kg', 'Refunds nothing (yours refunds 70%)', 'No changes allowed']);
-  const fareRow = (fare, override) => { const r = flight({ fare, fareOverride: override }); return { ...r, optionId: r.fare.code, key: `f.${r.offerId}|${r.fare.code}` }; };
+  const fareRow = (fare, override, o = {}) => { const r = flight({ fare, fareOverride: override, ...o }); return { ...r, optionId: r.fare.code, key: `f.${r.offerId}|${r.fare.code}` }; };
   assert.deepEqual(diff.giveUps({ out: flight({ fare: 'CLASSIC' }) }, { out: fareRow('CLASSIC', { code: 'SAVER', name: 'Saver' }) }), ['Saver fare instead of Classic']);
   assert.deepEqual(diff.giveUps({ out: flight({ fare: 'FLEX' }) }, { out: fareRow('FLEX', { code: 'FLEX30', name: 'Flex 30', refundablePercent: 30 }) }), ['Refunds 30% (yours refunds 70%)']);
   assert.deepEqual(diff.giveUps({ out: p }, { out: flight({ n: 3, stops: 1, minutes: 330, depart: '13:40', carrier: 'ZG', fare: 'FLEX' }) }),
@@ -363,7 +453,20 @@ test('giveUps: one line per thing that gets worse, never a price; legs prefixed 
   assert.deepEqual(diff.giveUps({ hotel: h }, { hotel: hotel({ room: 'STD', stars: 5, sleeps: 2, freeUntilHours: 72 }) }),
     ['Standard room instead of Deluxe room', 'Sleeps 2 instead of 3', 'Free cancellation ends 72 hours before check-in instead of 48']);
   assert.deepEqual(diff.giveUps({ hotel: h }, { hotel: hotel({ n: 2, name: 'Fixture Inn', area: 'Near the airport', stars: 4, refundable: false }) }),
-    ['Near the airport instead of City centre', '4-star instead of 5-star', "Can't be cancelled (yours can)"]);
+    ['Stays at Fixture Inn instead of Fixture Grand London', 'Near the airport instead of City centre', 'Standard room instead of Deluxe room', 'Sleeps 2 instead of 3', '4-star instead of 5-star', "Can't be cancelled (yours can)"]);
+  // Another hotel with the same stars and area but a smaller room: the hotel and the room both show.
+  const grand = hotel({ n: 1, name: 'Fixture Grand London', stars: 4, room: 'DLX', roomName: 'Deluxe room', sleeps: 2, bed: 'King bed', nightlyCents: 28000 });
+  const court = hotel({ n: 2, name: 'Fixture Court London', stars: 4, room: 'SGL', roomName: 'Single room', sleeps: 1, bed: 'Single bed', nightlyCents: 20000 });
+  assert.deepEqual(diff.giveUps({ hotel: grand }, { hotel: court }),
+    ['Stays at Fixture Court London instead of Fixture Grand London', 'Single room instead of Deluxe room', 'Single bed instead of King bed', 'Sleeps 1 instead of 2']);
+  // The same room name in another hotel still names the hotel.
+  assert.deepEqual(diff.giveUps({ hotel: hotel({ n: 1 }) }, { hotel: hotel({ n: 2, name: 'Fixture Court London' }) }), ['Stays at Fixture Court London instead of Fixture Grand London']);
+  const swap = buildAlternatives({ pick: fx.pick({ out: flight(), back: flight({ leg: 'back' }), hotel: grand }), candidates: [variant(fx.pick({ out: flight(), back: flight({ leg: 'back' }), hotel: grand }), 'hotel', 'hotel', { hotel: court })], evaluate: evaluator(defaultPolicy('standard')) });
+  assert.deepEqual(swap.alternatives.map(a => [a.label, a.giveUps.includes('Nothing else changes')]), [[CHEAPEST_WITHIN_LABEL, false]]);
+  // On a return trip, a cabin or fare name keeps its capital after the leg.
+  const back = flight({ leg: 'back' });
+  assert.deepEqual(diff.giveUps({ out: flight({ cabin: 'business' }), back }, { out: flight({ cabin: 'premium' }), back }), ['Outbound: Premium economy instead of Business']);
+  assert.deepEqual(diff.giveUps({ out: flight(), back: flight({ leg: 'back', fare: 'CLASSIC' }) }, { out: flight(), back: fareRow('CLASSIC', { code: 'SAVER', name: 'Saver' }, { leg: 'back' }) }), ['Return: Saver fare instead of Classic']);
   // Same rows, or only cheaper: nothing else changes.
   assert.deepEqual(diff.giveUps({ out: p, hotel: h }, { out: p, hotel: h }), ['Nothing else changes']);
   assert.deepEqual(diff.giveUps({ out: flight({ fare: 'LIGHT' }) }, { out: flight({ fare: 'FLEX' }) }), ['Flex fare instead of Light']);
@@ -382,8 +485,12 @@ test('compareTrips: rows that differ in DIFF_FIELDS order, null for a missing si
     { label: 'Outbound fare terms', a: '70% refundable. Free changes.', b: 'Non-refundable. Changes for a fee.' },
   ]);
   assert.deepEqual(cmp.totalCents, { a: 204000, b: 159000, delta: -45000 });
-  const later = diff.compareTrips(a, { rows: { out: flight({ date: '2026-11-13', fare: 'FLEX', cabin: 'business', totalCents: 80000 }), hotel: hotel({ checkIn: '2026-11-13', stars: 5 }) }, totalCents: 194000 });
-  assert.deepEqual(later.rows[0], { label: 'Dates', a: 'Thu 12 Nov to Mon 16 Nov', b: 'Fri 13 Nov to Tue 17 Nov' });
+  const later = diff.compareTrips(a, { rows: { out: flight({ date: '2026-11-13', depart: '07:05', carrier: 'ZG', fare: 'FLEX', cabin: 'business', totalCents: 80000 }), hotel: hotel({ checkIn: '2026-11-13', stars: 5 }) }, totalCents: 194000 });
+  // The declared order of the TripComparison typedef: carrier, times, stops, cabin, fare, bags, refunds, hotel,
+  // room, stars, dates (with fare terms after refunds and hotel cancellation after stars).
+  assert.deepEqual([...diff.DIFF_FIELDS], ['carrier', 'times', 'stops', 'cabin', 'fare', 'bags', 'refunds', 'changes', 'hotel', 'room', 'stars', 'hotelRefunds', 'dates']);
+  assert.deepEqual(later.rows.map(r => r.label), ['Outbound flight', 'Outbound times', 'Dates']);
+  assert.deepEqual(later.rows.at(-1), { label: 'Dates', a: 'Thu 12 Nov to Mon 16 Nov', b: 'Fri 13 Nov to Tue 17 Nov' });
   const noHotel = diff.compareTrips(a, { rows: { out: a.rows.out }, totalCents: 90000 });
   assert.deepEqual(noHotel.rows.find(r => r.label === 'Hotel'), { label: 'Hotel', a: 'Fixture Grand London, City centre', b: null });
   // lineDeltas: matched by label and kind, summing to the totals' delta.
