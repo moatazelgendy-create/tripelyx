@@ -1,10 +1,11 @@
 // Shared helpers for the Tripelyx Business tests (not a test file itself: it doesn't match *.test.js).
-// Seeding goes straight to the store, so tests spend no rate limit (signin shares the 40-per-10-minute
-// writeLimiter) and need no BusinessService method that a later stage owns.
+// Seeding goes through a Repo straight to the store, so tests spend no rate limit (signin shares the
+// 40-per-10-minute writeLimiter) and need no BusinessService method that a later stage owns.
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const { Repo } = require('../server/business/repo');
-const { KINDS, DEFAULT_COLORS } = require('../server/business/constants');
+const { KINDS, DEFAULT_TIMEZONE } = require('../server/business/constants');
+const { auditInsert } = require('../server/business/actor');
 const { id } = require('../server/lib/ids');
 
 const sha256 = s => crypto.createHash('sha256').update(s).digest('hex');
@@ -55,53 +56,79 @@ function client(base, cookie = '') {
   };
 }
 
+/** A Repo on the app's store and clock. */
+const repoFor = app => new Repo({ store: app.store, now: app.ctx.now });
+
+/** The commit entry that adds orgId to a user's company index (insert, or cas when it exists). */
+async function indexOp(repo, userId, orgId) {
+  const cur = await repo.get(KINDS.userIndex, userId);
+  if (!cur) return { insert: { kind: KINDS.userIndex, id: userId, data: { userId, orgIds: [orgId], rev: 0 }, owner: userId } };
+  return { cas: { kind: KINDS.userIndex, id: userId, rev: null, fn: d => { if (!d.orgIds.includes(orgId)) d.orgIds.push(orgId); } } };
+}
+
+/** A biz_member document in the §C3 shape. */
+function memberDoc(orgId, user, role, by, at, extra = {}) {
+  return {
+    orgId, userId: user.id, email: user.email, name: user.name, role, status: 'active', departmentId: null, managerId: null,
+    approverId: null, tier: 'standard', at, by, removedAt: null, rev: 0, ...extra,
+  };
+}
+
 /**
- * Seed an agency straight into the store, with the records BusinessService.createOrg writes (plan §D):
- * biz_org, biz_brand (default colors, no logo), biz_rules (all zero), the creator's biz_member (Owner)
- * and biz_user_org. Every `at` comes from app.ctx.now().
+ * Seed a company straight into the store in one Repo.commit, with the §C3 shapes: biz_org (memberCount 1,
+ * ownerIds [owner]), the owner's biz_member, the owner's biz_user_index and an org.created audit entry. Every
+ * `at` comes from app.ctx.now(). Stage 0 step 13 adds departments, budgets and the policies.
  * @param {object} app from startApp()
  * @param {{ user: object }} owner from seedUser()
- * @param {{ status?: 'pending'|'active'|'suspended', name?: string, email?: string }} [opts]
+ * @param {{ status?: 'pending'|'active'|'suspended', name?: string, timezone?: string }} [opts]
  * @returns {Promise<{ id: string, org: object, repo: Repo }>}
  */
-async function seedOrg(app, owner, { status = 'active', name = 'Sunny Days Travel', email = 'hello@sunnydays.example' } = {}) {
-  const repo = new Repo({ store: app.store, now: app.ctx.now });
+async function seedOrg(app, owner, { status = 'active', name = 'Acme Inc', timezone = DEFAULT_TIMEZONE } = {}) {
+  const repo = repoFor(app);
   const at = repo.iso();
   const orgId = id('org');
-  const org = { id: orgId, name, status, createdBy: owner.user.id, at, updatedAt: at, statusBy: null, statusAt: null, rev: 0 };
-  assert.ok(await repo.insert(KINDS.org, orgId, org));
-  assert.ok(await repo.insert(KINDS.brand, orgId, {
-    orgId, displayName: name, email, phone: '', website: '', primary: DEFAULT_COLORS.primary, accent: DEFAULT_COLORS.accent,
-    logo: null, rev: 0, updatedAt: at, updatedBy: owner.user.id,
-  }, { owner: orgId }));
-  assert.ok(await repo.insert(KINDS.rules, orgId, {
-    orgId, serviceFee: 0, perBookingFee: 0, markupTenths: 0, maxServiceFee: null, minProfit: 0, minMarginTenths: 0, maxDiscount: 0,
-    rev: 0, updatedAt: at, updatedBy: owner.user.id,
-  }, { owner: orgId }));
-  await linkMember(repo, orgId, owner.user, 'owner', owner.user.id);
-  return { id: orgId, org, repo };
-}
-
-async function linkMember(repo, orgId, user, role, by) {
-  const at = repo.iso();
-  const member = { orgId, userId: user.id, email: user.email, name: user.name, role, at, by, rev: 0 };
-  assert.ok(await repo.insert(KINDS.member, `${orgId}.${user.id}`, member, { owner: orgId }));
-  assert.ok(await repo.insert(KINDS.userOrg, `${user.id}.${orgId}`, { userId: user.id, orgId, at }, { owner: user.id }));
-  return member;
+  const org = {
+    id: orgId, name, nameKey: name.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ''), status, size: '1-10 people',
+    currency: 'USD', timezone, settings: { outOfPolicy: 'approval', approvalHours: 24, reasonMinChars: 10, budgetPeriod: 'quarter' },
+    ownerIds: [owner.user.id], memberCount: 1, createdBy: owner.user.id, at, updatedAt: at, statusBy: null, statusAt: null,
+    statusNote: null, rev: 0,
+  };
+  const idx = await indexOp(repo, owner.user.id, orgId);
+  await repo.commit({
+    inserts: [
+      { kind: KINDS.org, id: orgId, data: org, owner: null },
+      { kind: KINDS.member, id: `${orgId}.${owner.user.id}`, data: memberDoc(orgId, owner.user, 'owner', owner.user.id, at), owner: orgId },
+      ...(idx.insert ? [idx.insert] : []),
+      auditInsert(repo, { orgId, actor: { userId: owner.user.id, name: owner.user.name, role: 'owner' }, action: 'org.created', target: { kind: KINDS.org, id: orgId }, summary: `Created ${name}` }),
+    ],
+    cas: idx.cas ? [idx.cas] : [],
+  });
+  return { id: orgId, org: await repo.get(KINDS.org, orgId), repo };
 }
 
 /**
- * Seed a new account and make it a member of the org with this role (biz_member + biz_user_org).
+ * Seed a new account and make it a member of the company with this role, in one Repo.commit: its
+ * biz_member, the org's memberCount (and ownerIds for an owner) and its biz_user_index.
  * @param {object} app
- * @param {{ id: string }} org from seedOrg()
- * @param {'owner'|'manager'|'advisor'|'support'|'finance'|'readonly'} role
- * @param {{ name?: string, email?: string }} [who]
+ * @param {{ id: string, org?: object }} org from seedOrg()
+ * @param {'owner'|'travel_admin'|'finance'|'manager'|'employee'} role
+ * @param {{ name?: string, email?: string, departmentId?: string|null, managerId?: string|null,
+ *   approverId?: string|null, tier?: 'standard'|'director'|'executive' }} [who]
  * @returns {Promise<{ user: object, token: string, cookie: string, member: object }>}
  */
-async function addMember(app, org, role, who = {}) {
-  const u = await seedUser(app, who);
-  const repo = new Repo({ store: app.store, now: app.ctx.now });
-  const member = await linkMember(repo, org.id, u.user, role, org.org ? org.org.createdBy : null);
+async function seedMember(app, org, role, { name, email, ...extra } = {}) {
+  const u = await seedUser(app, { name, email });
+  const repo = repoFor(app);
+  const at = repo.iso();
+  const member = memberDoc(org.id, u.user, role, org.org ? org.org.createdBy : null, at, extra);
+  const idx = await indexOp(repo, u.user.id, org.id);
+  await repo.commit({
+    inserts: [{ kind: KINDS.member, id: `${org.id}.${u.user.id}`, data: member, owner: org.id }, ...(idx.insert ? [idx.insert] : [])],
+    cas: [
+      { kind: KINDS.org, id: org.id, rev: null, fn: d => { d.memberCount += 1; if (role === 'owner') d.ownerIds.push(u.user.id); } },
+      ...(idx.cas ? [idx.cas] : []),
+    ],
+  });
   return { ...u, member };
 }
 
@@ -146,4 +173,4 @@ function storeSnapshot(app, { ignoreKinds = [] } = {}) {
   });
 }
 
-module.exports = { seedUser, client, seedOrg, addMember, mutableClock, noInline, storeSnapshot, PASSWORD };
+module.exports = { seedUser, client, seedOrg, seedMember, mutableClock, noInline, storeSnapshot, PASSWORD };

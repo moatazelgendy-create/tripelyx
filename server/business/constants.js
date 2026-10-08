@@ -1,105 +1,109 @@
-// Tripelyx Business: fixed names and limits shared by every Business module. Frozen interface: other
-// modules import these names, so renaming one is a breaking change.
-
-/**
- * The nine pipeline stages, in pipeline order (the spec's "LEAD PIPELINE").
- * @type {ReadonlyArray<'new_lead'|'needs_review'|'proposal_sent'|'client_reviewing'|'revision_requested'|'approved'|'payment_pending'|'booked'|'lost'>}
- */
-const STAGES = Object.freeze([
-  'new_lead', 'needs_review', 'proposal_sent', 'client_reviewing', 'revision_requested',
-  'approved', 'payment_pending', 'booked', 'lost',
-]);
-
-/** Stage key → label, exactly as the spec names them. @type {Readonly<Record<string, string>>} */
-const STAGE_LABELS = Object.freeze({
-  new_lead: 'New Lead',
-  needs_review: 'Needs Review',
-  proposal_sent: 'Proposal Sent',
-  client_reviewing: 'Client Reviewing',
-  revision_requested: 'Revision Requested',
-  approved: 'Approved',
-  payment_pending: 'Payment Pending',
-  booked: 'Booked',
-  lost: 'Lost',
-});
-
-/** Stages only a person sets ("set by your team"); automatic moves never leave them. */
-const AUTO_LOCKED = Object.freeze(['payment_pending', 'booked', 'lost']);
+// Tripelyx Business: fixed names and limits shared by every Business module (plan §C, §D). Frozen
+// interface: other modules import these names, so renaming one is a breaking change.
 
 /** The owner's confirmed business address (CONTACT_EMAIL is not set on AWS). */
 const BUSINESS_EMAIL = 'go@tripelyx.com';
 
-/** Options per proposal version (slots A, B, C). */
-const MAX_OPTIONS = 3;
-/** Option slot keys, in order. */
-const OPTION_KEYS = Object.freeze(['A', 'B', 'C']);
-/** Share links per proposal (client and traveler links together). */
-const MAX_SHARES = 6;
-/** Lists stop here; pages then say "Showing the 1,000 most recent." */
+/** Company statuses: pending until a platform admin confirms it; suspended shuts the workspace. */
+const ORG_STATUSES = Object.freeze(['pending', 'active', 'suspended']);
+
+/** Member statuses: a removed member keeps a record (members are never deleted). */
+const MEMBER_STATUSES = Object.freeze(['active', 'removed']);
+
+/** The most records any list or scan holds at once (D6: anything that can grow pages instead). */
 const LIST_LIMIT = 1000;
+/** Rows per page on lists and the audit log. */
+const PAGE_SIZE = 50;
+/** Members per company (memberCount under CAS on biz_org). */
+const MEMBER_CAP = 1000;
+/** Aggregates page through at most this many requests and then say so. */
+const SCAN_CAP = 5000;
 
 /**
  * Record kinds in the generic store. server/business/repo.js is the only module that reads or writes them.
- * See plan §D for each kind's id, owner slot, document shape and write mode.
+ * Plan §C3 has each kind's id, owner slot, write mode and shape.
  */
 const KINDS = Object.freeze({
   org: 'biz_org',
-  brand: 'biz_brand',
-  logo: 'biz_logo',
-  rules: 'biz_rules',
   member: 'biz_member',
-  userOrg: 'biz_user_org',
+  userIndex: 'biz_user_index',
   invite: 'biz_invite',
-  client: 'biz_client',
-  proposal: 'biz_proposal',
-  draft: 'biz_draft',
-  version: 'biz_version',
-  versionInternal: 'biz_version_internal',
-  share: 'biz_share',
-  view: 'biz_view',
-  response: 'biz_response',
-  message: 'biz_message',
-  note: 'biz_note',
-  reminder: 'biz_reminder',
+  inviteEmail: 'biz_invite_email',
+  department: 'biz_department',
+  policy: 'biz_policy',
+  policyVersion: 'biz_policy_version',
+  budget: 'biz_budget',
+  request: 'biz_request',
+  reqLink: 'biz_req_link',
   audit: 'biz_audit',
 });
 
-/** Id prefixes for `lib/ids.id(prefix)`: org_, cli_, prp_, inv_, shr_, rsp_, bms_, bnt_, rem_, aud_. */
-const ID_PREFIX = Object.freeze({
-  org: 'org', client: 'cli', proposal: 'prp', invite: 'inv', share: 'shr',
-  response: 'rsp', message: 'bms', note: 'bnt', reminder: 'rem', audit: 'aud',
+/** Id prefixes for `lib/ids.id(prefix)`: org_, dep_, btr_, aud_, inv_ (invite publicId). */
+const ID_PREFIX = Object.freeze({ org: 'org', department: 'dep', request: 'btr', audit: 'aud', invite: 'inv' });
+
+/** Policy tiers; every member has one (default standard). */
+const TIERS = Object.freeze(['standard', 'director', 'executive']);
+/** Tier → label. */
+const TIER_LABELS = Object.freeze({ standard: 'Standard', director: 'Director', executive: 'Executive' });
+
+/** Stored request statuses (§C5). "past" is a display-only effective status, never stored. */
+const REQUEST_STATUSES = Object.freeze(['draft', 'pending', 'approved', 'denied', 'cancelled', 'expired']);
+
+/** Why a trip needs an exception (the Request Approval form). */
+const REASON_CATEGORIES = Object.freeze(['client_meeting', 'schedule', 'no_option', 'other']);
+/** Reason category → label. */
+const REASON_CATEGORY_LABELS = Object.freeze({
+  client_meeting: 'Client meeting',
+  schedule: 'Schedule',
+  no_option: 'No option inside policy',
+  other: 'Other',
 });
 
-/** Audit groups (plan §E). Brand events go in the team group. */
-const AUDIT_GROUPS = Object.freeze(['trip', 'pricing', 'team', 'sensitive', 'client']);
+/** Cabins, lowest first. */
+const CABINS = Object.freeze(['economy', 'premium', 'business']);
+/** Cabin → rank, for "at or below the policy's cabin" (economy < premium < business). */
+const CABIN_RANK = Object.freeze({ economy: 0, premium: 1, business: 2 });
+/** Cabin → label. */
+const CABIN_LABELS = Object.freeze({ economy: 'Economy', premium: 'Premium economy', business: 'Business' });
 
-/** Client reactions on a share link. */
-const RESPONSE_KINDS = Object.freeze(['love', 'cheaper', 'better', 'another', 'ask', 'comment']);
+/** biz_req_link roles: the traveler's own link, the assigned approver's, and one per pool member. */
+const REQ_LINK_ROLES = Object.freeze(['traveler', 'approver', 'pool']);
 
-/** "Show Me Another" reasons (value → label). */
-const WRONG_REASONS = Object.freeze({
-  destinations: 'Different destinations',
-  expensive: 'Too expensive',
-  short: 'Too short',
-  travel: 'Too much travel time',
-  hotels: 'Different hotels',
-  exciting: 'Something more exciting',
+/** Company settings (§B6, §C3). */
+const OUT_OF_POLICY_MODES = Object.freeze(['approval', 'block']);
+const BUDGET_PERIODS = Object.freeze(['quarter', 'month']);
+/** Approval expiry per company, in hours: [min, max]. */
+const APPROVAL_HOURS_RANGE = Object.freeze([4, 168]);
+/** Shortest exception reason a company may require (and the default). */
+const REASON_MIN_CHARS = 10;
+/** A new company's time zone, and the ones the sign-up form offers. */
+const DEFAULT_TIMEZONE = 'Africa/Cairo';
+const TIMEZONES = Object.freeze([
+  'Africa/Cairo', 'Asia/Dubai', 'Asia/Riyadh', 'Europe/London', 'Europe/Paris', 'Europe/Berlin', 'Europe/Rome',
+  'Europe/Athens', 'Europe/Istanbul', 'America/New_York', 'America/Chicago', 'America/Los_Angeles', 'UTC',
+]);
+/** Every amount is US dollars in phase 1. */
+const CURRENCY = 'USD';
+
+/** Audit groups and the actions in each (§C7). An action's group is the part before the dot. */
+const AUDIT_ACTIONS = Object.freeze({
+  org: Object.freeze(['org.created', 'org.confirmed', 'org.suspended', 'org.reactivated', 'org.settings_changed', 'org.exported']),
+  member: Object.freeze(['member.invited', 'member.invite_revoked', 'member.joined', 'member.updated', 'member.role_changed', 'member.removed']),
+  department: Object.freeze(['department.created', 'department.renamed', 'department.archived']),
+  policy: Object.freeze(['policy.published']),
+  budget: Object.freeze(['budget.set']),
+  request: Object.freeze([
+    'request.drafted', 'request.swapped', 'request.auto_approved', 'request.submitted', 'request.approved', 'request.denied',
+    'request.returned', 'request.cancelled', 'request.expired', 'request.message',
+  ]),
+  reports: Object.freeze(['reports.exported']),
 });
-
-/** Reminder kinds (the spec's four plus a custom one). */
-const REMINDER_KINDS = Object.freeze(['viewed', 'no_response', 'payment_pending', 'departure', 'custom']);
-
-/** Share link kinds: only a client link can approve. */
-const SHARE_KINDS = Object.freeze(['client', 'traveler']);
-
-/** Org statuses: pending until the platform approves it; suspended shuts the workspace and its links. */
-const ORG_STATUSES = Object.freeze(['pending', 'active', 'suspended']);
-
-/** Default brand colors (white text on both passes 4.5:1). */
-const DEFAULT_COLORS = Object.freeze({ primary: '#0b2545', accent: '#2f6fed' });
+/** Audit groups, in the activity filter's order. */
+const AUDIT_GROUPS = Object.freeze(Object.keys(AUDIT_ACTIONS));
 
 module.exports = {
-  STAGES, STAGE_LABELS, AUTO_LOCKED, BUSINESS_EMAIL, MAX_OPTIONS, OPTION_KEYS, MAX_SHARES, LIST_LIMIT,
-  KINDS, ID_PREFIX, AUDIT_GROUPS, RESPONSE_KINDS, WRONG_REASONS, REMINDER_KINDS, SHARE_KINDS, ORG_STATUSES,
-  DEFAULT_COLORS,
+  BUSINESS_EMAIL, ORG_STATUSES, MEMBER_STATUSES, LIST_LIMIT, PAGE_SIZE, MEMBER_CAP, SCAN_CAP, KINDS, ID_PREFIX,
+  TIERS, TIER_LABELS, REQUEST_STATUSES, REASON_CATEGORIES, REASON_CATEGORY_LABELS, CABINS, CABIN_RANK, CABIN_LABELS,
+  REQ_LINK_ROLES, OUT_OF_POLICY_MODES, BUDGET_PERIODS, APPROVAL_HOURS_RANGE, REASON_MIN_CHARS, DEFAULT_TIMEZONE,
+  TIMEZONES, CURRENCY, AUDIT_ACTIONS, AUDIT_GROUPS,
 };

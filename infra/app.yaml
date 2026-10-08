@@ -39,8 +39,8 @@ Parameters:
   EnableBusiness:
     Type: String
     AllowedValues: ['true', 'false']
-    Default: 'true'
-    Description: Tripelyx Business workspaces at /business (needs EnableTrips).
+    Default: 'false'
+    Description: Tripelyx Business company travel workspaces at /business (works with EnableTrips on or off). Off unless set to 'true'.
   PublicBaseUrl:
     Type: String
     Default: ''

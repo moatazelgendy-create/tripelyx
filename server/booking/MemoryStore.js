@@ -1,6 +1,82 @@
 // In-memory store for local development and tests. Same interface as PostgresStore; data is lost on
 // restart. config.js only allows it when APP_ENV=development and no DATABASE_URL is set.
+const { AppError } = require('../lib/errors');
+
 const clone = v => (v === undefined ? undefined : structuredClone(v));
+const isPlainObject = v => !!v && typeof v === 'object' && !Array.isArray(v) && Object.getPrototypeOf(v) === Object.prototype;
+
+/** The most rows one listRecordsPage call returns. */
+const PAGE_MAX = 200;
+const COMMIT_LISTS = ['checks', 'updates', 'inserts', 'deletes'];
+const OP_OF = { checks: 'check', updates: 'update', inserts: 'insert', deletes: 'delete' };
+
+/**
+ * Validate a commit() argument and return its operations in (kind, id) order, the order both stores
+ * verify (and Postgres locks) them in, so the first failure they report is the same. Throws a TypeError for
+ * a malformed call (unknown list, bad kind or id, a document that is not a plain object) and an Error when
+ * one record appears twice: a commit touches each record at most once.
+ * @param {object} spec { checks, updates, inserts, deletes }
+ * @returns {Array<{ op: 'check'|'update'|'insert'|'delete', kind: string, id: string, rev?: number, next?: object, data?: object, userId?: string|null }>}
+ */
+function planCommit(spec = {}) {
+  if (!isPlainObject(spec)) throw new TypeError('[store] commit takes { checks, updates, inserts, deletes }');
+  for (const key of Object.keys(spec)) {
+    if (!COMMIT_LISTS.includes(key)) throw new TypeError(`[store] commit takes checks, updates, inserts and deletes (got ${key})`);
+  }
+  const ops = [];
+  const seen = new Set();
+  for (const list of COMMIT_LISTS) {
+    const items = spec[list] === undefined ? [] : spec[list];
+    if (!Array.isArray(items)) throw new TypeError(`[store] commit ${list} must be an array`);
+    for (const item of items) {
+      if (!isPlainObject(item)) throw new TypeError(`[store] commit ${list} entries must be objects`);
+      const { kind, id } = item;
+      if (typeof kind !== 'string' || !kind || typeof id !== 'string' || !id || id.length > 200) throw new TypeError(`[store] commit ${list} entry needs a kind and an id`);
+      const key = `${kind}:${id}`;
+      if (seen.has(key)) throw new Error(`[store] commit touches ${key} more than once`);
+      seen.add(key);
+      const op = { op: OP_OF[list], kind, id };
+      if (list === 'checks') op.rev = item.rev;
+      if (list === 'updates') {
+        if (!isPlainObject(item.next)) throw new TypeError(`[store] commit update ${key} needs a plain object as next`);
+        op.rev = item.expectedRev;
+        op.next = item.next;
+      }
+      if (list === 'deletes') op.rev = item.expectedRev;
+      if (list === 'inserts') {
+        if (!isPlainObject(item.data)) throw new TypeError(`[store] commit insert ${key} needs a plain object as data`);
+        op.data = item.data;
+        op.userId = item.userId ?? null;
+      }
+      ops.push(op);
+    }
+  }
+  return ops.sort((a, b) => (a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
+/**
+ * The limit and owner checks every listRecordsPage makes. A falsy owner would page through every tenant.
+ * @param {string} userId
+ * @param {number} limit
+ */
+function checkPageArgs(userId, limit) {
+  if (!userId || typeof userId !== 'string') throw new Error('[store] listRecordsPage needs an owner (userId): it never lists every tenant');
+  if (!Number.isInteger(limit) || limit < 1 || limit > PAGE_MAX) throw new RangeError(`[store] listRecordsPage limit must be a whole number from 1 to ${PAGE_MAX}`);
+}
+
+/** The 400 a forged or damaged page cursor answers with (Repo turns it into a 404). */
+function badCursor() {
+  return new AppError('bad_cursor', 'That page link is not valid any more.', 400);
+}
+
+/** An opaque cursor: base64url of a JSON value. */
+const encodeCursor = value => Buffer.from(JSON.stringify(value), 'utf8').toString('base64url');
+
+/** The JSON value inside a cursor, or a bad_cursor error. */
+function decodeCursor(cursor) {
+  if (typeof cursor !== 'string' || cursor.length > 512 || !/^[A-Za-z0-9_-]+$/.test(cursor)) throw badCursor();
+  try { return JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')); } catch { throw badCursor(); }
+}
 
 class MemoryStore {
   constructor() {
@@ -93,6 +169,67 @@ class MemoryStore {
     return [...this.records.values()].filter(r => r.kind === kind && (!userId || r.userId === userId) && (!since || r.createdAt >= since))
       .sort((a, b) => b.seq - a.seq).slice(0, limit).map(r => clone(r.data));
   }
+
+  /**
+   * Atomic all-or-nothing write of several records (plan §C1). Everything is verified first and then
+   * everything is applied, with no await in between, so no other call can interleave.
+   * - checks:  [{ kind, id, rev }] the record exists and its rev (a missing rev counts as 0) is still `rev`;
+   * - updates: [{ kind, id, expectedRev, next }] compare-and-set on rev, written as { ...next, rev: expectedRev + 1 };
+   * - inserts: [{ kind, id, data, userId }] insert-only;
+   * - deletes: [{ kind, id, expectedRev }] compare-and-set delete.
+   * Each record may appear once. Operations run in (kind, id) order and the first failure is reported.
+   * @param {{ checks?: object[], updates?: object[], inserts?: object[], deletes?: object[] }} spec
+   * @returns {Promise<{ ok: true, docs: Record<string, object> } | { ok: false, reason: 'conflict'|'duplicate', kind: string, id: string }>}
+   *   docs holds every inserted and updated document under 'kind:id'
+   */
+  async commit(spec) {
+    const ops = planCommit(spec);
+    for (const o of ops) {
+      const r = this.records.get(`${o.kind}:${o.id}`);
+      if (o.op === 'insert') {
+        if (r) return { ok: false, reason: 'duplicate', kind: o.kind, id: o.id };
+      } else if (!r || !Number.isInteger(o.rev) || (r.data.rev ?? 0) !== o.rev) {
+        return { ok: false, reason: 'conflict', kind: o.kind, id: o.id };
+      }
+    }
+    const docs = {};
+    const at = new Date().toISOString();
+    for (const o of ops) {
+      const key = `${o.kind}:${o.id}`;
+      if (o.op === 'insert') {
+        this.records.set(key, { kind: o.kind, id: o.id, userId: o.userId, data: clone(o.data), createdAt: at, seq: (this.seq = (this.seq || 0) + 1) });
+        docs[key] = clone(o.data);
+      } else if (o.op === 'update') {
+        const r = this.records.get(key);
+        r.data = { ...clone(o.next), rev: o.rev + 1 };
+        docs[key] = clone(r.data);
+      } else if (o.op === 'delete') {
+        this.records.delete(key);
+      }
+    }
+    return { ok: true, docs };
+  }
+
+  /**
+   * One owner's records of a kind, newest first, a page at a time. The order is the store's own (insertion
+   * order here, created_at in Postgres): never business logic. The cursor is opaque.
+   * @param {string} kind
+   * @param {{ userId: string, limit?: number, cursor?: string|null }} opts userId is required (a falsy one throws)
+   * @returns {Promise<{ rows: object[], cursor: string|null }>} cursor is null on the last page
+   */
+  async listRecordsPage(kind, { userId, limit = 50, cursor = null } = {}) {
+    checkPageArgs(userId, limit);
+    let before = Infinity;
+    if (cursor !== null && cursor !== undefined) {
+      before = decodeCursor(cursor);
+      if (!Number.isSafeInteger(before) || before < 1) throw badCursor();
+    }
+    const hits = [...this.records.values()].filter(r => r.kind === kind && r.userId === userId && r.seq < before)
+      .sort((a, b) => b.seq - a.seq).slice(0, limit + 1);
+    const more = hits.length > limit;
+    const rows = hits.slice(0, limit);
+    return { rows: rows.map(r => clone(r.data)), cursor: more ? encodeCursor(rows[rows.length - 1].seq) : null };
+  }
 }
 
-module.exports = { MemoryStore };
+module.exports = { MemoryStore, planCommit, checkPageArgs, badCursor, encodeCursor, decodeCursor, PAGE_MAX };

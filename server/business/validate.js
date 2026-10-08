@@ -3,7 +3,7 @@
 // messages into one AppError(code, 'Check the highlighted fields.', 422, details) for the form to show.
 // Money is integer cents and percentages are integer tenths, parsed with string arithmetic (never floats).
 const { AppError } = require('../lib/errors');
-const { str, EMAIL } = require('../lib/validate');
+const { str, EMAIL, localPath } = require('../lib/validate');
 
 const invalid = message => new AppError('invalid_field', message, 422);
 const blankish = v => v === undefined || v === null || String(v).trim() === '';
@@ -69,29 +69,6 @@ function percentTenths(v, { max = 999, blank } = {}) {
 }
 
 /**
- * A website address: https only, no user name or password, a real host name. "example.com" becomes
- * "https://example.com/". Returns the normalized URL ('' for an empty optional field).
- * @param {unknown} v
- * @param {{ optional?: boolean }} [opts]
- * @returns {string}
- */
-function httpsUrl(v, { optional = false } = {}) {
-  if (blankish(v)) {
-    if (optional) return '';
-    throw invalid('Enter a website address.');
-  }
-  let s = String(v).trim();
-  if (s.length > 200) throw invalid('That address is too long.');
-  if (!/^[a-z][a-z0-9+.-]*:/i.test(s)) s = `https://${s}`;
-  let u;
-  try { u = new URL(s); } catch { throw invalid('Enter a website address that starts with https://.'); }
-  if (u.protocol !== 'https:') throw invalid('Enter a website address that starts with https://.');
-  if (u.username || u.password) throw invalid('Enter the address without a user name or password.');
-  if (!/^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(u.hostname) || u.port) throw invalid('Enter a website address like https://example.com.');
-  return u.href;
-}
-
-/**
  * An email address, lowercased (≤120 characters). Invisible and bidi control characters are refused.
  * @param {unknown} v
  * @param {{ optional?: boolean }} [opts]
@@ -123,37 +100,6 @@ function phone(v, { optional = false } = {}) {
   if (s.length > 30 || !/^[+\d][\d\s().-]{5,}$/.test(s) || (s.match(/\d/g) || []).length < 6) throw invalid('Enter a valid phone number.');
   return s;
 }
-
-/**
- * A brand color: exactly "#rrggbb" (lowercased). "#fff", "red" and "#12345g" are refused.
- * @param {unknown} v
- * @returns {string}
- */
-function hexColor(v) {
-  const s = String(v ?? '').trim();
-  if (!/^#[0-9a-f]{6}$/i.test(s)) throw invalid('Enter a color as # and six hex digits, like #0b2545.');
-  return s.toLowerCase();
-}
-
-function luminance(hex) {
-  const [r, g, b] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255)
-    .map(c => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-}
-
-/**
- * WCAG contrast ratio between two "#rrggbb" colors (1 to 21). Throws on a malformed color.
- * @param {string} hexA
- * @param {string} hexB
- * @returns {number}
- */
-function contrast(hexA, hexB) {
-  const a = luminance(hexColor(hexA)), b = luminance(hexColor(hexB));
-  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
-}
-
-/** Smallest contrast against white that a brand color needs (white text on it stays readable). */
-const MIN_CONTRAST = 4.5;
 
 /**
  * Free text: NFKC-normalized (fullwidth and compatibility letters become plain ones), invisible and bidi
@@ -195,17 +141,15 @@ function oneOf(v, list, { blank } = {}) {
   return hit;
 }
 
-const LOCAL_PATH = /^\/(?![/\\])[^\x00-\x1f]*$/;
-
 /**
- * A same-site path for redirects ("/business/o/x"), or `fallback`. Refuses "//host", "/\host", absolute
- * URLs and control characters.
+ * A same-site path for redirects ("/business/o/x"), or `fallback`. The shared rule (lib/validate.localPath):
+ * refuses "//host", "/\host", absolute URLs and control characters, and keeps at most 300 characters.
  * @param {unknown} path
  * @param {string|null} [fallback]
  * @returns {string|null}
  */
 function safeLocal(path, fallback = null) {
-  return typeof path === 'string' && path.length <= 2000 && LOCAL_PATH.test(path) ? path : fallback;
+  return localPath(path, fallback);
 }
 
 /**
@@ -228,7 +172,4 @@ function collect(code, fields) {
   return out;
 }
 
-module.exports = {
-  dollarsToCents, percentTenths, httpsUrl, email, phone, hexColor, contrast, MIN_CONTRAST, text, oneOf, safeLocal,
-  collect, dollars,
-};
+module.exports = { dollarsToCents, percentTenths, email, phone, text, oneOf, safeLocal, collect, dollars };

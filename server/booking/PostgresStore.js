@@ -3,6 +3,12 @@ const fs = require('fs');
 // environment points at its own database via DATABASE_URL. Rows keep the queryable fields as columns
 // and the full normalized record as JSONB, so the schema doesn't churn as verticals evolve.
 const { Pool } = require('pg');
+const { planCommit, checkPageArgs, badCursor, encodeCursor, decodeCursor } = require('./MemoryStore');
+
+/** created_at::text as Postgres prints it (DateStyle ISO), e.g. "2026-10-09 09:00:00.123456+00". */
+const PG_TIMESTAMP = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{1,6})?[+-]\d{2}(?::\d{2}){0,2}$/;
+/** Deadlock and serialization failures: the losing transaction is rolled back and reported as a conflict. */
+const RETRYABLE_PG = new Set(['40P01', '40001']);
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS tx_quotes (
@@ -47,6 +53,7 @@ CREATE TABLE IF NOT EXISTS tx_records (
 );
 CREATE INDEX IF NOT EXISTS tx_records_kind_user_idx ON tx_records (kind, user_id);
 CREATE INDEX IF NOT EXISTS tx_records_kind_created_idx ON tx_records (kind, created_at DESC);
+CREATE INDEX IF NOT EXISTS tx_records_kind_user_created_idx ON tx_records (kind, user_id, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS tx_bookings_user_idx ON tx_bookings ((data->>'userId'));
 CREATE TABLE IF NOT EXISTS tx_partner_leads (
   id TEXT PRIMARY KEY,
@@ -191,6 +198,117 @@ class PostgresStore {
     args.push(limit);
     const { rows } = await this.pool.query(`SELECT data FROM tx_records WHERE ${where.join(' AND ')} ORDER BY created_at DESC, id DESC LIMIT $${args.length}`, args);
     return rows.map(r => r.data);
+  }
+
+  /**
+   * Atomic all-or-nothing write of several records (plan §C1), in one transaction on one pooled client.
+   * Rows are touched in (kind, id) order, so two commits never lock the same rows in opposite orders:
+   * - checks:  [{ kind, id, rev }] SELECT … FOR SHARE: the record exists and its rev is still `rev`;
+   * - updates: [{ kind, id, expectedRev, next }] UPDATE … WHERE rev = expectedRev, written as { ...next, rev: expectedRev + 1 };
+   * - inserts: [{ kind, id, data, userId }] INSERT … ON CONFLICT DO NOTHING (created_at = clock_timestamp(),
+   *   so the inserts of one commit keep their (kind, id) order in listRecordsPage);
+   * - deletes: [{ kind, id, expectedRev }] DELETE … WHERE rev = expectedRev.
+   * Any statement that touches 0 rows, a deadlock or a serialization failure rolls everything back.
+   * @param {{ checks?: object[], updates?: object[], inserts?: object[], deletes?: object[] }} spec
+   * @returns {Promise<{ ok: true, docs: Record<string, object> } | { ok: false, reason: 'conflict'|'duplicate', kind: string, id: string }>}
+   */
+  async commit(spec) {
+    const ops = planCommit(spec);
+    if (!ops.length) return { ok: true, docs: {} };
+    const client = await this.pool.connect();
+    let current = null;
+    let healthy = true;
+    try {
+      await client.query('BEGIN');
+      const docs = {};
+      for (const o of ops) {
+        current = o;
+        const key = `${o.kind}:${o.id}`;
+        let rows = [];
+        let count = 0;
+        if (o.op === 'insert') {
+          ({ rows } = await client.query(
+            `INSERT INTO tx_records (kind, id, user_id, data, created_at) VALUES ($1, $2, $3, $4, clock_timestamp())
+             ON CONFLICT (kind, id) DO NOTHING RETURNING data`,
+            [o.kind, o.id, o.userId, o.data],
+          ));
+          if (rows.length !== 1) {
+            await client.query('ROLLBACK');
+            return { ok: false, reason: 'duplicate', kind: o.kind, id: o.id };
+          }
+          docs[key] = rows[0].data;
+          continue;
+        }
+        if (Number.isInteger(o.rev)) {
+          if (o.op === 'check') {
+            ({ rowCount: count } = await client.query(
+              "SELECT 1 FROM tx_records WHERE kind = $1 AND id = $2 AND COALESCE((data->>'rev')::int, 0) = $3 FOR SHARE",
+              [o.kind, o.id, o.rev],
+            ));
+          } else if (o.op === 'update') {
+            ({ rows, rowCount: count } = await client.query(
+              `UPDATE tx_records SET data = $4, updated_at = now()
+               WHERE kind = $1 AND id = $2 AND COALESCE((data->>'rev')::int, 0) = $3 RETURNING data`,
+              [o.kind, o.id, o.rev, { ...o.next, rev: o.rev + 1 }],
+            ));
+            if (count === 1) docs[key] = rows[0].data;
+          } else {
+            ({ rowCount: count } = await client.query(
+              "DELETE FROM tx_records WHERE kind = $1 AND id = $2 AND COALESCE((data->>'rev')::int, 0) = $3",
+              [o.kind, o.id, o.rev],
+            ));
+          }
+        }
+        if (count !== 1) {
+          await client.query('ROLLBACK');
+          return { ok: false, reason: 'conflict', kind: o.kind, id: o.id };
+        }
+      }
+      await client.query('COMMIT');
+      return { ok: true, docs };
+    } catch (err) {
+      try { await client.query('ROLLBACK'); } catch { healthy = false; }
+      if (healthy && RETRYABLE_PG.has(err.code) && current) return { ok: false, reason: 'conflict', kind: current.kind, id: current.id };
+      throw err;
+    } finally {
+      client.release(healthy ? undefined : true);
+    }
+  }
+
+  /**
+   * One owner's records of a kind, newest first (created_at, then id), a page at a time with a keyset
+   * cursor. Store order only, never business logic. The cursor is opaque.
+   * @param {string} kind
+   * @param {{ userId: string, limit?: number, cursor?: string|null }} opts userId is required (a falsy one throws)
+   * @returns {Promise<{ rows: object[], cursor: string|null }>} cursor is null on the last page
+   */
+  async listRecordsPage(kind, { userId, limit = 50, cursor = null } = {}) {
+    checkPageArgs(userId, limit);
+    const where = ['kind = $1', 'user_id = $2'];
+    const args = [kind, userId];
+    if (cursor !== null && cursor !== undefined) {
+      const at = decodeCursor(cursor);
+      if (!Array.isArray(at) || at.length !== 2 || typeof at[0] !== 'string' || !PG_TIMESTAMP.test(at[0])
+        || typeof at[1] !== 'string' || !at[1] || at[1].length > 200) throw badCursor();
+      args.push(at[0], at[1]);
+      where.push('(created_at, id) < ($3::timestamptz, $4)');
+    }
+    args.push(limit + 1);
+    let rows;
+    try {
+      ({ rows } = await this.pool.query(
+        `SELECT created_at::text AS ca, id, data FROM tx_records WHERE ${where.join(' AND ')}
+         ORDER BY created_at DESC, id DESC LIMIT $${args.length}`,
+        args,
+      ));
+    } catch (err) {
+      if (err.code === '22007' || err.code === '22008') throw badCursor(); // a timestamp Postgres can't read
+      throw err;
+    }
+    const more = rows.length > limit;
+    const page = rows.slice(0, limit);
+    const last = page[page.length - 1];
+    return { rows: page.map(r => r.data), cursor: more ? encodeCursor([last.ca, last.id]) : null };
   }
 
   async savePartnerLead(lead) {

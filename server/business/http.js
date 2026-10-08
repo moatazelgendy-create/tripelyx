@@ -1,0 +1,212 @@
+// Tripelyx Business HTTP guards (plan §B4, §I7; from 1C's http.js). Routers use these per route, never as a
+// path-less r.use(), so /business (the company page in pagesRouter) is never caught.
+//
+// - requireUserPage (alias requireUser): signed out → GET 303 /business/signin?next=<this page>; any other
+//   method → 303 /business/signin (a POST cannot be replayed after signing in).
+// - memberGate(ctx, perm, { own }): the company and the member record are re-read on every request
+//   (actor.loadActor; the only source of the role, and platform admins get nothing from isAdmin). Not a
+//   member, a removed member, an unknown company, another company's record or a request the permission
+//   does not reach → the app's 404 page. A member whose role lacks the permission → 403 page; a suspended
+//   company → 403 page. Always Cache-Control: no-store and X-Robots-Tag: noindex. Sets req.biz. The service
+//   re-checks all of this inside every method anyway.
+// - shellContext(ctx, req): what the workspace shell needs (company, member, company switcher, approvals
+//   count, navigation filtered by can()).
+const { AppError } = require('../lib/errors');
+const { notFoundView, errorView } = require('../views/errors');
+const { PERMISSIONS, LABELS, can, canAny, allowedAny, scopeOf } = require('./roles');
+const { KINDS } = require('./constants');
+const { safeLocal } = require('./validate');
+const { loadActor, roleMessage, SUSPENDED } = require('./actor');
+
+/** Private workspace headers: never cached, never indexed. */
+function privateHeaders(res) {
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+}
+
+/** Middleware: Cache-Control no-store and X-Robots-Tag noindex for a private page. */
+function noStore(req, res, next) {
+  privateHeaders(res);
+  next();
+}
+
+/** Send the signed-out visitor to the company sign-in (GET comes back here afterwards). */
+function toSignIn(req, res) {
+  if (req.method === 'GET' || req.method === 'HEAD') {
+    return res.redirect(303, `/business/signin?next=${encodeURIComponent(safeLocal(req.originalUrl, '/business/app'))}`);
+  }
+  return res.redirect(303, '/business/signin');
+}
+
+/** Middleware: a signed-in user, or a redirect to the company sign-in. */
+function requireUserPage(req, res, next) {
+  if (!req.user) return toSignIn(req, res);
+  next();
+}
+
+/** The default 403 page: the app's error page with the message. Stage 2 may pass its own view. */
+function defaultForbiddenView(ctx, { message }) {
+  return errorView(ctx, { status: 403, message });
+}
+
+/**
+ * Answer 404 with the app's own "Page not found" page (no hint that the workspace exists).
+ * @param {object} ctx
+ * @param {import('express').Response} res
+ */
+function sendNotFound(ctx, res) {
+  privateHeaders(res);
+  res.status(404).type('html').send(String(notFoundView(ctx)));
+}
+
+/**
+ * Answer 403 with the forbidden page.
+ * @param {object} ctx
+ * @param {import('express').Response} res
+ * @param {{ message: string, role?: string|null, reason: 'role'|'suspended' }} info
+ * @param {Function} [view] (ctx, { message, role, label, reason }) => html
+ */
+function sendForbidden(ctx, res, info, view = defaultForbiddenView) {
+  privateHeaders(res);
+  res.status(403).type('html').send(String(view(ctx, { ...info, label: info.role ? LABELS[info.role] : null })));
+}
+
+/**
+ * Gate a company page on a permission.
+ * @param {object} ctx the app context (ctx.business is the BusinessService, with its Repo at ctx.business.repo)
+ * @param {string|string[]} perm one of roles.PERMISSIONS, or several (the member needs any one of them)
+ * @param {{ own?: false|'request', forbiddenView?: Function }} [opts]
+ *   own: 'request' loads req.params.rid with Repo.getIn and requires roles.allowed for one of the permissions
+ *   (a pool link for the member counts for team and decider scopes); a missing, foreign or unreachable
+ *   request → 404. forbiddenView(ctx, { message, role, label, reason }) renders the 403 page.
+ * @returns {import('express').RequestHandler} named bizMemberGate; sets
+ *   req.biz = { org, member, actor: { org, member, user }, request? }
+ */
+function memberGate(ctx, perm, { own = false, forbiddenView = defaultForbiddenView } = {}) {
+  const perms = Array.isArray(perm) ? [...perm] : [perm];
+  if (!perms.length || perms.some(p => !PERMISSIONS.includes(p))) throw new Error(`[business] unknown permission ${perm}`);
+  if (own !== false && own !== 'request') throw new Error(`[business] memberGate own must be false or 'request' (got ${own})`);
+  return async function bizMemberGate(req, res, next) {
+    try {
+      privateHeaders(res);
+      if (!req.user) return toSignIn(req, res);
+      const svc = ctx.business;
+      const orgId = req.params.orgId;
+      if (!svc || !svc.repo || typeof orgId !== 'string') return sendNotFound(ctx, res);
+      let a;
+      try {
+        a = await loadActor(svc.repo, { org: { id: orgId }, user: req.user });
+      } catch (e) {
+        if (!(e instanceof AppError)) throw e;
+        if (e.code === 'org_suspended') return sendForbidden(ctx, res, { message: SUSPENDED, role: null, reason: 'suspended' }, forbiddenView);
+        return sendNotFound(ctx, res);
+      }
+      const { org, member } = a;
+      if (!canAny(member.role, perms)) {
+        return sendForbidden(ctx, res, { message: roleMessage(member.role, org.name), role: member.role, reason: 'role' }, forbiddenView);
+      }
+      const biz = { org, member, actor: { org, member, user: req.user } };
+      if (own === 'request') {
+        const rid = req.params.rid;
+        if (typeof rid !== 'string') throw new Error('[business] memberGate own:request needs a :rid route parameter');
+        const record = await svc.repo.getIn(KINDS.request, rid, org.id);
+        if (!record) return sendNotFound(ctx, res);
+        let ok = allowedAny(member, perms, record);
+        const poolScoped = perms.some(p => can(member.role, p) && (scopeOf(p) === 'team' || scopeOf(p) === 'decider'));
+        if (!ok && poolScoped) {
+          const link = await svc.repo.getIn(KINDS.reqLink, `${rid}.pool.${member.userId}`, org.id);
+          ok = !!link && link.userId === member.userId && allowedAny(member, perms, record, { pooled: true });
+        }
+        if (!ok) return sendNotFound(ctx, res);
+        biz.request = record;
+      }
+      req.biz = biz;
+      next();
+    } catch (e) { next(e); }
+  };
+}
+
+/**
+ * The workspace navigation, in order (§B3). `perms`: the member needs any one of them. "Policy" opens every
+ * tier's policy for policy.view.all and "Your travel policy" for everyone else.
+ */
+const NAV = Object.freeze([
+  { key: 'home', label: 'Home', path: '', perms: ['org.view'] },
+  { key: 'plan', label: 'Plan a trip', path: '/trips/new', perms: ['trip.request'] },
+  { key: 'trips', label: 'Trips', path: '/trips', perms: ['request.view.own', 'request.view.team', 'request.view.all'] },
+  { key: 'approvals', label: 'Approvals', path: '/approvals', perms: ['approval.decide'] },
+  { key: 'policy', label: 'Policy', path: '/policy', perms: ['org.view'] },
+  { key: 'budgets', label: 'Budgets', path: '/budgets', perms: ['budget.view.dept', 'budget.view.all'] },
+  { key: 'people', label: 'People', path: '/people', perms: ['members.view'] },
+  { key: 'reports', label: 'Reports', path: '/reports', perms: ['reports.view'] },
+  { key: 'activity', label: 'Activity', path: '/activity', perms: ['audit.view'] },
+  { key: 'settings', label: 'Settings', path: '/settings', perms: ['org.view'] },
+].map(n => Object.freeze({ ...n, perms: Object.freeze(n.perms) })));
+
+/**
+ * The navigation for one member: the items their role reaches, each with its href and whether it is the
+ * current section (the longest path that `currentPath` starts with, at a "/" boundary).
+ * @param {{ id: string }} org
+ * @param {{ role: string }} member
+ * @param {string} [currentPath] e.g. req.originalUrl
+ * @returns {Array<{ key: string, label: string, href: string, current: boolean }>}
+ */
+function navFor(org, member, currentPath = '') {
+  const base = `/business/o/${org.id}`;
+  const items = NAV.filter(n => canAny(member.role, n.perms)).map(n => {
+    const path = n.key === 'policy' && can(member.role, 'policy.view.all') ? '/policies' : n.path;
+    return { key: n.key, label: n.label, path, href: base + path };
+  });
+  const p = String(currentPath).split(/[?#]/)[0];
+  const rest = p === base || p.startsWith(`${base}/`) ? p.slice(base.length) : null;
+  let current = null;
+  if (rest !== null) {
+    for (const n of items) {
+      const hit = n.path === '' ? rest === '' || rest === '/' : rest === n.path || rest.startsWith(`${n.path}/`);
+      if (hit && (!current || n.path.length > current.path.length)) current = n;
+    }
+  }
+  return items.map(n => ({ key: n.key, label: n.label, href: n.href, current: n === current }));
+}
+
+/**
+ * Everything the workspace shell (views/business/shell.js) needs, after memberGate has set req.biz.
+ * Calls svc.listCompaniesFor(actor) for the company switcher and, for members who decide approvals,
+ * svc.inboxCount(actor) for the count chip (null otherwise).
+ * @param {object} ctx the app context
+ * @param {import('express').Request} req with req.biz from memberGate
+ * @returns {Promise<{ org: object, member: object, companies: object[], approvalsCount: number|null,
+ *   nav: Array<{ key: string, label: string, href: string, current: boolean }> }>}
+ */
+async function shellContext(ctx, req) {
+  const biz = req.biz;
+  if (!biz || !biz.org || !biz.member || !biz.actor) throw new Error('[business] shellContext runs after memberGate');
+  const svc = ctx.business;
+  const { org, member, actor } = biz;
+  const companies = await svc.listCompaniesFor(actor);
+  const approvalsCount = can(member.role, 'approval.decide') ? await svc.inboxCount(actor) : null;
+  return { org, member, companies, approvalsCount, nav: navFor(org, member, req.originalUrl) };
+}
+
+/**
+ * The guards bound to one app context and (optionally) a forbidden page view, for a router to use:
+ *   const g = gates(ctx, { forbiddenView }); r.get('/o/:orgId', g.memberGate('org.view'), handler)
+ * @param {object} ctx
+ * @param {{ forbiddenView?: Function }} [opts]
+ */
+function gates(ctx, { forbiddenView = defaultForbiddenView } = {}) {
+  return {
+    requireUser: requireUserPage,
+    requireUserPage,
+    noStore,
+    memberGate: (perm, opts = {}) => memberGate(ctx, perm, { forbiddenView, ...opts }),
+    notFound: res => sendNotFound(ctx, res),
+    forbidden: (res, info) => sendForbidden(ctx, res, info, forbiddenView),
+    shellContext: req => shellContext(ctx, req),
+  };
+}
+
+module.exports = {
+  requireUserPage, requireUser: requireUserPage, memberGate, noStore, gates, sendNotFound, sendForbidden, shellContext,
+  navFor, defaultForbiddenView, privateHeaders, NAV,
+};

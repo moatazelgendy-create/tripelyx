@@ -137,9 +137,13 @@ async function fetchText(base, p, cookie) {
   return { status: res.status, type: (res.headers.get('content-type') || '').split(';')[0], text: normalise(await res.text()) };
 }
 
-/** Signs Ada up through the real form and returns her session cookie, or null when there are no accounts. */
+/**
+ * Signs Ada up through the real form and returns her session cookie, or null when there is no sign-up page.
+ * /signup is a Travel by Budget page: with trips off there is none, even when Tripelyx Business builds
+ * accounts for its own sign-in.
+ */
 async function signUpAda(app) {
-  if (!app.accounts) return null;
+  if (!app.accounts || !app.tripService) return null;
   const res = await fetch(`${app.base}/signup`, {
     method: 'POST',
     headers: { ...HEADERS, 'content-type': 'application/x-www-form-urlencoded' },

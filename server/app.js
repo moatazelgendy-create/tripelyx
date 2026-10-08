@@ -23,16 +23,30 @@ const { createNotifier } = require('./trips/integrations/notifications');
 const { TripService } = require('./trips/service');
 const { demoMediaRouter } = require('./routes/demoMedia');
 const { BusinessService } = require('./business/service');
-const { createBusinessLimits } = require('./business/limits');
-const { businessRouter } = require('./routes/business');
-const { clientRouter, brandRouter, previewRouter } = require('./routes/businessClient');
+const { Repo } = require('./business/repo');
 const { AppError } = require('./lib/errors');
 const { id } = require('./lib/ids');
 const { notFoundView, errorView } = require('./views/errors');
 
 const ASSET_VERSION = Date.now().toString(36);
-/** Business paths that never read the session or set the visitor cookie: client pages, brand.css, logos. */
-const BUSINESS_PUBLIC_PATH = /^\/business\/(?:p|brand)(?:\/|$)/i; // case-insensitive, like Express routing
+
+/** A 43-or-more character base64url run: the shape of every secret token (session, invite). */
+const TOKEN_RUN = /[A-Za-z0-9_-]{43,}/g;
+
+/**
+ * A request URL fit for the error log (D9): invite tokens in paths, any `…token=` query value and any
+ * token-shaped run (43 or more base64url characters, also inside an encoded ?next=) are replaced, and the
+ * result is cut to 500 characters. Request bodies are never logged.
+ * @param {unknown} url req.originalUrl
+ * @returns {string}
+ */
+function redactUrl(url) {
+  return String(url ?? '')
+    .replace(/(\/business\/invite\/)[^/?#]*/gi, '$1[redacted]')
+    .replace(/([?&;][^=&;#]*token)=[^&;#]*/gi, '$1=[redacted]')
+    .replace(TOKEN_RUN, '[token]')
+    .slice(0, 500);
+}
 
 async function createApp(config, { registryOverrides, tripOverrides, store: injectedStore, now, log = console } = {}) {
   const store = injectedStore || createStore(config);
@@ -45,11 +59,13 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
   // (mock inventory is refused where demo inventory isn't allowed).
   const clock = now || (() => new Date());
   const inventory = config.trips.enabled ? createTripIntegrations(config, { now: clock, overrides: tripOverrides }) : null;
-  let tripService = null, accounts = null, agent = null, hunts = null, business = null;
+  // Accounts (sign-in, sessions) run for Travel by Budget and for Tripelyx Business, which works with
+  // Travel by Budget off too.
+  const accounts = inventory || config.business.enabled ? new Accounts({ store, config, now: clock }) : null;
+  let tripService = null, agent = null, hunts = null, business = null;
   if (inventory) {
     const notifier = createNotifier(config, { store, now: clock, log });
     tripService = new TripService({ inventory, store, notifier, config, now: clock, log });
-    accounts = new Accounts({ store, config, now: clock });
     // The AI Savings Hunter: stored hunts, re-run on open and on a timer (server/trips/hunts). The
     // timer stays off under the test runner, where tests call runDue themselves.
     hunts = new HuntService({ store, inventory, settings: () => tripService.settings(), notifier, now: clock, log, config });
@@ -62,9 +78,14 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
   } else if (config.trips.enabled) {
     log.warn('[trips] Travel by Budget is off: mock trip inventory is not allowed here (set ALLOW_DEMO_INVENTORY=true or name real TRIP_*_PROVIDER adapters).');
   }
+  // Platform admins (D1): grandfathered ADMIN_EMAILS accounts get their platform_admin record at boot.
+  if (accounts) await accounts.seedPlatformAdmins({ log });
   // Tripelyx Business (server/business): built only when ENABLE_BUSINESS is on, with Travel by Budget on or off.
-  // Its menu item, header class and footer link follow it (ctx.businessNav, server/views/layout.js).
-  business = config.business.enabled ? new BusinessService({ store, tripService, config, now: clock, log }) : null;
+  // It reaches the store only through its Repo. Its menu item, header class and footer link follow it
+  // (ctx.businessNav, server/views/layout.js).
+  business = config.business.enabled
+    ? new BusinessService({ repo: new Repo({ store, now: clock, log }), accounts, config, now: clock, log })
+    : null;
 
   const app = express();
   app.disable('x-powered-by');
@@ -130,30 +151,23 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
     businessNav: !!business,
   };
 
-  // Tripelyx Business public routes: the white-label client pages and each agency's brand.css and logo.
-  // They mount before "who is asking" so they never read the session cookie or set the Tripelyx visitor
-  // cookie (plan §G), and before agentRouter and tripsRouter, whose path-less r.use() header setters would
-  // otherwise run first. Neither needs req.user. They have their own limiters, never the shared writeLimiter.
-  const bizLim = business ? createBusinessLimits(config.business, { logger: log }) : null;
-  if (business) {
-    app.use('/business/brand', brandRouter(ctx, bizLim));
-    app.use('/business/p', clientRouter(ctx, { ...bizLim, sameOrigin }));
-  }
-
   // Who is asking: the signed-in user (session cookie) and an anonymous visitor id for the funnel.
   if (tripService) {
     app.use(async (req, res, next) => {
       try {
-        // A request under the Business client or brand paths that fell through to the 404 stays anonymous
-        // too: no session read, no visitor cookie.
-        if (business && BUSINESS_PUBLIC_PATH.test(req.path)) {
-          req.user = null;
-          req.visitor = null;
-          return runWithContext({ user: null, visitor: null }, () => next());
-        }
         req.user = await accounts.userFromRequest(req);
         req.visitor = visitorId(req, req.path.startsWith('/api/') ? null : res, config);
         runWithContext({ user: req.user, visitor: req.visitor }, () => next());
+      } catch (e) { next(e); }
+    });
+  } else if (business) {
+    // Business with Travel by Budget off: read the session for the Business pages only, and set no visitor
+    // cookie (the funnel belongs to Travel by Budget). Every other page stays exactly as it is with trips off.
+    app.use(['/business', '/admin/business'], async (req, res, next) => {
+      try {
+        req.user = await accounts.userFromRequest(req);
+        req.visitor = null;
+        runWithContext({ user: req.user, visitor: null }, () => next());
       } catch (e) { next(e); }
     });
   }
@@ -165,16 +179,12 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
   // Searches and the downward price search price hundreds of packages per request.
   const computeLimiter = rateLimit({ windowMs: 60 * 1000, limit: 120, standardHeaders: 'draft-7', legacyHeaders: false });
   app.use('/api', apiLimiter, apiRouter(ctx, { writeLimiter }));
+  // Tripelyx Business mounts (plan §J), when Business is on: the platform admin page at /admin/business
+  // before /admin (it works with trips off too), then the Business routers (routes/business/index.js) after
+  // /admin and before agentRouter, whose path-less r.use() header setters would otherwise run first (with
+  // trips off: before pagesRouter). None defines GET /business: pagesRouter serves the company page.
   if (tripService) {
     app.use('/admin', adminRouter(ctx, { writeLimiter }));
-    if (business) {
-      // The signed-in Business routers (they need req.user) mount here, after /admin and before
-      // agentRouter and tripsRouter, whose path-less r.use() header setters would otherwise run first.
-      // Neither defines GET /business (pagesRouter serves it). /business/brand and /business/p are
-      // mounted above, before "who is asking".
-      app.use('/business', previewRouter(ctx, { ...bizLim, sameOrigin }));
-      app.use('/business', businessRouter(ctx, { ...bizLim, sameOrigin }));
-    }
     app.use('/', agentRouter(ctx, { writeLimiter, computeLimiter, sameOrigin }));
     app.use('/', huntsRouter(ctx, { writeLimiter, computeLimiter, sameOrigin }));
     app.use('/', tripsRouter(ctx, { writeLimiter, computeLimiter }));
@@ -193,7 +203,7 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
     const known = err instanceof AppError;
     const status = known ? err.status : (err.status === 400 && err.type === 'entity.parse.failed' ? 400 : 500);
     const ref = id('err').slice(4, 14);
-    if (!known && status >= 500) log.error(`[error ${ref}] ${req.method} ${req.originalUrl}`, err);
+    if (!known && status >= 500) log.error(`[error ${ref}] ${req.method} ${redactUrl(req.originalUrl)}`, err);
     const body = known
       ? { code: err.code, message: err.message, details: err.details }
       : status === 400
@@ -206,4 +216,4 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
   return { app, engine, store, registry, payments, ctx, tripService, accounts, agent, hunts, business };
 }
 
-module.exports = { createApp };
+module.exports = { createApp, redactUrl };
