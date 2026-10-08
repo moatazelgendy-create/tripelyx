@@ -316,6 +316,11 @@ deployments on `staging`.
 
 ## Assets
 
-Photography is derived from Alamein Go's own `public/hero-beach.jpg`; illustrations, icons, device
-mockups and demo images are original. The Inter font is bundled under the SIL Open Font License
+The homepage's pictures (`public/img/home-*.webp`: the hero, the Alamein Go card, the laptop and
+phone screens and the partner band, which the other company pages reuse) are cropped from the
+homepage design picture the owner supplied, with the design's text and buttons painted out, and
+enlarged with ImageMagick (Lanczos, light sharpening) for 1x and 2x screens; no new imagery was
+generated or taken from a stock library for them. The rest of the photography (`coast-hero.*`,
+`brand-alameingo.webp`) is derived from Alamein Go's own `public/hero-beach.jpg`. Illustrations,
+icons, device frames and demo images are original. The Inter font is bundled under the SIL Open Font License
 (see `public/fonts/OFL.txt`).

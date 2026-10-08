@@ -64,6 +64,8 @@ function assertCorporateHome(page) {
   assert.match(page.text, /Built for travelers\. Designed for partners\./);
   assert.match(page.text, /Let’s build the future of travel — together\./);
   assert.doesNotMatch(page.text, /How much do you|tb-hero|action="\/agent"|\/js\/trips\.js/, 'the AI travel agent is not on the corporate homepage');
+  assert.doesNotMatch(page.text, /home-search|data-tabs|role="tablist"|<form/, 'no booking search on the homepage; it lives on /book');
+  assert.deepEqual([...page.text.matchAll(/<a class="vertical-tile" href="([^"]*)">/g)].map(m => m[1]), ['/book/hotels', '/book/cars', '/book/transfers', '/book/yachts', '/book/experiences'], 'the Alamein Go tiles open the booking pages');
 }
 
 // The AI travel agent's homepage as main served it at "/": the trip chrome, its title, its headings and forms.
@@ -174,15 +176,16 @@ test('every other page keeps the trip header, trip footer and environment banner
   assert.deepEqual([signout.status, signout.location], [303, '/ai-travel-agent']);
 });
 
-test('Our Brands and Technology list the Tripelyx AI Travel Agent and link to it, only where it runs', async t => {
+test('Our Brands lists the Tripelyx AI Travel Agent as a brand card next to Alamein Go and links to it, only where it runs', async t => {
   const app = await live();
   t.after(app.close);
-  const card = /<article class="card mt-28">\s*<span class="card-icon">[\s\S]*?<\/span>\s*<h2>Tripelyx AI Travel Agent<\/h2>\s*<p class="mb-16">Tell us what you want your trip to do\. The AI builds it\.<\/p>\s*<a class="btn btn-navy btn-lg" href="\/ai-travel-agent">Tell us your budget /;
+  const card = /<article class="brand-card brand-card-ai">\s*<div class="brand-card-media" aria-hidden="true"><svg class="icon"[^>]*><use href="#i-sparkle"\/><\/svg><\/div>\s*<div class="brand-card-body">\s*<h2 class="brand-logo"><span class="ai-wordmark">Tripelyx <span>AI Travel Agent<\/span><\/span><\/h2>\s*<p class="brand-tagline">Tell us what you want your trip to do\. The AI builds it\.<\/p>\s*<p class="brand-text">One number\. The agent finds where, when, how long, which flight and which hotel, builds three different vacations for it, and asks you only when it needs a real decision\.<\/p>\s*<a class="btn btn-navy btn-lg" href="\/ai-travel-agent">Tell us your budget /;
   const brands = (await get(app, '/brands')).text;
   assert.match(brands, card);
-  assert.ok(brands.indexOf('Visit Alamein Go') < brands.indexOf('Tripelyx AI Travel Agent'), 'listed next to Alamein Go');
-  assert.match((await get(app, '/technology')).text, card);
-  for (const path of ['/', '/partners', '/about', '/contact']) assert.doesNotMatch((await get(app, path)).text, /ai-travel-agent/, `${path}: no link to the AI travel agent`);
+  assert.deepEqual(brands.match(/<article class="brand-card[^"]*">/g), ['<article class="brand-card">', '<article class="brand-card brand-card-ai">'], 'the second brand card, after Alamein Go');
+  assert.ok(brands.indexOf('Visit Alamein Go') < brands.indexOf('brand-card-ai'), 'listed after Alamein Go');
+  assert.equal(brands.match(/href="\/ai-travel-agent"/g).length, 1, 'one link to it on Our Brands');
+  for (const path of ['/', '/technology', '/partners', '/about', '/contact']) assert.doesNotMatch((await get(app, path)).text, /ai-travel-agent|AI Travel Agent/, `${path}: the AI travel agent is only on Our Brands`);
 
   const off = await startApp({ ENABLE_TRIPS: 'false' });
   t.after(off.close);

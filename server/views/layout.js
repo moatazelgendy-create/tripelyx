@@ -1,5 +1,5 @@
 const { html, raw } = require('../lib/html');
-const { sprite, icon } = require('./icons');
+const { sprite, companySprite, icon } = require('./icons');
 const { current } = require('../lib/requestContext');
 
 const NAV = [
@@ -117,8 +117,8 @@ ${canonical && ctx.config && ctx.config.publicBaseUrl ? html`<link rel="canonica
 ${noindex ? raw('<meta name="robots" content="noindex">') : ''}
 ${ctx.preload || ''}
 </head>
-<body class="${bodyClass}">
-${sprite}
+<body class="${corporate ? `corp ${bodyClass}`.trim() : bodyClass}">
+${sprite}${corporate ? companySprite : ''}
 <a class="skip-link" href="#main">Skip to content</a>
 ${ctx.envBanner && !corporate ? html`<aside class="env-banner" aria-label="Environment notice">${ctx.envBanner}</aside>` : ''}
 ${header(active, trips)}

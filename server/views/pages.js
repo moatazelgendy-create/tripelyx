@@ -27,14 +27,18 @@ function partnerBand() {
 </section>`;
 }
 
-// The AI travel agent, a Tripelyx product with its own homepage; listed only where it runs.
+// The AI travel agent, a Tripelyx product with its own homepage, as a second brand card on Our Brands;
+// listed only where it runs. Its copy is the agent's own.
 function aiAgentCard(ctx) {
   if (!ctx.trips) return '';
-  return html`<article class="card mt-28">
-      <span class="card-icon">${icon('sparkle')}</span>
-      <h2>Tripelyx AI Travel Agent</h2>
-      <p class="mb-16">Tell us what you want your trip to do. The AI builds it.</p>
-      <a class="btn btn-navy btn-lg" href="/ai-travel-agent">Tell us your budget ${icon('arrow')}</a>
+  return html`<article class="brand-card brand-card-ai">
+      <div class="brand-card-media" aria-hidden="true">${icon('sparkle')}</div>
+      <div class="brand-card-body">
+        <h2 class="brand-logo"><span class="ai-wordmark">Tripelyx <span>AI Travel Agent</span></span></h2>
+        <p class="brand-tagline">Tell us what you want your trip to do. The AI builds it.</p>
+        <p class="brand-text">One number. The agent finds where, when, how long, which flight and which hotel, builds three different vacations for it, and asks you only when it needs a real decision.</p>
+        <a class="btn btn-navy btn-lg" href="/ai-travel-agent">Tell us your budget ${icon('arrow')}</a>
+      </div>
     </article>`;
 }
 
@@ -121,7 +125,6 @@ ${pageHero({ eyebrow: 'Our Technology', title: 'A complete travel commerce platf
     <div class="grid-4">
       ${verticals.map(([i, t, d]) => html`<div class="card"><span class="card-icon">${icon(i)}</span><h3>${t}</h3><p>${d}</p></div>`)}
     </div>
-    ${aiAgentCard(ctx)}
   </div>
 </section>
 <section class="section">
