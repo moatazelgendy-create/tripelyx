@@ -2,6 +2,7 @@ const express = require('express');
 const { homeView } = require('../views/home');
 const { refine, parseRefine } = require('../booking/refine');
 const { brandsView, technologyView, partnersView, aboutView, contactView } = require('../views/pages');
+const { businessMarketingView } = require('../views/business/marketing');
 const { bookView, bookIndexView, offerView, checkoutView, bookingView, manageView, defaultsFor } = require('../views/book');
 const { notFoundView } = require('../views/errors');
 const { tripCheckoutView, tripBookingView } = require('../views/trips/pages');
@@ -29,6 +30,9 @@ function pagesRouter(ctx, { writeLimiter }) {
   r.get('/partners', (req, res) => send(res, partnersView(ctx)));
   r.get('/about', (req, res) => send(res, aboutView(ctx)));
   r.get('/contact', (req, res) => send(res, contactView(ctx)));
+  // Tripelyx Business's company page renders with Travel by Budget off and with Business off; the workspace
+  // under /business/... is mounted in app.js only when Business runs.
+  r.get('/business', (req, res) => send(res, businessMarketingView(ctx)));
 
   r.get('/book', (req, res) => send(res, bookIndexView(ctx)));
 

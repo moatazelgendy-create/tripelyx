@@ -176,7 +176,15 @@ ${pageHero({ eyebrow: 'Partners', title: 'Let’s build the future of travel', a
   return layout({ title: 'Partners', active: 'partners', body, ctx, scripts: ['/js/forms.js'], corporate: true });
 }
 
+// The select under the email field, per form: the partner form, the Business form on /business, and Contact.
+const LEAD_TYPES = {
+  partner: ['Partnership type', ['Property owner', 'Transport company', 'Activity provider', 'Destination', 'Other']],
+  business: ['Business type', ['Travel agency', 'Independent travel advisor', 'Host agency or consortium', 'Travel creator', 'Employer or benefits platform', 'Bank or rewards program', 'Other']],
+  contact: ['Topic', ['General enquiry', 'Partnerships', 'Press', 'Careers', 'Booking support']],
+};
+
 function leadForm(kind) {
+  const [typeLabel, types] = LEAD_TYPES[kind] || LEAD_TYPES.contact;
   return html`<form class="form-card form" data-lead-form novalidate>
     <div class="form-row">
       <div class="field"><label for="lf-name">Your name</label><input id="lf-name" name="name" autocomplete="name" required maxlength="100"><p class="field-error" data-error-for="name"></p></div>
@@ -184,10 +192,8 @@ function leadForm(kind) {
     </div>
     <div class="form-row">
       <div class="field"><label for="lf-email">Email</label><input id="lf-email" name="email" type="email" autocomplete="email" required maxlength="120"><p class="field-error" data-error-for="email"></p></div>
-      <div class="field"><label for="lf-type">${kind === 'partner' ? 'Partnership type' : 'Topic'}</label>
-        <select id="lf-type" name="type">${(kind === 'partner'
-          ? ['Property owner', 'Transport company', 'Activity provider', 'Destination', 'Other']
-          : ['General enquiry', 'Partnerships', 'Press', 'Careers', 'Booking support']).map(o => html`<option>${o}</option>`)}</select></div>
+      <div class="field"><label for="lf-type">${typeLabel}</label>
+        <select id="lf-type" name="type">${types.map(o => html`<option>${o}</option>`)}</select></div>
     </div>
     <div class="field"><label for="lf-message">Message</label><textarea id="lf-message" name="message" required maxlength="2000"></textarea><p class="field-error" data-error-for="message"></p></div>
     <div class="sr-only" aria-hidden="true"><label for="lf-website">Website</label><input id="lf-website" name="website" tabindex="-1" autocomplete="off"></div>
@@ -243,4 +249,4 @@ ${pageHero({ eyebrow: 'Contact', title: 'Let’s talk.', lead: 'Questions about 
   return layout({ title: 'Contact', active: 'contact', body, ctx, scripts: ['/js/forms.js'], corporate: true });
 }
 
-module.exports = { brandsView, technologyView, partnersView, aboutView, contactView, pageHero };
+module.exports = { brandsView, technologyView, partnersView, aboutView, contactView, pageHero, leadForm, LEAD_TYPES };

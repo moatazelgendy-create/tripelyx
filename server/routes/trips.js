@@ -542,10 +542,10 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
     landing(req, res, next, { title: `Trips under $${n.toLocaleString('en-US')}`, eyebrow: 'Budget inspiration', lead: `Complete trips (flights, hotel and more) for under $${n.toLocaleString('en-US')}, taxes and fees included. Change the budget to see what else is possible.`, intro: `What $${n.toLocaleString('en-US')} really buys${raw.style ? ` for a ${raw.style} trip` : ''}.`, canonical: `/trips-under-${n}`, budget: n, raw, moreLinks: [500, 1000, 1500, 2000, 3000, 5000].filter(x => x !== n).slice(0, 3).map(x => [`/trips-under-${x}`, `Trips under $${x.toLocaleString('en-US')}`, '']) });
   });
 
-  r.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nDisallow: /trip/\nDisallow: /trips\nDisallow: /compare\nDisallow: /plan\nDisallow: /checkout/\nDisallow: /booking/\nDisallow: /admin\nDisallow: /my-trips\n${config.publicBaseUrl ? `Sitemap: ${config.publicBaseUrl}/sitemap.xml\n` : ''}`));
+  r.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nDisallow: /trip/\nDisallow: /trips\nDisallow: /compare\nDisallow: /plan\nDisallow: /checkout/\nDisallow: /booking/\nDisallow: /admin\nDisallow: /my-trips\nDisallow: /business/\n${config.publicBaseUrl ? `Sitemap: ${config.publicBaseUrl}/sitemap.xml\n` : ''}`));
   r.get('/sitemap.xml', (req, res) => {
     const base = config.publicBaseUrl || '';
-    const urls = ['/', '/ai-travel-agent', '/how-it-works', '/faq', '/destinations', '/beach-vacations', '/about', '/contact', ...[500, 1000, 1500, 2000, 3000, 5000].map(n => `/trips-under-${n}`), ...svc.inv.maps.listDestinations().map(d => `/trips-to-${slug(d.name)}`)];
+    const urls = ['/', '/ai-travel-agent', '/how-it-works', '/faq', '/destinations', '/beach-vacations', '/about', '/contact', '/business', ...[500, 1000, 1500, 2000, 3000, 5000].map(n => `/trips-under-${n}`), ...svc.inv.maps.listDestinations().map(d => `/trips-to-${slug(d.name)}`)];
     res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.map(u => `  <url><loc>${base}${u}</loc></url>`).join('\n')}\n</urlset>\n`);
   });
 
