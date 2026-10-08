@@ -23,7 +23,9 @@ class BusinessDemoHotels extends MockHotelProvider {
 
   /**
    * MockHotelProvider.buildOffers over this.hotels: the hotels matching `where` (or the one offerId), with a
-   * room that fits the guests, cheapest first.
+   * room big enough for the guests, cheapest first. Unlike the mock, a hotel whose every room is sold out for
+   * the stay is still offered (its options say available:false), so a Business search shows it as rows that
+   * are not available (plan §F4) instead of leaving it out.
    * @param {{ where: string, checkIn: string, checkOut: string, guests: number }} query
    * @param {{ offerId?: string }} [opts]
    * @returns {object[]} provider Offers from this.hotels, cheapest first
@@ -34,7 +36,7 @@ class BusinessDemoHotels extends MockHotelProvider {
       .filter(h => !offerId || `htl_${h.hotel_code}` === offerId)
       .filter(h => offerId || matchesText([h.name, h.area, h.city, h.country, h.category], query.where))
       .map(h => this.toOffer(h, query, nights))
-      .filter(o => offerId || o.options.some(opt => opt.available && opt.capacity >= query.guests))
+      .filter(o => offerId || o.options.some(opt => opt.capacity >= (query.guests || 1)))
       .sort((a, b) => a.fromPrice.amount - b.fromPrice.amount);
   }
 

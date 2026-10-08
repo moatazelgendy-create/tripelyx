@@ -202,6 +202,16 @@ test('demo hotels: 29 fictional properties, no ratings or reviews, every Busines
   assert.equal(new Set(all.map(h => h.hotel_code)).size, all.length, 'no code clashes with the Alamein Go data');
   assert.equal(new Set(all.map(h => h.name)).size, all.length, 'no name clashes either');
   const brands = /\b(hilton|marriott|hyatt|sheraton|westin|ritz|carlton|four seasons|intercontinental|holiday inn|crowne|radisson|novotel|ibis|sofitel|mercure|pullman|accor|fairmont|raffles|kempinski|shangri|mandarin|peninsula|jumeirah|rotana|m[öo]venpick|swiss[öo]tel|steigenberger|wyndham|ramada|best western|hampton|conrad|waldorf|st\.? regis|m[ée]ridien|aloft|premier inn|travelodge|rosewood|aman|armani|atlantis|rixos|hard rock|banyan|anantara|one ?& ?only|kimpton|citizenm|motel one|melia|barcel[óo]|iberostar|savoy|dorchester|claridge|langham|corinthia|belmond|oberoi|taj|ascott|citadines|adagio|doubletree|bulgari|cipriani|hassler|pera palace|[cç][ıi]ra[gğ]an|grande bretagne|bayerischer|mena house|le bristol|plaza ath[ée]n[ée]e|george v|address|vida|rove|emaar|nobu|sls|w hotel|edition|mgallery|nh |leonardo|scandic|hotel indigo|staybridge|novum|motel)\b/i;
+  // A same-city web search on all 29 names (8 Oct 2026) found real hotels whose distinctive name these demo
+  // names used to share: Riverside Hotel (Cairo), Aureliano and Hotel Fontanella Borghese (Rome), Elia Ermou
+  // (Athens), Hotel Bel Oranger (Paris); Lotus Hotel (Cairo) and Hotel Vespasiano (Rome) sat close to names
+  // tried in their place. No demo hotel, code or room may carry those words in that city.
+  const realHere = { Cairo: /\b(riverside|lotus)\b/i, Rome: /\b(aureliano|fontanella|vespasiano)\b/i, Athens: /\belia\b/i, Paris: /\boranger\b/i };
+  for (const h of BUSINESS_HOTELS) {
+    if (realHere[h.city]) {
+      assert.doesNotMatch([h.name, h.hotel_code, ...h.rooms.map(r => r.name)].join(' '), realHere[h.city], `${h.name}: not the name of a real hotel in ${h.city}`);
+    }
+  }
   for (const h of BUSINESS_HOTELS) {
     assert.ok(!('review_score' in h) && !('review_count' in h), `${h.hotel_code}: no review score or count`);
     assert.doesNotMatch(h.name, brands, `${h.name}: no well-known hotel brand`);

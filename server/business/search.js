@@ -12,6 +12,8 @@
 //   arrival's local date when every available outbound itinerary lands on a later date (an overnight
 //   flight): one way the nights are kept (check-out moves too); with a return the check-out stays the return
 //   date, and nothing moves if that would leave no night. SearchResult.query is the query as searched.
+//   (This is the rule Stage 0 froze in parseTripQuery's JSDoc. While a same-day flight exists the stay starts
+//   on the departure date for every pick, which also holds the room for an early-morning arrival.)
 // - A currency other than the org's (USD): 422 'unsupported_currency', "Priced in another currency, not supported yet".
 // - The benchmarks are plan §E2's median with outliers removed, computed here so the composer needs no policy
 //   engine (the same rule as policy/benchmark.js; test/business-search.test.js checks the two agree).
@@ -25,10 +27,12 @@
 //     ±1, ±2, ±3 days, legs and hotel moving together, nights kept, never in the past; 1 to 3 per shift) ·
 //     room (a cheaper room, same hotel; 0) · hotel (another hotel in the same city, its cheapest room; 0) ·
 //     all_within (0; only when the caller passes `evaluate`, since the composer holds no policy).
-//   The pick's own legs are searched once more for the 0-search kinds (the same search the results page
-//   showed; not counted as extra, and skipped when the caller hands over that SearchResult as `searched`).
-//   At most maxSearches (20) extra searches and POOL_CAP (200) candidates; truncated when either cuts
-//   anything. Never a different destination or route.
+//   The 0-search kinds come from the pick's own legs: the SearchResult the caller hands over as `searched`
+//   (no search), else those legs searched once more, and a leg whose pick sits in another cabin than the
+//   query's (a swapped-in cabin alternative) is always searched again in that cabin. Every provider search
+//   variants() makes counts: at most maxSearches (20) in all, spent on the pick's legs first, then cabin,
+//   then the date shifts closest first; `searches` is the number that ran. At most POOL_CAP (200)
+//   candidates. truncated when either cap cuts anything. Never a different destination or route.
 const { AppError } = require('../lib/errors');
 const { isIsoDate, addDays, daysBetween } = require('../lib/dates');
 const { validateOffer, validateQuote } = require('../providers/contracts');
@@ -90,13 +94,14 @@ function field(raw, name) {
  * search() again (which moves checkIn the same way) and prices and stores that SearchResult.query. Nothing
  * is ever priced with this function's output directly when a hotel is in the trip.)
  * Blank cabin means economy; blank nights (one way with a hotel) means 1; hotel and flex are checkboxes
- * ('1' or 'on'). Unknown fields are ignored; a repeated field is an error on that field.
+ * ('1' or 'on'). Unknown fields are ignored; a repeated field is an error on that field (the checkboxes
+ * too: a repeated hotel or flex box is never read as unticked).
  * @param {import('./types').RawTripQuery} raw
  * @param {{ today: string, airports: Array<{ code: string }>, cityFor: (iata: string) => { city: string, country: string }|null }} opts
  *   today: tz.localDate(org.timezone, now)
  * @returns {import('./types').TripQuery}
  * @throws {AppError} 422 'invalid_query', 'Check the highlighted fields.', details keyed by raw field name
- *   (from, to, depart, return, nights, cabin)
+ *   (from, to, depart, return, nights, cabin; hotel and flex only when repeated)
  * @throws {Error} a malformed `today` (a programming error)
  */
 function parseTripQuery(raw, { today, airports = [], cityFor = null } = {}) {
@@ -128,7 +133,11 @@ function parseTripQuery(raw, { today, airports = [], cityFor = null } = {}) {
   const cabin = cabinRaw === '' ? 'economy' : cabinRaw;
   if (!CABINS.includes(cabin)) details.cabin = 'Choose a cabin.';
 
-  const wantsHotel = CHECKED.has(field(r, 'hotel'));
+  const hotelBox = field(r, 'hotel');
+  if (hotelBox === null) details.hotel = 'Choose whether you need a hotel.';
+  const flexBox = field(r, 'flex');
+  if (flexBox === null) details.flex = 'Choose whether your dates can move.';
+  const wantsHotel = CHECKED.has(hotelBox);
   let nights = null;
   if (wantsHotel && !ret) {
     const n = field(r, 'nights');
@@ -146,7 +155,7 @@ function parseTripQuery(raw, { today, airports = [], cityFor = null } = {}) {
   }
   return {
     from, to, departDate: depart, returnDate: ret || null, cabin, passengers: 1,
-    datesFlexible: CHECKED.has(field(r, 'flex')), hotel,
+    datesFlexible: CHECKED.has(flexBox), hotel,
   };
 }
 
@@ -285,10 +294,12 @@ class TripComposer {
    * @param {import('./types').RawTripQuery} raw
    * @param {{ today: string }} opts
    * @returns {import('./types').TripQuery}
-   * @throws {AppError} 422 'invalid_query' with per-field details
+   * @throws {AppError} 422 'invalid_query' with per-field details; 503 'no_supplier' when inventory.status is
+   *   'none' (there is no airport list to check a search against, so no field is blamed)
    */
   parseQuery(raw, { today } = {}) {
-    const inv = this.inventory || {};
+    this._ready();
+    const inv = this.inventory;
     const airports = typeof inv.airports === 'function' ? inv.airports() : [];
     return parseTripQuery(raw, { today, airports, cityFor: iata => (typeof inv.cityFor === 'function' ? inv.cityFor(iata) : null) });
   }
@@ -353,9 +364,11 @@ class TripComposer {
    *   searched?: import('./types').SearchResult, today?: string }} opts
    *   evaluate (optional): a row's policy verdict (this.policy.evaluateComponent with the request's EvalCtx);
    *   without it there is no 'all_within' candidate. searched (optional): the SearchResult the pick came from,
-   *   reused for the 0-search kinds when it is the same query. today (optional): the org's local date, the
-   *   earliest a 'dates' shift may leave (default: the UTC date of now()). maxSearches is capped at 20.
-   * @returns {Promise<import('./types').VariantResult>} searches: the extra searches made
+   *   reused for the 0-search kinds when it is the same query (a leg picked in another cabin is searched
+   *   again). today (optional): the org's local date, the earliest a 'dates' shift may leave (default: the
+   *   UTC date of now()). maxSearches is capped at 20.
+   * @returns {Promise<import('./types').VariantResult>} searches: every provider search this call made (the
+   *   pick's own legs too, when they were not handed over), never more than maxSearches
    * @throws {AppError} 422 'invalid_selection'; 503 'no_supplier'
    */
   async variants(query, selection, { datesFlexible = false, maxSearches = MAX_SEARCHES, evaluate = null, searched = null, today = null } = {}) {
@@ -387,16 +400,19 @@ class TripComposer {
       candidates.push({ change, selection: selectionNow, query: copyQuery(q), rows: structuredClone(rows), totalCents: total });
     };
 
-    // The pick's own legs: the same search the results came from (reused when handed over).
+    // The pick's own legs: the same search the results came from when handed over (no search), else searched
+    // again, each search counted. A leg the budget cannot reach has no pool, so no 0-search kind for it.
     const reuse = searched && searched.query && sameSearch(searched.query, query) ? searched : null;
     const pools = {};
-    await Promise.all(comps.map(async c => {
-      if (c === 'hotel') {
-        pools.hotel = reuse && reuse.legs.hotel ? reuse.legs.hotel.rows : (await this._hotelLeg(query.hotel, pricedAt)).rows;
-      } else {
-        const leg = reuse && reuse.legs[c] && pick[c].cabin === query.cabin ? reuse.legs[c] : await this._flightLeg(c, query, pick[c].cabin, pricedAt);
-        pools[c] = leg.rows;
-      }
+    const again = [];
+    for (const c of comps) {
+      const handed = reuse && reuse.legs[c] && (c === 'hotel' || pick[c].cabin === query.cabin) ? reuse.legs[c] : null;
+      if (handed) pools[c] = handed.rows;
+      else if (spend(1)) again.push(c);
+      else pools[c] = [];
+    }
+    await Promise.all(again.map(async c => {
+      pools[c] = (c === 'hotel' ? await this._hotelLeg(query.hotel, pricedAt) : await this._flightLeg(c, query, pick[c].cabin, pricedAt)).rows;
     }));
 
     // fare, flight, stops, room, hotel: one component changes, from the same search.

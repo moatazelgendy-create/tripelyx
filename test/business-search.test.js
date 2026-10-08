@@ -5,9 +5,9 @@ const assert = require('node:assert/strict');
 const { parseTripQuery, TripComposer, MAX_PRICED_PER_LEG, MAX_SEARCHES, MAX_DAYS_AHEAD, MAX_TRIP_DAYS, NIGHTS_RANGE, FLEX_DAYS } = require('../server/business/search');
 const { recheck } = require('../server/business/recheck');
 const { createBusinessInventory } = require('../server/business/inventory');
-const { BusinessDemoFlights } = require('../server/business/demo/flights');
+const { BusinessDemoFlights, FARE_TERMS } = require('../server/business/demo/flights');
 const { BusinessDemoHotels } = require('../server/business/demo/hotels');
-const { BUSINESS_HOTELS } = require('../server/business/demo/hotels-data');
+const { BUSINESS_HOTELS, BUSINESS_CITIES } = require('../server/business/demo/hotels-data');
 const dto = require('../server/business/dto');
 const { CABIN_RANK, CABINS } = require('../server/business/constants');
 const { addDays, daysBetween } = require('../server/lib/dates');
@@ -98,6 +98,10 @@ test('parseTripQuery: 422 with an error for every bad field, keyed by the form f
   assert.deepEqual(Object.keys(details({ from: 'CAI', to: 'LHR', depart: '2026-11-12', return: 'soon' })), ['return']);
   assert.deepEqual(Object.keys(details({ from: ['CAI', 'DXB'], to: 'LHR', depart: '2026-11-12' })), ['from'], 'a repeated field');
   assert.deepEqual(Object.keys(details({ from: 'CAI', to: 'LHR', depart: ['2026-11-12'] })), ['depart']);
+  // The checkboxes too: a repeated hotel or flex box is an error, never a silent "unticked".
+  assert.deepEqual(details({ ...RAW, hotel: ['1', '1'] }), { hotel: 'Choose whether you need a hotel.' });
+  assert.deepEqual(details({ ...RAW, flex: ['1', '1'] }), { flex: 'Choose whether your dates can move.' });
+  assert.deepEqual(Object.keys(details({ ...RAW, from: 'XXX', hotel: ['1'], flex: [] })).sort(), ['flex', 'from', 'hotel']);
   for (const nights of ['0', '15', '2.5', 'abc', '-1', '007']) {
     assert.deepEqual(details({ from: 'CAI', to: 'LHR', depart: '2026-11-12', hotel: '1', nights }), { nights: `Choose ${NIGHTS_RANGE[0]} to ${NIGHTS_RANGE[1]} nights.` }, nights);
   }
@@ -119,8 +123,12 @@ test('parseTripQuery: departure from today (the company\'s date) to 330 days ahe
   assert.throws(() => parse({ from: 'CAI', to: 'LHR', depart: '2026-10-09' }, '2026-10-10'), e => e.code === 'invalid_query');
   assert.throws(() => parseTripQuery(RAW, { today: '9 Oct', airports: [] }), /today/);
   assert.throws(() => parseTripQuery(RAW, { today: TODAY, airports: [] }), e => Boolean(e.details.from && e.details.to), 'no airports, no search');
+  // With no supplier there is no airport list to check against: "Supplier not connected yet", not field errors.
   const none = new TripComposer({ inventory: createBusinessInventory({ allowDemoInventory: false }, { registry: { get: () => null } }), now });
-  assert.throws(() => none.parseQuery(RAW, { today: TODAY }), e => e.code === 'invalid_query');
+  for (const raw of [RAW, {}]) {
+    assert.throws(() => none.parseQuery(raw, { today: TODAY }), e => e.code === 'no_supplier' && e.status === 503 && /^Supplier not connected yet\./.test(e.message));
+  }
+  assert.throws(() => new TripComposer({}).parseQuery(RAW, { today: TODAY }), e => e.code === 'no_supplier');
 });
 
 // ---------------------------------------------------------------------------------------------------------
@@ -243,6 +251,40 @@ test('search: an unavailable option is a row with the flag and no price, and is 
   assert.deepEqual(p.unavailable, ['out']);
   assert.equal(p.totalCents, null);
   assert.equal(p.rows.out.available, false);
+});
+
+test('search: a hotel whose every room is sold out for the stay shows as unavailable rows, never disappears', async () => {
+  // Find a stay (the demo provider decides availability per room and night) where one Business hotel has no
+  // room left at all, and keep the city's other hotels to compare.
+  const provider = new BusinessDemoHotels();
+  let found = null;
+  for (let d = 0; d < 120 && !found; d++) {
+    const checkIn = addDays(TODAY, d), checkOut = addDays(checkIn, 4);
+    for (const h of BUSINESS_HOTELS) {
+      const offer = await provider.getOffer(`htl_${h.hotel_code}`, { where: h.city, checkIn, checkOut, guests: 1 });
+      if (offer.options.every(o => !o.available)) { found = { h, checkIn }; break; }
+    }
+  }
+  assert.ok(found, 'some stay has a fully sold-out demo hotel');
+  const { h, checkIn } = found;
+  const offers = await provider.search({ where: h.city, checkIn, checkOut: addDays(checkIn, 4), guests: 1 });
+  assert.ok(offers.some(o => o.id === `htl_${h.hotel_code}`), 'the provider still offers it');
+  const to = BUSINESS_CITIES.find(c => c.city === h.city).iata;
+  const from = to === 'CAI' ? 'DXB' : 'CAI';
+  const { composer, hotels } = overrideComposer();
+  const r = await composer.search(parse({ from, to, depart: checkIn, hotel: '1', nights: '4' }));
+  assert.equal(r.query.hotel.checkIn, checkIn);
+  const mine = r.legs.hotel.rows.filter(x => x.offerId === `htl_${h.hotel_code}`);
+  assert.deepEqual(mine.map(x => x.optionId).sort(), h.rooms.map(x => x.code).sort(), 'every room is a row');
+  for (const row of mine) {
+    assert.equal(row.available, false);
+    assert.equal(row.totalCents, null);
+    assert.equal(row.nightlyCents, null);
+    assert.deepEqual(row.lines, []);
+  }
+  assert.equal(hotels.calls.quote, r.legs.hotel.rows.filter(x => x.available).length, 'sold-out rooms are never quoted');
+  assert.equal(r.legs.hotel.rows.at(-1).available, false, 'unavailable rows sort last');
+  assert.deepEqual(r.legs.hotel.benchmark.incl_taxes, referenceBenchmark(perOffer(r.legs.hotel.rows, x => x.nightlyInclCents)), 'the benchmark counts available rooms only');
 });
 
 // ---------------------------------------------------------------------------------------------------------
@@ -368,6 +410,55 @@ test('recheck: an option gone from the inventory altogether is unavailable, not 
   await assert.rejects(composer.price(request.selection, request.query), e => e.code === 'invalid_selection', 'price() alone still refuses it');
 });
 
+/** Demo flights whose Flex quote can turn to Light's terms at the same price (a supplier changing its terms). */
+class TermsFlights extends BusinessDemoFlights {
+  async quote(input) {
+    const q = await super.quote(input);
+    return this.lightTerms && input.optionId === 'FLEX' ? { ...q, cancellation: { ...FARE_TERMS.LIGHT } } : q;
+  }
+}
+/** Demo hotels whose rooms can turn non-refundable at the same price. */
+class TermsHotels extends BusinessDemoHotels {
+  async quote(input) {
+    const q = await super.quote(input);
+    return this.strict ? { ...q, cancellation: { type: 'non_refundable', freeUntilHours: 0, penaltyPercent: 100, summary: 'Non-refundable.' } } : q;
+  }
+}
+
+test('recheck: new refund or change terms at the same price are "changed", not "same"', async () => {
+  const flights = new TermsFlights(), hotels = new TermsHotels();
+  const { composer } = overrideComposer({ flights, hotels });
+  const r = await composer.search(parse(RAW));
+  const out = r.legs.out.rows.find(x => x.available && x.optionId === 'FLEX');
+  const hotel = r.legs.hotel.rows.find(x => x.available && x.cancellation.refundable);
+  assert.ok(out && hotel, 'a Flex fare and a refundable room');
+  const selection = { out: out.key, back: r.legs.back.rows.find(x => x.available).key, hotel: hotel.key };
+  const priced = await composer.price(selection, r.query);
+  const request = Object.freeze({ selection, query: r.query, rows: priced.rows, totalCents: priced.totalCents });
+  assert.equal((await composer.recheck(request)).status, 'same');
+
+  flights.lightTerms = true;
+  const fare = await composer.recheck(request);
+  assert.equal(fare.status, 'changed');
+  assert.equal(fare.components.out.status, 'changed');
+  assert.equal(fare.components.out.wasCents, fare.components.out.nowCents, 'the price did not move');
+  assert.equal(fare.components.out.row.fare.terms, 'Non-refundable. No changes.');
+  assert.equal(fare.components.back.status, 'same');
+  assert.equal(fare.components.hotel.status, 'same');
+  assert.equal(fare.newTotalCents, priced.totalCents);
+
+  flights.lightTerms = false;
+  hotels.strict = true;
+  const room = await recheck(composer, request);
+  assert.equal(room.status, 'changed');
+  assert.equal(room.components.hotel.status, 'changed');
+  assert.equal(room.components.hotel.nowCents, hotel.totalCents);
+  assert.equal(room.components.hotel.row.cancellation.refundable, false);
+  assert.equal(room.components.out.status, 'same');
+  hotels.strict = false;
+  assert.equal((await composer.recheck(request)).status, 'same', 'back to the stored terms: same');
+});
+
 // ---------------------------------------------------------------------------------------------------------
 // variants
 
@@ -458,22 +549,25 @@ test('variants: dates only when the dates can move, never in the past; no all_wi
   assert.ok(!fixed.candidates.some(c => c.change.kind === 'all_within'), 'no evaluate, no all_within');
   assert.equal(fixed.searches, 2, 'only the two cabin searches');
   const economy = await businessPick(composer, { ...RAW });
-  const plain = await composer.variants(economy.r.query, economy.selection, { datesFlexible: false });
-  assert.equal(plain.searches, 0, 'economy and fixed dates: no extra search at all');
+  const plain = await composer.variants(economy.r.query, economy.selection, { datesFlexible: false, searched: economy.r });
+  assert.equal(plain.searches, 0, 'economy, fixed dates and the search handed over: no search at all');
   assert.ok(!plain.candidates.some(c => c.change.kind === 'cabin'));
+  const again = await composer.variants(economy.r.query, economy.selection, { datesFlexible: false });
+  assert.equal(again.searches, 3, 'not handed over: the pick\'s own three legs are searched again, and counted');
+  assert.deepEqual(again.candidates, plain.candidates, 'the same candidates either way');
 
   // Leaving tomorrow: one day earlier is today, two and three days earlier would be in the past.
   const soon = await businessPick(composer, { from: 'CAI', to: 'LHR', depart: '2026-10-10', return: '2026-10-13', cabin: 'economy' });
   const v = await composer.variants(soon.r.query, soon.selection, { datesFlexible: true, today: TODAY });
   assert.ok(v.candidates.filter(c => c.change.kind === 'dates').every(c => c.query.departDate >= TODAY && c.change.days >= -1));
-  assert.equal(v.searches, 4 * 2, 'shifts +1, −1, +2 and +3, two legs each');
+  assert.equal(v.searches, 2 + 4 * 2, 'the pick\'s two legs, then shifts +1, −1, +2 and +3, two legs each');
   const byDefault = await composer.variants(soon.r.query, soon.selection, { datesFlexible: true });
   assert.deepEqual(byDefault.candidates.map(c => c.query.departDate), v.candidates.map(c => c.query.departDate), 'without today: the UTC date of now()');
-  const fromTomorrow = await composer.variants(soon.r.query, soon.selection, { datesFlexible: true, today: '2026-10-10' });
+  const fromTomorrow = await composer.variants(soon.r.query, soon.selection, { datesFlexible: true, today: '2026-10-10', searched: soon.r });
   assert.equal(fromTomorrow.searches, 3 * 2, 'a company already on the 10th cannot leave on the 9th');
 });
 
-test('variants: at most 20 extra searches; a smaller budget cuts the furthest shifts and says so', async () => {
+test('variants: at most 20 searches in all, counted as they run; a smaller budget cuts the furthest shifts and says so', async () => {
   const { composer, flights, hotels } = overrideComposer();
   const { r, selection } = await businessPick(composer);
   const calls = () => flights.calls.search + hotels.calls.search;
@@ -483,14 +577,38 @@ test('variants: at most 20 extra searches; a smaller budget cuts the furthest sh
   assert.equal(small.searches, 5, 'cabin 2, then one shift of 3');
   assert.equal(calls() - before, 5);
   assert.ok(small.candidates.filter(c => c.change.kind === 'dates').every(c => c.change.days === 1), 'only the first shift fits');
+
+  // Not handed over: the pick's own three legs are searched again and count against the 20.
   before = calls();
   const big = await composer.variants(r.query, selection, { datesFlexible: true, maxSearches: 500, today: TODAY });
-  assert.ok(big.searches <= MAX_SEARCHES, 'capped at 20');
-  assert.equal(calls() - before, big.searches + 3, 'plus the pick\'s own three legs, searched again when not handed over');
+  assert.equal(calls() - before, big.searches, 'searches is every provider search that ran');
+  assert.equal(big.searches, MAX_SEARCHES, 'capped at 20: 3 pick legs, 2 cabin, 5 shifts of 3');
+  assert.equal(big.truncated, true, 'the sixth shift did not fit');
+  assert.equal(big.candidates.filter(c => c.change.kind === 'dates').length, 5);
+
+  // A swapped-in cabin alternative (Premium economy out, the search was Business): that leg is searched in
+  // its own cabin, and that search counts too.
+  const cabinAlt = big.candidates.find(c => c.change.kind === 'cabin' && c.change.component === 'out');
+  assert.equal(cabinAlt.rows.out.cabin, 'premium');
+  before = calls();
+  const swapped = await composer.variants(r.query, cabinAlt.selection, { datesFlexible: true, searched: r, today: TODAY });
+  assert.equal(calls() - before, swapped.searches, 'every search counted');
+  assert.ok(swapped.searches <= MAX_SEARCHES);
+  assert.equal(swapped.searches, 1 + 2 + 5 * 3, 'the Premium economy out leg, 2 cabin, then 5 shifts of 3');
+  assert.equal(swapped.truncated, true);
+  assert.ok(swapped.candidates.some(c => c.change.kind === 'flight' && c.rows.out.cabin === 'premium'), 'the 0-search kinds vary the swapped leg in its cabin');
+
   const none = await composer.variants(r.query, selection, { datesFlexible: true, maxSearches: 0, searched: r });
   assert.equal(none.searches, 0);
   assert.equal(none.truncated, true);
   assert.ok(none.candidates.length > 0 && none.candidates.every(c => ['fare', 'flight', 'stops', 'room', 'hotel'].includes(c.change.kind)), 'the 0-search kinds still come');
+  before = calls();
+  const nothing = await composer.variants(r.query, selection, { datesFlexible: true, maxSearches: 0 });
+  assert.deepEqual([nothing.searches, nothing.truncated, nothing.candidates.length, calls() - before], [0, true, 0, 0], 'no budget and nothing handed over: no search at all');
+  const two = await composer.variants(r.query, selection, { datesFlexible: false, maxSearches: 2 });
+  assert.equal(two.searches, 2);
+  assert.equal(two.truncated, true);
+  assert.ok(two.candidates.every(c => c.change.component !== 'hotel'), 'the hotel leg did not fit, so no hotel or room candidate');
 });
 
 test('variants: an unavailable pick has no variants; a one-way pick without a hotel varies the one flight', async () => {
@@ -502,7 +620,7 @@ test('variants: an unavailable pick has no variants; a one-way pick without a ho
   const one = await businessPick(composer, { from: 'CAI', to: 'LHR', depart: '2026-11-12', cabin: 'premium', flex: '1' });
   const v = await composer.variants(one.r.query, one.selection, { datesFlexible: true, today: TODAY });
   assert.ok(v.candidates.every(c => c.rows.back === null && c.rows.hotel === null && c.selection.back === null && c.selection.hotel === null));
-  assert.equal(v.searches, 1 + 6, 'one cabin search, then one search per shift');
+  assert.equal(v.searches, 1 + 1 + 6, 'the pick\'s own leg, one cabin search, then one search per shift');
   assert.ok(v.candidates.some(c => c.change.kind === 'cabin' && c.rows.out.cabin === 'economy'));
 });
 

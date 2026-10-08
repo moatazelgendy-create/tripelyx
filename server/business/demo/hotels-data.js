@@ -1,7 +1,9 @@
 // DEMO DATA: fictional properties for Tripelyx Business previews (plan §F2). Not real hotels: names are
-// invented and checked against well-known hotel brands, and none is used. Area names are real only so a
-// search reads naturally. Every rate, tax and term is demo data, and nothing here is a rating, a review,
-// a count of rooms left or a claim about availability (the demo provider decides availability itself).
+// invented and checked against well-known hotel brands, and none is used. Each name was also searched in its
+// own city (8 Oct 2026), and a name whose distinctive word a real hotel there carries was replaced
+// (test/business-inventory.test.js lists those words). Area names are real only so a search reads naturally.
+// Every rate, tax and term is demo data, and nothing here is a rating, a review, a count of rooms left or a
+// claim about availability (the demo provider decides availability itself).
 //
 // 29 properties: 3 in each of the 9 cities other than Cairo (a 3-star, a 4-star and a 5-star), and 2 in
 // Cairo (a 3-star and a 4-star: Cairo already has the Alamein Go demo data's CA-NILE, 5-star), so each of
@@ -140,15 +142,15 @@ const RAW = [
       room('STE-VER', 'Vermeil Suite', 3, '1 king bed + sofa bed', 42, 300, ['Living room']),
     ],
   }),
-  hotel('PA-ORANGER', {
-    name: 'Grand Oranger Paris', stars: 5, area: 'Champs-Élysées', city: 'Paris', country: 'France',
+  hotel('PA-PIVOINE', {
+    name: 'Grand Pivoine Paris', stars: 5, area: 'Champs-Élysées', city: 'Paris', country: 'France',
     blurb: 'A grand hotel set around a glass-roofed winter garden, with a spa and a restaurant on the terrace.',
     amenities: ['Spa', 'Pool', 'Restaurant', 'Gym', 'Free Wi-Fi', 'Concierge', 'Room service'],
     cancel: free(3, 50),
     rooms: [
       room('DLX-KNG', 'Deluxe King', 2, '1 king bed', 35, 320),
       room('JST-GDN', 'Junior Suite', 3, '1 king bed + sofa bed', 48, 420, ['Garden view']),
-      room('STE-ORA', 'Oranger Suite', 4, '1 king bed + sofa bed', 90, 610, ['Living room', 'Terrace']),
+      room('STE-PIV', 'Pivoine Suite', 4, '1 king bed + sofa bed', 90, 610, ['Living room', 'Terrace']),
     ],
   }),
 
@@ -184,8 +186,8 @@ const RAW = [
   }),
 
   // Rome: Standard cap $220 a night with taxes (VAT 10%, $5 city tax).
-  hotel('RM-FONTANELLA', {
-    name: 'Fontanella Rooms', category: 'Boutique hotel', stars: 3, area: 'Trastevere', city: 'Rome', country: 'Italy',
+  hotel('RM-LUCCIOLA', {
+    name: 'Lucciola Rooms', category: 'Boutique hotel', stars: 3, area: 'Trastevere', city: 'Rome', country: 'Italy',
     blurb: 'Rooms above a quiet lane of trattorias, with a shared roof terrace.',
     amenities: ['Free Wi-Fi', 'Roof terrace', 'Breakfast available', 'Air conditioning'],
     checkIn: '14:00', checkOut: '11:00', cancel: NONREFUNDABLE,
@@ -202,15 +204,15 @@ const RAW = [
       room('STE-PIN', 'Pini Suite', 3, '1 king bed + sofa bed', 44, 240, ['Living room']),
     ],
   }),
-  hotel('RM-AURELIANO', {
-    name: 'Palazzo Aureliano', stars: 5, area: 'Piazza di Spagna', city: 'Rome', country: 'Italy',
+  hotel('RM-VENTAGLIO', {
+    name: 'Palazzo Ventaglio', stars: 5, area: 'Piazza di Spagna', city: 'Rome', country: 'Italy',
     blurb: 'A grand palazzo near the Spanish Steps, with frescoed halls, a spa and a rooftop restaurant.',
     amenities: ['Spa', 'Rooftop restaurant', 'Gym', 'Free Wi-Fi', 'Concierge', 'Room service'],
     cancel: free(3, 50),
     rooms: [
       room('DLX-KNG', 'Deluxe King', 2, '1 king bed', 32, 255),
       room('JST-CTY', 'Junior Suite', 3, '1 king bed + sofa bed', 45, 330, ['City view']),
-      room('STE-AUR', 'Aureliano Suite', 4, '1 king bed + sofa bed', 85, 480, ['Living room', 'Terrace']),
+      room('STE-VEN', 'Ventaglio Suite', 4, '1 king bed + sofa bed', 85, 480, ['Living room', 'Terrace']),
     ],
   }),
 
@@ -246,8 +248,8 @@ const RAW = [
   }),
 
   // Athens: Greece's Standard cap $170 a night with taxes (no city cap; VAT 13%, $2 city tax).
-  hotel('AT-ELIA', {
-    name: 'Elia Steps Rooms', category: 'Boutique hotel', stars: 3, area: 'Plaka', city: 'Athens', country: 'Greece',
+  hotel('AT-CICADA', {
+    name: 'Cicada Steps Rooms', category: 'Boutique hotel', stars: 3, area: 'Plaka', city: 'Athens', country: 'Greece',
     blurb: 'A small hotel on a stepped lane below the old town, with a breakfast terrace.',
     amenities: ['Free Wi-Fi', 'Breakfast terrace', 'Air conditioning', 'Lift'],
     checkIn: '14:00', checkOut: '11:00', cancel: NONREFUNDABLE,
@@ -348,14 +350,14 @@ const RAW = [
     rooms: [room('STD-DBL', 'Standard Double', 2, '1 double bed', 20, 68), room('SUP-DBL', 'Superior Double', 2, '1 queen bed', 24, 85, ['Garden view'])],
   }),
   hotel('CA-DOKKI', {
-    name: 'Dokki Riverside Hotel', stars: 4, area: 'Dokki', city: 'Cairo', country: 'Egypt',
+    name: 'Dokki Acanthus Court', stars: 4, area: 'Dokki', city: 'Cairo', country: 'Egypt',
     blurb: 'A modern hotel on the west bank of the river, with meeting rooms and a pool terrace.',
     amenities: ['Free Wi-Fi', 'Meeting rooms', 'Pool', 'Restaurant', 'Gym'],
     cancel: NONREFUNDABLE,
     rooms: [
       room('DLX-KNG', 'Deluxe King', 2, '1 king bed', 30, 115),
       room('DLX-NIL', 'Deluxe Nile View', 2, '1 king bed', 32, 125, ['Nile view']),
-      room('STE-DOK', 'Riverside Suite', 3, '1 king bed + sofa bed', 55, 160, ['Nile view', 'Living room']),
+      room('STE-DOK', 'Acanthus Suite', 3, '1 king bed + sofa bed', 55, 160, ['Nile view', 'Living room']),
     ],
   }),
 ];

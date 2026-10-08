@@ -1200,7 +1200,7 @@ test('interfaces: every Stage 0 Business module loads with its frozen exports, a
   await assert.rejects(explainer.explain({ violations: [], alternatives: [], noneWithin: true }), NOT_BUILT);
   assert.throws(() => createExplainer({ business: { explainer: 'model' } }), /unknown explainer/);
   const composer = new TripComposer({ inventory: { status: 'none' }, now: fixed });
-  assert.throws(() => composer.parseQuery({}, { today: '2026-10-09' }), e => e.code === 'invalid_query' && e.status === 422);
+  assert.throws(() => composer.parseQuery({}, { today: '2026-10-09' }), e => e.code === 'no_supplier' && e.status === 503);
   await assert.rejects(composer.search({}), e => e.code === 'no_supplier' && e.status === 503);
 });
 
