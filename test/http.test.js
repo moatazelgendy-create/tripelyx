@@ -6,7 +6,7 @@ const { addDays, today } = require('../server/lib/dates');
 test('pages render, security headers are set, secrets are not exposed', async t => {
   const app = await startApp({ PAYMENT_LIVE_SECRET_KEY: 'sk_should_not_leak' });
   t.after(app.close);
-  for (const path of ['/', '/brands', '/technology', '/partners', '/about', '/contact', '/book', '/book/hotels', '/book/flights', '/book/cars', '/book/cruises', '/book/yachts', '/book/transfers', '/book/activities', '/book/experiences', '/manage']) {
+  for (const path of ['/', '/ai-travel-agent', '/brands', '/technology', '/partners', '/about', '/contact', '/book', '/book/hotels', '/book/flights', '/book/cars', '/book/cruises', '/book/yachts', '/book/transfers', '/book/activities', '/book/experiences', '/manage']) {
     const res = await fetch(app.base + path);
     assert.equal(res.status, 200, path);
     const body = await res.text();
@@ -28,7 +28,7 @@ test('pages render, security headers are set, secrets are not exposed', async t 
 test('no inline style attributes or inline scripts (the CSP would block them)', async t => {
   const app = await startApp();
   t.after(app.close);
-  for (const path of ['/', '/brands', '/technology', '/partners', '/about', '/contact', '/book/hotels', '/book/experiences']) {
+  for (const path of ['/', '/ai-travel-agent', '/brands', '/technology', '/partners', '/about', '/contact', '/book/hotels', '/book/experiences']) {
     const body = await (await fetch(app.base + path)).text();
     assert.ok(!/\sstyle="/.test(body), `${path} has an inline style attribute`);
     assert.ok(!/<script(?![^>]*\bsrc=)(?![^>]*application\/json)[^>]*>/.test(body), `${path} has an inline script`);

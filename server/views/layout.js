@@ -11,7 +11,8 @@ const NAV = [
   { href: '/contact', label: 'Contact', key: 'contact' },
 ];
 
-// With Travel by Budget on, the site leads with trip planning; the company pages move to the footer.
+// With Travel by Budget on, every page but the company pages leads with trip planning; the company
+// pages are in its footer.
 const TRIP_NAV = [
   { href: '/plan', label: 'Build My Trip', key: 'plan' },
   { href: '/how-it-works', label: 'How It Works', key: 'how' },
@@ -38,7 +39,7 @@ function header(active, trips) {
   return html`
 <header class="site-header${trips ? ' site-header-trips' : ''}" data-header>
   <div class="container header-inner">
-    <a class="header-logo" href="/" aria-label="Tripelyx home">${logo()}</a>
+    <a class="header-logo" href="${trips ? '/ai-travel-agent' : '/'}" aria-label="Tripelyx home">${logo()}</a>
     <nav class="main-nav" id="main-nav" aria-label="Main">
       <ul>
         ${nav.map(n => html`<li><a href="${n.href}"${n.key === active ? raw(' aria-current="page"') : ''}>${n.label}</a></li>`)}
@@ -61,13 +62,13 @@ function tripFooter() {
 <footer class="site-footer trip-footer">
   <div class="container">
     <div class="tf-top">
-      <div class="tf-brand"><a class="footer-logo" href="/" aria-label="Tripelyx home">${logo()}</a><p>You set the budget. We build the trip, and keep the numbers clear.</p></div>
+      <div class="tf-brand"><a class="footer-logo" href="/ai-travel-agent" aria-label="Tripelyx home">${logo()}</a><p>You set the budget. We build the trip, and keep the numbers clear.</p></div>
       ${col('Plan', [['/plan', 'Build My Trip'], ['/plan?style=surprise', 'Surprise Me'], ['/destinations', 'Destinations'], ['/trips-under-1000', 'Trips under $1,000'], ['/trips-under-1500', 'Trips under $1,500'], ['/beach-vacations', 'Beach vacations']])}
       ${col('Help', [['/how-it-works', 'How it works'], ['/faq', 'FAQ'], ['/my-trips', 'My Trips'], ['/manage', 'Find a booking'], ['/custom-trip', 'Request a custom trip'], ['/contact', 'Contact us']])}
       ${col('Company', [['/about', 'About us'], ['/brands', 'Our brands'], ['/technology', 'Technology'], ['/partners', 'Partners'], ['/book', 'Alamein Go booking']])}
       ${col('Policies', [['/legal/terms', 'Terms & Conditions'], ['/legal/privacy', 'Privacy Policy'], ['/legal/cancellation', 'Cancellation Policy'], ['/legal/refunds', 'Refund Policy'], ['/legal/cookies', 'Cookie Policy'], ['/legal/travel-disclosures', 'Travel Disclosures']])}
     </div>
-    <p class="copyright">© ${new Date().getFullYear()} Tripelyx LLC. All rights reserved.</p>
+    <p class="copyright">© ${new Date().getFullYear()} Tripelyx Inc. All rights reserved.</p>
   </div>
 </footer>`;
 }
@@ -85,13 +86,15 @@ function footer() {
       <li><a href="https://www.instagram.com/" rel="noopener" target="_blank" aria-label="Instagram">${icon('instagram')}</a></li>
       <li><a href="https://www.youtube.com/" rel="noopener" target="_blank" aria-label="YouTube">${icon('youtube')}</a></li>
     </ul>
-    <p class="copyright">© ${new Date().getFullYear()} Tripelyx LLC. All rights reserved.</p>
+    <p class="copyright">© ${new Date().getFullYear()} Tripelyx Inc. All rights reserved.</p>
   </div>
 </footer>`;
 }
 
-function layout({ title, description, active, body, scripts = [], bodyClass = '', ctx = {}, canonical = null, noindex = false }) {
-  const trips = !!(ctx.trips);
+// The company pages (`corporate`) keep the corporate header, footer and title, and no environment
+// banner, even with Travel by Budget on.
+function layout({ title, description, active, body, scripts = [], bodyClass = '', ctx = {}, canonical = null, noindex = false, corporate = false }) {
+  const trips = !!(ctx.trips) && !corporate;
   const fullTitle = title ? `${title} | Tripelyx` : trips ? 'Tripelyx — Tell us what you want your trip to do. The AI builds it.' : 'Tripelyx — Travel technology that powers better journeys';
   const desc = description || 'Tripelyx builds travel platforms and technology that connect travelers, destinations and local businesses across the world.';
   return html`<!doctype html>
@@ -117,7 +120,7 @@ ${ctx.preload || ''}
 <body class="${bodyClass}">
 ${sprite}
 <a class="skip-link" href="#main">Skip to content</a>
-${ctx.envBanner ? html`<aside class="env-banner" aria-label="Environment notice">${ctx.envBanner}</aside>` : ''}
+${ctx.envBanner && !corporate ? html`<aside class="env-banner" aria-label="Environment notice">${ctx.envBanner}</aside>` : ''}
 ${header(active, trips)}
 <main id="main" tabindex="-1">
 ${body}

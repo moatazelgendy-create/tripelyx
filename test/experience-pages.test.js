@@ -105,9 +105,9 @@ test('the homepage: WHAT DO YOU WANT FROM THIS TRIP? as four submit buttons with
   const app = await startApp();
   t.after(app.close);
   const c = client(app.base);
-  const home = await c.req('/');
+  const home = await c.req('/ai-travel-agent');
   assert.equal(home.status, 200);
-  noInline('/', home.text);
+  noInline('/ai-travel-agent', home.text);
   const form = home.text.match(/<form class="ag-hero-form ag-hero-number" method="post" action="\/agent">[\s\S]*?<\/form>/)[0];
   assert.match(form, /<legend class="ag-hero-entry-q">WHAT DO YOU WANT FROM THIS TRIP\?<\/legend>/);
   assert.deepEqual(ENTRY_MODES.map(m => [m[0], m[1]]), [['save', 'SAVE THE MOST'], ['value', 'BEST VALUE'], ['easy', 'MAKE IT EASY'], ['experience', 'MAKE IT MEMORABLE']]);

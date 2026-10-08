@@ -239,7 +239,7 @@ test('pages: the homepage asks for one number, a budget starts a mission, the ca
   const app = await startApp();
   try {
     const c = client(app.base);
-    const home = await c.req('/');
+    const home = await c.req('/ai-travel-agent');
     assert.match(home.text, /How much do you.*want to spend\?/s);
     assert.match(home.text, /Save me the most/);
     assert.match(home.text, /No destination required/);

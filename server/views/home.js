@@ -157,7 +157,7 @@ ${homeSearch(verticals)}
   </div>
 </section>`;
   return layout({
-    active: 'home', body,
+    active: 'home', body, corporate: true,
     ctx: { ...ctx, preload: raw('<link rel="preload" as="image" href="/img/coast-hero.webp" fetchpriority="high">') },
   });
 }

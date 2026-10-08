@@ -40,7 +40,7 @@ function compareView(ctx, { items, cx, mode = 'compare', all = false, locks = {}
         <p class="tb-results-sub">Only what differs is shown${all ? '' : html` (<a href="/compare?${new URLSearchParams([...items.map(it => ['t', it.token]), ...items.map(it => ['l', it.label || '']), ...new URLSearchParams(contextParams(cx)), ['all', '1']]).toString()}">show every row</a>)`}. Every total includes taxes, mandatory fees and our service fee. ${demoBadge(ctx.tripService.demo, 'Demo inventory and prices')}</p>`;
   const body = html`
 <div class="container tb-results tb-compare-page">
-  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a> / ${cx.searchParams ? html`<a href="/trips?${cx.searchParams}">Your trips</a> / ` : ''}<a href="${tripUrl(first)}">${first.trip.dest.name}</a> / <span aria-current="page">${optimize ? 'Before and after' : 'Compare'}</span></nav>
+  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/ai-travel-agent">Home</a> / ${cx.searchParams ? html`<a href="/trips?${cx.searchParams}">Your trips</a> / ` : ''}<a href="${tripUrl(first)}">${first.trip.dest.name}</a> / <span aria-current="page">${optimize ? 'Before and after' : 'Compare'}</span></nav>
   <header class="tb-results-head"><div>${head}</div></header>
   ${proposal && proposal.improvements && proposal.improvements.length ? html`<div class="tb-changes-grid">
     <section class="tb-panel"><h2>${icon('sparkle')} What improves</h2><ul class="tb-list">${proposal.improvements.map(g => html`<li><b>${g.label}:</b> ${g.b} <small class="tb-muted">(was ${g.a})</small></li>`)}</ul></section>

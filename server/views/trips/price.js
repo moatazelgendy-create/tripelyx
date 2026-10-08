@@ -142,7 +142,7 @@ function priceView(ctx, { data, cx, user }) {
 
   const body = html`
 <div class="container tb-results tb-price-page">
-  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a> / ${cx.searchParams ? html`<a href="/trips?${cx.searchParams}">Your trips</a> / ` : ''}<a href="${keepUrl}">${t.dest.name}</a> / <span aria-current="page">Name your price</span></nav>
+  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/ai-travel-agent">Home</a> / ${cx.searchParams ? html`<a href="/trips?${cx.searchParams}">Your trips</a> / ` : ''}<a href="${keepUrl}">${t.dest.name}</a> / <span aria-current="page">Name your price</span></nav>
   <header class="tb-results-head"><div><p class="eyebrow">Name your price</p>${head}</div></header>
   ${main}
   ${ladderView(t, { rungs: ladder, truncated: data.truncated, considered, currentVerdict: data.currentVerdict }, cx, picks)}

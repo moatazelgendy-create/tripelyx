@@ -363,7 +363,7 @@ test('the hunt pages: sign-in required, the form creates a hunt or says why not,
     assert.ok(all.includes('Your hunts') && all.includes(h0.name));
 
     // The homepage offers the hunt under "Save me the most".
-    const home = await c.req('/');
+    const home = await c.req('/ai-travel-agent');
     assert.equal(home.status, 200);
     assert.ok(home.text.includes('href="/hunts/new"') && text(home.text).includes('I can wait: let the AI hunt for it'));
 

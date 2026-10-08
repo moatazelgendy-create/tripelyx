@@ -36,7 +36,7 @@ function challengeFormView(ctx, { raw: given = {}, destinations, origins, hotels
   const need = k => (missing.includes(k) ? raw(' aria-invalid="true"') : '');
   const body = html`
 <div class="container tb-chal-page">
-  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a> / <span aria-current="page">Challenge us</span></nav>
+  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/ai-travel-agent">Home</a> / <span aria-current="page">Challenge us</span></nav>
   <header class="tb-results-head">
     <div>
       <p class="eyebrow">Already found a trip?</p>
@@ -122,7 +122,7 @@ function challengeReviewView(ctx, { ch, unknowns, theirDest, originCity, hotelNa
   const lockable = LOCKS.filter(l => (l === 'nonstop' ? ch.flight !== 'nonstop' : true));
   const body = html`
 <div class="container tb-chal-page">
-  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a> / <a href="/challenge?${challengerParams(ch)}">Challenge us</a> / <span aria-current="page">The trip to beat</span></nav>
+  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/ai-travel-agent">Home</a> / <a href="/challenge?${challengerParams(ch)}">Challenge us</a> / <span aria-current="page">The trip to beat</span></nav>
   <header class="tb-results-head"><div><p class="eyebrow">Review the challenger</p><h1>What exactly are we trying to beat?</h1><p class="tb-results-sub">This is the trip as you described it. Anything you didn’t give is marked unknown, and stays unknown: we don’t fill gaps in your favor or ours. ${demoBadge(ctx.tripService.demo, 'Demo inventory and prices')}</p></div></header>
   <div class="tb-chal-grid">
     <section class="tb-panel tb-challenger" aria-labelledby="ch-title">
@@ -246,7 +246,7 @@ function challengeResultView(ctx, { out, theirDest, originCity, user }) {
   const protectedWords = fairFight(ch);
   const body = html`
 <div class="container tb-chal-page">
-  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a> / <a href="/challenge?${challengerParams(ch)}">Challenge us</a> / <a href="${reviewUrl}">The trip to beat</a> / <span aria-current="page">${MODES[mode].label}</span></nav>
+  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/ai-travel-agent">Home</a> / <a href="/challenge?${challengerParams(ch)}">Challenge us</a> / <a href="${reviewUrl}">The trip to beat</a> / <span aria-current="page">${MODES[mode].label}</span></nav>
   <header class="tb-results-head"><div><p class="eyebrow">${MODES[mode].label}</p><h1>Their trip vs our challenger</h1><p class="tb-results-sub">${theirDest.name} from ${originCity} · ${plural(ch.nights, 'night')} · ${plural(ch.travelers, 'traveler')} · their price ${money(ch.total)}. ${protectedWords.length ? `Protected: ${joinAnd(protectedWords)}.` : ''} Prices are checked live each time this page loads. ${demoBadge(ctx.tripService.demo, 'Demo inventory and prices')}</p></div></header>
 
   <section class="tb-verdict ${vb.cls}" aria-labelledby="verdict-title">
@@ -256,7 +256,7 @@ function challengeResultView(ctx, { out, theirDest, originCity, user }) {
     <div class="tb-card-actions">
       ${ours && v.state !== 'keep' ? html`<a class="btn btn-navy" href="${tripUrl}">${v.state === 'info' ? 'See our version anyway' : 'Take the challenger'} ${icon('arrow')}</a>` : ''}
       ${v.state === 'info' ? html`<a class="btn btn-ghost" href="/challenge?${challengerParams(ch)}">Add what you know</a>` : ''}
-      ${v.state === 'keep' ? html`<a class="btn btn-navy" href="/">Keep my deal</a>` : html`<a class="btn btn-ghost" href="/">Keep my deal</a>`}
+      ${v.state === 'keep' ? html`<a class="btn btn-navy" href="/ai-travel-agent">Keep my deal</a>` : html`<a class="btn btn-ghost" href="/ai-travel-agent">Keep my deal</a>`}
       <a class="btn btn-ghost" href="/challenge/result?${challengerParams(ch, { mode })}">Challenge it again</a>
     </div>
   </section>

@@ -223,7 +223,7 @@ ${recent ? html`<section class="tb-section tb-section-tight" aria-label="Your un
   return layout({
     title: null, active: 'home', body, ctx,
     description: 'Tell your AI travel agent what you want your trip to do. It searches, compares and negotiates complete trips (flights, hotel, experiences) inside your budget, with every tax and fee in the price.',
-    scripts: ['/js/trips.js'], canonical: '/',
+    scripts: ['/js/trips.js'], canonical: '/ai-travel-agent',
   });
 }
 

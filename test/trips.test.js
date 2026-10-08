@@ -476,7 +476,7 @@ test('money and time: weekdays are a second budget, never a claim about anyoneâ€
   for (const rule of ['4 nights instead of 5', 'any style, not only a beach trip', 'lowest price first, instead of the hotel', 'up to 10% over your budget']) assert.ok(new RegExp(rule, 'i').test(none.text), `${rule} is answered`);
   assert.ok(!/Shorten the trip|Relax one rule|Allow up to 10% more/.test(none.text), 'no single-rule link is offered twice');
   assert.doesNotMatch(none.text, /No results found/i);
-  const home = await c.req('/');
+  const home = await c.req('/ai-travel-agent');
   assert.match(home.text, /Or say it in your own words/);
   assert.match(home.text, /every total includes taxes and fees/);
   assert.match(home.text, /Build my best trip/);
@@ -538,10 +538,10 @@ test('Journey B: a dream destination gets the gap and real single-change closers
   assert.match(await missing.text(), /How much do you want to spend\?/);
 });
 
-test('pages render without inline scripts or styles; corporate site moves to /company; flag turns it all off', async t => {
+test('pages render without inline scripts or styles; the AI homepage is /ai-travel-agent and the corporate homepage stays at /; flag turns it all off', async t => {
   const app = await startApp();
   t.after(app.close);
-  const paths = ['/', '/plan', '/plan?b=1500', '/plan?b=1500&k=0&from=SFO&who=family', `/trips?${new URLSearchParams(QUERY)}`, '/how-it-works', '/faq', '/legal/terms', '/legal/privacy', '/custom-trip', '/destinations', '/trips-to-cancun', '/beach-vacations', '/trips-under-1500', '/trips-under-2000?region=international', '/signin', '/signup', '/company', '/about', '/book/hotels', '/robots.txt', '/sitemap.xml'];
+  const paths = ['/', '/ai-travel-agent', '/plan', '/plan?b=1500', '/plan?b=1500&k=0&from=SFO&who=family', `/trips?${new URLSearchParams(QUERY)}`, '/how-it-works', '/faq', '/legal/terms', '/legal/privacy', '/custom-trip', '/destinations', '/trips-to-cancun', '/beach-vacations', '/trips-under-1500', '/trips-under-2000?region=international', '/signin', '/signup', '/about', '/book/hotels', '/robots.txt', '/sitemap.xml'];
   for (const p of paths) {
     const res = await fetch(app.base + p);
     assert.equal(res.status, 200, p);
@@ -549,7 +549,7 @@ test('pages render without inline scripts or styles; corporate site moves to /co
     assert.ok(!/\sstyle="/.test(body), `${p} has an inline style attribute`);
     assert.ok(!/<script(?![^>]*\bsrc=)(?![^>]*application\/json)[^>]*>/.test(body), `${p} has an inline script`);
   }
-  const home = await (await fetch(app.base + '/')).text();
+  const home = await (await fetch(app.base + '/ai-travel-agent')).text();
   assert.match(home, /How much do you<br>want to spend\?/);
   assert.match(home, /Surprise me/i);
   assert.match(home, /Demo inventory/);
@@ -562,11 +562,16 @@ test('pages render without inline scripts or styles; corporate site moves to /co
   assert.equal((await fetch(app.base + '/plan?b=1500&k=0&from=SFO&who=couple&when=anytime&style=beach&prio=hotel', { redirect: 'manual' })).status, 303, 'a complete plan goes straight to results');
   assert.equal((await fetch(app.base + '/my-trips', { redirect: 'manual' })).status, 303, 'My Trips needs an account');
   assert.equal((await fetch(app.base + '/admin')).status, 404, 'admin is invisible to the public');
+  assert.match(await (await fetch(app.base + '/')).text(), /Travel technology/);
+  const company = await fetch(app.base + '/company', { redirect: 'manual' });
+  assert.equal(company.status, 301);
+  assert.equal(company.headers.get('location'), '/');
 
   const off = await startApp({ ENABLE_TRIPS: 'false' });
   t.after(off.close);
   assert.match(await (await fetch(off.base + '/')).text(), /Travel technology/);
   assert.equal((await fetch(off.base + '/plan')).status, 404);
+  assert.equal((await fetch(off.base + '/ai-travel-agent')).status, 404);
   const prod = await startApp({ APP_ENV: 'production', ENABLE_TRIPS: 'true', ALLOW_DEMO_INVENTORY: 'false', DATABASE_URL: 'memory', PAYMENT_MODE: 'test', HTTPS_ONLY: 'true', DATABASE_ENV: 'production' }).catch(e => e);
   if (!(prod instanceof Error)) { t.after(prod.close); assert.equal((await fetch(prod.base + '/plan')).status, 404, 'mock trip inventory is refused where demo data is not allowed'); }
 });

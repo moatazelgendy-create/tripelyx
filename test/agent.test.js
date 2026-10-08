@@ -253,7 +253,7 @@ test('pages: the homepage leads with the agent, a conversation has a page, a liv
   const app = await startApp();
   try {
     const c = client(app.base);
-    const home = await c.req('/');
+    const home = await c.req('/ai-travel-agent');
     assert.equal(home.status, 200);
     assert.match(home.text, /How much do you.*want to spend\?/s);
     assert.match(home.text, /Show me what my money can do/); assert.match(home.text, /No destination required/); assert.match(home.text, /I already know where I want to go/);

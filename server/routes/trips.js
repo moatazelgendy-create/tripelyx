@@ -65,8 +65,8 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
 
   r.use((req, res, next) => { res.setHeader('Cache-Control', 'no-cache'); next(); });
 
-  // ---- homepage ----
-  r.get('/', async (req, res, next) => {
+  // ---- the AI travel agent's homepage ("/" is the corporate homepage, routes/pages.js) ----
+  r.get('/ai-travel-agent', async (req, res, next) => {
     try {
       await tracked(req, 'home_visit');
       const example = await cached('home:example', 600000, async () => {
@@ -112,7 +112,7 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
   r.get('/dream', async (req, res, next) => {
     try {
       const dest = svc.inv.maps.getDestination(String(req.query.dest || '').slice(0, 40));
-      if (!dest) return res.redirect(303, '/#tb-dream-title');
+      if (!dest) return res.redirect(303, '/ai-travel-agent#tb-dream-title');
       const raw = { who: 'couple', style: 'surprise', prio: 'hotel', k: '0', ...req.query };
       // "I have to be there": an optional fixed departure date from the homepage form.
       const t0 = today();
@@ -437,7 +437,7 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
     }
   });
   r.post('/signout', sameOrigin, form, async (req, res, next) => {
-    try { await accounts.endSession(req, res); res.redirect(303, '/'); } catch (e) { next(e); }
+    try { await accounts.endSession(req, res); res.redirect(303, '/ai-travel-agent'); } catch (e) { next(e); }
   });
 
   r.get('/my-trips', requireUser, async (req, res, next) => {
@@ -545,7 +545,7 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
   r.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nDisallow: /trip/\nDisallow: /trips\nDisallow: /compare\nDisallow: /plan\nDisallow: /checkout/\nDisallow: /booking/\nDisallow: /admin\nDisallow: /my-trips\n${config.publicBaseUrl ? `Sitemap: ${config.publicBaseUrl}/sitemap.xml\n` : ''}`));
   r.get('/sitemap.xml', (req, res) => {
     const base = config.publicBaseUrl || '';
-    const urls = ['/', '/how-it-works', '/faq', '/destinations', '/beach-vacations', '/about', '/contact', ...[500, 1000, 1500, 2000, 3000, 5000].map(n => `/trips-under-${n}`), ...svc.inv.maps.listDestinations().map(d => `/trips-to-${slug(d.name)}`)];
+    const urls = ['/', '/ai-travel-agent', '/how-it-works', '/faq', '/destinations', '/beach-vacations', '/about', '/contact', ...[500, 1000, 1500, 2000, 3000, 5000].map(n => `/trips-under-${n}`), ...svc.inv.maps.listDestinations().map(d => `/trips-to-${slug(d.name)}`)];
     res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.map(u => `  <url><loc>${base}${u}</loc></url>`).join('\n')}\n</urlset>\n`);
   });
 
