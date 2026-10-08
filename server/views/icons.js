@@ -51,12 +51,19 @@ const PATHS = {
   youtube: '<rect x="1.8" y="5" width="20.4" height="14" rx="4" fill="currentColor"/><path d="M10 9.2v5.6l4.8-2.8z" fill="#fff"/>',
 };
 
-const sprite = raw(`<svg xmlns="http://www.w3.org/2000/svg" class="sprite" width="0" height="0" aria-hidden="true">${
-  Object.entries(PATHS).map(([k, p]) => `<symbol id="i-${k}" viewBox="0 0 24 24">${p}</symbol>`).join('')
-}</svg>`);
+// Solid pictograms only the company pages use (the homepage's booking tiles), in their own sprite.
+const COMPANY_PATHS = {
+  'bed-solid': '<path d="M1.8 5.6a1.3 1.3 0 0 1 2.6 0v6.2h17.8v7.4a1.2 1.2 0 0 1-2.4 0v-1.7H4.4v1.7a1.3 1.3 0 0 1-2.6 0z" fill="currentColor"/><rect x="5.6" y="7.9" width="4.6" height="3.1" rx="1.3" fill="currentColor"/><path d="M11.2 7.9h7.4a3.6 3.6 0 0 1 3.6 3.6v.3h-11z" fill="currentColor"/>',
+  'yacht-solid': '<path d="M9.4 4.6h4.4l2 2.9H7.6z" fill="currentColor"/><path d="M5.8 8.6h12.6l2.2 3.2H3.4z" fill="currentColor"/><path d="M1.6 13h20.8l-2.9 5.6a1.4 1.4 0 0 1-1.2.7H5.6a1.4 1.4 0 0 1-1.2-.7z" fill="currentColor"/><path d="M8.6 9.7h1.8M11.2 9.7h1.8M13.8 9.7h1.8" stroke="#fff" stroke-width="1.1" stroke-linecap="round"/><path d="M3.4 15.4h17.2" stroke="#fff" stroke-width="1.2"/>',
+  island: '<path d="M12.3 9.6c.9 2.9 1 6.2.2 9.6h-2.2c.9-3.2.9-6.3.2-9.3z" fill="currentColor"/><path d="M11.9 9.8C10.6 6.4 7.4 5 3.6 5.8c2.5.5 4.3 1.8 5 3.6-2.3-.9-4.8-.3-6.6 1.6 3.3-.7 6.4-.3 9.9-1.2z" fill="currentColor"/><path d="M12.2 9.8c1.2-3.6 4.6-5.2 8.4-4.4-2.4.5-4.1 1.9-4.8 3.8 2.3-.9 4.8-.3 6.5 1.6-3.2-.8-6.4-.3-10.1-1z" fill="currentColor"/><path d="M12 9.6c-.1-2.6-1.4-4.6-3.4-5.9 2.9.2 4.8 2.2 5 4.9z" fill="currentColor"/><path d="M15.6 18.3l2.9-5.3v5.3z" fill="currentColor"/><path d="M2.5 21.5c2.3-2.2 5.5-3.3 9.5-3.3s7.2 1.1 9.5 3.3z" fill="currentColor"/>',
+};
+
+const symbols = paths => Object.entries(paths).map(([k, p]) => `<symbol id="i-${k}" viewBox="0 0 24 24">${p}</symbol>`).join('');
+const sprite = raw(`<svg xmlns="http://www.w3.org/2000/svg" class="sprite" width="0" height="0" aria-hidden="true">${symbols(PATHS)}</svg>`);
+const companySprite = raw(`<svg xmlns="http://www.w3.org/2000/svg" class="sprite" width="0" height="0" aria-hidden="true">${symbols(COMPANY_PATHS)}</svg>`);
 
 function icon(name, cls = '') {
   return raw(`<svg class="icon${cls ? ` ${cls}` : ''}" aria-hidden="true" focusable="false"><use href="#i-${name}"/></svg>`);
 }
 
-module.exports = { sprite, icon, ICON_NAMES: Object.keys(PATHS) };
+module.exports = { sprite, companySprite, icon, ICON_NAMES: Object.keys(PATHS) };

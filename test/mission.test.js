@@ -4,7 +4,7 @@
 // package or a sentence the agent said; nothing is asserted that the inventory does not back.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { startApp } = require('./helpers');
+const { startApp, clock: testClock, fixedNow } = require('./helpers');
 const { decodeSpec } = require('../server/trips/spec');
 const savemax = require('../server/trips/savemax');
 const { money } = require('../server/views/trips/common');
@@ -239,7 +239,7 @@ test('pages: the homepage asks for one number, a budget starts a mission, the ca
   const app = await startApp();
   try {
     const c = client(app.base);
-    const home = await c.req('/');
+    const home = await c.req('/ai-travel-agent');
     assert.match(home.text, /How much do you.*want to spend\?/s);
     assert.match(home.text, /Save me the most/);
     assert.match(home.text, /No destination required/);
@@ -869,7 +869,7 @@ test('hunt mode: the saving worth an interruption is said with the hunt, and "te
 });
 
 test('hunt mode: the conversation’s hunt card is the record as the service’s own check verified it, never a live re-price with no judgement: inside the refresh limit an answer runs nothing and the card is stamped with the check it shows; months later "keep waiting" re-checks the hunt (said), the departed trip is said gone, and the card stands on the new best', async () => {
-  let clock = new Date(); clock.setUTCHours(9, 0, 0, 0);
+  let clock = fixedNow(); clock.setUTCHours(9, 0, 0, 0);
   const app = await startApp({}, { now: () => new Date(clock) });
   try {
     const agent = app.agent, store = app.ctx.store;
@@ -931,7 +931,7 @@ test('hunt mode: an exactly stated date becomes the hunt’s month, named in wor
     const s0 = await agent.create({ visitor: 'v-restart', userId: u.id, mission: true, mode: 'save' });
     const say = ask(agent, s0.id, u);
     // A date far enough out that its month has departures left to price whatever today is.
-    const depart = addDays(today(), 45);
+    const depart = addDays(today(testClock()), 45);
     let s = await say(`$2,000 leaving ${depart}`);
     if (s.pending === 'origin') s = await say('JFK');
     assert.equal(s.dateMode, 'exact'); assert.equal(s.depart, depart);

@@ -65,8 +65,8 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
 
   r.use((req, res, next) => { res.setHeader('Cache-Control', 'no-cache'); next(); });
 
-  // ---- homepage ----
-  r.get('/', async (req, res, next) => {
+  // ---- the AI travel agent's homepage ("/" is the corporate homepage, routes/pages.js) ----
+  r.get('/ai-travel-agent', async (req, res, next) => {
     try {
       await tracked(req, 'home_visit');
       const example = await cached('home:example', 600000, async () => {
@@ -112,10 +112,10 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
   r.get('/dream', async (req, res, next) => {
     try {
       const dest = svc.inv.maps.getDestination(String(req.query.dest || '').slice(0, 40));
-      if (!dest) return res.redirect(303, '/#tb-dream-title');
+      if (!dest) return res.redirect(303, '/ai-travel-agent#tb-dream-title');
       const raw = { who: 'couple', style: 'surprise', prio: 'hotel', k: '0', ...req.query };
       // "I have to be there": an optional fixed departure date from the homepage form.
-      const t0 = today();
+      const t0 = today(svc.now());
       const fixed = isIsoDate(raw.depart) && raw.depart >= addDays(t0, 3) && daysBetween(t0, raw.depart) <= 330;
       if (!raw.when || (raw.when === 'exact' && !fixed)) raw.when = fixed ? 'exact' : 'anytime';
       if (!fixed) delete raw.depart;
@@ -124,7 +124,7 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
       const ask = missing.find(m => ['budget', 'from', 'n'].includes(m));
       if (ask) return send(res, stepView(ctx, { step: ask, raw: req.query, query, origins: svc.inv.maps.listOrigins(), dream: dest }));
       await tracked(req, 'search_started', { budget: query.budget, dream: dest.id, origin: query.origin });
-      const out = optimizer.dreamSearch(svc.inv, query, dest.id, { settings: await svc.settings(), now: new Date() });
+      const out = optimizer.dreamSearch(svc.inv, query, dest.id, { settings: await svc.settings(), now: svc.now() });
       // The context on this page's trip links carries only what the traveler said: the destination
       // they named (so a booking can say it was kept), the date they must leave on (held on every
       // page from here, never moved by a cut), and a length or a priority only when the query
@@ -145,7 +145,7 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
 
   // ---- Trip Challenge: bring the trip you found; we build a comparable one and say who wins ----
   // Our hotels by destination, for "I love this hotel": a probe of the hotel supplier, names only.
-  const ourHotels = destId => svc.inv.hotels.search({ destId, checkIn: addDays(today(), 14), nights: 1, rooms: 1 }).map(h => ({ id: h.id, name: h.name, stars: h.stars }));
+  const ourHotels = destId => svc.inv.hotels.search({ destId, checkIn: addDays(today(svc.now()), 14), nights: 1, rooms: 1 }).map(h => ({ id: h.id, name: h.name, stars: h.stars }));
   const hotelGroups = () => svc.inv.maps.listDestinations().slice().sort((a, b) => a.name.localeCompare(b.name))
     .map(d => ({ dest: d, hotels: ourHotels(d.id) })).filter(g => g.hotels.length);
   const challengeForm = (req, res, missing = []) => send(res, challengeFormView(ctx, {
@@ -156,7 +156,7 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
   });
   r.get('/challenge/review', (req, res, next) => {
     try {
-      const { challenger: ch, missing } = challenge.parseChallenger(req.query, { maps: svc.inv.maps });
+      const { challenger: ch, missing } = challenge.parseChallenger(req.query, { maps: svc.inv.maps, now: svc.now() });
       if (missing.length) return challengeForm(req, res, missing);
       const theirDest = svc.inv.maps.getDestination(ch.dest);
       const hotel = ch.hotel ? ourHotels(ch.dest).find(h => h.id === ch.hotel) : null;
@@ -166,12 +166,12 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
   });
   r.get('/challenge/result', compute, async (req, res, next) => {
     try {
-      const { challenger: ch, missing } = challenge.parseChallenger(req.query, { maps: svc.inv.maps });
+      const { challenger: ch, missing } = challenge.parseChallenger(req.query, { maps: svc.inv.maps, now: svc.now() });
       if (missing.length) return challengeForm(req, res, missing);
       let mode = challenge.MODES[req.query.mode] ? String(req.query.mode) : 'less';
       if (mode === 'surprise' && ch.locks.includes('dest')) mode = 'less';
       await tracked(req, 'search_started', { budget: ch.total, challenge: ch.dest, mode, origin: ch.origin });
-      const out = challenge.runChallenge(svc.inv, ch, await svc.settings(), { mode, now: new Date() });
+      const out = challenge.runChallenge(svc.inv, ch, await svc.settings(), { mode, now: svc.now() });
       send(res, challengeResultView(ctx, { out, theirDest: svc.inv.maps.getDestination(ch.dest), originCity: originCity(ch.origin), user: user(req) }));
     } catch (e) { next(e); }
   });
@@ -437,12 +437,12 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
     }
   });
   r.post('/signout', sameOrigin, form, async (req, res, next) => {
-    try { await accounts.endSession(req, res); res.redirect(303, '/'); } catch (e) { next(e); }
+    try { await accounts.endSession(req, res); res.redirect(303, '/ai-travel-agent'); } catch (e) { next(e); }
   });
 
   r.get('/my-trips', requireUser, async (req, res, next) => {
     try {
-      const t = today();
+      const t = today(svc.now());
       const bookings = (await ctx.store.listBookings({ userId: req.user.id, limit: 200 })).filter(b => b.vertical === 'trips' && b.status !== 'expired');
       const pub = bookings.map(b => ctx.engine.publicBooking(b));
       // Hunts are listed from their stored facts (no search runs here); the list is empty without the hunter.
@@ -545,7 +545,7 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
   r.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nDisallow: /trip/\nDisallow: /trips\nDisallow: /compare\nDisallow: /plan\nDisallow: /checkout/\nDisallow: /booking/\nDisallow: /admin\nDisallow: /my-trips\n${config.publicBaseUrl ? `Sitemap: ${config.publicBaseUrl}/sitemap.xml\n` : ''}`));
   r.get('/sitemap.xml', (req, res) => {
     const base = config.publicBaseUrl || '';
-    const urls = ['/', '/how-it-works', '/faq', '/destinations', '/beach-vacations', '/about', '/contact', ...[500, 1000, 1500, 2000, 3000, 5000].map(n => `/trips-under-${n}`), ...svc.inv.maps.listDestinations().map(d => `/trips-to-${slug(d.name)}`)];
+    const urls = ['/', '/ai-travel-agent', '/how-it-works', '/faq', '/destinations', '/beach-vacations', '/about', '/contact', ...[500, 1000, 1500, 2000, 3000, 5000].map(n => `/trips-under-${n}`), ...svc.inv.maps.listDestinations().map(d => `/trips-to-${slug(d.name)}`)];
     res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.map(u => `  <url><loc>${base}${u}</loc></url>`).join('\n')}\n</urlset>\n`);
   });
 

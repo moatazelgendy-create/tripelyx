@@ -6,7 +6,7 @@
 // table is asserted against priceTrip of its token through the service, never against a typed figure.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { startApp } = require('./helpers');
+const { startApp, fixedNow } = require('./helpers');
 const { loadConfig } = require('../server/config');
 const { createTripIntegrations } = require('../server/trips/integrations');
 const { decodeSpec, encodeSpec } = require('../server/trips/spec');
@@ -53,7 +53,7 @@ test('understanding: the goal chips are the goals, in order and at most three; t
     assert.ok(!understand(t, { mission: { mode: null } }, { maps }).intents.some(i => /^x[A-Z]/.test(i)), `${t} is not an Experience Max chip outside the mode`);
   }
   assert.equal(understand('Make $250 memorable', { mission: { mode: 'experience' } }, { maps }).updates.memAmount, 25000);
-  const ev = understand('I already have concert tickets on December 12, in the evening', { mission: { mode: 'experience' } }, { maps });
+  const ev = understand('I already have concert tickets on December 12, in the evening', { mission: { mode: 'experience' } }, { maps, now: fixedNow() });
   assert.deepEqual(ev.intents, ['xEvent']);
   assert.equal(ev.updates.event.name, 'your concert'); assert.equal(ev.updates.event.slot, 'evening'); assert.match(ev.updates.event.date, /^\d{4}-12-12$/);
   assert.equal(understand('Keep $500 for spending', { mission: { mode: 'experience' } }, { maps }).updates.memAmount, undefined, 'a reserve is never a memory amount');
@@ -566,7 +566,7 @@ test('"Where should I stop?" and the canvas\'s Memories page say the same "I\'d 
 });
 
 test('WHAT WAS ACTUALLY WORTH IT? after the trip: kept on the booking chip by chip; the account remembers it only on the owner\'s yes, and the next Experience Max names it', async t => {
-  const clock = new Date(); clock.setUTCHours(9, 0, 0, 0);
+  const clock = fixedNow(); clock.setUTCHours(9, 0, 0, 0);
   const app = await startApp({}, { now: () => clock });
   t.after(app.close);
   const agent = app.agent, svc = app.ctx.tripService;
@@ -661,7 +661,7 @@ test('understanding: a goals answer about remembering is never "remember my defa
 });
 
 test('"Remember this for next time?": a no in any words keeps it on the booking only; only a plain yes reaches the account; a goals answer saves nothing', async t => {
-  const clock = new Date(); clock.setUTCHours(9, 0, 0, 0);
+  const clock = fixedNow(); clock.setUTCHours(9, 0, 0, 0);
   const app = await startApp({}, { now: () => clock });
   t.after(app.close);
   const agent = app.agent, svc = app.ctx.tripService;
@@ -701,7 +701,7 @@ test('"Remember this for next time?": a no in any words keeps it on the booking 
 });
 
 test('WORTH IT from the agent: the yes or no reaches the service with who is asking, and what it decided is said: replaced, removed, kept on the account that booked it, or no account at all', async t => {
-  const clock = new Date(); clock.setUTCHours(9, 0, 0, 0);
+  const clock = fixedNow(); clock.setUTCHours(9, 0, 0, 0);
   const app = await startApp({}, { now: () => clock });
   t.after(app.close);
   const agent = app.agent, svc = app.ctx.tripService;

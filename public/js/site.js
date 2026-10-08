@@ -16,7 +16,9 @@
       if (e.key === 'Escape' && document.body.classList.contains('nav-open')) { setOpen(false); toggle.focus(); }
     });
     nav.addEventListener('click', function (e) { if (e.target.closest('a')) setOpen(false); });
-    window.matchMedia('(min-width: 1025px)').addEventListener('change', function (m) { if (m.matches) setOpen(false); });
+    // the company pages keep the full navigation from 1024px, the other pages from 1025px
+    var wide = document.body.classList.contains('corp') ? '(min-width: 1024px)' : '(min-width: 1025px)';
+    window.matchMedia(wide).addEventListener('change', function (m) { if (m.matches) setOpen(false); });
   }
 
   var header = document.querySelector('[data-header]');
@@ -25,30 +27,6 @@
     window.addEventListener('scroll', onScroll, { passive: true });
     onScroll();
   }
-
-  // Homepage search tabs: arrow keys move between tabs, Enter/click shows that vertical's form.
-  document.querySelectorAll('[data-tabs]').forEach(function (box) {
-    var tabs = Array.prototype.slice.call(box.querySelectorAll('[data-tab]'));
-    function select(tab, focus) {
-      tabs.forEach(function (t) {
-        var on = t === tab;
-        t.setAttribute('aria-selected', String(on));
-        t.tabIndex = on ? 0 : -1;
-        var panel = document.getElementById(t.getAttribute('aria-controls'));
-        if (panel) panel.hidden = !on;
-      });
-      if (focus) tab.focus();
-    }
-    tabs.forEach(function (t, i) {
-      t.addEventListener('click', function (e) { e.preventDefault(); select(t, false); });
-      t.addEventListener('keydown', function (e) {
-        var next = e.key === 'ArrowRight' ? i + 1 : e.key === 'ArrowLeft' ? i - 1 : e.key === 'Home' ? 0 : e.key === 'End' ? tabs.length - 1 : null;
-        if (next === null) return;
-        e.preventDefault();
-        select(tabs[(next + tabs.length) % tabs.length], true);
-      });
-    });
-  });
 
   var reveal = document.querySelectorAll('.reveal');
   if ('IntersectionObserver' in window && reveal.length) {

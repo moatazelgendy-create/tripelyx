@@ -155,7 +155,7 @@ function leaksView(ctx, { data, cx, hunt: h, cutTyped = '', cutProblem = null, c
   const promoOff = promo ? -h.breakdown.rows.filter(r => r.kind === 'discount').reduce((x, r) => x + r.amount, 0) : 0;
   const body = html`
 <div class="container tb-trip tb-leak">
-  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a> / ${cx.searchParams ? html`<a href="/trips?${cx.searchParams}">Your trips</a> / ` : ''}<a href="${tripUrl(token, cx)}">${t.dest.name}</a> / <span aria-current="page">What you don't need to pay for</span></nav>
+  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/ai-travel-agent">Home</a> / ${cx.searchParams ? html`<a href="/trips?${cx.searchParams}">Your trips</a> / ` : ''}<a href="${tripUrl(token, cx)}">${t.dest.name}</a> / <span aria-current="page">What you don't need to pay for</span></nav>
   <header class="tb-leak-head">
     <p class="eyebrow">${plural(s.nights, 'night')} in ${t.dest.name} · ${longDate(s.depart)} – ${longDate(t.flight.return)} · ${plural(s.travelers, 'traveler')} · from ${origin ? origin.city : s.from} ${demoBadge(t.demo)}</p>
     <h1>What you don't need to pay for</h1>

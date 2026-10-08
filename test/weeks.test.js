@@ -15,12 +15,13 @@ const decision = require('../server/trips/decision');
 const { classifyChanges } = require('../server/trips/facts');
 const { encodeSpec, decodeSpec } = require('../server/trips/spec');
 const { addDays, today } = require('../server/lib/dates');
+const { clock } = require('./helpers');
 const { format } = require('../server/lib/money');
 const weeks = require('../server/trips/weeks');
 
-const inv = createTripIntegrations(loadConfig({ APP_ENV: 'development' }));
+const inv = createTripIntegrations(loadConfig({ APP_ENV: 'development' }), { now: clock });
 const settings = DEFAULT_SETTINGS;
-const now = new Date();
+const now = clock();
 const t0 = today(now);
 const fmt = cents => format(cents, 'USD');
 const QUERY = { budget: 200000, vacationBudget: 200000, keep: 0, budgetInput: 2000, budgetType: 'total', travelers: 2, who: 'couple', origin: 'NYC', dateMode: 'anytime', depart: null, month: null, nights: 5, style: 'beach', priority: 'price', allowOver: 0, dest: null, region: null, rules: null, dests: null, notCountry: null };

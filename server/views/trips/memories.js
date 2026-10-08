@@ -232,7 +232,7 @@ function memoriesView(ctx, { data, cx, mem: d, promo = null, promoError = null, 
   const s = t.spec, gs = d.goals, cap = cx.budget || null;
   const pxGone = cx.protect ? { px: undefined } : {};
   const head = html`
-  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a> / ${cx.searchParams ? html`<a href="/trips?${cx.searchParams}">Your trips</a> / ` : ''}<a href="${tripUrl(token, cx)}">${t.dest.name}</a> / <span aria-current="page">Make it more memorable</span></nav>
+  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/ai-travel-agent">Home</a> / ${cx.searchParams ? html`<a href="/trips?${cx.searchParams}">Your trips</a> / ` : ''}<a href="${tripUrl(token, cx)}">${t.dest.name}</a> / <span aria-current="page">Make it more memorable</span></nav>
   <header class="tb-mem-head">
     <p class="eyebrow">${plural(s.nights, 'night')} in ${t.dest.name} · ${longDate(s.depart)} – ${longDate(t.flight.return)} · ${plural(s.travelers, 'traveler')} · from ${origin ? origin.city : s.from} ${demoBadge(t.demo)}</p>
     <h1>Make it more memorable</h1>

@@ -6,7 +6,7 @@ const { bookView, bookIndexView, offerView, checkoutView, bookingView, manageVie
 const { notFoundView } = require('../views/errors');
 const { tripCheckoutView, tripBookingView } = require('../views/trips/pages');
 const { worthItOpen } = require('../trips/service');
-const { VERTICALS, getVertical } = require('../verticals');
+const { getVertical } = require('../verticals');
 const { AppError } = require('../lib/errors');
 const { readCookies, bookingCookieName, setBookingCookie } = require('../lib/cookies');
 
@@ -21,11 +21,9 @@ function pagesRouter(ctx, { writeLimiter }) {
 
   r.use((req, res, next) => { res.setHeader('Cache-Control', 'no-cache'); next(); });
 
-  // With Travel by Budget on, the trips router owns "/" and the corporate homepage moves to /company.
-  r.get(ctx.trips ? '/company' : '/', (req, res) => {
-    const verticals = VERTICALS.filter(v => enabled(v.key)).map(v => ({ meta: v, values: defaultsFor(v), lookups: lookupsFor(v.key) }));
-    send(res, homeView(ctx, { verticals }));
-  });
+  // "/" is always the corporate homepage; the AI travel agent's homepage is /ai-travel-agent (routes/trips.js).
+  r.get('/', (req, res) => send(res, homeView(ctx)));
+  r.get('/company', (req, res) => res.redirect(301, '/'));
   r.get('/brands', (req, res) => send(res, brandsView(ctx)));
   r.get('/technology', (req, res) => send(res, technologyView(ctx)));
   r.get('/partners', (req, res) => send(res, partnersView(ctx)));

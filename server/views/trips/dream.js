@@ -21,7 +21,7 @@ function dreamView(ctx, { dest, q, originCity, best, under, gap, closers, cx, us
   const dreamToken = dreamT ? encodeSpec(dreamT.spec) : null;
   const body = html`
 <div class="container tb-dream-page">
-  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a> / <span aria-current="page">Make it work</span></nav>
+  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/ai-travel-agent">Home</a> / <span aria-current="page">Make it work</span></nav>
   <header class="tb-results-head">
     <div>
       <p class="eyebrow">${beat ? 'Beat my quote' : q.dateMode === 'exact' ? 'I have to be there' : 'Budget Negotiator'}</p>

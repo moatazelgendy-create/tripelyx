@@ -1,22 +1,21 @@
 const { html, raw } = require('../lib/html');
 const { icon } = require('./icons');
 const { layout } = require('./layout');
-const { searchForm } = require('./book');
 
-// "ALAMEIN GO" wordmark: typeset, with an original wave mark under GO.
+// "ALAMEIN GO" wordmark: typeset, with the two-stroke wave under GO.
 function alameinGoWordmark() {
   return html`<span class="ag-wordmark" role="img" aria-label="Alamein Go">
     <span class="ag-alamein" aria-hidden="true">ALAMEIN</span>
-    <span class="ag-go" aria-hidden="true">GO<svg class="ag-wave" viewBox="0 0 120 26" aria-hidden="true"><path d="M2 12c18-9 34-9 52 0s34 9 52 0c4-2 8-3.6 12-4.6-6 6-12 9.6-19 12-14 4.8-30 2.6-45-3.6C38 10 22 9 2 12z" fill="currentColor"/><path d="M14 22c14-5 26-5 40 0s26 5 40 0c-11 6-23 7.4-36 3.2-13-4.2-28-4.6-44-3.2z" fill="currentColor" opacity=".55"/></svg></span>
+    <span class="ag-go" aria-hidden="true">GO<svg class="ag-wave" viewBox="0 0 96 24" aria-hidden="true"><path d="M3.5 7c8.5-.5 18.5 3 27.5 3.2 8 .2 13-6.7 21-6.4 4 .2 7 1.4 9 2.8-6 .4-12 2.9-19 6.2-6 2.8-13 3.6-20 1.8C15 12.8 9 9.2 3.5 7z" fill="currentColor"/><path d="M34 19c10-1.4 20-4.5 29-9 7-3.6 13-7.4 19-7 4 .2 7 1.6 9.5 3.6-7.5.8-13.5 4-21.5 8.4-9 4.8-20 6-36 4z" fill="currentColor"/></svg></span>
   </span>`;
 }
 
 const TILES = [
-  { v: 'hotels', label: 'Stays', icon: 'bed' },
+  { v: 'hotels', label: 'Stays', icon: 'bed-solid' },
   { v: 'cars', label: 'Cars', icon: 'car' },
   { v: 'transfers', label: 'Transfers', icon: 'bus' },
-  { v: 'yachts', label: 'Yachts', icon: 'yacht' },
-  { v: 'experiences', label: 'Experiences', icon: 'palm' },
+  { v: 'yachts', label: 'Yachts', icon: 'yacht-solid' },
+  { v: 'experiences', label: 'Experiences', icon: 'island' },
 ];
 
 const WHY = [
@@ -66,28 +65,10 @@ function devices() {
 </div>`;
 }
 
-// Tabbed search box under the hero, one tab per bookable vertical. Without JS the tabs are plain links
-// to each vertical's search page and only the first form shows; site.js turns them into tabs.
-function homeSearch(verticals) {
-  if (!verticals.length) return '';
-  return html`<section class="home-search" aria-label="Search travel">
-  <div class="container">
-    <div class="home-search-card" data-tabs>
-      <div class="home-search-tabs" role="tablist" aria-label="What are you booking?">
-        ${verticals.map((v, i) => html`<a role="tab" id="hs-tab-${v.meta.key}" href="/book/${v.meta.key}" aria-controls="hs-panel-${v.meta.key}" aria-selected="${i === 0 ? 'true' : 'false'}"${i ? raw(' tabindex="-1"') : ''} data-tab>${icon(v.meta.icon)}<span>${v.meta.label}</span></a>`)}
-      </div>
-      ${verticals.map((v, i) => html`<div class="home-search-panel" role="tabpanel" id="hs-panel-${v.meta.key}" aria-labelledby="hs-tab-${v.meta.key}"${i ? raw(' hidden') : ''}>
-        ${searchForm(v.meta, v.values, v.lookups, {}, { idPrefix: `hs-${v.meta.key}`, bind: false })}
-      </div>`)}
-    </div>
-  </div>
-</section>`;
-}
-
-function homeView(ctx, { verticals = [] } = {}) {
+function homeView(ctx) {
   const body = html`
 <section class="hero" aria-labelledby="hero-title">
-  <div class="hero-media" role="img" aria-label="The Mediterranean coast at New Alamein: white sand, turquoise water and a clear sky"></div>
+  <div class="hero-media" role="img" aria-label="Aerial view of New Alamein: towers, beach and turquoise water on the Mediterranean coast"></div>
   <div class="container hero-inner">
     <p class="eyebrow eyebrow-light">Travel technology. Real places. Bigger possibilities.</p>
     <h1 id="hero-title" class="hero-title">Travel technology<br> that powers<br> <span class="accent">better journeys.</span></h1>
@@ -99,7 +80,7 @@ function homeView(ctx, { verticals = [] } = {}) {
     <div class="location-chip">${icon('pin')}<span><b>New Alamein</b><small>Egypt</small></span></div>
   </div>
 </section>
-${homeSearch(verticals)}
+
 <section class="brands-section" aria-labelledby="brands-title">
   <div class="container">
     <div class="section-head">
@@ -157,8 +138,8 @@ ${homeSearch(verticals)}
   </div>
 </section>`;
   return layout({
-    active: 'home', body,
-    ctx: { ...ctx, preload: raw('<link rel="preload" as="image" href="/img/coast-hero.webp" fetchpriority="high">') },
+    active: 'home', body, corporate: true,
+    ctx: { ...ctx, preload: raw('<link rel="preload" as="image" href="/img/home-hero.webp" imagesrcset="/img/home-hero.webp 1x, /img/home-hero-2x.webp 2x" fetchpriority="high">') },
   });
 }
 

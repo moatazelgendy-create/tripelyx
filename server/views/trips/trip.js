@@ -242,7 +242,7 @@ function tripView(ctx, { data, cx, user, saved, dreamGap, named = null, promo = 
   const plan = vacationPlan(t, cx, options);
   const body = html`
 <div class="container tb-trip">
-  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a> / ${cx.searchParams ? html`<a href="/trips?${cx.searchParams}">Your trips</a> / ` : ''}<span aria-current="page">${t.dest.name}</span></nav>
+  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/ai-travel-agent">Home</a> / ${cx.searchParams ? html`<a href="/trips?${cx.searchParams}">Your trips</a> / ` : ''}<span aria-current="page">${t.dest.name}</span></nav>
   ${dreamGap || ''}
   <header class="tb-trip-head">
     <div class="tb-trip-media"><img src="${t.dest.image.url}" alt="${t.dest.image.alt}" width="800" height="500"></div>

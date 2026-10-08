@@ -12,13 +12,14 @@ const optimizer = require('../server/trips/optimizer');
 const { classifyChanges, usableTime } = require('../server/trips/facts');
 const { encodeSpec, decodeSpec } = require('../server/trips/spec');
 const { addDays, today } = require('../server/lib/dates');
+const { clock } = require('./helpers');
 const { format } = require('../server/lib/money');
 const strategies = require('../server/trips/strategies');
 
-const raw = createTripIntegrations(loadConfig({ APP_ENV: 'development' }));
+const raw = createTripIntegrations(loadConfig({ APP_ENV: 'development' }), { now: clock });
 const inv = optimizer.memoInventory(raw);
 const settings = DEFAULT_SETTINGS;
-const now = new Date();
+const now = clock();
 const fmt = cents => format(cents, 'USD');
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 const money = s => Math.round(Number(s.replace(/[$,]/g, '')) * 100);

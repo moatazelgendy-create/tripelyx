@@ -26,7 +26,7 @@ function guideView(ctx, { data, cx }) {
   const tripUrl = `/trip/${token}?${contextParams(cx)}`;
   const body = html`
 <div class="container tb-results tb-guide-page">
-  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/">Home</a> / ${cx.searchParams ? html`<a href="/trips?${cx.searchParams}">Your trips</a> / ` : ''}<a href="${tripUrl}">${t.dest.name}</a> / <span aria-current="page">Step by step</span></nav>
+  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/ai-travel-agent">Home</a> / ${cx.searchParams ? html`<a href="/trips?${cx.searchParams}">Your trips</a> / ` : ''}<a href="${tripUrl}">${t.dest.name}</a> / <span aria-current="page">Step by step</span></nav>
   <header class="tb-results-head"><div>
     <p class="eyebrow">Your trip, step by step</p>
     <h1>${t.dest.name}, ${plural(s.nights, 'night')} from ${longDate(s.depart)}: what happens, in order.</h1>

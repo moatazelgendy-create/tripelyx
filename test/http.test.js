@@ -1,12 +1,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { startApp } = require('./helpers');
+const { startApp, clock } = require('./helpers');
 const { addDays, today } = require('../server/lib/dates');
 
 test('pages render, security headers are set, secrets are not exposed', async t => {
   const app = await startApp({ PAYMENT_LIVE_SECRET_KEY: 'sk_should_not_leak' });
   t.after(app.close);
-  for (const path of ['/', '/brands', '/technology', '/partners', '/about', '/contact', '/book', '/book/hotels', '/book/flights', '/book/cars', '/book/cruises', '/book/yachts', '/book/transfers', '/book/activities', '/book/experiences', '/manage']) {
+  for (const path of ['/', '/ai-travel-agent', '/brands', '/technology', '/partners', '/about', '/contact', '/book', '/book/hotels', '/book/flights', '/book/cars', '/book/cruises', '/book/yachts', '/book/transfers', '/book/activities', '/book/experiences', '/manage']) {
     const res = await fetch(app.base + path);
     assert.equal(res.status, 200, path);
     const body = await res.text();
@@ -28,7 +28,7 @@ test('pages render, security headers are set, secrets are not exposed', async t 
 test('no inline style attributes or inline scripts (the CSP would block them)', async t => {
   const app = await startApp();
   t.after(app.close);
-  for (const path of ['/', '/brands', '/technology', '/partners', '/about', '/contact', '/book/hotels', '/book/experiences']) {
+  for (const path of ['/', '/ai-travel-agent', '/brands', '/technology', '/partners', '/about', '/contact', '/book/hotels', '/book/experiences']) {
     const body = await (await fetch(app.base + path)).text();
     assert.ok(!/\sstyle="/.test(body), `${path} has an inline style attribute`);
     assert.ok(!/<script(?![^>]*\bsrc=)(?![^>]*application\/json)[^>]*>/.test(body), `${path} has an inline script`);
@@ -47,7 +47,7 @@ test('disabled verticals 404 and disappear from navigation', async t => {
 test('booking API: JSON only, cookie-scoped access, full pay flow', async t => {
   const app = await startApp();
   t.after(app.close);
-  const date = addDays(today(), 12);
+  const date = addDays(today(clock()), 12);
   const search = await (await fetch(`${app.base}/api/search/transfers?from=${encodeURIComponent('El Alamein Airport (DBB)')}&to=${encodeURIComponent('Marassi')}&date=${date}`)).json();
   const offer = search.offers[0];
   const formPost = await fetch(app.base + '/api/quotes', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'x=1' });
@@ -86,7 +86,7 @@ test('no-JS paths: results, quote form post and manage form work without JavaScr
   // The demo marks some yachts as booked on some dates: the first date from two weeks out with a free one.
   let html, m = null;
   for (let offset = 14; offset < 44 && !m; offset++) {
-    html = await (await fetch(`${app.base}/book/yachts?date=${addDays(today(), offset)}&duration=half_day&guests=4`)).text();
+    html = await (await fetch(`${app.base}/book/yachts?date=${addDays(today(clock()), offset)}&duration=half_day&guests=4`)).text();
     m = html.match(/href="(\/book\/yachts\/[^"]+)"/);
   }
   assert.ok(m, 'a yacht is free on some date in the next month');

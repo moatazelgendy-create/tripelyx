@@ -2,12 +2,13 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { TestPaymentProcessor, luhn } = require('../server/payments/TestPaymentProcessor');
 const { MemoryStore } = require('../server/booking');
+const { clock } = require('./helpers');
 
 const card = number => ({ type: 'test_card', number, expMonth: '12', expYear: '35', cvc: '123', name: 'T' });
 
 test('test processor: success, declines, validation, refunds', async () => {
   const store = new MemoryStore();
-  const p = new TestPaymentProcessor({ store });
+  const p = new TestPaymentProcessor({ store, now: clock });
   const i = await p.createIntent({ amount: 10000, currency: 'USD', bookingId: 'bk_1', description: 'x' });
   assert.equal(i.mode, 'test');
 

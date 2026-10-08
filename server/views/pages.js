@@ -27,6 +27,21 @@ function partnerBand() {
 </section>`;
 }
 
+// The AI travel agent, a Tripelyx product with its own homepage, as a second brand card on Our Brands;
+// listed only where it runs. Its copy is the agent's own.
+function aiAgentCard(ctx) {
+  if (!ctx.trips) return '';
+  return html`<article class="brand-card brand-card-ai">
+      <div class="brand-card-media" aria-hidden="true">${icon('sparkle')}</div>
+      <div class="brand-card-body">
+        <h2 class="brand-logo"><span class="ai-wordmark">Tripelyx <span>AI Travel Agent</span></span></h2>
+        <p class="brand-tagline">Tell us what you want your trip to do. The AI builds it.</p>
+        <p class="brand-text">One number. The agent finds where, when, how long, which flight and which hotel, builds three different vacations for it, and asks you only when it needs a real decision.</p>
+        <a class="btn btn-navy btn-lg" href="/ai-travel-agent">Tell us your budget ${icon('arrow')}</a>
+      </div>
+    </article>`;
+}
+
 function brandsView(ctx) {
   const body = html`
 ${pageHero({ eyebrow: 'Our Brands', title: 'Unique destinations.', accent: 'Powerful platforms.', lead: 'Each Tripelyx brand is a complete booking platform built around one destination — local inventory, local partners and a single place for travelers to plan everything.' })}
@@ -44,6 +59,7 @@ ${pageHero({ eyebrow: 'Our Brands', title: 'Unique destinations.', accent: 'Powe
         ${TILES.map(t => html`<li><a class="vertical-tile" href="/book/${t.v}">${icon(t.icon)}<span>${t.label}</span></a></li>`)}
       </ul>
     </article>
+    ${aiAgentCard(ctx)}
   </div>
 </section>
 <section class="section section-soft">
@@ -70,7 +86,7 @@ ${pageHero({ eyebrow: 'Our Brands', title: 'Unique destinations.', accent: 'Powe
   </div>
 </section>
 ${partnerBand()}`;
-  return layout({ title: 'Our Brands', active: 'brands', body, ctx });
+  return layout({ title: 'Our Brands', active: 'brands', body, ctx, corporate: true });
 }
 
 function technologyView(ctx) {
@@ -123,7 +139,7 @@ ${pageHero({ eyebrow: 'Our Technology', title: 'A complete travel commerce platf
   </div>
 </section>
 ${partnerBand()}`;
-  return layout({ title: 'Technology', active: 'technology', body, ctx });
+  return layout({ title: 'Technology', active: 'technology', body, ctx, corporate: true });
 }
 
 function partnersView(ctx) {
@@ -157,7 +173,7 @@ ${pageHero({ eyebrow: 'Partners', title: 'Let’s build the future of travel', a
     ${leadForm('partner')}
   </div>
 </section>`;
-  return layout({ title: 'Partners', active: 'partners', body, ctx, scripts: ['/js/forms.js'] });
+  return layout({ title: 'Partners', active: 'partners', body, ctx, scripts: ['/js/forms.js'], corporate: true });
 }
 
 function leadForm(kind) {
@@ -204,7 +220,7 @@ ${pageHero({ eyebrow: 'About Tripelyx', title: 'Travel technology.', accent: 'Re
   </div>
 </section>
 ${partnerBand()}`;
-  return layout({ title: 'About', active: 'about', body, ctx });
+  return layout({ title: 'About', active: 'about', body, ctx, corporate: true });
 }
 
 function contactView(ctx) {
@@ -224,7 +240,7 @@ ${pageHero({ eyebrow: 'Contact', title: 'Let’s talk.', lead: 'Questions about 
     ${leadForm('contact')}
   </div>
 </section>`;
-  return layout({ title: 'Contact', active: 'contact', body, ctx, scripts: ['/js/forms.js'] });
+  return layout({ title: 'Contact', active: 'contact', body, ctx, scripts: ['/js/forms.js'], corporate: true });
 }
 
 module.exports = { brandsView, technologyView, partnersView, aboutView, contactView, pageHero };
