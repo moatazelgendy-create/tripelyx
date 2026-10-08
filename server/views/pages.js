@@ -177,14 +177,16 @@ ${pageHero({ eyebrow: 'Partners', title: 'Let’s build the future of travel', a
 }
 
 // The select under the email field, per form: the partner form, the Business form on /business, and Contact.
+// A third entry is the lead's `kind`, sent as a hidden field: only the Business form has one, so its enquiries
+// reach /admin/business (validatePartnerLead keeps `kind` only when it is exactly 'business').
 const LEAD_TYPES = {
   partner: ['Partnership type', ['Property owner', 'Transport company', 'Activity provider', 'Destination', 'Other']],
-  business: ['Company size', ['1-10 people', '11-50 people', '51-200 people', '201-1,000 people', 'More than 1,000 people']],
+  business: ['Company size', ['1-10 people', '11-50 people', '51-200 people', '201-1,000 people', 'More than 1,000 people'], 'business'],
   contact: ['Topic', ['General enquiry', 'Partnerships', 'Press', 'Careers', 'Booking support']],
 };
 
 function leadForm(kind) {
-  const [typeLabel, types] = LEAD_TYPES[kind] || LEAD_TYPES.contact;
+  const [typeLabel, types, leadKind] = LEAD_TYPES[kind] || LEAD_TYPES.contact;
   return html`<form class="form-card form" data-lead-form novalidate>
     <div class="form-row">
       <div class="field"><label for="lf-name">Your name</label><input id="lf-name" name="name" autocomplete="name" required maxlength="100"><p class="field-error" data-error-for="name"></p></div>
@@ -197,7 +199,7 @@ function leadForm(kind) {
     </div>
     <div class="field"><label for="lf-message">Message</label><textarea id="lf-message" name="message" required maxlength="2000"></textarea><p class="field-error" data-error-for="message"></p></div>
     <div class="sr-only" aria-hidden="true"><label for="lf-website">Website</label><input id="lf-website" name="website" tabindex="-1" autocomplete="off"></div>
-    <div data-form-status role="status" aria-live="polite"></div>
+    ${leadKind ? html`<input type="hidden" name="kind" value="${leadKind}">` : ''}<div data-form-status role="status" aria-live="polite"></div>
     <button class="btn btn-navy btn-lg" type="submit"><span class="btn-label">Send message</span> ${icon('arrow')}</button>
     <noscript><p class="alert alert-info">This form needs JavaScript. You can also reach us by email.</p></noscript>
   </form>`;
