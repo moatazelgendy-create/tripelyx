@@ -54,22 +54,39 @@ function elements(markup) {
 const textOf = s => String(s).replace(/<svg[\s\S]*?<\/svg>/g, ' ').replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/&#39;/g, '\'').replace(/&quot;/g, '"').replace(/\s+/g, ' ').trim();
 const hasClass = (el, cls) => new RegExp(`\\bclass="[^"]*\\b${cls}\\b`).test(el.attrs);
 
+/** An amount written in text: "$86", "$ 1,240", "−$50", "€20". */
+const TEXT_AMOUNT = /[$€£¥]\s?\d/;
+
 /**
- * The demo rule (§F6): each .bz-money has an ancestor marked data-price-source="demo" that says "Demo price"
- * and, when `priced`, "Priced at". Returns how many amounts it checked.
+ * The demo rule (§F6): each .bz-money, and each amount written as plain text anywhere (a reason, a verdict, a
+ * table cell, a fact), has an ancestor marked data-price-source="demo" that says "Demo price" and, when
+ * `priced`, "Priced at". Returns how many .bz-money amounts it checked.
  */
 function assertDemoMoney(markup, { priced = true, label = '' } = {}) {
   const s = String(markup);
+  const all = elements(s);
+  const check = (el, what) => {
+    let box = el;
+    while (box && !/\bdata-price-source="demo"/.test(box.attrs)) box = box.parent;
+    assert.ok(box, `${label}: ${what} sits in a demo container`);
+    const text = textOf(s.slice(box.inner, box.end));
+    assert.ok(text.includes('Demo price'), `${label}: the container of ${what} says Demo price: ${text.slice(0, 160)}`);
+    if (priced) assert.ok(text.includes('Priced at'), `${label}: the container of ${what} says Priced at: ${text.slice(0, 160)}`);
+  };
   let n = 0;
-  for (const el of elements(s)) {
+  for (const el of all) {
     if (!hasClass(el, 'bz-money')) continue;
     n += 1;
-    let box = el.parent;
-    while (box && !/\bdata-price-source="demo"/.test(box.attrs)) box = box.parent;
-    assert.ok(box, `${label}: ${s.slice(el.start, el.start + 80)} sits in a demo container`);
-    const text = textOf(s.slice(box.inner, box.end));
-    assert.ok(text.includes('Demo price'), `${label}: its container says Demo price: ${text.slice(0, 160)}`);
-    if (priced) assert.ok(text.includes('Priced at'), `${label}: its container says Priced at: ${text.slice(0, 160)}`);
+    check(el.parent, s.slice(el.start, el.start + 80));
+  }
+  // Amounts in text nodes: the innermost element around each one must sit in a demo container too.
+  for (const m of s.matchAll(/>([^<]+)</g)) {
+    const text = textOf(m[1]);
+    if (!TEXT_AMOUNT.test(text)) continue;
+    const at = m.index + 1;
+    const owner = all.filter(el => !VOID.has(el.tag) && !/\/\s*$/.test(el.attrs) && el.inner <= at && at < el.end)
+      .reduce((a, el) => (!a || el.inner > a.inner ? el : a), null);
+    check(owner, `"${text.slice(0, 60)}"`);
   }
   return n;
 }
@@ -174,6 +191,18 @@ test('format: zones, money, percentages, durations and travel dates', () => {
   assert.equal(f.clock24('nope'), '');
 });
 
+test('format: money and percent take whole numbers only, so a missing amount never prints as "$0" or "0%"', () => {
+  for (const bad of [null, undefined, NaN, Infinity, '1234', '', 12.5, 2 ** 53, {}, true]) {
+    assert.throws(() => f.money(bad), TypeError, `money(${String(bad)})`);
+    assert.throws(() => f.percent(bad), TypeError, `percent(${String(bad)})`);
+  }
+  assert.equal(f.money(0), '$0', 'a real zero still prints');
+  assert.equal(f.money(-0), '$0', 'never "-$0"');
+  assert.equal(f.money(-15050), '−$150.50');
+  assert.equal(f.percent(0), '0%');
+  assert.equal(f.percent(-125), '-12.5%');
+});
+
 test('format: times read in the company zone on a 12-hour clock, named, with no narrow spaces', () => {
   // Cairo is UTC+3 on 9 Oct 2026 and UTC+2 on 31 Dec.
   assert.equal(f.timeIn(TZ, PRICED), '3:42 PM');
@@ -244,8 +273,13 @@ test('the demo rule: every amount every part prints sits in a demo container tha
   // All together on one page, too.
   assertDemoMoney(html`${Object.values(pieces)}`, { label: 'all' });
 
-  // The checker itself catches a bare amount.
+  // The checker itself catches a bare amount, also one written as text, and a label without "Priced at".
   assert.throws(() => assertDemoMoney(html`<p>${parts.amount(100)}</p>`), /demo container/);
+  assert.throws(() => assertDemoMoney(html`<div><p>Over by $86</p></div>`), /"Over by \$86" sits in a demo container/);
+  assert.throws(() => assertDemoMoney(html`<td><span class="bz-cell-value">−$50</span></td>`), /demo container/);
+  assert.throws(() => assertDemoMoney(html`<div data-price-source="demo"><p>Over by $86</p><p>Demo price</p></div>`), /says Priced at/);
+  assert.equal(assertDemoMoney(html`<div data-price-source="demo"><input name="x"><p>Over by $86</p><p>${NOTE}</p></div>`), 0, 'a text amount in a labelled container passes');
+  assert.equal(assertDemoMoney(html`<p>Plan 7 days ahead. Q4 2026. 20% over.</p>`), 0, 'digits without a currency sign are not amounts');
   // Without a priced-at time the label still says Demo price.
   assert.match(String(parts.demoPrice(500, { pricedAt: null, timeZone: TZ })), /<span class="bz-demo-price" data-price-source="demo"><span class="bz-money">\$5<\/span> <span class="bz-price-note">Demo price<\/span><\/span>/);
   assert.equal(assertDemoMoney(parts.demoPrice(500, { pricedAt: null, timeZone: TZ }), { priced: false }), 1);
@@ -263,6 +297,25 @@ test('linesTable: every line and a total that is their sum; inDemo leaves out it
   const bare = String(parts.linesTable(lines, { inDemo: true, totalLabel: 'Trip total' }));
   assert.doesNotMatch(bare, /data-price-source/);
   assert.match(bare, /<dt>Trip total<\/dt>/);
+});
+
+test('a missing amount is never a priced "$0": demoPrice prints nothing, amount and linesTable refuse it', () => {
+  const opts = { pricedAt: PRICED, timeZone: TZ };
+  // No amount (a budget that isn't set, a recheck with no new total): nothing to label, nothing printed.
+  assert.equal(parts.demoPrice(null, opts), '');
+  assert.equal(parts.demoPrice(undefined, opts), '');
+  // Anything else that is not whole cents is a bug in the page: it fails loudly instead of reading "$0".
+  for (const bad of ['abc', '100', NaN, 12.5]) {
+    assert.throws(() => parts.demoPrice(bad, opts), TypeError, String(bad));
+    assert.throws(() => parts.amount(bad), TypeError, String(bad));
+  }
+  assert.throws(() => parts.amount(undefined), TypeError);
+  assert.throws(() => parts.amount(null), TypeError);
+  assert.throws(() => parts.linesTable([{ label: 'Fare', kind: 'base' }], opts), TypeError, 'a line without cents');
+  assert.throws(() => parts.linesTable([{ label: 'Fare', kind: 'base', cents: 62000 }, { label: 'Taxes', kind: 'tax', cents: '4200' }], opts), TypeError);
+  assert.throws(() => parts.limitsBar({ heading: 'x', items: [{ key: 'k', text: 'Up to', cents: 'x', suffix: '' }] }, opts), TypeError);
+  // A real zero is still a price.
+  assert.match(String(parts.demoPrice(0, opts)), /<span class="bz-money">\$0<\/span>/);
 });
 
 test('policy badges and status pills: text and an icon for every state, escaped when unknown', () => {
@@ -305,6 +358,26 @@ test('violationList: reasons with icons, "+N more" when collapsed, a demo contai
   assert.doesNotMatch(one, /data-price-source/, 'no amount: no demo label');
   assert.equal(parts.violationList([]), '');
   assert.equal(parts.violationList(null), '');
+
+  // A reason with an amount, outside a demo container, needs its priced-at time: "Demo price" alone is not
+  // the label (§F6), so the part refuses rather than print an amount without one.
+  assert.throws(() => parts.violationList([{ text: 'Over your $712 limit by $86' }], { timeZone: TZ }), TypeError);
+  assert.throws(() => parts.violationList([{ text: 'Over your $712 limit by $86' }], { timeZone: TZ, pricedAt: null }), TypeError);
+  assert.equal(assertDemoMoney(parts.violationList(v, { pricedAt: PRICED, timeZone: TZ })), 0, 'its text amounts sit in a priced container');
+  // No amount: no time needed.
+  assert.doesNotMatch(String(parts.violationList(v.slice(2), { timeZone: TZ })), /data-price-source/);
+});
+
+test('verdict: a verdict that quotes an amount gets its own priced demo container', () => {
+  const plain = String(parts.verdict('within', "Within policy. Confirm and it's approved to book."));
+  assert.match(plain, /^<div class="bz-verdict bz-verdict-within">/, 'no amount: just the verdict');
+  const priced = String(parts.verdict('out', 'Over your trip limit by $310', { pricedAt: PRICED, timeZone: TZ }));
+  assert.match(priced, /^<div class="bz-demo-box bz-verdict-box" data-price-source="demo"><div class="bz-verdict bz-verdict-out">/);
+  assert.ok(priced.includes(NOTE));
+  assertDemoMoney(priced, { label: 'verdict' });
+  assert.throws(() => parts.verdict('out', 'Over by $86'), TypeError, 'an amount without a priced-at time');
+  // Inside a container that already labels it, no second one.
+  assert.match(String(parts.verdict('out', 'Over by $86', { inDemo: true })), /^<div class="bz-verdict bz-verdict-out">/);
 });
 
 test('rowCard: one card per offer, a radio per option, unavailable and blocked options disabled', () => {
@@ -337,6 +410,28 @@ test('rowCard: one card per offer, a radio per option, unavailable and blocked o
   assert.equal((page.match(/<p class="bz-opt-price is-unavailable">Not available in demo data<\/p>/g) || []).length, all.filter(r => !r.row.available).length);
   assert.match(page, /\srequired>/);
 
+  // An option the demo data doesn't have says so once, and is never called "Blocked by policy": the policy
+  // engine marks it blocked (inventory.unavailable), but no company rule blocks it.
+  const unavailable = all.filter(r => !r.row.available);
+  assert.ok(unavailable.every(r => r.evaluation.status === 'blocked' && r.evaluation.violations.some(x => x.rule === 'inventory.unavailable')), 'the engine blocks them');
+  for (const r of unavailable) {
+    const li = String(parts.rowCard(r, { timeZone: TZ, input: { name: 'out' } })).match(/<li class="bz-opt[\s\S]*<\/li>/)[0];
+    assert.match(li, /^<li class="bz-opt is-disabled is-unavailable">/, r.row.key);
+    assert.doesNotMatch(li, /Blocked by policy|bz-badge/, `${r.row.key}: no policy badge`);
+    assert.equal(textOf(li).match(/Not available in demo data/g).length, 1, `${r.row.key}: said once`);
+  }
+  // A real policy block (Sahara Wings) keeps its badge and its reason.
+  const carrier = all.find(r => r.row.available && r.evaluation.status === 'blocked');
+  const blockedLi = String(parts.rowCard(carrier, { timeZone: TZ, input: { name: 'out' } }));
+  assert.match(blockedLi, /<li class="bz-opt is-disabled is-blocked">/);
+  assert.match(blockedLi, /<span class="bz-badge bz-badge-blocked">[\s\S]*?<span>Blocked by policy<\/span><\/span>/);
+  assert.match(blockedLi, /<li class="bz-reason is-block">/);
+  // Another reason on an unavailable option stays; only the duplicate "not available" one goes.
+  const other = { ...unavailable[0], evaluation: { status: 'blocked', violations: [...unavailable[0].evaluation.violations, { rule: 'flight.cabin', severity: 'approval', text: 'Business class is above your limit.' }] } };
+  const otherLi = textOf(parts.rowCard(other, { timeZone: TZ }));
+  assert.ok(otherLi.includes('Business class is above your limit.'));
+  assert.doesNotMatch(otherLi, /Not available in demo data\./);
+
   // The overnight flight says +1; a nonstop says Nonstop; the times are the airports' own, 24-hour.
   assert.match(page, /22:10 <span aria-hidden="true">→<\/span><span class="sr-only"> to <\/span> 08:35<sup class="bz-plus" title="1 day later">\+1<\/sup>/);
   assert.match(page, /<p class="bz-row-meta">Nonstop · 5h · [^<]* · ZM102 · Economy<\/p>/);
@@ -365,6 +460,28 @@ test('rowCard escapes what the rows carry and renders without a form', () => {
   assert.equal(parts.rowCard([], { timeZone: TZ }), '');
   assert.equal(parts.stars(undefined), '');
   assert.equal(parts.stars(4), '4-star');
+});
+
+test('rowCard: a hotel\'s nightly rate and its Price to Beat saving are on the same basis as the policy', () => {
+  const { hotels } = searchRows();
+  // Fixture London STD: $375 a night room only, $427.50 with taxes. A Price to Beat of $401.25 sits between.
+  const std = hotels.find(r => r.row.key === 'h.htl_fake_LHR_1|STD');
+  assert.deepEqual([std.row.nightlyCents, std.row.nightlyInclCents], [37500, 42750]);
+  const line = (s, cls) => { const m = String(s).match(new RegExp(`<p class="${cls}">([\\s\\S]*?)</p>`)); return m ? textOf(m[1]) : null; };
+
+  const excl = parts.rowCard(std, { timeZone: TZ, priceToBeatCents: 40125, basis: 'excl_taxes' });
+  assert.equal(line(excl, 'bz-opt-nightly'), '$375 a night before taxes', 'the room-only rate the policy compares');
+  assert.equal(line(excl, 'bz-opt-beat'), '$26.25 a night under the Price to Beat', '$375 + $26.25 = $401.25');
+  assert.doesNotMatch(String(excl), /a night with taxes/);
+
+  const incl = parts.rowCard(std, { timeZone: TZ, priceToBeatCents: 40125, basis: 'incl_taxes' });
+  assert.equal(line(incl, 'bz-opt-nightly'), '$427.50 a night with taxes');
+  assert.equal(line(incl, 'bz-opt-beat'), null, 'over the Price to Beat with taxes: no saving claimed');
+  const under = parts.rowCard(std, { timeZone: TZ, priceToBeatCents: 45000 });
+  assert.equal(line(under, 'bz-opt-beat'), '$22.50 a night under the Price to Beat', 'the default basis is with taxes');
+  // At the Price to Beat exactly: nothing "under" it.
+  assert.equal(line(parts.rowCard(std, { timeZone: TZ, priceToBeatCents: 37500, basis: 'excl_taxes' }), 'bz-opt-beat'), null);
+  for (const s of [excl, incl, under]) assertDemoMoney(s, { label: 'hotel card' });
 });
 
 test('altCard and alternativesPanel: saving, new total, give-ups, the swap form, the pinned option first', () => {
@@ -616,9 +733,17 @@ test('shell: the ribbons say what runs here (demo, pending company, no supplier 
     [['demo', PREVIEW_RIBBON], ['supplier', `${parts.NO_SUPPLIER.title} ${parts.NO_SUPPLIER.text}`]]);
   const pendingOrg = { ...ORG, name: 'Blue & Co', status: 'pending' };
   const pending = String(shellView(ctxFor(), shellFor('owner', { org: pendingOrg }), { body: '' }));
-  assert.deepEqual(ribbons(pending), [['demo', parts.DEMO_RIBBON], ['pending', pendingRibbon('Blue & Co')]]);
+  assert.deepEqual(ribbons(pending), [['demo', parts.DEMO_RIBBON], ['pending', pendingRibbon('Blue & Co', { demo: true })]]);
   assert.ok(pending.includes('Tripelyx is confirming Blue &amp; Co.'), 'escaped');
-  assert.equal(pendingRibbon('X'), "Tripelyx is confirming X. You can set up policies, departments and budgets and try a demo trip now. Teammates can join once it's confirmed.");
+  assert.ok(pending.includes('try a demo trip now'), 'demo inventory: a demo trip can be tried');
+  assert.equal(pendingRibbon('X', { demo: true }), "Tripelyx is confirming X. You can set up policies, departments and budgets and try a demo trip now. Teammates can join once it's confirmed.");
+  assert.equal(pendingRibbon('X'), "Tripelyx is confirming X. You can set up policies, departments and budgets now. Teammates can join once it's confirmed.");
+  // No supplier (production) or a live one: no demo trip to offer, so the pending ribbon offers none.
+  for (const status of ['none', 'live']) {
+    const r = ribbons(String(shellView(ctxFor({ status }), shellFor('owner', { org: pendingOrg }), { body: '', searchPage: true })));
+    assert.deepEqual(r.find(x => x[0] === 'pending'), ['pending', pendingRibbon('Blue & Co')], status);
+    assert.doesNotMatch(r.map(x => x[1]).join(' '), /demo trip|demo data/, `${status}: no demo claim in any ribbon`);
+  }
   // A live inventory (never today) is not called demo data either.
   assert.deepEqual(ribbons(String(shellView(ctxFor({ status: 'live' }), shellFor('owner'), { body: '', searchPage: true }))), [['demo', PREVIEW_RIBBON]]);
   // No Business context at all reads as "no supplier".
@@ -656,7 +781,10 @@ test('a composed workspace page: one h1, no skipped heading level, every control
       ${parts.actionBar(html`<button class="btn btn-navy bz-btn" type="submit">Review trip</button>`)}
     </form>
     ${parts.alternativesPanel({ alternatives: alts, cheapestWithin: alts[0] }, { timeZone: TZ, action: '/swap', rev: 1 })}
-    ${parts.demoBox(html`<h2>Budget</h2><p>Committed ${parts.amount(312000)} of ${parts.amount(1000000)}</p>${parts.budgetBar({ amountCents: 1000000, committedCents: 312000 })}`, opts)}
+    ${parts.verdict('out', 'Out of policy: 2 reasons', opts)}
+    ${parts.verdict('out', 'The trip total is over your $2,500 trip limit by $310', opts)}
+    ${parts.violationList([{ rule: 'budget', severity: 'approval', text: 'This trip would use $1,240 of the $900 left in Engineering for Q4 2026' }], opts)}
+    ${parts.demoBox(html`<h2>Budget</h2><p>Committed ${parts.amount(312000)} of ${parts.amount(1000000)}</p>${parts.budgetBar({ amountCents: 1000000, committedCents: 312000 })}${parts.kvList([['Remaining', parts.amount(688000)], ['Department', 'Engineering']])}`, opts)}
     ${parts.comingSoon('Spend booked', 'Shows once real bookings exist.')}
     ${parts.supplierPanel()}
     ${parts.copyLink({ id: 'link', value: 'https://example.test/x' })}`;
@@ -668,6 +796,7 @@ test('a composed workspace page: one h1, no skipped heading level, every control
   assert.ok(levels.includes(3), 'cards sit a level under their section');
   assert.ok(assertLabelled(page, 'page') > 10, 'radios, the purpose and the copy field');
   assert.ok(assertDemoMoney(page, { label: 'page' }) > 20);
+  assert.ok(/\$310/.test(textOf(page)) && /\$1,240/.test(textOf(page)), 'the text amounts were on the page and checked');
   const ids = [...page.matchAll(/\sid="([^"]+)"/g)].map(m => m[1]);
   assert.equal(new Set(ids).size, ids.length, 'unique ids');
 });
@@ -692,6 +821,47 @@ test('business.css and business-marketing.css are flat, every rule a bz- class; 
   const listeners = [];
   const doc = { querySelectorAll: () => [], querySelector: () => null, addEventListener: (t, fn) => listeners.push(t), activeElement: null };
   vm.runInNewContext(js, { document: doc, window: { location: { href: 'http://x/' }, history: {} }, navigator: {}, URL, setTimeout, clearTimeout });
+});
+
+/** Every declaration of business.css as [selector, property, value, media] (media '' outside @media). */
+function cssDeclarations(css) {
+  const out = [];
+  const src = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const walk = (text, media) => {
+    for (const m of text.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      for (const sel of m[1].split(',').map(s => s.trim())) {
+        for (const d of m[2].split(';')) {
+          const i = d.indexOf(':');
+          if (i > 0) out.push([sel, d.slice(0, i).trim(), d.slice(i + 1).trim(), media]);
+        }
+      }
+    }
+  };
+  const mediaRe = /@media([^{]+)\{((?:[^{}]*\{[^{}]*\})*)\s*\}/g;
+  for (const m of src.matchAll(mediaRe)) walk(m[2], m[1].trim());
+  walk(src.replace(mediaRe, ''), '');
+  return out;
+}
+
+test('business.css: the switcher fits its box at every width, [hidden] hides, and touch targets are 44px', () => {
+  const decls = cssDeclarations(fs.readFileSync(path.join(__dirname, '..', 'public', 'css', 'business.css'), 'utf8'));
+  const values = (sel, prop) => decls.filter(d => d[0] === sel && d[1] === prop);
+  // The switcher's summary is a block-level flex box, so it is exactly as wide as the shrinking <details>
+  // around it (an inline-flex summary spilled out and covered the Approvals chip from 641 to 1023px).
+  assert.deepEqual(values('.bz-switch-sum', 'display').map(d => [d[2], d[3]]), [['flex', '']]);
+  assert.ok(values('.bz-switch-org', 'min-width').some(d => d[2] === '0' && d[3] === ''), 'the name gives way');
+  assert.ok(values('.bz-pop-wrap', 'min-width').some(d => d[2] === '0'));
+  assert.equal(values('.bz-switch', 'overflow').length, 0, 'never clip the switcher: its list hangs below it');
+  // The hidden attribute wins over .btn's display (the "Copy link" button without JavaScript).
+  const hidden = decls.filter(d => /\[hidden\]$/.test(d[0]) && d[1] === 'display' && d[3] === '');
+  assert.ok(hidden.some(d => d[0] === '.bz-app [hidden]' && d[2] === 'none !important'), JSON.stringify(hidden));
+  assert.ok(hidden.some(d => d[0] === '.bz-copy [hidden]'), 'the copy block too, wherever it is used');
+  // Touch targets (§B3): the "+N more" reasons, "Price details" and the wordmark link are 44px tall or more,
+  // and nothing at a narrower width takes that back.
+  for (const sel of ['.bz-reasons-more > summary', '.bz-more > summary', '.bz-brand']) {
+    const mins = values(sel, 'min-height');
+    assert.ok(mins.length > 0 && mins.every(d => parseFloat(d[2]) >= 44), `${sel}: ${JSON.stringify(mins)}`);
+  }
 });
 
 /** Just enough DOM for /js/business.js: elements by id and the selectors the script asks for. */

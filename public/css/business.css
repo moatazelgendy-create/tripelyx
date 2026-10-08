@@ -10,11 +10,13 @@
 .bz-app h2 { font-size: 21px; line-height: 1.25; }
 .bz-app h3 { font-size: 18px; line-height: 1.3; }
 .bz-btn { min-height: 44px; padding: 0 20px; font-size: 15px; }
+/* the hidden attribute always wins (site.css .btn sets display, which would show the no-JS "Copy link" button) */
+.bz-app [hidden], .bz-copy [hidden] { display: none !important; }
 
 /* ---------- Top bar ---------- */
 .bz-top { background: #fff; border-bottom: 1px solid var(--line); position: relative; z-index: 40; }
 .bz-top-inner { display: flex; align-items: center; gap: 12px; padding: 10px 24px; min-height: 64px; }
-.bz-brand { display: inline-flex; align-items: baseline; gap: 8px; text-decoration: none; margin-right: 8px; flex: none; }
+.bz-brand { display: inline-grid; grid-auto-flow: column; align-items: baseline; align-content: center; gap: 8px; min-height: 44px; text-decoration: none; margin-right: 8px; flex: none; }
 .bz-brand .wordmark { font-size: 24px; }
 .bz-brand-sub { font-size: 15px; font-weight: 600; color: var(--blue-600); letter-spacing: -0.01em; }
 .bz-chipbtn { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 14px; border: 1px solid var(--line); border-radius: 999px; background: #fff; color: var(--ink); font-size: 14.5px; font-weight: 600; text-decoration: none; cursor: pointer; white-space: nowrap; min-width: 0; }
@@ -23,7 +25,9 @@
 .bz-pop-wrap { position: relative; min-width: 0; }
 .bz-pop-wrap > summary { list-style: none; }
 .bz-pop-wrap > summary::-webkit-details-marker { display: none; }
-.bz-switch-sum { max-width: 420px; }
+/* the summary is a block-level flex box, exactly as wide as the <details> the top bar shrinks, so the company
+   name gives way with an ellipsis instead of spilling over the chips beside it (on phones the role can too) */
+.bz-switch-sum { display: flex; max-width: 420px; }
 .bz-switch-org { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .bz-switch-role { color: var(--muted); font-weight: 500; flex: none; }
 .bz-caret { color: var(--muted); font-size: 12px; flex: none; }
@@ -132,7 +136,7 @@ span.bz-price-note { display: inline; margin: 0; }
 .bz-reason { display: flex; gap: 8px; align-items: flex-start; }
 .bz-reason .icon { width: 14px; height: 14px; flex: none; margin-top: 3px; color: #b26a00; }
 .bz-reason.is-block .icon { color: #3d4a5c; }
-.bz-reasons-more > summary { cursor: pointer; font-size: 13.5px; font-weight: 600; color: var(--blue-600); margin-top: 4px; min-height: 32px; display: flex; align-items: center; }
+.bz-reasons-more > summary { cursor: pointer; font-size: 13.5px; font-weight: 600; color: var(--blue-600); margin-top: 2px; min-height: 44px; display: flex; align-items: center; }
 .bz-reasons-more[open] > summary { margin-bottom: 4px; }
 
 /* ---------- Your limits for this search ---------- */
@@ -173,7 +177,7 @@ div.bz-opt-label { cursor: default; padding-top: 0; }
 .bz-opt-beat .icon { width: 13px; height: 13px; }
 .bz-opt-beat .bz-money { color: #0c5e43; }
 .bz-more { border-top: 1px solid var(--line); padding-top: 6px; }
-.bz-more > summary { cursor: pointer; font-weight: 600; color: var(--blue-600); font-size: 14px; min-height: 36px; display: flex; align-items: center; }
+.bz-more > summary { cursor: pointer; font-weight: 600; color: var(--blue-600); font-size: 14px; min-height: 44px; display: flex; align-items: center; }
 .bz-more[open] > summary { margin-bottom: 4px; }
 
 /* Price lines */
@@ -315,6 +319,14 @@ div.bz-opt-label { cursor: default; padding-top: 0; }
   .bz-main { padding: 20px 24px 48px; }
 }
 
+/* ---------- Narrow tablets: the top bar keeps room for the company name (icons for Approvals and the account) ---------- */
+@media (max-width: 899.98px) {
+  .bz-top-approvals { padding: 0 12px; }
+  .bz-top-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .bz-user-sum { padding: 0 12px; }
+  .bz-user-first { display: none; }
+}
+
 /* ---------- Phones ---------- */
 @media (max-width: 640px) {
   .bz-app h1 { font-size: 24px; }
@@ -323,12 +335,9 @@ div.bz-opt-label { cursor: default; padding-top: 0; }
   .bz-brand { order: 1; margin-right: auto; }
   .bz-brand .wordmark { font-size: 21px; }
   .bz-brand-sub { font-size: 14px; }
-  .bz-top-approvals { order: 2; margin-left: 0; padding: 0 12px; }
-  .bz-top-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .bz-top-approvals { order: 2; margin-left: 0; }
   .bz-user { order: 3; }
   .bz-switch + .bz-user { margin-left: 0; }
-  .bz-user-sum { padding: 0 12px; }
-  .bz-user-first { display: none; }
   .bz-switch { order: 4; flex: 1 1 100%; }
   .bz-switch-sum { width: 100%; max-width: none; }
   .bz-switch-role { overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 0; }

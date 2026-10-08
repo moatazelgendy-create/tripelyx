@@ -11,8 +11,10 @@
 // The demo rule (§F6): every amount renders as <span class="bz-money"> inside an element marked
 // data-price-source="demo" that also shows "Demo price · Priced at 3:42 PM, Fri 9 Oct (Cairo time)". The parts
 // that print money make that container themselves (demoPrice, demoBox, linesTable, limitsBar, rowCard,
-// altCard, alternativesPanel); linesTable and violationList skip theirs with { inDemo: true } when they sit
-// inside one already. A page that prints an amount anywhere else wraps it in demoBox().
+// altCard, alternativesPanel, and violationList and verdict when their text quotes an amount); linesTable,
+// violationList and verdict skip theirs with { inDemo: true } when they sit inside one already. A page that
+// prints an amount anywhere else (a table cell, a fact) wraps it in demoBox(). Amounts are whole cents: a
+// missing one throws (format.money) instead of reading "$0", and demoPrice(null) prints nothing.
 //
 // Views render the allow-listed DTOs only (types.FlightRow, HotelRow, Alternative, Evaluation): no provider,
 // rating, review count, net rate or `internal` field exists to print. Times come from the rows and requests
@@ -24,7 +26,11 @@ const f = require('./format');
 
 const { money, plural } = f;
 
-/** One amount, for a page that already sits inside a demo container: <span class="bz-money">$842</span>. */
+/**
+ * One amount, for a page that already sits inside a demo container: <span class="bz-money">$842</span>. Whole
+ * cents only (format.money throws a TypeError on null, undefined, NaN or a string): a missing amount is the
+ * page's to explain ("No budget set", "no longer in the demo data"), never a "$0".
+ */
 function amount(cents) {
   return html`<span class="bz-money">${money(cents)}</span>`;
 }
@@ -66,10 +72,13 @@ function priceNote(pricedAt, timeZone, { inline = false } = {}) {
 /**
  * One amount with its demo label, as its own demo container:
  * <span data-price-source="demo"><span class="bz-money">$842</span> <span>Demo price · Priced at …</span></span>.
- * @param {number} cents
+ * No amount (null or undefined, e.g. a budget's remaining with no budget set) prints nothing at all, so it can
+ * never read as a "$0" price; anything else that is not whole cents throws a TypeError.
+ * @param {number|null} cents
  * @param {{ pricedAt: string|null, timeZone: string }} opts
  */
 function demoPrice(cents, { pricedAt, timeZone }) {
+  if (cents === null || cents === undefined) return '';
   return html`<span class="bz-demo-price" data-price-source="demo">${amount(cents)} ${priceNote(pricedAt, timeZone, { inline: true })}</span>`;
 }
 
@@ -112,14 +121,16 @@ function supplierPanel({ level = 2 } = {}) {
 const LINE_KINDS = Object.freeze(['base', 'tax', 'fee', 'discount']);
 
 /**
- * Every line of a price and the total (the sum of the lines, so the total shown is the total charged).
+ * Every line of a price and the total (the sum of the lines, so the total shown is the total charged). A line
+ * without whole cents throws a TypeError: a total that left it out would not be the total charged.
  * @param {import('../../business/types').RowLine[]} lines
  * @param {{ pricedAt?: string|null, timeZone?: string, inDemo?: boolean, totalLabel?: string }} [opts]
  *   inDemo: the caller's demo container already labels it (no container of its own)
  */
 function linesTable(lines, { pricedAt = null, timeZone = 'UTC', inDemo = false, totalLabel = 'Total' } = {}) {
   const list = Array.isArray(lines) ? lines : [];
-  const total = list.reduce((s, l) => s + (Number(l.cents) || 0), 0);
+  if (!list.every(l => l && Number.isSafeInteger(l.cents))) throw new TypeError('[business] linesTable: every price line needs whole cents');
+  const total = list.reduce((s, l) => s + l.cents, 0);
   const table = html`<dl class="bz-lines">
     ${list.map(l => html`<div class="bz-line is-${LINE_KINDS.includes(l.kind) ? l.kind : 'base'}"><dt>${l.label}</dt><dd>${amount(l.cents)}</dd></div>`)}
     <div class="bz-line bz-line-total"><dt>${totalLabel}</dt><dd>${amount(total)}</dd></div>
@@ -209,8 +220,9 @@ const CURRENCY_RE = /[$€£¥]|\bUSD\b/;
  * @param {import('../../business/types').Violation[]} violations
  * @param {{ collapse?: boolean, pricedAt?: string|null, timeZone?: string, inDemo?: boolean }} [opts]
  *   collapse: the first reason, then "+N more" in a <details> (§E4). Texts can hold amounts ("Over your $712
- *   limit by $86"), so a list with an amount gets its own demo container (pass pricedAt and timeZone), unless
- *   inDemo says the caller's container already labels it.
+ *   limit by $86"), so a list with an amount gets its own demo container, unless inDemo says the caller's
+ *   container already labels it. That container says when the amounts were priced, so it needs pricedAt:
+ *   without one a list with an amount throws a TypeError (a reason without amounts needs no time).
  */
 function violationList(violations, { collapse = false, pricedAt, timeZone = 'UTC', inDemo = false } = {}) {
   const list = Array.isArray(violations) ? violations : [];
@@ -220,7 +232,9 @@ function violationList(violations, { collapse = false, pricedAt, timeZone = 'UTC
     ? html`<div class="bz-reasons-wrap"><ul class="bz-reasons">${item(list[0])}</ul><details class="bz-reasons-more"><summary>+${String(list.length - 1)} more</summary><ul class="bz-reasons">${list.slice(1).map(item)}</ul></details></div>`
     : html`<ul class="bz-reasons">${list.map(item)}</ul>`;
   const hasMoney = list.some(v => CURRENCY_RE.test(String(v.text || '')));
-  return !inDemo && hasMoney ? demoBox(body, { pricedAt: pricedAt || null, timeZone, cls: 'bz-reasons-box' }) : body;
+  if (inDemo || !hasMoney) return body;
+  if (!pricedAt) throw new TypeError('[business] violationList: a reason with an amount needs pricedAt (or inDemo inside a priced demo container)');
+  return demoBox(body, { pricedAt, timeZone, cls: 'bz-reasons-box' });
 }
 
 /**
@@ -268,6 +282,9 @@ function hotelHead(row, level, titleId) {
   </div>`;
 }
 
+/** The unavailable option's text (§B6). */
+const UNAVAILABLE = 'Not available in demo data';
+
 function optionText(row) {
   if (row.kind === 'flight') {
     const fare = row.fare || {};
@@ -282,22 +299,30 @@ function optionText(row) {
   };
 }
 
+/**
+ * An option's price. A hotel also shows its nightly rate on the policy's basis (hotels.capBasis: the room-only
+ * rate "before taxes", or the rate "with taxes"), and how far under the Price to Beat that same rate is, so
+ * the rate shown and the saving claimed never disagree.
+ */
 function optionPrice(row, { priceToBeatCents, basis }) {
   if (!row.available || row.totalCents === null || row.totalCents === undefined) {
-    return html`<p class="bz-opt-price is-unavailable">Not available in demo data</p>`;
+    return html`<p class="bz-opt-price is-unavailable">${UNAVAILABLE}</p>`;
   }
   if (row.kind !== 'hotel') return html`<p class="bz-opt-price">${amount(row.totalCents)} <span class="bz-opt-unit">total</span></p>`;
-  const nightly = basis === 'excl_taxes' ? row.nightlyCents : row.nightlyInclCents;
-  const under = priceToBeatCents !== null && priceToBeatCents !== undefined && nightly !== null && nightly !== undefined ? priceToBeatCents - nightly : null;
+  const excl = basis === 'excl_taxes';
+  const nightly = excl ? row.nightlyCents : row.nightlyInclCents;
+  const under = Number.isSafeInteger(priceToBeatCents) ? priceToBeatCents - nightly : null;
   return html`<p class="bz-opt-price">${amount(row.totalCents)} <span class="bz-opt-unit">total</span></p>
-    <p class="bz-opt-nightly">${amount(row.nightlyInclCents)} a night with taxes</p>
+    <p class="bz-opt-nightly">${amount(nightly)} a night ${excl ? 'before taxes' : 'with taxes'}</p>
     ${under !== null && under > 0 ? html`<p class="bz-opt-beat">${icon('check')}<span>${amount(under)} a night under the Price to Beat</span></p>` : ''}`;
 }
 
 /**
  * A search result card (§F7): one itinerary with its fares, or one hotel with its rooms, each option with its
  * total, terms, policy badge and reasons. With `input`, each option is a radio of a form (unavailable and
- * blocked options are disabled). The whole card is one demo container.
+ * blocked options are disabled). The whole card is one demo container. An option the demo data doesn't have
+ * says "Not available in demo data" once: the policy engine marks it blocked (inventory.unavailable), but no
+ * company rule blocks it, so it gets no "Blocked by policy" badge and no second "not available" reason.
  * @param {import('../../business/types').ResultRow|import('../../business/types').ResultRow[]} group rows of
  *   one offer (same offerId), in the order to show them
  * @param {{ timeZone: string, input?: { name: string, checked?: string|null, required?: boolean }|null,
@@ -311,17 +336,20 @@ function rowCard(group, { timeZone, input = null, level = 3, priceToBeatCents = 
   const titleId = keyId('bz-row', head.key);
   const options = list.map(({ row, evaluation }) => {
     const ev = evaluation || { status: null, violations: [] };
+    const missing = !row.available;
+    const reasons = missing ? (ev.violations || []).filter(v => v.rule !== 'inventory.unavailable') : ev.violations;
+    const state = missing ? 'unavailable' : ev.status;
     const text = optionText(row);
     const id = keyId('bz-opt', `${input ? input.name : ''}|${row.key}`);
-    const disabled = !row.available || ev.status === 'blocked';
+    const disabled = missing || ev.status === 'blocked';
     const checked = input && !disabled && input.checked === row.key;
     const label = html`<span class="bz-opt-name">${text.name}</span>${text.facts ? html`<span class="bz-opt-facts">${text.facts}</span>` : ''}${text.terms ? html`<span class="bz-opt-terms">${text.terms}</span>` : ''}`;
-    return html`<li class="bz-opt${disabled ? ' is-disabled' : ''}${ev.status ? ` is-${ev.status}` : ''}">
+    return html`<li class="bz-opt${disabled ? ' is-disabled' : ''}${state ? ` is-${state}` : ''}">
       <div class="bz-opt-main">
         ${input ? html`<input class="bz-opt-radio" type="radio" id="${id}" name="${input.name}" value="${row.key}"${checked ? raw(' checked') : ''}${disabled ? raw(' disabled') : ''}${input.required ? raw(' required') : ''}><label class="bz-opt-label" for="${id}">${label}</label>` : html`<div class="bz-opt-label">${label}</div>`}
-        <div class="bz-opt-side">${optionPrice(row, { priceToBeatCents, basis })}${policyBadge(ev.status)}</div>
+        <div class="bz-opt-side">${optionPrice(row, { priceToBeatCents, basis })}${missing ? '' : policyBadge(ev.status)}</div>
       </div>
-      ${violationList(ev.violations, { collapse: true, inDemo: true })}
+      ${violationList(reasons, { collapse: true, inDemo: true })}
       ${lines && row.available && row.lines && row.lines.length ? html`<details class="bz-more"><summary>Price details</summary>${linesTable(row.lines, { inDemo: true })}</details>` : ''}
     </li>`;
   });
@@ -484,13 +512,19 @@ function checklist(items) {
 
 /**
  * A trip's policy verdict in one line, e.g. "Within policy. Confirm and it's approved to book." with its
- * badge. Text only: a verdict that quotes an amount goes in a demoBox.
+ * badge. A verdict that quotes an amount ("over your $2,500 trip limit by $310") becomes its own demo
+ * container with "Demo price · Priced at …", so it needs pricedAt (a TypeError without one), unless inDemo
+ * says the caller's container already labels it.
  * @param {'within'|'out'|'blocked'} status
- * @param {*} text
+ * @param {*} text text or markup from html``
+ * @param {{ pricedAt?: string|null, timeZone?: string, inDemo?: boolean }} [opts]
  */
-function verdict(status, text) {
+function verdict(status, text, { pricedAt = null, timeZone = 'UTC', inDemo = false } = {}) {
   const tone = BADGES[status] ? status : 'out';
-  return html`<div class="bz-verdict bz-verdict-${tone}">${policyBadge(status)}<p class="bz-verdict-text">${text}</p></div>`;
+  const box = html`<div class="bz-verdict bz-verdict-${tone}">${policyBadge(status)}<p class="bz-verdict-text">${text}</p></div>`;
+  if (inDemo || !CURRENCY_RE.test(String(text))) return box;
+  if (!pricedAt) throw new TypeError('[business] verdict: a verdict with an amount needs pricedAt (or inDemo inside a priced demo container)');
+  return demoBox(box, { pricedAt, timeZone, cls: 'bz-verdict-box' });
 }
 
 /**
@@ -556,4 +590,5 @@ module.exports = {
   dataTable, emptyState, notice, errorBox, actionBar,
   pageHead, tabs, pager, kvList, checklist, verdict, outsideToggle, copyLink, charCount, budgetBar,
   DEMO_RIBBON, NO_SUPPLIER, BADGES, PILLS, CHEAPEST_WITHIN_LABEL, ALT_HEADING, ALT_SUB, ALT_TRUNCATED, ALT_NONE,
+  UNAVAILABLE,
 };

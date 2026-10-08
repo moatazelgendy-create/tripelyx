@@ -10,8 +10,9 @@
 // noindex. It loads site.css, business.css and /js/business.js (deferred, progressive enhancement only):
 // the switcher, the user menu and the phone menu are <details>, so everything works without JavaScript.
 //
-// Ribbons, first inside <main>: the demo ribbon always; the pending-company ribbon while Tripelyx confirms the
-// company; and "Supplier not connected yet" on search pages (searchPage: true) when no supplier is connected.
+// Ribbons, first inside <main>: the demo ribbon always (it names demo data only when demo inventory runs); the
+// pending-company ribbon while Tripelyx confirms the company (it offers a demo trip only with demo inventory);
+// and "Supplier not connected yet" on search pages (searchPage: true) when no supplier is connected.
 const { html, raw } = require('../../lib/html');
 const { sprite, icon } = require('../icons');
 const { logo } = require('../layout');
@@ -30,8 +31,13 @@ const NAV_ICONS = Object.freeze({
 /** The ribbon with no demo inventory: no demo flights or hotels exist to talk about. */
 const PREVIEW_RIBBON = 'Preview: nothing is booked or charged. No emails are sent.';
 
-/** The pending-company ribbon (§B3). */
-const pendingRibbon = name => `Tripelyx is confirming ${name}. You can set up policies, departments and budgets and try a demo trip now. Teammates can join once it's confirmed.`;
+/**
+ * The pending-company ribbon (§B3). It offers a demo trip only when demo inventory runs here: with no
+ * supplier (production) or a live one there is no demo trip to try, as with the demo ribbon.
+ * @param {string} name the company's
+ * @param {{ demo?: boolean }} [opts] demo: the inventory status is 'demo'
+ */
+const pendingRibbon = (name, { demo = false } = {}) => `Tripelyx is confirming ${name}. You can set up policies, departments and budgets${demo ? ' and try a demo trip' : ''} now. Teammates can join once it's confirmed.`;
 
 const inventoryStatus = ctx => (ctx.business && ctx.business.inventory && ctx.business.inventory.status) || 'none';
 
@@ -39,7 +45,7 @@ function ribbons(ctx, shell, { searchPage }) {
   const status = inventoryStatus(ctx);
   return html`<div class="bz-ribbons">
     <p class="bz-ribbon bz-ribbon-demo" role="note">${icon('info')}<span>${status === 'demo' ? DEMO_RIBBON : PREVIEW_RIBBON}</span></p>
-    ${shell.org.status === 'pending' ? html`<p class="bz-ribbon bz-ribbon-pending" role="note">${icon('clock')}<span>${pendingRibbon(shell.org.name)}</span></p>` : ''}
+    ${shell.org.status === 'pending' ? html`<p class="bz-ribbon bz-ribbon-pending" role="note">${icon('clock')}<span>${pendingRibbon(shell.org.name, { demo: status === 'demo' })}</span></p>` : ''}
     ${searchPage && status === 'none' ? html`<p class="bz-ribbon bz-ribbon-supplier" role="note">${icon('plug')}<span><b>${NO_SUPPLIER.title}</b> ${NO_SUPPLIER.text}</span></p>` : ''}
   </div>`;
 }

@@ -29,10 +29,19 @@ function zoneLabel(timeZone) {
   return `${z.split('/').pop().replace(/_/g, ' ')} time`;
 }
 
-/** Cents as dollars: "$2,940", "$12.50"; a negative amount gets a real minus sign ("−$50"). */
+/** What a bad value was, for the TypeError (never the value itself in full). */
+const kindOf = v => (v === null ? 'null' : typeof v === 'number' ? String(v) : typeof v);
+
+/**
+ * Cents as dollars: "$2,940", "$12.50"; a negative amount gets a real minus sign ("−$50"). Whole cents only:
+ * null, undefined, NaN, a string or a fraction throws a TypeError, so a missing amount (no budget set, a
+ * recheck with no new total) can never read as a "$0" price. The page says why there is no amount instead.
+ * @param {number} cents a safe integer
+ */
 function money(cents) {
-  const n = Math.round(Number(cents) || 0);
-  return n < 0 ? `−${format(-n, 'USD')}` : format(n, 'USD');
+  if (!Number.isSafeInteger(cents)) throw new TypeError(`[business] money() needs whole cents, got ${kindOf(cents)}`);
+  if (cents === 0) return format(0, 'USD');
+  return cents < 0 ? `−${format(-cents, 'USD')}` : format(cents, 'USD');
 }
 
 /** "1 night", "3 nights"; `many` for an irregular plural. */
@@ -40,10 +49,14 @@ function plural(n, word, many = `${word}s`) {
   return `${n} ${n === 1 ? word : many}`;
 }
 
-/** Integer tenths of a percent as text: 200 → "20%", 125 → "12.5%". */
+/**
+ * Integer tenths of a percent as text: 200 → "20%", 125 → "12.5%". Like money(), a missing share (null when
+ * nothing was submitted) throws a TypeError instead of reading "0%".
+ * @param {number} tenths a safe integer
+ */
 function percent(tenths) {
-  const t = Math.round(Number(tenths) || 0);
-  return `${t % 10 ? (t / 10).toFixed(1) : t / 10}%`;
+  if (!Number.isSafeInteger(tenths)) throw new TypeError(`[business] percent() needs whole tenths, got ${kindOf(tenths)}`);
+  return `${tenths % 10 ? (tenths / 10).toFixed(1) : tenths / 10}%`;
 }
 
 /** Minutes as a duration: 304 → "5h 04m", 120 → "2h", 45 → "45m". */
