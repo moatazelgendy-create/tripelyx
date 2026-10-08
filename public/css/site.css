@@ -829,13 +829,15 @@ fieldset.options { border: 0; padding: 0; margin: 0; min-width: 0; }
   .partner-band { background-position: 70% center, 0 0; background-size: cover, auto; }
 }
 @media (max-width: 640px) {
-  .hero-inner { padding: 40px 0 104px; }
-  .hero .eyebrow { font-size: 10.5px; letter-spacing: .22em; }
-  .hero-title { font-size: 36px; line-height: 39px; }
-  .hero-lead { font-size: 16px; line-height: 23px; }
+  .hero-inner { padding: 40px 0 100px; }
+  /* two lines, always broken after "REAL PLACES." */
+  .hero .eyebrow { font-size: 11px; line-height: 17px; letter-spacing: .18em; max-width: 26em; margin-bottom: 12px; }
+  /* three lines at every phone width: 30px at 320, 36px at 390, 38px from 414 */
+  .hero-title { font-size: clamp(30px, 9.2vw, 38px); line-height: 1.1; margin-bottom: 16px; }
+  .hero-lead { font-size: 16px; line-height: 23px; margin-bottom: 24px; }
   .hero::before { background: linear-gradient(180deg, rgba(2, 40, 66, .88) 0%, rgba(2, 40, 66, .78) 60%, rgba(2, 40, 66, .55) 100%); }
-  .hero .hero-actions .btn { flex: 1 1 140px; min-height: 48px; font-size: 15px; }
-  .location-chip { left: 0; right: auto; bottom: 28px; height: 50px; }
+  .hero .hero-actions .btn { flex: 1 1 140px; min-height: 48px; padding: 0 16px; font-size: 15px; }
+  .location-chip { left: 0; right: auto; bottom: 20px; height: 50px; }
 
   .brands-section { padding: 36px 0 40px; }
   .brands-section .section-head { flex-direction: column; align-items: flex-start; gap: 8px; margin-bottom: 18px; }
@@ -864,8 +866,51 @@ fieldset.options { border: 0; padding: 0; margin: 0; min-width: 0; }
 
   .partner-inner { padding: 40px 0 44px; gap: 22px; }
   .partner-band .btn { width: 100%; }
+
+  /* The homepage only (Our Brands and the other company pages keep their cards and partner band as they are):
+     one eyebrow and title size, 24px from copy to its button, and every main button 48px tall with a 15px label */
+  .home .brands-section { padding: 40px 0; }
+  .home .brands-section .section-head .eyebrow, .home .tech-copy .eyebrow, .home .why-section .eyebrow, .home .partner-band .eyebrow { font-size: 11px; letter-spacing: .24em; margin-bottom: 10px; }
+  .home .brands-section .section-title, .home .tech-copy .section-title, .home .why-section .section-title, .home .partner-title { font-size: clamp(25px, 16.3px + 2.73vw, 28px); line-height: 1.18; text-wrap: balance; }
+  .home .tech-copy .section-title, .home .partner-title { margin-bottom: 12px; }
+  .home .hero-lead, .home .brand-text, .home .tech-copy .section-lead, .home .why-item span > span, .home .partner-text { text-wrap: pretty; }
+  /* a 45px tap area without moving the link */
+  .home .brands-section .text-link { padding: 10px 0; margin: -10px 0; }
+  .home .ag-go { padding-bottom: 17px; margin-bottom: -17px; }
+  .home .brand-tagline { margin-bottom: 8px; text-wrap: balance; }
+  .home .brand-text { margin-bottom: 20px; }
+  .home .brand-card .btn-lg, .home .tech-copy .btn, .home .partner-band .btn { min-height: 48px; font-size: 15px; }
+  .home .tech-copy .section-lead { margin-bottom: 24px; }
+  /* "Experiences" gets the wider tile, as on desktop */
+  .home .vertical-tiles { gap: 5px; padding: 0 8px 12px; grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(0, 1.1fr); }
+  .home .why-grid { gap: 20px; margin-left: 0; }
+  .home .why-item { gap: 16px; }
+  .home .why-icon { width: 60px; height: 60px; }
+  .home .why-icon .icon { width: 28px; height: 28px; }
+  .home .partner-inner { gap: 24px; }
+  .home .partner-band .btn { margin: 0; }
+
+  /* The company footer: links at body-text size in 40px tap rows, three to a row, and the social icons
+     beside the logo down to 320px */
+  .corp .footer-inner { column-gap: 12px; }
+  .corp .footer-logo { margin-left: 0; }
+  .corp .footer-nav { margin: -10px 0; }
+  .corp .footer-nav ul { display: grid; grid-template-columns: repeat(3, max-content); gap: 0 24px; }
+  .corp .footer-nav a { display: block; padding: 10px 0; font-size: 15px; line-height: 20px; }
+  .corp .social { gap: 6px; margin: -5px -11px -5px auto; }
+  .corp .social a { width: 44px; height: 44px; }
+}
+/* wide enough for the five footer links in one row */
+@media (min-width: 500px) and (max-width: 640px) {
+  .corp .footer-nav ul { grid-template-columns: repeat(5, max-content); }
 }
 /* below 390px five tiles in a row no longer fit their labels */
 @media (max-width: 389.98px) {
   .vertical-tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  /* on the homepage, three over two, centred, with larger labels */
+  .home .vertical-tiles { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; padding: 0 20px 20px; }
+  .home .vertical-tiles li { grid-column: span 2; }
+  .home .vertical-tiles li:nth-child(4) { grid-column: 2 / span 2; }
+  .home .vertical-tile, .home .vertical-tiles li:last-child .vertical-tile { font-size: 12px; }
+  .home .vertical-tile .icon { width: 24px; height: 24px; }
 }
