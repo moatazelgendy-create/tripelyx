@@ -1,15 +1,18 @@
 // Business's own demo hotels (plan §F2): the Alamein Go demo hotels plus BUSINESS_HOTELS, read from
 // this.hotels (MockHotelProvider reads its module-level HOTELS, so buildOffers, priceLines and lookups are
-// all overridden). A subclass: no file under providers/mock changes.
-// STUB from Stage 0 with the frozen interface; Stage 1I builds it. Loaded only when demo inventory is allowed.
+// all overridden). A subclass: no file under providers/mock changes, and the registry (Alamein Go, the AI
+// travel agent) keeps serving MockHotelProvider itself. Loaded only when demo inventory is allowed.
 //
 // toOffer calls super's, then deletes `rating` when the source hotel has no review score (Business hotels
-// have none). Nothing here is ever shown raw: dto.hotelRow strips rating, media, badges and the rest.
+// have none) and adds each room's `bed` to its option. Nothing here is ever shown raw: dto.hotelRow keeps
+// only its allow-list (no rating, media, badges, rooms left or provider name).
 const MockHotelProvider = require('../../providers/mock/MockHotelProvider');
 const HOTELS = require('../../providers/mock/demo-data/hotels');
+const { line, matchesText } = require('../../providers/mock/BaseMockProvider');
+const { toMinor, percentOf } = require('../../lib/money');
+const { daysBetween } = require('../../lib/dates');
+const { AppError } = require('../../lib/errors');
 const { BUSINESS_HOTELS } = require('./hotels-data');
-
-function notBuilt() { throw new Error('[business] not built'); }
 
 class BusinessDemoHotels extends MockHotelProvider {
   /** @param {{ hotels?: object[], latencyMs?: number }} [opts] hotels: raw demo hotels (default: Alamein Go's plus BUSINESS_HOTELS) */
@@ -19,20 +22,59 @@ class BusinessDemoHotels extends MockHotelProvider {
   }
 
   /**
+   * MockHotelProvider.buildOffers over this.hotels: the hotels matching `where` (or the one offerId), with a
+   * room big enough for the guests, cheapest first. Unlike the mock, a hotel whose every room is sold out for
+   * the stay is still offered (its options say available:false), so a Business search shows it as rows that
+   * are not available (plan §F4) instead of leaving it out.
    * @param {{ where: string, checkIn: string, checkOut: string, guests: number }} query
    * @param {{ offerId?: string }} [opts]
    * @returns {object[]} provider Offers from this.hotels, cheapest first
    */
-  buildOffers(query, opts) { notBuilt(); }
+  buildOffers(query, { offerId } = {}) {
+    const nights = Math.max(1, daysBetween(query.checkIn, query.checkOut));
+    return this.hotels
+      .filter(h => !offerId || `htl_${h.hotel_code}` === offerId)
+      .filter(h => offerId || matchesText([h.name, h.area, h.city, h.country, h.category], query.where))
+      .map(h => this.toOffer(h, query, nights))
+      .filter(o => offerId || o.options.some(opt => opt.capacity >= (query.guests || 1)))
+      .sort((a, b) => a.fromPrice.amount - b.fromPrice.amount);
+  }
 
-  /** @returns {object} super.toOffer(...) without `rating` when the hotel has no review score */
-  toOffer(h, query, nights) { notBuilt(); }
+  /** @returns {object} super.toOffer(...) without `rating` when the hotel has no review score, each option with its bed */
+  toOffer(h, query, nights) {
+    const offer = super.toOffer(h, query, nights);
+    if (h.review_score == null) delete offer.rating;
+    offer.options = offer.options.map(o => {
+      const r = h.rooms.find(x => x.code === o.id);
+      return { ...o, bed: r ? r.bed : '' };
+    });
+    return offer;
+  }
 
-  /** @returns {object[]} price lines, reading this.hotels */
-  priceLines(offer, option, query) { notBuilt(); }
+  /**
+   * MockHotelProvider's price lines, reading this.hotels. A city with no city tax gets no city tax line
+   * (rather than a $0 one).
+   * @returns {object[]}
+   */
+  priceLines(offer, option) {
+    const h = this.hotels.find(x => `htl_${x.hotel_code}` === offer.id);
+    if (!h) throw new AppError('offer_not_found', 'This offer is no longer available for your dates.', 404);
+    const nights = offer.details.nights;
+    const base = option.price.amount * nights;
+    const lines = [
+      line('room', `${option.name} × ${nights} night${nights > 1 ? 's' : ''}`, 'base', base),
+      line('vat', `VAT (${h.vat_pct}%)`, 'tax', percentOf(base, h.vat_pct)),
+    ];
+    if (h.city_tax_usd_per_night > 0) {
+      lines.push(line('city_tax', `City tax (${nights} night${nights > 1 ? 's' : ''})`, 'tax', toMinor(h.city_tax_usd_per_night) * nights));
+    }
+    return lines;
+  }
 
   /** @returns {{ where: string[] }} cities and areas of this.hotels */
-  lookups() { notBuilt(); }
+  lookups() {
+    return { where: [...new Set(this.hotels.flatMap(h => [h.city, `${h.area}, ${h.city}`]))] };
+  }
 }
 
 module.exports = { BusinessDemoHotels };

@@ -1162,14 +1162,12 @@ test('interfaces: every Stage 0 Business module loads with its frozen exports, a
   for (const [mod, names] of Object.entries(EXPECTED)) assert.deepEqual(Object.keys(require(`../server/business/${mod}`)).sort(), names, mod);
 
   const m = name => require(`../server/business/${name}`);
-  // Stage 1P built lifecycle, approver, alternatives, diff, explain and policy/*: their stubs left this list.
+  // Stage 1P built lifecycle, approver, alternatives, diff, explain and policy/*; Stage 1I built dto, search, recheck,
+  // inventory and demo/*: their stubs left this list.
   const stubs = [
-    () => m('dto').extraKeys({}, true), () => m('dto').assertRow({}),
-    () => m('dto').parseRowKey('x'), () => m('search').parseTripQuery({}, {}),
     () => m('csv').csvCell('x'), () => m('csv').toCsv([], []), () => m('reports').outOfPolicyShare([]), () => m('reports').reportTiles({}),
   ];
   for (const fn of stubs) assert.throws(fn, NOT_BUILT, String(fn));
-  await assert.rejects(m('recheck').recheck({}, {}), NOT_BUILT);
 
   // The frozen data that is final in Stage 0.
   assert.equal(m('csv').CSV_COLUMNS.length, 21);
@@ -1177,7 +1175,7 @@ test('interfaces: every Stage 0 Business module loads with its frozen exports, a
   assert.deepEqual(m('reports').COMING_SOON.map(t => t.label), ['Spend booked', 'Invoices']);
   assert.ok(dto.ROW_KEY_RE.test('f.flt_fake_CAILHR_2026-11-12_1|LIGHT') && dto.ROW_KEY_RE.test('h.htl_fake_LHR_1|STD'));
   for (const bad of ['flt_x|LIGHT', 'f.flt_x', 'f.flt_x|LI GHT', 'x.flt_x|A', `f.flt_${'a'.repeat(161)}|A`]) assert.ok(!dto.ROW_KEY_RE.test(bad), bad);
-  assert.deepEqual(m('demo/hotels-data').BUSINESS_HOTELS, []);
+  assert.equal(m('demo/hotels-data').BUSINESS_HOTELS.length, 29);
   for (const c of m('demo/hotels-data').BUSINESS_CITIES) {
     const a = demoAirports.find(x => x.iata === c.iata);
     assert.ok(a && a.city === c.city && a.country === c.country, `${c.iata} is in the airport data as ${c.city}, ${c.country}`);
@@ -1190,14 +1188,14 @@ test('interfaces: every Stage 0 Business module loads with its frozen exports, a
   assert.ok(Object.isFrozen(engine));
   for (const name of POLICY_ENGINE_METHODS) assert.equal(typeof engine[name], 'function', name);
 
-  // Factories never throw (the app boots on them); their methods do until Stage 1.
+  // Factories never throw (the app boots on them), and the built explainer resolves.
   const explainer = createExplainer({ business: { explainer: 'rules' } });
   assert.equal(explainer.name, 'rules');
   assert.equal(typeof (await explainer.explain({ violations: [], alternatives: [], noneWithin: true })).summary, 'string');
   assert.throws(() => createExplainer({ business: { explainer: 'model' } }), /unknown explainer/);
   const composer = new TripComposer({ inventory: { status: 'none' }, now: fixed });
-  assert.throws(() => composer.parseQuery({}, { today: '2026-10-09' }), NOT_BUILT);
-  await assert.rejects(composer.search({}), NOT_BUILT);
+  assert.throws(() => composer.parseQuery({}, { today: '2026-10-09' }), e => e.code === 'no_supplier' && e.status === 503);
+  await assert.rejects(composer.search({}), e => e.code === 'no_supplier' && e.status === 503);
 });
 
 test('interfaces: createBusinessInventory picks overrides, live, demo or none, and never loads demo data without demo inventory', () => {
@@ -1220,7 +1218,8 @@ test('interfaces: createBusinessInventory picks overrides, live, demo or none, a
   assert.equal(over.status, 'demo');
   assert.equal(over.flights, f);
   assert.equal(over.hotels, h);
-  for (const inv of [none, demo]) assert.throws(() => inv.airports(), NOT_BUILT);
+  assert.deepEqual(none.airports(), []);
+  assert.ok(demo.airports().some(a => a.code === 'CAI'));
 });
 
 test('interfaces: the service facade carries exactly the frozen method list, one module per method, with checked dependencies', async t => {
