@@ -138,7 +138,7 @@ function homeView(ctx) {
   </div>
 </section>`;
   return layout({
-    active: 'home', body, corporate: true,
+    active: 'home', body, corporate: true, bodyClass: 'home',
     ctx: { ...ctx, preload: raw('<link rel="preload" as="image" href="/img/home-hero.webp" imagesrcset="/img/home-hero.webp 1x, /img/home-hero-2x.webp 2x" fetchpriority="high">') },
   });
 }
