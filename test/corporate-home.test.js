@@ -10,11 +10,9 @@ const { addDays, today } = require('../server/lib/dates');
 const LIVE = { APP_ENV: 'staging', ENABLE_TRIPS: 'true', ALLOW_DEMO_INVENTORY: 'true', PAYMENT_MODE: 'test', DATABASE_URL: 'memory', PUBLIC_BASE_URL: 'https://www.tripelyx.com' };
 const live = () => startApp(LIVE, { store: new MemoryStore() });
 
-const CORPORATE = [['/', null], ['/brands', 'Our Brands'], ['/technology', 'Technology'], ['/business', 'Business'], ['/partners', 'Partners'], ['/about', 'About'], ['/contact', 'Contact']];
-const CORPORATE_NAV = [['/', 'Home'], ['/brands', 'Our Brands'], ['/technology', 'Technology'], ['/business', 'Business'], ['/partners', 'Partners'], ['/about', 'About'], ['/contact', 'Contact']];
-// The corporate footer keeps exactly its five links: Business is a header item only.
-const CORPORATE_FOOTER = [['/brands', 'Our Brands'], ['/technology', 'Technology'], ['/partners', 'Partners'], ['/about', 'About'], ['/contact', 'Contact']];
-const TRIP_NAV = [['/plan', 'Build My Trip'], ['/how-it-works', 'How It Works'], ['/destinations', 'Destinations'], ['/my-trips', 'My Trips'], ['/faq', 'Help'], ['/business', 'Business']];
+const CORPORATE = [['/', null], ['/brands', 'Our Brands'], ['/technology', 'Technology'], ['/partners', 'Partners'], ['/about', 'About'], ['/contact', 'Contact']];
+const CORPORATE_NAV = [['/', 'Home'], ['/brands', 'Our Brands'], ['/technology', 'Technology'], ['/partners', 'Partners'], ['/about', 'About'], ['/contact', 'Contact']];
+const TRIP_NAV = [['/plan', 'Build My Trip'], ['/how-it-works', 'How It Works'], ['/destinations', 'Destinations'], ['/my-trips', 'My Trips'], ['/faq', 'Help']];
 const AI_HEADINGS = [
   ['tb-example-title', '“I have $1,500 for 2 people, from San Francisco, 5 nights, beach. The hotel matters most.”'],
   ['tb-levels-title', 'Where can your budget take you?'],
@@ -50,7 +48,7 @@ function assertCorporate(path, title, page) {
   assert.doesNotMatch(header, /Sign in|\/signin|\/my-trips/, `${path}: no account area`);
   const footer = footerOf(page.text);
   assert.match(footer, /^<footer class="site-footer">/, `${path}: the corporate footer, not the trip footer`);
-  assert.deepEqual([...part(footer, /<nav class="footer-nav"[\s\S]*?<\/nav>/).matchAll(/<a href="([^"]*)">([^<]*)<\/a>/g)].map(m => [m[1], m[2]]), CORPORATE_FOOTER, `${path}: the footer row`);
+  assert.deepEqual([...part(footer, /<nav class="footer-nav"[\s\S]*?<\/nav>/).matchAll(/<a href="([^"]*)">([^<]*)<\/a>/g)].map(m => [m[1], m[2]]), CORPORATE_NAV.slice(1), `${path}: the footer row`);
   assert.match(footer, /<a class="footer-logo" href="\/" aria-label="Tripelyx home">/);
   assert.ok(footer.includes(COPYRIGHT), `${path}: ${COPYRIGHT}`);
   assert.equal(titleOf(page.text), title ? `${title} | Tripelyx` : 'Tripelyx — Travel technology that powers better journeys', `${path}: title`);
@@ -187,7 +185,7 @@ test('Our Brands lists the Tripelyx AI Travel Agent as a brand card next to Alam
   assert.deepEqual(brands.match(/<article class="brand-card[^"]*">/g), ['<article class="brand-card">', '<article class="brand-card brand-card-ai">'], 'the second brand card, after Alamein Go');
   assert.ok(brands.indexOf('Visit Alamein Go') < brands.indexOf('brand-card-ai'), 'listed after Alamein Go');
   assert.equal(brands.match(/href="\/ai-travel-agent"/g).length, 1, 'one link to it on Our Brands');
-  for (const path of ['/', '/technology', '/business', '/partners', '/about', '/contact']) assert.doesNotMatch((await get(app, path)).text, /ai-travel-agent|AI Travel Agent/, `${path}: the AI travel agent is only on Our Brands`);
+  for (const path of ['/', '/technology', '/partners', '/about', '/contact']) assert.doesNotMatch((await get(app, path)).text, /ai-travel-agent|AI Travel Agent/, `${path}: the AI travel agent is only on Our Brands`);
 
   const off = await startApp({ ENABLE_TRIPS: 'false' });
   t.after(off.close);

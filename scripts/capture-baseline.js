@@ -74,6 +74,35 @@ function normalise(text) {
 const sha256 = text => crypto.createHash('sha256').update(text, 'utf8').digest('hex');
 
 /**
+ * With Business on, the only changes Business may make to an existing page's chrome (plan §B1): the "Business"
+ * menu item, the site-header-biz class, the .header-name span around the account name and the trip footer's
+ * "Tripelyx Business" link. Removes exactly those and counts each, so a test can check both that nothing else
+ * changed and that each change appears where it should.
+ * @returns {{ text: string, counts: { navItem: number, headerClass: number, headerName: number, footerLink: number } }}
+ */
+function stripBusiness(text) {
+  const counts = { navItem: 0, headerClass: 0, headerName: 0, footerLink: 0 };
+  const out = String(text)
+    .replace(/<li><a href="\/business"(?: aria-current="page")?>Business<\/a><\/li>/g, () => { counts.navItem++; return ''; })
+    .replace(/<li><a href="\/business">Tripelyx Business<\/a><\/li>/g, () => { counts.footerLink++; return ''; })
+    .replace(/(<header class="site-header(?: site-header-trips)?) site-header-biz(" data-header>)/g, (m, a, b) => { counts.headerClass++; return a + b; })
+    .replace(/<span class="header-name">([^<]*)<\/span>/g, (m, name) => { counts.headerName++; return name; });
+  return { text: out, counts };
+}
+
+/** The counts stripBusiness should find on an HTML page rendered with Business on. */
+function expectedBusinessCounts(text) {
+  const page = String(text);
+  if (!/<header class="site-header/.test(page)) return { navItem: 0, headerClass: 0, headerName: 0, footerLink: 0 };
+  return {
+    navItem: 1,
+    headerClass: 1,
+    headerName: /<div class="header-account header-cta">/.test(page) ? 1 : 0,
+    footerLink: /<footer class="site-footer trip-footer">/.test(page) ? 1 : 0,
+  };
+}
+
+/**
  * Holds the global Date at `iso`: new Date() and Date.now() return it; every other form of Date is unchanged.
  * @returns {() => void} restores the real Date
  */
@@ -125,20 +154,26 @@ async function signUpAda(app) {
 /**
  * Asks one running app every baseline question, in a fixed order.
  * @param {object} app from bootApp (or test/helpers.js startApp)
- * @param {{ offers?: Record<string,string> }} [opts] offer page paths to use (default: found from the search JSON)
- * @returns {Promise<{ pages, signedIn, full, offers }>} pages and signedIn map path → {status,type,sha256};
+ * @param {{ offers?: Record<string,string>, only?: 'pages'|'full' }} [opts] offer page paths to use (default:
+ *   found from the search JSON); `only` asks just the PAGES and SIGNED_IN questions, or just the BOOK, API and offers
+ * @returns {Promise<{ pages, signedIn, full, offers }>} pages and signedIn map path → {status,type,sha256,text};
  *   full maps name → {path,status,type,text}; offers maps name → path
  */
 async function collect(app, opts = {}) {
+  const want = part => !opts.only || opts.only === part;
   const pages = {};
-  for (const p of PAGES) {
-    const r = await fetchText(app.base, p);
-    pages[p] = { status: r.status, type: r.type, sha256: sha256(r.text), text: r.text };
+  if (want('pages')) {
+    for (const p of PAGES) {
+      const r = await fetchText(app.base, p);
+      pages[p] = { status: r.status, type: r.type, sha256: sha256(r.text), text: r.text };
+    }
   }
   const full = {};
-  for (const [name, p] of [...BOOK, ...API]) full[name] = { path: p, ...(await fetchText(app.base, p)) };
   const offers = opts.offers ? { ...opts.offers } : {};
-  if (!opts.offers) {
+  if (want('full')) {
+    for (const [name, p] of [...BOOK, ...API]) full[name] = { path: p, ...(await fetchText(app.base, p)) };
+  }
+  if (want('full') && !opts.offers) {
     for (const [name, [vertical, from]] of Object.entries(OFFER_FROM)) {
       const json = JSON.parse(full[`api-${from}`].text);
       if (!json.offers || !json.offers.length) throw new Error(`no ${vertical} offer to open for ${name}`);
@@ -146,9 +181,9 @@ async function collect(app, opts = {}) {
       offers[name] = `/book/${vertical}/${encodeURIComponent(json.offers[0].id)}?${q}`;
     }
   }
-  for (const [name, p] of Object.entries(offers)) full[name] = { path: p, ...(await fetchText(app.base, p)) };
+  if (want('full')) for (const [name, p] of Object.entries(offers)) full[name] = { path: p, ...(await fetchText(app.base, p)) };
   let signedIn = null;
-  const cookie = await signUpAda(app);
+  const cookie = want('pages') ? await signUpAda(app) : null;
   if (cookie) {
     signedIn = {};
     for (const p of SIGNED_IN) {
@@ -157,6 +192,21 @@ async function collect(app, opts = {}) {
     }
   }
   return { pages, signedIn, full, offers };
+}
+
+/** sha256 of every file under server/providers/mock (the demo inventory /book runs on), by relative path. */
+function providerSources(root) {
+  const dir = path.join(root, 'server', 'providers', 'mock');
+  const out = {};
+  const walk = d => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const f = path.join(d, e.name);
+      if (e.isDirectory()) walk(f);
+      else out[path.relative(root, f).split(path.sep).join('/')] = sha256(fs.readFileSync(f, 'utf8'));
+    }
+  };
+  walk(dir);
+  return out;
 }
 
 const ext = type => (type === 'application/json' ? 'json' : 'html');
@@ -173,7 +223,7 @@ async function main() {
   // As under the test runner: the Savings Hunter's timer stays off.
   process.env.NODE_TEST = process.env.NODE_TEST || '1';
   freezeDate(FIXED_NOW);
-  const manifest = { commit: BASE_COMMIT, fixedNow: FIXED_NOW, normalised: ['?v= on .css/.js links', 'copyright year'], envs: {} };
+  const manifest = { commit: BASE_COMMIT, fixedNow: FIXED_NOW, normalised: ['?v= on .css/.js links', 'copyright year'], providerSources: providerSources(root), envs: {} };
   for (const [envName, env] of Object.entries(ENVS)) {
     const app = await bootApp(root, env);
     try {
@@ -193,6 +243,6 @@ async function main() {
   console.log(`wrote ${out}`);
 }
 
-module.exports = { FIXED_NOW, BASE_COMMIT, ENVS, PAGES, SIGNED_IN, BOOK, API, FLIGHT_QUERIES, HOTEL_QUERIES, ADA, normalise, sha256, freezeDate, bootApp, collect };
+module.exports = { FIXED_NOW, BASE_COMMIT, ENVS, PAGES, SIGNED_IN, BOOK, API, FLIGHT_QUERIES, HOTEL_QUERIES, ADA, normalise, sha256, stripBusiness, expectedBusinessCounts, freezeDate, bootApp, collect, providerSources };
 
 if (require.main === module) main().catch(e => { console.error(e); process.exit(1); });

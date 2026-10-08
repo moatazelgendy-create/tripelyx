@@ -75,16 +75,19 @@ test('HTTPS_ONLY defaults on outside development and production refuses to turn 
   assert.throws(() => loadConfig({ APP_ENV: 'production', HTTPS_ONLY: 'false', ...db }), /HTTPS_ONLY=false/);
 });
 
-test('Tripelyx Business: on outside production, off in production, never a vertical or public', () => {
+test('Tripelyx Business: off in every APP_ENV unless ENABLE_BUSINESS=true, never a vertical or public', () => {
   const db = { DATABASE_URL: 'postgres://u:p@h/db' };
-  assert.equal(loadConfig({}).business.enabled, true, 'development');
-  assert.equal(loadConfig({ APP_ENV: 'staging', ...db }).business.enabled, true, 'staging (the live site)');
+  assert.equal(loadConfig({}).business.enabled, false, 'development');
+  assert.equal(loadConfig({ APP_ENV: 'staging', ...db }).business.enabled, false, 'staging (the live site)');
   assert.equal(loadConfig({ APP_ENV: 'production', ...db }).business.enabled, false, 'production');
-  assert.equal(loadConfig({ APP_ENV: 'production', ENABLE_BUSINESS: 'true', ...db }).business.enabled, true);
-  assert.equal(loadConfig({ ENABLE_BUSINESS: 'false' }).business.enabled, false);
+  for (const APP_ENV of ['development', 'staging', 'production']) {
+    assert.equal(loadConfig({ APP_ENV, ENABLE_BUSINESS: 'true', ...db }).business.enabled, true, `${APP_ENV}: ENABLE_BUSINESS=true`);
+    assert.equal(loadConfig({ APP_ENV, ENABLE_BUSINESS: 'false', ...db }).business.enabled, false, `${APP_ENV}: ENABLE_BUSINESS=false`);
+    assert.equal(loadConfig({ APP_ENV, ENABLE_BUSINESS: '', ...db }).business.enabled, false, `${APP_ENV}: ENABLE_BUSINESS empty`);
+  }
   const c = loadConfig({});
   assert.deepEqual(c.business, {
-    enabled: true, selfServe: false, shareLinkDays: 60, inviteDays: 7, followUpDays: 3, writeLimit: 300,
+    enabled: false, selfServe: false, shareLinkDays: 60, inviteDays: 7, followUpDays: 3, writeLimit: 300,
     computeLimit: 30, clientWriteLimit: 20, logoMaxKb: 200, maxOrgsPerUser: 3,
   });
   assert.equal(loadConfig({ BUSINESS_SELF_SERVE: 'true' }).business.selfServe, true);

@@ -5,6 +5,25 @@
     "?v= on .css/.js links",
     "copyright year"
   ],
+  "providerSources": {
+    "server/providers/mock/BaseMockProvider.js": "f3674cca971a7f88b4bdebb534176267cacfbb73fa916e1b5e2e6e730765aa01",
+    "server/providers/mock/demo-data/cars.js": "36becd975478544c09bdc4ffe052a0e8406bc913ebc0b870aa367d9532988d74",
+    "server/providers/mock/demo-data/cruises.js": "d78337e6ce7fea8ad744bd8656d3719c00830a22d6ed1104d8668cbc6456b2ae",
+    "server/providers/mock/demo-data/experiences.js": "b239a9233b9fb5846e5ef42e33cb71b60f9d95e4c54e2855d47aa5272b6ec7f3",
+    "server/providers/mock/demo-data/flights.js": "5b3867e77f613551ad4b2270b9290673080027e7fc1041b91d930a1de65b47e5",
+    "server/providers/mock/demo-data/hotels.js": "13bc43b7fde19b8aa59ac19c66d4c4e9c07a7c5f7531406326da3f0532c4f6d8",
+    "server/providers/mock/demo-data/README.md": "6d1d1893106c4ec39313b78b44eb1e40970c8cbbacbd186707cf7174b5c4d8d7",
+    "server/providers/mock/demo-data/transfers.js": "5575e630694887e2ddcd4914cafa7a52dd0306d057369003524e61b885dabfca",
+    "server/providers/mock/demo-data/yachts.js": "5afc3d87c7ec871c8911c907bd53ba9b09dc7128802c81b9c3e2a15788dc264c",
+    "server/providers/mock/index.js": "10b6ea7dbe9ddd93a5c4134cb06d071ede577f5e8790295b2b8728a65a26e543",
+    "server/providers/mock/MockCarProvider.js": "6206a7d087d53bd4889323576b49b37ea6481e556ded763a5a9ab0ce4bb24988",
+    "server/providers/mock/MockCruiseProvider.js": "10a5faf9d0a1fbd32a3a896bed78d53566bfff21d1507276b1b9bd720df26c73",
+    "server/providers/mock/MockExperienceProvider.js": "fe517c8143f5fa6a49e3827e24cfefc9e775af3ae16ec783c04fd4aaa20eb327",
+    "server/providers/mock/MockFlightProvider.js": "390923a21c5f66dd46c9cf285f3d67452eba014b932a6411995102a8110931d8",
+    "server/providers/mock/MockHotelProvider.js": "ea96f8f4d6193b7e29cb7d0ea40a47c32830328e6bfe1cbd34231e562c063ecd",
+    "server/providers/mock/MockTransferProvider.js": "eb93d8b506fb5b1a6a7593223be2cd24087c04be67587c287995b64dcdf1c364",
+    "server/providers/mock/MockYachtProvider.js": "9bdf73f05fc0fae9d856f4911ae1271c62bcdbf615d0484242f577e974ddb53e"
+  },
   "envs": {
     "dev": {
       "env": {},

@@ -59,12 +59,12 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
     agent = new AgentService({ tripService, store, now: clock, log, hunts });
     engine.extraProviders.trips = tripService.bookingProvider();
     engine.hooks.bookingEvent = (type, b) => tripService.onBookingEvent(type, b).catch(e => log.error('[trips] booking event', e));
-    // Tripelyx Business: advisor workspaces and client proposals on top of the trip engine (server/business).
-    business = config.business.enabled ? new BusinessService({ store, tripService, config, now: clock, log }) : null;
   } else if (config.trips.enabled) {
     log.warn('[trips] Travel by Budget is off: mock trip inventory is not allowed here (set ALLOW_DEMO_INVENTORY=true or name real TRIP_*_PROVIDER adapters).');
   }
-  if (config.business.enabled && !business) log.warn('[business] Tripelyx Business is off: it needs Travel by Budget.');
+  // Tripelyx Business (server/business): built only when ENABLE_BUSINESS is on, with Travel by Budget on or off.
+  // Its menu item, header class and footer link follow it (ctx.businessNav, server/views/layout.js).
+  business = config.business.enabled ? new BusinessService({ store, tripService, config, now: clock, log }) : null;
 
   const app = express();
   app.disable('x-powered-by');
@@ -127,6 +127,7 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
     agent,
     hunts,
     business,
+    businessNav: !!business,
   };
 
   // Tripelyx Business public routes: the white-label client pages and each agency's brand.css and logo.

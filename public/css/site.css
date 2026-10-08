@@ -925,11 +925,12 @@ fieldset.options { border: 0; padding: 0; margin: 0; min-width: 0; }
   .home .vertical-tile, .home .vertical-tiles li:last-child .vertical-tile { font-size: 10.5px; }
 }
 
-/* The generic header outside the company pages with Travel by Budget off (e.g. /book): seven items on one line
-   from 1025px, and the Partner With Us button inside the container (tighter gaps and 14px links up to 1280px). */
-body:not(.corp) .site-header:not(.site-header-trips) .main-nav a { white-space: nowrap; }
+/* Tripelyx Business on (.site-header-biz, only when Business runs): the generic header outside the company pages
+   with Travel by Budget off (e.g. /book) keeps its seven items on one line from 1025px, and the Partner With Us
+   button inside the container (tighter gaps and 14px links up to 1280px). With Business off nothing here applies. */
+body:not(.corp) .site-header-biz:not(.site-header-trips) .main-nav a { white-space: nowrap; }
 @media (min-width: 1025px) and (max-width: 1279.98px) {
-  body:not(.corp) .site-header:not(.site-header-trips) .main-nav { padding-left: 0; }
-  body:not(.corp) .site-header:not(.site-header-trips) .main-nav ul { gap: 18px; }
-  body:not(.corp) .site-header:not(.site-header-trips) .main-nav a { font-size: 14px; }
+  body:not(.corp) .site-header-biz:not(.site-header-trips) .main-nav { padding-left: 0; }
+  body:not(.corp) .site-header-biz:not(.site-header-trips) .main-nav ul { gap: 18px; }
+  body:not(.corp) .site-header-biz:not(.site-header-trips) .main-nav a { font-size: 14px; }
 }

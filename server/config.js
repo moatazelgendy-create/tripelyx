@@ -114,11 +114,11 @@ function loadConfig(env = process.env) {
     huntIntervalMinutes: int(env.HUNT_INTERVAL_MINUTES, 360, 'HUNT_INTERVAL_MINUTES'),
   };
 
-  // Tripelyx Business (advisor workspaces, client proposals and share links under /business/...).
-  // It runs on Travel by Budget, so it is off whenever trips are off. Not a vertical: it is not in
-  // `flags` and never reaches publicConfig.
+  // Tripelyx Business (company travel workspaces under /business/...). Off in every APP_ENV unless
+  // ENABLE_BUSINESS=true: with it off, every existing page renders exactly as before Business. Not a
+  // vertical: it is not in `flags` and never reaches publicConfig.
   const business = {
-    enabled: bool(env.ENABLE_BUSINESS, !isProduction),
+    enabled: bool(env.ENABLE_BUSINESS, false),
     // false: an agency can build and preview, but client sharing waits for platform approval.
     selfServe: bool(env.BUSINESS_SELF_SERVE, false),
     shareLinkDays: pos(env.BUSINESS_SHARE_LINK_DAYS, 60, 'BUSINESS_SHARE_LINK_DAYS'),

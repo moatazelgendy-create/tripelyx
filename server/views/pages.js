@@ -179,7 +179,7 @@ ${pageHero({ eyebrow: 'Partners', title: 'Let’s build the future of travel', a
 // The select under the email field, per form: the partner form, the Business form on /business, and Contact.
 const LEAD_TYPES = {
   partner: ['Partnership type', ['Property owner', 'Transport company', 'Activity provider', 'Destination', 'Other']],
-  business: ['Business type', ['Travel agency', 'Independent travel advisor', 'Host agency or consortium', 'Travel creator', 'Employer or benefits platform', 'Bank or rewards program', 'Other']],
+  business: ['Company size', ['1-10 people', '11-50 people', '51-200 people', '201-1,000 people', 'More than 1,000 people']],
   contact: ['Topic', ['General enquiry', 'Partnerships', 'Press', 'Careers', 'Booking support']],
 };
 

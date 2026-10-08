@@ -446,7 +446,7 @@ test('limits: defaults come from config and the client view and beacon limits ar
 
 // ---------------------------------------------------------------------------------------------------
 test('app: client and brand paths never read the session or set the Tripelyx visitor cookie', async t => {
-  const app = await startApp();
+  const app = await startApp({ ENABLE_BUSINESS: 'true' });
   t.after(app.close);
   const { user, cookie } = await seedUser(app, { name: 'Zebedee Quartermaine' });
   const tok = tokens.newToken();
@@ -470,8 +470,8 @@ test('app: client and brand paths never read the session or set the Tripelyx vis
   assert.ok((await signedIn.text()).includes(user.name.split(' ')[0]), 'a signed-in 404 elsewhere still shows the account');
 });
 
-test('app: ctx.business exists only with trips and Business on, and the stub routers change nothing', async t => {
-  const app = await startApp();
+test('app: ctx.business exists only with Business on (trips on or off), and the stub routers change nothing', async t => {
+  const app = await startApp({ ENABLE_BUSINESS: 'true' });
   t.after(app.close);
   assert.ok(app.business, 'createApp returns business');
   assert.equal(app.ctx.business, app.business);
@@ -479,6 +479,7 @@ test('app: ctx.business exists only with trips and Business on, and the stub rou
   assert.equal(app.business.tripService, app.tripService);
   assert.equal(app.business.config, app.config);
   assert.equal(typeof app.business.now, 'function');
+  assert.equal(app.ctx.businessNav, true);
   for (const path of ['/', '/plan', '/brands', '/how-it-works']) assert.equal((await fetch(app.base + path)).status, 200, path);
   for (const path of ['/business/app', '/business/p/x', '/business/brand/x/brand.css', '/business/o/x']) {
     const res = await fetch(app.base + path);
@@ -486,18 +487,24 @@ test('app: ctx.business exists only with trips and Business on, and the stub rou
     noInline(path, await res.text());
   }
 
-  const off = await startApp({ ENABLE_BUSINESS: 'false' });
-  t.after(off.close);
-  assert.equal(off.business, null);
-  assert.equal(off.ctx.business, null);
-  assert.equal((await fetch(`${off.base}/plan`)).status, 200);
+  for (const env of [{}, { ENABLE_BUSINESS: 'false' }]) {
+    const off = await startApp(env);
+    t.after(off.close);
+    assert.equal(off.business, null, 'off by default and with ENABLE_BUSINESS=false');
+    assert.equal(off.ctx.business, null);
+    assert.equal(off.ctx.businessNav, false);
+    assert.equal((await fetch(`${off.base}/plan`)).status, 200);
+  }
 
-  const warned = [];
-  const noTrips = await startApp({ ENABLE_TRIPS: 'false' }, { log: { error() {}, info() {}, log() {}, warn: m => warned.push(m) } });
+  const noTrips = await startApp({ ENABLE_TRIPS: 'false', ENABLE_BUSINESS: 'true' });
   t.after(noTrips.close);
-  assert.equal(noTrips.business, null);
-  assert.ok(warned.includes('[business] Tripelyx Business is off: it needs Travel by Budget.'));
+  assert.equal(noTrips.tripService, null);
+  assert.ok(noTrips.business, 'Business runs with Travel by Budget off');
+  assert.equal(noTrips.ctx.businessNav, true);
   assert.equal((await fetch(`${noTrips.base}/`)).status, 200);
+  const noTripsOff = await startApp({ ENABLE_TRIPS: 'false' });
+  t.after(noTripsOff.close);
+  assert.equal(noTripsOff.business, null);
 });
 
 test('helpers: seeded sessions sign in, seeded orgs and members have the §D shapes, GETs leave the store alone', async t => {
