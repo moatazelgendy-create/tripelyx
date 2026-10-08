@@ -261,6 +261,29 @@ test('repo: cas checks rev, applies the change and makes racing writers lose wit
 // ---------------------------------------------------------------------------------------------------
 const fieldError = fn => { try { fn(); } catch (e) { assert.ok(e instanceof AppError && e.code === 'invalid_field' && e.status === 422, e.message); return e.message; } assert.fail('expected an invalid_field error'); };
 
+
+test('repo: cas refuses a callback that returns anything but a plain object or nothing, or re-homes a record', async () => {
+  const store = new MemoryStore();
+  const repo = new Repo({ store, now: () => new Date(FIXED_NOW) });
+  const org = id('org');
+  const original = { id: 'cli_1', orgId: org, name: 'A', logo: null, rev: 0 };
+  await repo.insert(KINDS.client, 'c1', original, { owner: org });
+  // The arrow-function slips: `d => d.name = 'X'` returns 'X', `d => d.logo = {…}` returns the logo.
+  const slips = [d => d.name = 'X', d => d.logo = { type: 'image/png' }, () => true, () => 5, () => 'str', () => [1, 2], () => null, () => new Date(), d => d.rev = 7];
+  for (const fn of slips) {
+    await assert.rejects(repo.cas(KINDS.client, 'c1', 0, fn), /cas fn must return a plain object or nothing|may not change or drop/, String(fn));
+  }
+  await assert.rejects(repo.cas(KINDS.client, 'c1', 0, d => ({ ...d, orgId: id('org') })), /may not change or drop orgId/);
+  await assert.rejects(repo.cas(KINDS.client, 'c1', 0, d => ({ ...d, id: 'cli_2' })), /may not change or drop id/);
+  await assert.rejects(repo.cas(KINDS.client, 'c1', 0, ({ orgId: _o, ...rest }) => rest), /may not change or drop orgId/);
+  await assert.rejects(repo.cas(KINDS.client, 'c1', 0, d => { delete d.orgId; }), /may not change or drop orgId/);
+  assert.deepEqual(await repo.get(KINDS.client, 'c1'), original, 'every refused change leaves the record unchanged');
+  // The two supported shapes still work.
+  assert.deepEqual(await repo.cas(KINDS.client, 'c1', 0, d => { d.name = 'B'; }), { ...original, name: 'B', rev: 1 });
+  assert.deepEqual(await repo.cas(KINDS.client, 'c1', 1, d => ({ ...d, name: 'C' })), { ...original, name: 'C', rev: 2 });
+  assert.deepEqual(await repo.cas(KINDS.client, 'c1', 2, d => { d.name = 'D'; return d; }), { ...original, name: 'D', rev: 3 });
+});
+
 test('validate: money in cents and percentages in tenths, by string arithmetic', () => {
   assert.equal(v.dollarsToCents('1,000.50'), 100050);
   assert.equal(v.dollarsToCents('$ 25'), 2500);
@@ -317,6 +340,19 @@ test('validate: text, choices, local paths and collected form errors', () => {
   assert.equal(v.text('line one\r\nline two\n\n\n\nend', 100, { multiline: true }), 'line one\nline two\n\nend');
   assert.equal(v.text('a\nb', 100), 'a b');
   assert.equal(v.text(undefined, 10), '');
+  // Invisible and direction-changing characters are removed and the text is NFKC-normalized, so a word
+  // check on the cleaned value sees what the page will show.
+  assert.equal(v.text('a\u202eb', 10), 'ab');
+  assert.equal(v.text('Trip\u200belyx', 20), 'Tripelyx');
+  assert.equal(v.text('\u202exylepirT', 20), 'xylepirT', 'the reversed name renders reversed once the override is gone');
+  assert.equal(v.text('\uff34\uff52\uff49\uff50elyx', 20), 'Tripelyx', 'fullwidth letters become plain ones');
+  assert.equal(v.text('Tri\u00adp\u2060e\u200cl\u200dy\u2066x\u2069\ufeff\u200e\u200f\u061c\u180e\u034f', 20), 'Tripelyx');
+  assert.equal(v.text('a\u2028b\u0085c', 10), 'a b c', 'line separators and C1 controls become spaces');
+  assert.equal(v.text('one\u202e\n\u2029two', 20, { multiline: true }), 'one\n two');
+  assert.equal(v.text('cafe\u0301', 10), 'caf\u00e9');
+  assert.equal(v.text('\u200b\u200b', 10), '');
+  assert.equal(fieldError(() => v.text('\u200b \u202e', 10, { required: true })), 'Fill in this field.');
+  assert.equal(fieldError(() => v.email('hello\u202e@agency.example')), 'Enter a valid email address.');
   assert.equal(fieldError(() => v.text('  ', 10, { required: true })), 'Fill in this field.');
   assert.equal(v.oneOf('B', constants.OPTION_KEYS), 'B');
   assert.equal(v.oneOf('', constants.OPTION_KEYS, { blank: null }), null);
@@ -398,6 +434,31 @@ test('limits: defaults come from config and the client view and beacon limits ar
 });
 
 // ---------------------------------------------------------------------------------------------------
+test('app: client and brand paths never read the session or set the Tripelyx visitor cookie', async t => {
+  const app = await startApp();
+  t.after(app.close);
+  const { user, cookie } = await seedUser(app, { name: 'Zebedee Quartermaine' });
+  const tok = tokens.newToken();
+  const anonymous = [`/business/p/${tok}`, `/business/p/${tok}/versions`, `/business/p/${tok}/approve?option=B`, '/business/p/x',
+    '/business/brand/x/brand.css', `/business/brand/${id('org')}/logo?v=1`, '/business/brand', '/BUSINESS/P/x'];
+  for (const path of anonymous) {
+    for (const headers of [{}, { cookie }]) {
+      const res = await fetch(app.base + path, { headers, redirect: 'manual' });
+      assert.equal(res.headers.get('set-cookie'), null, `${path} ${headers.cookie ? 'signed in' : 'signed out'}`);
+      if (headers.cookie) assert.ok(!(await res.text()).includes(user.name.split(' ')[0]), `${path}: the session is not read`);
+    }
+  }
+  const post = await fetch(`${app.base}/business/p/${tok}/seen`, { method: 'POST', headers: { 'sec-fetch-site': 'same-origin' } });
+  assert.equal(post.headers.get('set-cookie'), null, 'beacon');
+  // Everywhere else the visitor cookie and the session work as before (workspace paths need req.user).
+  for (const path of ['/plan', '/business/app', '/business/o/x', '/business/pricing', '/nope']) {
+    const res = await fetch(app.base + path, { redirect: 'manual' });
+    assert.match(res.headers.get('set-cookie') || '', /^txv=/, path);
+  }
+  const signedIn = await fetch(`${app.base}/nope`, { headers: { cookie } });
+  assert.ok((await signedIn.text()).includes(user.name.split(' ')[0]), 'a signed-in 404 elsewhere still shows the account');
+});
+
 test('app: ctx.business exists only with trips and Business on, and the stub routers change nothing', async t => {
   const app = await startApp();
   t.after(app.close);

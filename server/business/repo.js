@@ -21,6 +21,9 @@ const validId = id => typeof id === 'string' && id.length > 0 && id.length <= 20
 /** Ids written by Business: composite ids join parts with '.', never ':'. */
 const checkNewId = id => { if (!validId(id) || id.includes(':')) throw new Error('[business] bad record id'); };
 
+/** A plain object: not null, not an array, not a class instance or Date. */
+const isPlainObject = v => !!v && typeof v === 'object' && !Array.isArray(v) && Object.getPrototypeOf(v) === Object.prototype;
+
 function checkDoc(v, path) {
   if (v === null || typeof v === 'string' || typeof v === 'boolean') return;
   if (typeof v === 'number') { if (!Number.isFinite(v)) throw new Error(`[business] ${path} is not a finite number`); return; }
@@ -38,11 +41,14 @@ function checkDoc(v, path) {
  * @param {unknown} doc
  */
 function assertDoc(doc) {
-  if (!doc || typeof doc !== 'object' || Array.isArray(doc) || Object.getPrototypeOf(doc) !== Object.prototype) {
+  if (!isPlainObject(doc)) {
     throw new Error('[business] a record must be a plain object');
   }
   checkDoc(doc, 'data');
 }
+
+/** Fields that tie a record to its tenant and parent; cas never lets them change or disappear. */
+const IDENTITY_KEYS = ['id', 'orgId', 'proposalId', 'userId'];
 
 const sortKey = (d, by) => String((by === 'updatedAt' ? (d.updatedAt || d.at) : (d.at || d.updatedAt)) || '');
 
@@ -137,8 +143,10 @@ class Repo {
    * nobody wrote in between; the stored rev becomes rev + 1.
    * - `rev` is the rev the caller saw (a form's hidden field: an integer or digit string). Pass null to
    *   use the rev just read (for server-side updates with no form; still safe against lost updates).
-   * - `fn(current)` returns the next document, or changes `current` in place and returns nothing. It may
-   *   be async and may throw to abort.
+   * - `fn(current)` returns the next document (a plain object), or changes `current` in place and returns
+   *   nothing (`d => { d.x = 1; }`, with braces). Any other return value throws, and so does a next
+   *   document whose id, orgId, proposalId or userId differs from the stored one, so a slip such as
+   *   `d => d.x = 1` can never overwrite or re-home a record. It may be async and may throw to abort.
    * Throws AppError 404 when the record is gone and AppError('conflict', …, 409) when the rev moved on.
    * @param {string} kind
    * @param {string} id
@@ -153,7 +161,14 @@ class Repo {
       : (typeof rev === 'number' ? rev : /^\d{1,9}$/.test(String(rev)) ? Number(rev) : NaN);
     if (!Number.isInteger(seen) || seen !== (cur.rev ?? 0)) throw conflict();
     const draft = structuredClone(cur);
-    const next = (await fn(draft)) ?? draft;
+    const returned = await fn(draft);
+    // `d => d.status = 'active'` returns 'active' and `d => d.logo = {…}` returns the logo: neither may
+    // replace the record. A returned value must be a plain object that keeps the record's identity.
+    if (returned !== undefined && !isPlainObject(returned)) throw new Error('[business] cas fn must return a plain object or nothing');
+    const next = returned ?? draft;
+    for (const k of IDENTITY_KEYS) {
+      if (Object.hasOwn(cur, k) && next[k] !== cur[k]) throw new Error(`[business] cas fn may not change or drop ${k}`);
+    }
     const { rev: _drop, ...doc } = next; // eslint-disable-line no-unused-vars
     assertDoc(doc);
     const written = await this.store.updateRecord(kind, id, seen, doc);

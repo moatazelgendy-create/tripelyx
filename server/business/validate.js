@@ -8,6 +8,17 @@ const { str, EMAIL } = require('../lib/validate');
 const invalid = message => new AppError('invalid_field', message, 422);
 const blankish = v => v === undefined || v === null || String(v).trim() === '';
 
+/**
+ * Invisible and direction-changing characters: soft hyphen, combining grapheme joiner, Arabic letter mark,
+ * Mongolian vowel separator, zero-width space / non-joiner / joiner, LRM / RLM, the bidi embeddings and
+ * overrides (U+202A-202E), word joiner and invisible operators (U+2060-2064), the bidi isolates and
+ * deprecated format controls (U+2066-206F) and the BOM. They let "Trip\u200belyx" or a reversed name behind
+ * U+202E pass a word check while rendering as something else, so text() removes them.
+ */
+const INVISIBLE_CHARS = '\\u00ad\\u034f\\u061c\\u180e\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff';
+const INVISIBLE = new RegExp(`[${INVISIBLE_CHARS}]`, 'g');
+const HAS_INVISIBLE = new RegExp(`[${INVISIBLE_CHARS}]`);
+
 /** "$2,000" or "$12.50" from cents (validator messages only; views format money themselves). */
 function dollars(cents) {
   const whole = Math.floor(cents / 100), part = cents % 100;
@@ -78,7 +89,7 @@ function httpsUrl(v, { optional = false } = {}) {
 }
 
 /**
- * An email address, lowercased (≤120 characters).
+ * An email address, lowercased (≤120 characters). Invisible and bidi control characters are refused.
  * @param {unknown} v
  * @param {{ optional?: boolean }} [opts]
  * @returns {string}
@@ -89,7 +100,7 @@ function email(v, { optional = false } = {}) {
     if (optional) return '';
     throw invalid('Enter an email address.');
   }
-  if (s.length > 120 || !EMAIL.test(s)) throw invalid('Enter a valid email address.');
+  if (s.length > 120 || !EMAIL.test(s) || HAS_INVISIBLE.test(s)) throw invalid('Enter a valid email address.');
   return s;
 }
 
@@ -142,19 +153,24 @@ function contrast(hexA, hexB) {
 const MIN_CONTRAST = 4.5;
 
 /**
- * Free text: control characters become spaces (newlines are kept when `multiline`), trimmed, cut to `max`.
+ * Free text: NFKC-normalized (fullwidth and compatibility letters become plain ones), invisible and bidi
+ * control characters removed, other control characters (C0, C1, U+2028/2029) turned into spaces (newlines
+ * are kept when `multiline`), trimmed, cut to `max`. Word checks on names (such as refusing "tripelyx")
+ * should run on this cleaned value, lowercased.
  * @param {unknown} v
  * @param {number} max
  * @param {{ multiline?: boolean, required?: boolean }} [opts]
  * @returns {string}
  */
 function text(v, max, { multiline = false, required = false } = {}) {
+  const raw = (v === undefined || v === null ? '' : String(v)).normalize('NFKC').replace(INVISIBLE, '')
+    .replace(/[\u0080-\u009f\u2028\u2029]/g, ' ');
   let s;
   if (multiline) {
-    s = (v === undefined || v === null ? '' : String(v)).replace(/\r\n?/g, '\n')
+    s = raw.replace(/\r\n?/g, '\n')
       .replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, ' ').replace(/\n{3,}/g, '\n\n').trim().slice(0, max).trim();
   } else {
-    s = str(v, max);
+    s = str(raw, max);
   }
   if (required && !s) throw invalid('Fill in this field.');
   return s;

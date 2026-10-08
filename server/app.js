@@ -31,6 +31,8 @@ const { id } = require('./lib/ids');
 const { notFoundView, errorView } = require('./views/errors');
 
 const ASSET_VERSION = Date.now().toString(36);
+/** Business paths that never read the session or set the visitor cookie: client pages, brand.css, logos. */
+const BUSINESS_PUBLIC_PATH = /^\/business\/(?:p|brand)(?:\/|$)/i; // case-insensitive, like Express routing
 
 async function createApp(config, { registryOverrides, tripOverrides, store: injectedStore, now, log = console } = {}) {
   const store = injectedStore || createStore(config);
@@ -127,10 +129,27 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
     business,
   };
 
+  // Tripelyx Business public routes: the white-label client pages and each agency's brand.css and logo.
+  // They mount before "who is asking" so they never read the session cookie or set the Tripelyx visitor
+  // cookie (plan §G), and before agentRouter and tripsRouter, whose path-less r.use() header setters would
+  // otherwise run first. Neither needs req.user. They have their own limiters, never the shared writeLimiter.
+  const bizLim = business ? createBusinessLimits(config.business, { logger: log }) : null;
+  if (business) {
+    app.use('/business/brand', brandRouter(ctx, bizLim));
+    app.use('/business/p', clientRouter(ctx, { ...bizLim, sameOrigin }));
+  }
+
   // Who is asking: the signed-in user (session cookie) and an anonymous visitor id for the funnel.
   if (tripService) {
     app.use(async (req, res, next) => {
       try {
+        // A request under the Business client or brand paths that fell through to the 404 stays anonymous
+        // too: no session read, no visitor cookie.
+        if (business && BUSINESS_PUBLIC_PATH.test(req.path)) {
+          req.user = null;
+          req.visitor = null;
+          return runWithContext({ user: null, visitor: null }, () => next());
+        }
         req.user = await accounts.userFromRequest(req);
         req.visitor = visitorId(req, req.path.startsWith('/api/') ? null : res, config);
         runWithContext({ user: req.user, visitor: req.visitor }, () => next());
@@ -148,14 +167,12 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
   if (tripService) {
     app.use('/admin', adminRouter(ctx, { writeLimiter }));
     if (business) {
-      // Business routers mount before agentRouter and tripsRouter, whose path-less r.use() header setters
-      // would otherwise run first. None of them defines GET /business (pagesRouter serves it), and they
-      // have their own limiters, never the shared writeLimiter.
-      const lim = createBusinessLimits(config.business, { logger: log });
-      app.use('/business/brand', brandRouter(ctx, lim));
-      app.use('/business/p', clientRouter(ctx, { ...lim, sameOrigin }));
-      app.use('/business', previewRouter(ctx, { ...lim, sameOrigin }));
-      app.use('/business', businessRouter(ctx, { ...lim, sameOrigin }));
+      // The signed-in Business routers (they need req.user) mount here, after /admin and before
+      // agentRouter and tripsRouter, whose path-less r.use() header setters would otherwise run first.
+      // Neither defines GET /business (pagesRouter serves it). /business/brand and /business/p are
+      // mounted above, before "who is asking".
+      app.use('/business', previewRouter(ctx, { ...bizLim, sameOrigin }));
+      app.use('/business', businessRouter(ctx, { ...bizLim, sameOrigin }));
     }
     app.use('/', agentRouter(ctx, { writeLimiter, computeLimiter, sameOrigin }));
     app.use('/', huntsRouter(ctx, { writeLimiter, computeLimiter, sameOrigin }));
