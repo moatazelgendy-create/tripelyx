@@ -1249,7 +1249,8 @@ test('interfaces: the service facade carries exactly the frozen method list, one
   const svc = new BusinessService({ repo, config, now: fixed, log: quietLog, accounts: null, ...deps });
   for (const k of Object.keys(deps)) assert.equal(svc[k], deps[k], k);
   assert.equal(svc.repo, repo);
-  for (const name of SERVICE_METHODS) await assert.rejects(svc[name]({ user: null }), NOT_BUILT, name);
+  // Stage 1W-a built team.js (test/business-team.test.js covers it): its methods left this loop.
+  for (const name of SERVICE_METHODS.filter(n => METHOD_MODULE[n] !== 'team')) await assert.rejects(svc[name]({ user: null }), NOT_BUILT, name);
   const bare = new BusinessService({ repo, config, now: fixed });
   assert.deepEqual([bare.inventory, bare.composer, bare.policy, bare.alternatives, bare.explainer, bare.accounts], [null, null, null, null, null, null]);
 });
