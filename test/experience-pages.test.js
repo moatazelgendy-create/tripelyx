@@ -11,7 +11,7 @@
 // No dollar figure is hard-coded: every trip comes from a search, every number is priced by the app.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { startApp } = require('./helpers');
+const { startApp, fixedNow } = require('./helpers');
 const { encodeSpec, decodeSpec } = require('../server/trips/spec');
 const { addDays, today } = require('../server/lib/dates');
 const { format } = require('../server/lib/money');
@@ -52,7 +52,7 @@ const CARD = { type: 'test_card', number: '4242424242424242', expMonth: '12', ex
 const TRAVELER = { firstName: 'Ada', lastName: 'Lovelace', email: 'ada@example.com' };
 const GOALS = ['beach', 'food', 'nature'];
 const SECTIONS = ['goals', 'receipt', 'budget', 'rhythm', 'hotel-or-experience', 'make-memorable', 'big-or-many', 'free', 'location', 'schedule', 'ladder', 'same-feeling', 'alternative', 'protection', 'final-check', 'more'];
-function fixedClock() { const d = new Date(); d.setUTCHours(9, 0, 0, 0); return d; }
+function fixedClock() { const d = fixedNow(); d.setUTCHours(9, 0, 0, 0); return d; }
 const sum = xs => xs.reduce((n, x) => n + x, 0);
 const attrs = (html, name) => [...html.matchAll(new RegExp(`${name}="(-?\\d+)"`, 'g'))].map(m => Number(m[1]));
 // One section of a page: from its id to the next section (or the end of the page's main).

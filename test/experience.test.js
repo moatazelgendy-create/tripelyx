@@ -18,14 +18,14 @@ const strategies = require('../server/trips/strategies');
 const decision = require('../server/trips/decision');
 const { addDays, today } = require('../server/lib/dates');
 const { format } = require('../server/lib/money');
-const { startApp } = require('./helpers');
+const { startApp, clock } = require('./helpers');
 const X = require('../server/trips/experience');
 const { GUIDE_CHECKED_AT } = require('../server/trips/demo-data/destinations');
 const { longDate } = require('../server/trips/words');
 
-const inv = createTripIntegrations(loadConfig({ APP_ENV: 'development' }));
+const inv = createTripIntegrations(loadConfig({ APP_ENV: 'development' }), { now: clock });
 const settings = DEFAULT_SETTINGS;
-const now = new Date();
+const now = clock();
 const fmt = cents => format(cents, 'USD');
 const Q = { budget: 250000, vacationBudget: 250000, keep: 0, budgetInput: 2500, budgetType: 'total', travelers: 2, who: 'couple', origin: 'NYC', dateMode: 'anytime', depart: null, month: null, nights: 5, style: 'surprise', priority: 'price', allowOver: 0, dest: null, region: null, rules: null, dests: null, notCountry: null };
 const GOALS = ['beach', 'food', 'nature'];

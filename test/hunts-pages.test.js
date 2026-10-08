@@ -6,7 +6,7 @@
 // the hunt; another customer's hunt is a 404. Every number asserted is read back from the stored record.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { startApp } = require('./helpers');
+const { startApp, fixedNow } = require('./helpers');
 const { ACCEPTANCE } = require('../server/trips/hunts');
 const hunter = require('../server/trips/hunter');
 const { format } = require('../server/lib/money');
@@ -30,7 +30,7 @@ const client = base => {
 // Words no hunt page may carry: no urgency, no scarcity, no predictions.
 const PRESSURE = /\b(hurry|limited|selling out|last chance|act now|almost gone|don[’']t miss|only \d+ left|ending soon|book now|still available|prices? (?:will|may) (?:rise|go up)|countdown|typically|usually|predict)\b/i;
 // A fixed hour, so moving the clock by minutes never crosses midnight UTC.
-function fixedClock() { const d = new Date(); d.setUTCHours(9, 0, 0, 0); return d; }
+function fixedClock() { const d = fixedNow(); d.setUTCHours(9, 0, 0, 0); return d; }
 const minutes = n => n * 60000;
 const FORM = [['budget', '3,000'], ['from', 'NYC'], ['travelers', '2'], ['who', 'couple'], ['when', 'anytime'], ['nights', '4'], ['maxNights', '4'], ['style', 'beach'], ['nonstop', 'preferred'], ['stars', ''], ['meals', ''], ['bags', ''], ['threshold', 'recommend'], ['savingsLevel', 'balanced'], ...['under', 'drop', 'extra-night', 'nonstop', 'quality', 'destination'].map(k => ['notify', k])];
 const signup = (c, email, next = '/hunts') => c.req('/signup', { method: 'POST', form: { name: 'Ada Lovelace', email, password: 'correct horse battery', next } });

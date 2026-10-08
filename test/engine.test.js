@@ -6,7 +6,7 @@ const { MemoryStore } = require('../server/booking');
 const { BookingEngine } = require('../server/booking/engine');
 const { TestPaymentProcessor } = require('../server/payments/TestPaymentProcessor');
 const { FACTORIES } = require('../server/providers/mock');
-const { sampleQueries, quietLog } = require('./helpers');
+const { sampleQueries, quietLog, clock: testClock } = require('./helpers');
 const { addDays, today } = require('../server/lib/dates');
 
 const TRAVELER = { firstName: 'Mona', lastName: 'Test', email: 'Mona@Example.com' };
@@ -16,7 +16,7 @@ const DECLINE = { ...VISA, number: '4000000000000002' };
 function setup({ now, overrides } = {}) {
   const config = loadConfig({});
   const store = new MemoryStore();
-  let clock = now || new Date();
+  let clock = now || testClock();
   const nowFn = () => clock;
   const engine = new BookingEngine({
     registry: createRegistry(config, { overrides }), store, config, log: quietLog, now: nowFn,
@@ -35,7 +35,7 @@ async function quoteFor(engine, vertical, query) {
 
 test('query validation rejects past dates, inverted ranges and bad numbers', async () => {
   const { engine } = setup();
-  const d = addDays(today(), 10);
+  const d = addDays(today(testClock()), 10);
   await assert.rejects(engine.search('hotels', { where: 'x', checkIn: '2020-01-01', checkOut: d }), e => e.code === 'invalid_query' && /past/.test(e.details.checkIn));
   await assert.rejects(engine.search('hotels', { where: 'x', checkIn: d, checkOut: d }), e => /after/.test(e.details.checkOut));
   await assert.rejects(engine.search('hotels', { where: 'x', checkIn: d, checkOut: addDays(d, 2), guests: '99' }), e => !!e.details.guests);
