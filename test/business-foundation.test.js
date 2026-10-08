@@ -1162,20 +1162,14 @@ test('interfaces: every Stage 0 Business module loads with its frozen exports, a
   for (const [mod, names] of Object.entries(EXPECTED)) assert.deepEqual(Object.keys(require(`../server/business/${mod}`)).sort(), names, mod);
 
   const m = name => require(`../server/business/${name}`);
+  // Stage 1P built lifecycle, approver, alternatives, diff, explain and policy/*: their stubs left this list.
   const stubs = [
-    () => m('lifecycle').transition({}, { type: 'cancel' }, {}), () => m('lifecycle').effectiveStatus({}, FIXED_NOW), () => m('lifecycle').expiresAt(FIXED_NOW, 24, '2026-11-12', 'UTC'),
-    () => m('approver').resolveApprover({}, {}), () => m('alternatives').buildAlternatives({}), () => m('alternatives').alternativeId({}, {}),
-    () => m('diff').compareTrips({}, {}), () => m('diff').giveUps({}, {}), () => m('dto').extraKeys({}, true), () => m('dto').assertRow({}),
-    () => m('dto').parseRowKey('x'), () => m('search').parseTripQuery({}, {}), () => m('policy/schema').normalizePolicy({}, {}),
-    () => m('policy/schema').formFromPolicy({}), () => m('policy/schema').policyChanges({}, {}), () => m('policy/evaluate').evaluateTrip({}, {}, {}),
-    () => m('policy/evaluate').evaluateComponent({}, {}), () => m('policy/benchmark').benchmark([]), () => m('policy/describe').describe({}, {}),
-    () => m('policy/describe').limitsBar({}, {}, {}),
+    () => m('dto').extraKeys({}, true), () => m('dto').assertRow({}),
+    () => m('dto').parseRowKey('x'), () => m('search').parseTripQuery({}, {}),
     () => m('csv').csvCell('x'), () => m('csv').toCsv([], []), () => m('reports').outOfPolicyShare([]), () => m('reports').reportTiles({}),
-    () => m('explain').guardExplanation({}, {}),
   ];
   for (const fn of stubs) assert.throws(fn, NOT_BUILT, String(fn));
   await assert.rejects(m('recheck').recheck({}, {}), NOT_BUILT);
-  await assert.rejects(new (m('explain').RuleExplainer)().explain({}), NOT_BUILT);
 
   // The frozen data that is final in Stage 0.
   assert.equal(m('csv').CSV_COLUMNS.length, 21);
@@ -1194,12 +1188,12 @@ test('interfaces: every Stage 0 Business module loads with its frozen exports, a
   assert.deepEqual(Object.keys(engine).sort(), [...POLICY_ENGINE_METHODS].sort());
   assert.equal(POLICY_ENGINE_METHODS.length, 17);
   assert.ok(Object.isFrozen(engine));
-  for (const name of POLICY_ENGINE_METHODS) assert.throws(() => engine[name]({}, {}, {}), NOT_BUILT, name);
+  for (const name of POLICY_ENGINE_METHODS) assert.equal(typeof engine[name], 'function', name);
 
   // Factories never throw (the app boots on them); their methods do until Stage 1.
   const explainer = createExplainer({ business: { explainer: 'rules' } });
   assert.equal(explainer.name, 'rules');
-  await assert.rejects(explainer.explain({ violations: [], alternatives: [], noneWithin: true }), NOT_BUILT);
+  assert.equal(typeof (await explainer.explain({ violations: [], alternatives: [], noneWithin: true })).summary, 'string');
   assert.throws(() => createExplainer({ business: { explainer: 'model' } }), /unknown explainer/);
   const composer = new TripComposer({ inventory: { status: 'none' }, now: fixed });
   assert.throws(() => composer.parseQuery({}, { today: '2026-10-09' }), NOT_BUILT);
