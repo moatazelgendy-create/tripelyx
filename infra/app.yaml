@@ -36,6 +36,11 @@ Parameters:
     AllowedValues: ['true', 'false']
     Default: 'true'
     Description: Serve the Travel by Budget planner as the homepage.
+  EnableBusiness:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'true'
+    Description: Tripelyx Business workspaces at /business (needs EnableTrips).
   PublicBaseUrl:
     Type: String
     Default: ''
@@ -225,6 +230,7 @@ Resources:
             - { Name: PAYMENT_MODE, Value: !Ref PaymentMode }
             - { Name: ALLOW_DEMO_INVENTORY, Value: !Ref AllowDemoInventory }
             - { Name: ENABLE_TRIPS, Value: !Ref EnableTrips }
+            - { Name: ENABLE_BUSINESS, Value: !Ref EnableBusiness }
             - { Name: ADMIN_EMAILS, Value: !Ref AdminEmails }
             - { Name: PUBLIC_BASE_URL, Value: !Ref PublicBaseUrl }
             - { Name: DATABASE_ENV, Value: !Ref AppEnv }

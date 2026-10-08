@@ -147,6 +147,33 @@ class PostgresStore {
     return data;
   }
 
+  /**
+   * Insert-only write: stores the record only when no record of this kind has this id yet.
+   * @returns {Promise<boolean>} true when written, false when the id was taken (the stored data is untouched)
+   */
+  async insertRecord(kind, id, data, { userId = null } = {}) {
+    const { rowCount } = await this.pool.query(
+      'INSERT INTO tx_records (kind, id, user_id, data) VALUES ($1, $2, $3, $4) ON CONFLICT (kind, id) DO NOTHING',
+      [kind, id, userId, data],
+    );
+    return rowCount === 1;
+  }
+
+  /**
+   * Compare-and-set on the document's `rev` (a missing rev counts as 0): writes `{ ...next, rev: expectedRev + 1 }`
+   * only when the stored rev still equals expectedRev. The owner and creation time are kept.
+   * @returns {Promise<object|null>} the written document, or null when the record is missing or the rev moved on
+   */
+  async updateRecord(kind, id, expectedRev, next) {
+    if (!Number.isInteger(expectedRev)) return null;
+    const { rows } = await this.pool.query(
+      `UPDATE tx_records SET data = $4, updated_at = now()
+       WHERE kind = $1 AND id = $2 AND COALESCE((data->>'rev')::int, 0) = $3 RETURNING data`,
+      [kind, id, expectedRev, { ...next, rev: expectedRev + 1 }],
+    );
+    return rows[0] ? rows[0].data : null;
+  }
+
   async getRecord(kind, id) {
     const { rows } = await this.pool.query('SELECT data FROM tx_records WHERE kind = $1 AND id = $2', [kind, id]);
     return rows[0] ? rows[0].data : null;
@@ -169,6 +196,16 @@ class PostgresStore {
   async savePartnerLead(lead) {
     await this.pool.query('INSERT INTO tx_partner_leads (id, data) VALUES ($1, $2)', [lead.id, lead]);
     return lead;
+  }
+
+  /**
+   * Partner and business enquiries, newest first.
+   * @param {{ limit?: number }} [opts]
+   * @returns {Promise<object[]>}
+   */
+  async listPartnerLeads({ limit = 200 } = {}) {
+    const { rows } = await this.pool.query('SELECT data FROM tx_partner_leads ORDER BY created_at DESC, id DESC LIMIT $1', [limit]);
+    return rows.map(r => r.data);
   }
 }
 

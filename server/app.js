@@ -22,6 +22,10 @@ const { createTripIntegrations } = require('./trips/integrations');
 const { createNotifier } = require('./trips/integrations/notifications');
 const { TripService } = require('./trips/service');
 const { demoMediaRouter } = require('./routes/demoMedia');
+const { BusinessService } = require('./business/service');
+const { createBusinessLimits } = require('./business/limits');
+const { businessRouter } = require('./routes/business');
+const { clientRouter, brandRouter, previewRouter } = require('./routes/businessClient');
 const { AppError } = require('./lib/errors');
 const { id } = require('./lib/ids');
 const { notFoundView, errorView } = require('./views/errors');
@@ -39,7 +43,7 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
   // (mock inventory is refused where demo inventory isn't allowed).
   const clock = now || (() => new Date());
   const inventory = config.trips.enabled ? createTripIntegrations(config, { now: clock, overrides: tripOverrides }) : null;
-  let tripService = null, accounts = null, agent = null, hunts = null;
+  let tripService = null, accounts = null, agent = null, hunts = null, business = null;
   if (inventory) {
     const notifier = createNotifier(config, { store, now: clock, log });
     tripService = new TripService({ inventory, store, notifier, config, now: clock, log });
@@ -53,9 +57,12 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
     agent = new AgentService({ tripService, store, now: clock, log, hunts });
     engine.extraProviders.trips = tripService.bookingProvider();
     engine.hooks.bookingEvent = (type, b) => tripService.onBookingEvent(type, b).catch(e => log.error('[trips] booking event', e));
+    // Tripelyx Business: advisor workspaces and client proposals on top of the trip engine (server/business).
+    business = config.business.enabled ? new BusinessService({ store, tripService, config, now: clock, log }) : null;
   } else if (config.trips.enabled) {
     log.warn('[trips] Travel by Budget is off: mock trip inventory is not allowed here (set ALLOW_DEMO_INVENTORY=true or name real TRIP_*_PROVIDER adapters).');
   }
+  if (config.business.enabled && !business) log.warn('[business] Tripelyx Business is off: it needs Travel by Budget.');
 
   const app = express();
   app.disable('x-powered-by');
@@ -117,6 +124,7 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
     accounts,
     agent,
     hunts,
+    business,
   };
 
   // Who is asking: the signed-in user (session cookie) and an anonymous visitor id for the funnel.
@@ -139,6 +147,16 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
   app.use('/api', apiLimiter, apiRouter(ctx, { writeLimiter }));
   if (tripService) {
     app.use('/admin', adminRouter(ctx, { writeLimiter }));
+    if (business) {
+      // Business routers mount before agentRouter and tripsRouter, whose path-less r.use() header setters
+      // would otherwise run first. None of them defines GET /business (pagesRouter serves it), and they
+      // have their own limiters, never the shared writeLimiter.
+      const lim = createBusinessLimits(config.business, { logger: log });
+      app.use('/business/brand', brandRouter(ctx, lim));
+      app.use('/business/p', clientRouter(ctx, { ...lim, sameOrigin }));
+      app.use('/business', previewRouter(ctx, { ...lim, sameOrigin }));
+      app.use('/business', businessRouter(ctx, { ...lim, sameOrigin }));
+    }
     app.use('/', agentRouter(ctx, { writeLimiter, computeLimiter, sameOrigin }));
     app.use('/', huntsRouter(ctx, { writeLimiter, computeLimiter, sameOrigin }));
     app.use('/', tripsRouter(ctx, { writeLimiter, computeLimiter }));
@@ -167,7 +185,7 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
     res.status(status).type('html').send(String(errorView(ctx, { status, ...body })));
   });
 
-  return { app, engine, store, registry, payments, ctx, tripService, accounts, agent, hunts };
+  return { app, engine, store, registry, payments, ctx, tripService, accounts, agent, hunts, business };
 }
 
 module.exports = { createApp };

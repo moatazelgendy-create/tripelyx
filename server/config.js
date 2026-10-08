@@ -19,6 +19,14 @@ function int(value, fallback, name) {
   return n;
 }
 
+// A whole number of at least one, or the fallback when unset.
+function pos(value, fallback, name) {
+  if (value === undefined || value === '') return fallback;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 1) throw new Error(`${name} must be a whole number of 1 or more (got "${value}")`);
+  return n;
+}
+
 function databaseUrlFromParts(env) {
   if (!env.DATABASE_HOST) return null;
   if (!env.DATABASE_NAME || !env.DATABASE_USER || !env.DATABASE_PASSWORD) {
@@ -106,9 +114,27 @@ function loadConfig(env = process.env) {
     huntIntervalMinutes: int(env.HUNT_INTERVAL_MINUTES, 360, 'HUNT_INTERVAL_MINUTES'),
   };
 
+  // Tripelyx Business (advisor workspaces, client proposals and share links under /business/...).
+  // It runs on Travel by Budget, so it is off whenever trips are off. Not a vertical: it is not in
+  // `flags` and never reaches publicConfig.
+  const business = {
+    enabled: bool(env.ENABLE_BUSINESS, !isProduction),
+    // false: an agency can build and preview, but client sharing waits for platform approval.
+    selfServe: bool(env.BUSINESS_SELF_SERVE, false),
+    shareLinkDays: pos(env.BUSINESS_SHARE_LINK_DAYS, 60, 'BUSINESS_SHARE_LINK_DAYS'),
+    inviteDays: pos(env.BUSINESS_INVITE_DAYS, 7, 'BUSINESS_INVITE_DAYS'),
+    followUpDays: pos(env.BUSINESS_FOLLOW_UP_DAYS, 3, 'BUSINESS_FOLLOW_UP_DAYS'),
+    writeLimit: pos(env.BUSINESS_WRITE_LIMIT, 300, 'BUSINESS_WRITE_LIMIT'),
+    computeLimit: pos(env.BUSINESS_COMPUTE_LIMIT, 30, 'BUSINESS_COMPUTE_LIMIT'),
+    clientWriteLimit: pos(env.BUSINESS_CLIENT_WRITE_LIMIT, 20, 'BUSINESS_CLIENT_WRITE_LIMIT'),
+    logoMaxKb: pos(env.BUSINESS_LOGO_MAX_KB, 200, 'BUSINESS_LOGO_MAX_KB'),
+    maxOrgsPerUser: pos(env.BUSINESS_MAX_ORGS_PER_USER, 3, 'BUSINESS_MAX_ORGS_PER_USER'),
+  };
+
   return {
     appEnv,
     trips,
+    business,
     isProduction,
     port: Number(env.PORT || 4100),
     publicBaseUrl: env.PUBLIC_BASE_URL || null,

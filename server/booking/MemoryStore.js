@@ -43,6 +43,13 @@ class MemoryStore {
 
   async savePartnerLead(lead) { this.leads.push(clone(lead)); return lead; }
 
+  /**
+   * Partner and business enquiries, newest first.
+   * @param {{ limit?: number }} [opts]
+   * @returns {Promise<object[]>}
+   */
+  async listPartnerLeads({ limit = 200 } = {}) { return clone(this.leads).reverse().slice(0, limit); }
+
   // Newest first.
   async listBookings({ userId, limit = 500 } = {}) {
     return [...this.bookings.values()].filter(b => !userId || b.userId === userId)
@@ -57,6 +64,29 @@ class MemoryStore {
     this.records.set(key, { kind, id, userId: userId ?? (prev && prev.userId) ?? null, data: clone(data), createdAt: prev ? prev.createdAt : new Date().toISOString(), seq: prev ? prev.seq : (this.seq = (this.seq || 0) + 1) });
     return data;
   }
+  /**
+   * Insert-only write: stores the record only when no record of this kind has this id yet.
+   * @returns {Promise<boolean>} true when written, false when the id was taken (the stored data is untouched)
+   */
+  async insertRecord(kind, id, data, { userId = null } = {}) {
+    const key = `${kind}:${id}`;
+    if (this.records.has(key)) return false;
+    this.records.set(key, { kind, id, userId: userId ?? null, data: clone(data), createdAt: new Date().toISOString(), seq: (this.seq = (this.seq || 0) + 1) });
+    return true;
+  }
+
+  /**
+   * Compare-and-set on the document's `rev` (a missing rev counts as 0): writes `{ ...next, rev: expectedRev + 1 }`
+   * only when the stored rev still equals expectedRev. The owner, creation time and list order are kept.
+   * @returns {Promise<object|null>} the written document, or null when the record is missing or the rev moved on
+   */
+  async updateRecord(kind, id, expectedRev, next) {
+    const r = this.records.get(`${kind}:${id}`);
+    if (!r || !Number.isInteger(expectedRev) || (r.data.rev ?? 0) !== expectedRev) return null;
+    r.data = { ...clone(next), rev: expectedRev + 1 };
+    return clone(r.data);
+  }
+
   async getRecord(kind, id) { const r = this.records.get(`${kind}:${id}`); return r ? clone(r.data) : null; }
   async deleteRecord(kind, id) { return this.records.delete(`${kind}:${id}`); }
   async listRecords(kind, { userId, limit = 1000, since } = {}) {

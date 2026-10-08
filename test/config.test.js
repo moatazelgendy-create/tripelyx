@@ -74,3 +74,34 @@ test('HTTPS_ONLY defaults on outside development and production refuses to turn 
   assert.equal(loadConfig({ APP_ENV: 'staging', HTTPS_ONLY: 'false', ...db }).httpsOnly, false);
   assert.throws(() => loadConfig({ APP_ENV: 'production', HTTPS_ONLY: 'false', ...db }), /HTTPS_ONLY=false/);
 });
+
+test('Tripelyx Business: on outside production, off in production, never a vertical or public', () => {
+  const db = { DATABASE_URL: 'postgres://u:p@h/db' };
+  assert.equal(loadConfig({}).business.enabled, true, 'development');
+  assert.equal(loadConfig({ APP_ENV: 'staging', ...db }).business.enabled, true, 'staging (the live site)');
+  assert.equal(loadConfig({ APP_ENV: 'production', ...db }).business.enabled, false, 'production');
+  assert.equal(loadConfig({ APP_ENV: 'production', ENABLE_BUSINESS: 'true', ...db }).business.enabled, true);
+  assert.equal(loadConfig({ ENABLE_BUSINESS: 'false' }).business.enabled, false);
+  const c = loadConfig({});
+  assert.deepEqual(c.business, {
+    enabled: true, selfServe: false, shareLinkDays: 60, inviteDays: 7, followUpDays: 3, writeLimit: 300,
+    computeLimit: 30, clientWriteLimit: 20, logoMaxKb: 200, maxOrgsPerUser: 3,
+  });
+  assert.equal(loadConfig({ BUSINESS_SELF_SERVE: 'true' }).business.selfServe, true);
+  assert.equal(loadConfig({ BUSINESS_SHARE_LINK_DAYS: '30' }).business.shareLinkDays, 30);
+  assert.equal(Object.values(c.flags).filter(Boolean).length, 8, 'still exactly 8 vertical flags');
+  assert.ok(!('business' in c.flags));
+  const pub = JSON.stringify(publicConfig(c));
+  assert.ok(!('business' in publicConfig(c)) && !/business|selfServe|shareLinkDays/i.test(pub), 'publicConfig has no business settings');
+});
+
+test('Tripelyx Business numbers must be whole numbers of 1 or more', () => {
+  const names = ['BUSINESS_SHARE_LINK_DAYS', 'BUSINESS_INVITE_DAYS', 'BUSINESS_FOLLOW_UP_DAYS', 'BUSINESS_WRITE_LIMIT',
+    'BUSINESS_COMPUTE_LIMIT', 'BUSINESS_CLIENT_WRITE_LIMIT', 'BUSINESS_LOGO_MAX_KB', 'BUSINESS_MAX_ORGS_PER_USER'];
+  for (const name of names) {
+    for (const bad of ['soon', '-5', '1.5', '0']) {
+      assert.throws(() => loadConfig({ [name]: bad }), new RegExp(`${name} must be a whole number`), `${name}=${bad}`);
+    }
+    assert.ok(loadConfig({ [name]: '' }), `${name} empty falls back to the default`);
+  }
+});
