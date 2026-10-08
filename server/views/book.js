@@ -86,7 +86,8 @@ function resultCard(vertical, offer, query) {
   const avail = offer.options.filter(o => o.available);
   const best = (avail.length ? avail : offer.options).reduce((a, b) => (a.price.amount <= b.price.amount ? a : b));
   const free = offer.cancellation.type !== 'non_refundable';
-  const few = avail.length && best.remaining !== undefined && best.remaining !== null && best.remaining <= 3;
+  // "Only N left" only when a real supplier reports the count: demo inventory's counts are made up.
+  const few = !offer.demo && avail.length && best.remaining !== undefined && best.remaining !== null && best.remaining <= 3;
   return html`<article class="result">
     <a class="result-media" href="${url}" tabindex="-1" aria-hidden="true"><img src="${offer.media[0] ? offer.media[0].url : ''}" alt="" loading="lazy" width="400" height="250">${(offer.badges || [])[0] ? html`<span class="media-badge">${offer.badges[0]}</span>` : ''}</a>
     <div class="result-body">
@@ -314,14 +315,14 @@ function offerView(ctx, { vertical, offer, query, error, selected = {} }) {
         <legend class="sr-only">Options</legend>
         ${offer.options.map(o => html`<label class="option${o.available ? '' : ' is-disabled'}">
           <input type="radio" name="optionId" value="${o.id}"${o.id === chosen ? raw(' checked') : ''}${o.available ? '' : raw(' disabled')} required>
-          <span><b>${o.name}</b><small>${o.available ? (o.description || '') : 'Not available for your search'}${o.available && o.remaining !== undefined && o.remaining > 0 && o.remaining <= 3 ? ` · only ${o.remaining} left` : ''}</small></span>
+          <span><b>${o.name}</b><small>${o.available ? (o.description || '') : 'Not available for your search'}${!offer.demo && o.available && o.remaining !== undefined && o.remaining > 0 && o.remaining <= 3 ? ` · only ${o.remaining} left` : ''}</small></span>
           <span class="option-price"><b>${money(o.price.amount, o.price.currency)}</b><small>${UNIT_LABEL[offer.fromPrice.unit] || ''}</small>${o.total && o.total.amount !== o.price.amount ? html`<small>${money(o.total.amount, o.total.currency)} total</small>` : ''}</span>
         </label>`)}
       </fieldset>
       ${slots ? html`<div class="offer-section"><h2>Start time</h2><div class="slots" role="radiogroup" aria-label="Start time">${slots.map(s => {
         const ok = s.remaining >= (query.participants || 1);
         const isSel = selected.slot ? selected.slot === s.time : firstSlot && firstSlot.time === s.time;
-        return html`<label class="slot"><input type="radio" name="slot" value="${s.time}"${isSel && ok ? raw(' checked') : ''}${ok ? '' : raw(' disabled')} required><span>${s.time}<small>${s.remaining ? `${s.remaining} left` : 'Full'}</small></span></label>`;
+        return html`<label class="slot"><input type="radio" name="slot" value="${s.time}"${isSel && ok ? raw(' checked') : ''}${ok ? '' : raw(' disabled')} required><span>${s.time}<small>${!s.remaining ? 'Full' : offer.demo ? 'Open' : `${s.remaining} left`}</small></span></label>`;
       })}</div></div>` : ''}
       <button class="btn btn-navy btn-lg btn-block" type="submit"${firstAvailable ? '' : raw(' disabled')}><span class="btn-label">${firstAvailable ? 'Continue to checkout' : 'Sold out'}</span> ${icon('arrow')}</button>
       <p class="secure-note">${icon('lock')}Final price with taxes is shown before you pay.</p>
