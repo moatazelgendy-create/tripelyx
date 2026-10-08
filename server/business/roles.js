@@ -6,8 +6,9 @@
 //   org access from that alone.
 // - BusinessService re-checks can() and the own-scope inside every method, so a route bug cannot skip them.
 // - "own" means an Advisor (or, for reminders, a Support Agent or Finance member) acts only on records whose
-//   advisorId is their own user id. For `org.view` it means the Advisor's dashboard counts only their own
-//   records; the team list and the Coming soon page have no owner.
+//   advisorId is their own user id. `org.view` is a plain yes for every role (the org, team list, brand and
+//   Coming soon page have no owner); the Advisor's dashboard counts only their own records, a filtering rule
+//   the dashboard applies (see DASHBOARD_OWN).
 
 /** @typedef {'owner'|'manager'|'advisor'|'support'|'finance'|'readonly'} Role */
 
@@ -52,7 +53,7 @@ const PERMISSIONS = Object.freeze([
 
 // The matrix. Y = yes, O = own records only, '-' = no. Columns: owner, manager, advisor, support, finance, readonly.
 const MATRIX = {
-  'org.view':             ['Y', 'Y', 'O', 'Y', 'Y', 'Y'],
+  'org.view':             ['Y', 'Y', 'Y', 'Y', 'Y', 'Y'],
   'proposals.view':       ['Y', 'Y', 'O', 'Y', 'Y', 'Y'],
   'proposals.edit':       ['Y', 'Y', 'O', '-', '-', '-'],
   'proposals.send':       ['Y', 'Y', 'O', '-', '-', '-'],
@@ -76,13 +77,23 @@ const MATRIX = {
   'audit.view':           ['Y', 'Y', '-', '-', 'Y', '-'],
 };
 
-const freezeSets = build => Object.freeze(Object.fromEntries(ROLES.map((role, i) => [role, Object.freeze(new Set(build(i)))])));
+// Object.freeze does not stop Set#add/delete, so the exported Sets refuse every change themselves.
+class LockedSet extends Set {
+  constructor(items) { super(items); this.locked = true; Object.freeze(this); }
+  add(v) { if (this.locked) throw new TypeError('[business] the permission matrix is read-only'); return super.add(v); }
+  delete() { throw new TypeError('[business] the permission matrix is read-only'); }
+  clear() { throw new TypeError('[business] the permission matrix is read-only'); }
+}
+const freezeSets = build => Object.freeze(Object.fromEntries(ROLES.map((role, i) => [role, new LockedSet(build(i))])));
 
 /** Role → Set of permissions the role holds (own-only ones included). @type {Readonly<Record<Role, ReadonlySet<string>>>} */
 const PERMS = freezeSets(i => PERMISSIONS.filter(p => MATRIX[p][i] !== '-'));
 
 /** Role → Set of permissions the role holds only on its own records. */
 const OWN = freezeSets(i => PERMISSIONS.filter(p => MATRIX[p][i] === 'O'));
+
+/** Roles whose dashboard counts and lists cover only the proposals and clients they advise. */
+const DASHBOARD_OWN = Object.freeze(['advisor']);
 
 /**
  * Stages a role may set by hand when it is not every stage. Finance records money steps only.
@@ -171,6 +182,6 @@ function allowed(member, perm, record = null) {
 }
 
 module.exports = {
-  ROLES, LABELS, PERMISSIONS, PERMS, OWN, STAGE_LIMITS, CLIENT_VIEW,
+  ROLES, LABELS, PERMISSIONS, PERMS, OWN, STAGE_LIMITS, CLIENT_VIEW, DASHBOARD_OWN,
   can, ownOnly, assignableBy, canSetStage, clientView, allowed,
 };

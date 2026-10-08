@@ -38,10 +38,13 @@ function dollarsToCents(v, { max = Infinity, blank } = {}) {
     if (blank !== undefined) return blank;
     throw invalid('Enter an amount.');
   }
-  const s = String(v).replace(/[$,\s]/g, '');
-  const m = /^(\d{1,7})(?:\.(\d{1,2}))?$/.exec(s);
+  // One optional leading $, and commas only as thousands separators ("1,00" is refused, not read as 100).
+  const s = String(v).replace(/\s/g, '').replace(/^\$/, '');
+  const m = /^((?:\d{1,3}(?:,\d{3})+)|\d{1,7})(?:\.(\d{1,2}))?$/.exec(s);
   if (!m) throw invalid('Enter an amount in dollars, like 25 or 25.50.');
-  const cents = Number(m[1]) * 100 + Number((m[2] || '').padEnd(2, '0'));
+  const whole = m[1].replace(/,/g, '');
+  if (whole.length > 7) throw invalid('Enter an amount in dollars, like 25 or 25.50.');
+  const cents = Number(whole) * 100 + Number((m[2] || '').padEnd(2, '0'));
   if (cents > max) throw invalid(`The most you can enter is ${dollars(max)}.`);
   return cents;
 }

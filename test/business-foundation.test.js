@@ -23,7 +23,7 @@ const { KINDS } = constants;
 // Roles (plan §E). Y = yes, O = own records only, - = no.
 // Columns: Owner, Manager, Advisor, Support Agent, Finance, Read Only.
 const EXPECTED_MATRIX = {
-  'org.view':             'Y Y O Y Y Y',
+  'org.view':             'Y Y Y Y Y Y',
   'proposals.view':       'Y Y O Y Y Y',
   'proposals.edit':       'Y Y O - - -',
   'proposals.send':       'Y Y O - - -',
@@ -64,6 +64,13 @@ test('roles: the six roles, their labels and the exact permission matrix', () =>
   const ownCells = roles.ROLES.flatMap(r => roles.PERMISSIONS.filter(p => roles.ownOnly(r, p)).map(p => `${r}:${p}`));
   assert.ok(ownCells.every(c => c.startsWith('advisor:') || c === 'support:reminders' || c === 'finance:reminders'));
   assert.ok(Object.isFrozen(roles.PERMS) && Object.isFrozen(roles.ROLES) && Object.isFrozen(roles.PERMISSIONS));
+  // The Sets themselves refuse changes, so nothing can widen a role at runtime.
+  assert.throws(() => roles.PERMS.readonly.add('clients.delete'), /read-only/);
+  assert.throws(() => roles.PERMS.owner.delete('org.view'), /read-only/);
+  assert.throws(() => roles.OWN.advisor.clear(), /read-only/);
+  assert.equal(roles.can('readonly', 'clients.delete'), false);
+  assert.equal(roles.can('owner', 'org.view'), true);
+  assert.deepEqual(roles.DASHBOARD_OWN, ['advisor']);
 });
 
 test('roles: unknown roles and permissions are refused', () => {
@@ -171,6 +178,9 @@ test('repo: the scope check matches the user ids accounts.register makes', async
   await assert.rejects(repo.list(KINDS.client, null), /unscoped/);
   await assert.rejects(repo.list(KINDS.client, undefined), /unscoped/);
   await assert.rejects(repo.insert(KINDS.client, 'cli_x', { rev: 0 }, { owner: '' }), /unscoped/);
+  // Only an org record may go without an owner: anything else would be invisible to every scoped list.
+  await assert.rejects(repo.insert(KINDS.client, 'cli_y', { rev: 0 }), /unscoped/);
+  await assert.rejects(repo.put(KINDS.reminder, 'rem_y', { rev: 0 }), /unscoped/);
 });
 
 test('repo: getIn refuses another tenant, list is scoped and sorted by the clock time', async () => {
@@ -292,7 +302,8 @@ test('validate: money in cents and percentages in tenths, by string arithmetic',
   assert.equal(v.dollarsToCents('123.45'), 12345);
   assert.equal(v.dollarsToCents(17), 1700);
   assert.equal(v.dollarsToCents('9999999.99'), 999999999);
-  for (const bad of ['1.005', '-1', 'abc', '1e3', '1.2.3', '12345678', '.5', '0x10']) fieldError(() => v.dollarsToCents(bad));
+  for (const bad of ['1.005', '-1', 'abc', '1e3', '1.2.3', '12345678', '.5', '0x10', '1,00', ',5', '1,,0', '$$5', '5$', '12,345,678']) fieldError(() => v.dollarsToCents(bad));
+  assert.equal(v.dollarsToCents('$1,234,567.89'), 123456789);
   assert.equal(v.dollarsToCents('', { blank: 0 }), 0);
   assert.equal(v.dollarsToCents('  ', { blank: null }), null);
   assert.equal(fieldError(() => v.dollarsToCents('')), 'Enter an amount.');

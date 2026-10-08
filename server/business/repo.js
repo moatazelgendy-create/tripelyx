@@ -133,7 +133,7 @@ class Repo {
    */
   async insert(kind, id, data, { owner = null } = {}) {
     checkNewId(id);
-    if (owner !== null) this.assertScope(owner);
+    if (owner !== null || kind !== KINDS.org) this.assertScope(owner);
     assertDoc(data);
     return this.store.insertRecord(kind, id, data, { userId: owner });
   }
@@ -186,7 +186,7 @@ class Repo {
    */
   async put(kind, id, data, { owner = null } = {}) {
     checkNewId(id);
-    if (owner !== null) this.assertScope(owner);
+    if (owner !== null || kind !== KINDS.org) this.assertScope(owner);
     assertDoc(data);
     return this.store.putRecord(kind, id, data, { userId: owner });
   }
