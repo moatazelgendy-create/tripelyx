@@ -1168,8 +1168,7 @@ test('interfaces: every Stage 0 Business module loads with its frozen exports, a
     () => m('policy/schema').formFromPolicy({}), () => m('policy/schema').policyChanges({}, {}), () => m('policy/evaluate').evaluateTrip({}, {}, {}),
     () => m('policy/evaluate').evaluateComponent({}, {}), () => m('policy/benchmark').benchmark([]), () => m('policy/describe').describe({}, {}),
     () => m('policy/describe').limitsBar({}, {}, {}),
-    // csv.csvCell, csv.toCsv, reports.outOfPolicyShare and reports.reportTiles are built by Stage 1W-b
-    // (test/business-requests.test.js covers them).
+    () => m('csv').csvCell('x'), () => m('csv').toCsv([], []), () => m('reports').outOfPolicyShare([]), () => m('reports').reportTiles({}),
     () => m('explain').guardExplanation({}, {}),
   ];
   for (const fn of stubs) assert.throws(fn, NOT_BUILT, String(fn));
@@ -1255,12 +1254,7 @@ test('interfaces: the service facade carries exactly the frozen method list, one
   const svc = new BusinessService({ repo, config, now: fixed, log: quietLog, accounts: null, ...deps });
   for (const k of Object.keys(deps)) assert.equal(svc[k], deps[k], k);
   assert.equal(svc.repo, repo);
-  // Stage 1W-b built the budgets, policies, requests, reports and csv methods: they now refuse an actor with no
-  // user or company as not found (actor.loadActor) instead of throwing NOT_BUILT.
-  const BUILT_1WB = ['budgets', 'policies', 'requests', 'reports', 'csv'];
-  for (const name of SERVICE_METHODS) {
-    await assert.rejects(svc[name]({ user: null }), BUILT_1WB.includes(METHOD_MODULE[name]) ? e => e.code === 'not_found' : NOT_BUILT, name);
-  }
+  for (const name of SERVICE_METHODS) await assert.rejects(svc[name]({ user: null }), NOT_BUILT, name);
   const bare = new BusinessService({ repo, config, now: fixed });
   assert.deepEqual([bare.inventory, bare.composer, bare.policy, bare.alternatives, bare.explainer, bare.accounts], [null, null, null, null, null, null]);
 });

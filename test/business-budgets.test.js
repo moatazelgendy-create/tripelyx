@@ -252,3 +252,23 @@ test('a request is evaluated with its tier\'s current policy; the page says when
   assert.deepEqual(q.evaluation.policy, { tier: 'standard', version: 2 }, 'submit re-evaluates with the current version');
   assert.equal((await w.svc.getRequest(t, r.id)).policyChanged, null);
 });
+
+test('a saved policy saves again when the inventory no longer lists its airlines or route airports', async () => {
+  const w = await world();
+  const t = w.as(w.admin);
+  await w.repo.cas(KINDS.policy, `${w.org.id}.standard`, null, d => {
+    d.rules.flights.blockedCarriers = ['ZS'];
+    d.rules.flights.routeOverrides = [{ from: 'CAI', to: 'LHR', bothWays: true, cap: { mode: 'none' }, maxCabin: null }];
+  });
+  // The inventory lists nothing today (no supplier, or a live one without these codes).
+  w.svc.inventory = { ...w.svc.inventory, airports: () => [], carriers: () => [] };
+  let refs = null;
+  const normalize = w.policy.normalizePolicy;
+  w.svc.policy = { ...w.policy, normalizePolicy: (form, r) => { refs = r; return normalize(form, r); } };
+  const view = await w.svc.getPolicy(t, 'standard');
+  assert.deepEqual(view.refs.carriers.map(c => c.code), ['ZS'], 'the editor can show the stored airline');
+  assert.deepEqual(view.refs.airports.map(a => a.code).sort(), ['CAI', 'LHR']);
+  await w.svc.savePolicy(t, 'standard', { form: { ...view.form, longHaulMinutes: '420' }, rev: view.rev });
+  assert.deepEqual(refs.carriers, ['ZS']);
+  assert.deepEqual([...refs.airports].sort(), ['CAI', 'LHR']);
+});

@@ -9,7 +9,8 @@ const { Accounts } = require('../server/accounts');
 const { loadConfig } = require('../server/config');
 const { Repo, memberScope } = require('../server/business/repo');
 const { BusinessService } = require('../server/business/service');
-const { KINDS } = require('../server/business/constants');
+const { KINDS, ID_PREFIX } = require('../server/business/constants');
+const { id: newId } = require('../server/lib/ids');
 const { CARD_MESSAGE } = require('../server/business/cards');
 const reports = require('../server/business/reports');
 const csv = require('../server/business/csv');
@@ -652,6 +653,23 @@ for (const S of STORES) {
     }
   });
 
+  test(`${S.name}: two racing auto-approvals on one budget: one approved, the other updated to ask for approval`, { skip: S.skip }, async t => {
+    const store = await S.make();
+    t.after(() => store.close && store.close());
+    const w = await world({ store, budgetCents: WITHIN_TOTAL + 1000 });
+    const other = await seedMember(w.app, w.org, 'employee', { name: 'Kim Other', departmentId: w.eng.id, managerId: w.manager.user.id });
+    const a = await draft(w, w.traveler);
+    const b = await draft(w, other);
+    const results = await Promise.allSettled([[w.traveler, a], [other, b]].map(([who, r]) => w.svc.submit(w.as(who), r.id, { rev: r.rev })));
+    assert.deepEqual(results.map(x => x.status), ['fulfilled', 'fulfilled'], JSON.stringify(results.map(x => x.reason && x.reason.code)));
+    assert.deepEqual(results.map(x => x.value.outcome).sort(), ['auto_approved', 'repriced']);
+    const loser = results.find(x => x.value.outcome === 'repriced').value.request;
+    assert.equal(loser.status, 'draft');
+    assert.deepEqual(loser.evaluation.violations.map(v => v.rule), ['budget']);
+    const committed = Object.values((await budgetOf(w)).commits).reduce((n, c) => n + c, 0);
+    assert.equal(committed, WITHIN_TOTAL, 'never past the budget');
+  });
+
   test(`${S.name}: two cancellations of one approved trip release its hold once`, { skip: S.skip }, async t => {
     const store = await S.make();
     t.after(() => store.close && store.close());
@@ -826,11 +844,13 @@ test('report tiles: shares in tenths rounded half up, top reasons, savings, stat
   assert.equal(reasons[3].label, 'zz.custom');
   assert.equal(reports.topReasons(Array.from({ length: 9 }, (_, i) => req('pending', 'out', [`r.${i}`]))).length, 5);
 
-  const swapped = { history: [{ action: 'drafted' }, { action: 'swapped', savedCents: 400 }] };
+  const swapped = (...saved) => ({ history: [{ action: 'drafted' }, ...saved.map(savedCents => ({ action: 'swapped', savedCents }))] });
   assert.equal(reports.savedBySwitching([
-    req('approved', 'within', [], { original: 1400, ...swapped }), req('approved', 'within', [], { original: 1300 }),
-    req('cancelled', 'within', [], { original: 1900, ...swapped }), req('approved', 'within', [], { original: 900, ...swapped }),
-  ]), 400, 'approved with a swap only, never negative');
+    req('approved', 'within', [], { original: 1400, ...swapped(400) }), req('approved', 'within', [], { original: 1300 }),
+    req('cancelled', 'within', [], { original: 1900, ...swapped(900) }), req('approved', 'within', [], { original: 900, ...swapped(-100) }),
+    // The price fell after the switches (original − total is 800): only the 250 they saved counts.
+    req('approved', 'within', [], { original: 1800, ...swapped(300, -50) }),
+  ]), 650, 'approved with a swap only, what each switch saved, never negative');
 
   const effectiveStatus = (r, nowIso) => (r.status === 'pending' && nowIso >= r.expiresAt ? 'expired' : r.status === 'approved' && r.query.departDate < nowIso.slice(0, 10) ? 'past' : r.status);
   const tiles = reports.reportTiles({
@@ -954,4 +974,254 @@ test('CSV: the 21 columns, a BOM and CRLF, the formula guard and Demo price on e
   assert.equal((await w.svc.exportCsv(w.as(w.finance), { period: '2027-Q1' })).rowCount, 0);
   await assert.rejects(w.svc.exportCsv(w.as(w.finance), { status: 'nope', departmentId: 'x' }), e => e.code === 'invalid_filter' && !!e.details.status && !!e.details.departmentId);
   await assert.rejects(w.svc.exportCsv(w.as(w.manager), {}), e => e.status === 403);
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// Review round (Stage 1W-b): each test failed before its fix
+
+test('approving keeps the evaluation the request was submitted with, whatever the policy says now', async () => {
+  // The limit raised while the request waited, then tightened until the trip would be blocked.
+  for (const change of [{ flightCapCents: 70000 }, { blockedCarriers: ['ZS', 'ZM'] }]) {
+    const w = await world({ budgetCents: 1000000 });
+    const q = await pending(w);
+    const submitted = structuredClone(q.evaluation);
+    assert.equal(submitted.status, 'out');
+    w.policy.configure(change);
+    const searches = w.composer.calls.search;
+    const res = await w.svc.decide(w.as(w.manager), q.id, { action: 'approve', rev: q.rev });
+    assert.equal(res.outcome, 'approved');
+    assert.deepEqual(res.request.evaluation, submitted, JSON.stringify(change));
+    assert.equal(w.composer.calls.search, searches, 'approving runs no new search');
+    assert.deepEqual(reports.outOfPolicyShare([res.request]), { tenths: 1000, submitted: 1, outOrBlocked: 1 });
+    assert.deepEqual(reports.topReasons([res.request]).map(r => r.rule), ['flight.cap']);
+    const row = (await w.svc.exportCsv(w.as(w.finance), {})).body.split('\r\n')[1];
+    assert.ok(row.includes(',out,'), row);
+  }
+});
+
+test('a POST reads the clock once: crossing expiresAt half-way never answers 409 with the request left pending', async () => {
+  const posts = {
+    deny: (w, q) => w.svc.decide(w.as(w.manager), q.id, { action: 'deny', note: 'Not this time, sorry.', rev: q.rev }),
+    message: (w, q) => w.svc.message(w.as(w.manager), q.id, { text: 'Any update on this?' }),
+    cancel: (w, q) => w.svc.cancel(w.as(w.traveler), q.id, { rev: q.rev }),
+  };
+  for (const [name, post] of Object.entries(posts)) {
+    const w = await world();
+    const q = await pending(w);
+    const exp = Date.parse(q.expiresAt);
+    const repo = w.svc.repo;
+    const clock = repo.clock;
+    let reads = 0;
+    repo.clock = () => { reads += 1; return new Date(reads <= 1 ? exp - 1 : exp); };
+    let err = null;
+    try { await post(w, q); } catch (e) { err = e; }
+    repo.clock = clock;
+    const stored = await w.repo.get(KINDS.request, q.id);
+    if (err) {
+      assert.equal(err.code, 'request_expired', `${name}: ${err.code}`);
+      assert.equal(stored.status, 'expired', `${name}: a 409 request_expired persists the expiry`);
+    } else {
+      assert.notEqual(stored.rev, q.rev, `${name}: the POST wrote`);
+    }
+  }
+});
+
+test('override holders see the cancel button on a departed (past) approved trip, as the POST allows', async () => {
+  const w = await world({ budgetCents: 1000000 });
+  const r = await draft(w, w.traveler);
+  const ok = (await w.svc.submit(w.as(w.traveler), r.id, { rev: r.rev })).request;
+  w.clock.set('2026-11-13T09:00:00.000Z');
+  const admin = await w.svc.getRequest(w.as(w.admin), r.id);
+  assert.equal(admin.status, 'past');
+  assert.equal(admin.can.cancel, true);
+  const own = await w.svc.getRequest(w.as(w.traveler), r.id);
+  assert.equal(own.can.cancel, false, 'the traveler cannot cancel after departure');
+  await assert.rejects(w.svc.cancel(w.as(w.traveler), r.id, { rev: ok.rev }), code('departed'));
+  const fin = await w.svc.getRequest(w.as(w.finance), r.id);
+  assert.equal(fin.can.cancel, false, 'no override, no button');
+  assert.equal((await w.svc.cancel(w.as(w.admin), r.id, { rev: ok.rev })).status, 'cancelled');
+});
+
+test('a draft that was within policy but is not anymore at Confirm is updated with its new verdict, not refused', async () => {
+  // The department budget is used up by a colleague first.
+  const w = await world({ budgetCents: WITHIN_TOTAL + 1000 });
+  const other = await seedMember(w.app, w.org, 'employee', { name: 'Kim Other', departmentId: w.eng.id, managerId: w.manager.user.id });
+  const a = await draft(w, w.traveler);
+  const b = await draft(w, other);
+  assert.equal(b.evaluation.status, 'within');
+  assert.equal((await w.svc.submit(w.as(w.traveler), a.id, { rev: a.rev })).outcome, 'auto_approved');
+  const res = await w.svc.submit(w.as(other), b.id, { rev: b.rev });
+  assert.equal(res.outcome, 'repriced');
+  assert.equal(res.request.status, 'draft');
+  assert.equal(res.request.rev, b.rev + 1);
+  assert.equal(res.request.totalCents, WITHIN_TOTAL, 'the price did not change');
+  assert.equal(res.request.evaluation.status, 'out');
+  assert.deepEqual(res.request.evaluation.violations.map(v => v.rule), ['budget']);
+  assert.deepEqual(res.request.history.map(h => h.action), ['drafted'], 'no price line: only the verdict moved');
+  const [audit] = await auditsFor(w, 'request.repriced');
+  assert.equal(audit.target.id, b.id);
+  assert.doesNotMatch(audit.summary, /price/i);
+  assert.deepEqual((await budgetOf(w)).commits, { [a.id]: WITHIN_TOTAL });
+  const view = await w.svc.getRequest(w.as(other), b.id);
+  assert.equal(view.request.evaluation.status, 'out', 'the page now shows the Request Approval form');
+  assert.equal(view.can.submit, true);
+  const sent = await w.svc.submit(w.as(other), b.id, { rev: res.request.rev, reason: REASON });
+  assert.equal(sent.outcome, 'submitted');
+
+  // The policy tightened since the draft: the same.
+  const w2 = await world();
+  const c = await draft(w2, w2.traveler);
+  w2.policy.configure({ flightCapCents: 10000 });
+  const res2 = await w2.svc.submit(w2.as(w2.traveler), c.id, { rev: c.rev });
+  assert.equal(res2.outcome, 'repriced');
+  assert.equal(res2.request.evaluation.status, 'out');
+  assert.ok(res2.request.alternatives.length >= 0);
+});
+
+test('swapping to an option inside policy keeps the cheapest option inside policy the traveler saw', async () => {
+  const w = await world({ budgetCents: 1000000 });
+  const r = await draft(w, w.traveler, OUTSIDE);
+  const cheapest = r.cheapestWithin;
+  assert.ok(cheapest);
+  const s = await w.svc.swap(w.as(w.traveler), r.id, { altId: cheapest.id, rev: r.rev });
+  assert.equal(s.evaluation.status, 'within');
+  assert.equal(s.cheapestWithin && s.cheapestWithin.id, cheapest.id);
+  assert.equal(s.cheapestWithin.totalCents, cheapest.totalCents);
+  // A later re-price of the (within) pick keeps it too.
+  w.inventory.setPrice(s.selection.hotel, s.rows.hotel.totalCents - 1000);
+  const rp = await w.svc.submit(w.as(w.traveler), r.id, { rev: s.rev });
+  assert.equal(rp.outcome, 'repriced');
+  assert.equal(rp.request.cheapestWithin && rp.request.cheapestWithin.id, cheapest.id);
+  const done = await w.svc.submit(w.as(w.traveler), r.id, { rev: rp.request.rev });
+  const cells = csv.requestRow(done.request, { timezone: 'UTC', status: 'approved', departmentName: 'Engineering', approverName: '' });
+  assert.equal(cells[csv.CSV_COLUMNS.indexOf('cheapest_in_policy_usd')], (cheapest.totalCents / 100).toFixed(2));
+});
+
+test('saved by switching is what each switch saved, on approved trips only; the CSV and the tile agree', async () => {
+  const w = await world({ budgetCents: 1000000 });
+  const r = await draft(w, w.traveler, OUTSIDE);
+  const s = await w.svc.swap(w.as(w.traveler), r.id, { altId: r.cheapestWithin.id, rev: r.rev });
+  const saved = s.history.at(-1).savedCents;
+  assert.equal(saved, OUTSIDE_TOTAL - s.totalCents);
+  // The outbound gets cheaper after the switch: that is a price change, not a saving from switching.
+  w.inventory.setPrice(s.selection.out, s.rows.out.totalCents - 15000);
+  const rp = await w.svc.submit(w.as(w.traveler), r.id, { rev: s.rev });
+  assert.equal(rp.outcome, 'repriced');
+  const done = await w.svc.submit(w.as(w.traveler), r.id, { rev: rp.request.rev });
+  assert.equal(done.outcome, 'auto_approved');
+  assert.equal(done.request.totalCents, s.totalCents - 15000);
+  assert.equal(reports.savedBySwitching([done.request]), saved);
+  const col = csv.CSV_COLUMNS.indexOf('saved_by_switching_usd');
+  const ctx = status => ({ timezone: 'UTC', status, departmentName: 'Engineering', approverName: '' });
+  assert.equal(csv.requestRow(done.request, ctx('approved'))[col], (saved / 100).toFixed(2));
+
+  // A switched trip that was then cancelled saved nothing.
+  const c = await draft(w, w.traveler, OUTSIDE);
+  const cs = await w.svc.swap(w.as(w.traveler), c.id, { altId: c.cheapestWithin.id, rev: c.rev });
+  const cancelled = await w.svc.cancel(w.as(w.traveler), c.id, { rev: cs.rev });
+  assert.equal(reports.savedBySwitching([cancelled]), 0);
+  assert.equal(csv.requestRow(cancelled, ctx('cancelled'))[col], '', 'blank, never a saving');
+
+  const d = await w.svc.dashboard(w.as(w.finance), { view: 'reports' });
+  assert.equal(d.reports.savedBySwitchingCents, saved);
+  const out = await w.svc.exportCsv(w.as(w.finance), {});
+  const sum = out.body.slice(1).split('\r\n').slice(1, -1).map(line => line.split(',')).reduce((n, cells) => n + Math.round(Number(cells[col] || 0) * 100), 0);
+  assert.equal(sum, saved, 'the CSV column sums to the tile');
+});
+
+test('CSV: a formula after a semicolon is guarded too (spreadsheets in semicolon locales split on it)', async () => {
+  const starts = /^[\s"]*[=+\-@\t\r]/;
+  for (const s of ['x;=1+2;y', 'Sam;=HYPERLINK(CHAR(104)&CHAR(116));x', 'a; +1', 'a;"=1', 'a;-2', 'a;@b', ';=1', 'a;\t=1']) {
+    const cell = csv.csvCell(s);
+    for (const part of cell.split(';').slice(1)) assert.doesNotMatch(part, starts, `${JSON.stringify(s)} → ${JSON.stringify(cell)}`);
+  }
+  assert.equal(csv.csvCell('Sales; Europe'), 'Sales; Europe', 'plain text keeps its semicolons');
+  assert.equal(csv.csvCell("a;'=1"), "a;'=1", 'already guarded');
+
+  const w = await world({ budgetCents: 1000000 });
+  const sam = await seedMember(w.app, w.org, 'employee', { name: 'Sam;=HYPERLINK(CHAR(104));x', departmentId: w.eng.id, managerId: w.manager.user.id });
+  await draft(w, sam);
+  const out = await w.svc.exportCsv(w.as(w.finance), {});
+  const row = out.body.split('\r\n')[1];
+  for (const part of row.split(';').slice(1)) assert.doesNotMatch(part, starts, row);
+});
+
+test('a pool member demoted below admin leaves the pool: no decision, no note-free approval, no view', async () => {
+  const w = await world({ budgetCents: 1000000 });
+  const lone = await seedMember(w.app, w.org, 'employee', { name: 'Lou Lone', departmentId: w.eng.id });
+  const p = await pending(w, lone);
+  assert.ok(p.approval.poolIds.includes(w.admin.user.id));
+  await w.repo.cas(KINDS.member, `${w.org.id}.${w.admin.user.id}`, null, d => { d.role = 'manager'; });
+  const ex = w.as(w.admin);
+  await assert.rejects(w.svc.decide(ex, p.id, { action: 'approve', note: '', rev: p.rev }), code('not_found'));
+  await assert.rejects(w.svc.getRequest(ex, p.id), code('not_found'));
+  await assert.rejects(w.svc.message(ex, p.id, { text: 'Any update on this?' }), code('not_found'));
+  assert.equal((await w.svc.inbox(ex, {})).counts.waiting, 0);
+  assert.equal(await w.svc.inboxCount(ex), 0);
+  assert.equal((await w.svc.listRequests(ex, { scope: 'team' })).rows.length, 0);
+  assert.equal((await w.repo.get(KINDS.request, p.id)).status, 'pending');
+  // The owner, still an admin, decides as the pool.
+  const ok = await w.svc.decide(w.as(w.owner), p.id, { action: 'approve', rev: p.rev });
+  assert.equal(ok.request.approval.decidedAs, 'pool');
+});
+
+test('an override cancellation checks the canceller\'s member record in the commit', async () => {
+  const w = await world({ budgetCents: 1000000 });
+  const r = await draft(w, w.traveler);
+  const ok = (await w.svc.submit(w.as(w.traveler), r.id, { rev: r.rev })).request;
+  const repo = w.svc.repo;
+  const commit = repo.commit.bind(repo);
+  let demoted = false;
+  repo.commit = async spec => {
+    if (!demoted && spec.cas && spec.cas.some(c => c.kind === KINDS.request)) {
+      demoted = true;
+      await repo.cas(KINDS.member, `${w.org.id}.${w.admin.user.id}`, null, d => { d.role = 'employee'; });
+    }
+    return commit(spec);
+  };
+  await assert.rejects(w.svc.cancel(w.as(w.admin), r.id, { rev: ok.rev }), e => e.status === 403);
+  repo.commit = commit;
+  assert.ok(demoted);
+  assert.equal((await w.repo.get(KINDS.request, r.id)).status, 'approved');
+  assert.deepEqual((await budgetOf(w)).commits, { [r.id]: WITHIN_TOTAL });
+  assert.equal((await auditsFor(w, 'request.cancelled')).length, 0);
+});
+
+test('a filtered list matching few requests reads the store in whole pages, not one record at a time', async () => {
+  const w = await world();
+  const proto = await w.repo.get(KINDS.request, (await draft(w, w.traveler)).id);
+  const put = async status => {
+    const rid = newId(ID_PREFIX.request);
+    await w.repo.insert(KINDS.request, rid, { ...structuredClone(proto), id: rid, rev: 0, status }, { owner: w.org.id });
+  };
+  for (let i = 0; i < 150; i += 1) await put('cancelled');
+  for (let i = 0; i < 48; i += 1) await put('draft'); // 49 drafts in all, the newest
+  const repo = w.svc.repo;
+  const page = repo.page.bind(repo);
+  let calls = 0;
+  repo.page = (...args) => { if (args[0] === KINDS.request) calls += 1; return page(...args); };
+  const res = await w.svc.listRequests(w.as(w.finance), { scope: 'all', status: 'draft' });
+  repo.page = page;
+  assert.equal(res.rows.length, 49);
+  assert.equal(res.cursor, null);
+  assert.ok(calls <= 5, `${calls} store pages`);
+});
+
+test('CSV: when the 5,000-request scan is hit, the note row says so and promises nothing else', async () => {
+  const w = await world();
+  const proto = await w.repo.get(KINDS.request, (await draft(w, w.traveler)).id);
+  const repo = w.svc.repo;
+  const page = repo.page.bind(repo);
+  let n = 0;
+  repo.page = async (kind, scope, opts) => {
+    if (kind !== KINDS.request) return page(kind, scope, opts);
+    n += 1;
+    return { rows: Array.from({ length: opts.limit }, (_, i) => ({ ...structuredClone(proto), id: `btr_${String(n).padStart(8, '0')}${String(i).padStart(8, '0')}` })), cursor: 'more' };
+  };
+  const out = await w.svc.exportCsv(w.as(w.finance), {});
+  repo.page = page;
+  assert.equal(out.truncated, true);
+  const lines = out.body.slice(1).split('\r\n');
+  assert.match(lines.at(-2), /^"Based on the 5,000 most recent requests\.",/);
+  assert.doesNotMatch(out.body, /Narrow the filters/, 'filters run on the same 5,000 requests, so narrowing reaches nothing older');
 });

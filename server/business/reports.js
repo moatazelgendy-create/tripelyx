@@ -78,15 +78,21 @@ function topReasons(requests, limit = TOP_REASONS) {
 }
 
 /**
- * Σ (originalTotalCents − totalCents) over approved requests whose history has a swap.
+ * What switching to cheaper options saved: over approved requests (stored status, so departed ones count and
+ * cancelled or denied ones never do), each request's Σ savedCents of its 'swapped' history lines (the pick's
+ * total as it stood minus the option's, priced at the switch), floored at 0 per request. A price that
+ * moved later (a re-price on submit or on approval) is not a saving from switching, so originalTotalCents −
+ * totalCents is never used.
  * @param {import('./types').Request[]} requests
  * @returns {number} cents (never negative)
  */
 function savedBySwitching(requests) {
   let sum = 0;
   for (const r of requests || []) {
-    if (!r || r.status !== 'approved' || !Array.isArray(r.history) || !r.history.some(h => h && h.action === 'swapped')) continue;
-    if (Number.isInteger(r.originalTotalCents) && Number.isInteger(r.totalCents) && r.originalTotalCents > r.totalCents) sum += r.originalTotalCents - r.totalCents;
+    if (!r || r.status !== 'approved' || !Array.isArray(r.history)) continue;
+    let saved = 0;
+    for (const h of r.history) if (h && h.action === 'swapped' && Number.isSafeInteger(h.savedCents)) saved += h.savedCents;
+    if (saved > 0) sum += saved;
   }
   return sum;
 }

@@ -20,8 +20,9 @@
 //   stands now.").
 // - A POST on a pending request with now ≥ expiresAt first commits the expiry (request CAS → expired, audit
 //   'request.expired', the 'clock' system actor), then answers 409 'request_expired'.
-// - Prices are never taken from a form: the selection keys are re-priced with this.composer.price and the
-//   policy re-evaluated with the tier's current policy every time.
+// - Prices are never taken from a form: the selection keys are re-priced with this.composer.price, and the
+//   policy re-evaluated with the tier's current policy on create, swap, re-price and submit (an approval
+//   keeps the evaluation the request was submitted with).
 // - evaluation.evaluatedAt is stamped from this.repo.iso().
 // Errors common to all: 404 'not_found' (unknown id, another company's, or not visible to the member under
 // roles.allowed with { own: 'request' }), 403 'forbidden', 403 'org_suspended', 409 'conflict', plus the
@@ -38,7 +39,18 @@
 // - Approver and pool links are insert-only and keyed by request, role and user, so a request submitted again
 //   after a price change inserts only the links it does not have yet.
 // - Pool membership is the request's own snapshot (approval.pool and approval.poolIds, written in the same
-//   commit as the pool links): a pool link left from an earlier submission gives no say on the new one.
+//   commit as the pool links): a pool link left from an earlier submission gives no say on the new one. The
+//   member must also still be an admin (Owner or Travel Admin, the roles the pool is drawn from), so an admin
+//   demoted meanwhile leaves the pool.
+// - Each POST reads the clock once (nowIso) and uses it for the expiry check and every transition, so a
+//   request crossing its expiresAt half-way is either decided as of that moment or expired and persisted.
+// - Approving keeps the evaluation the request was submitted with (the verdict the approver is shown and
+//   reports count); only the budget is read fresh for the hold.
+// - A submit whose fresh evaluation is worse than the stored one (within became out, or out became blocked:
+//   the budget was used up, or the policy changed) writes the re-evaluated draft instead (outcome
+//   'repriced', audit 'request.repriced' with the policy check named), so the page shows the right form.
+// - cheapestWithin is the cheapest option inside policy the traveler saw: a swap or a re-price that finds
+//   none (the pick is within now) keeps the earlier one.
 // - A re-priced draft (submit or approve finding a new price) keeps the convention of evaluateTrip: totalCents
 //   is the sum of the components that still price, and an unavailable component evaluates as blocked.
 
@@ -111,8 +123,14 @@ const formRev = rev => (typeof rev === 'number' ? (Number.isInteger(rev) && rev 
 const revOf = d => d.rev ?? 0;
 const plain = v => (typeof v === 'string' ? v : '');
 
-/** The member holds a place in this request's approval pool (the snapshot written with the pool links). */
-const isPooled = (r, userId) => !!r.approval && r.approval.pool === true && Array.isArray(r.approval.poolIds) && r.approval.poolIds.includes(userId);
+/** The roles the admins' pool is drawn from (approver resolution, plan §D). */
+const POOL_ROLES = Object.freeze(['owner', 'travel_admin']);
+/**
+ * The member holds a place in this request's approval pool: named in the snapshot written with the pool
+ * links, and still an admin (a pool member demoted to Manager no longer decides as the pool).
+ */
+const isPooled = (r, member) => !!member && POOL_ROLES.includes(member.role) && !!r.approval && r.approval.pool === true
+  && Array.isArray(r.approval.poolIds) && r.approval.poolIds.includes(member.userId);
 
 /** How this member would decide a request: 'assigned', 'pool', 'override', or null (never the traveler). */
 function deciderRole(a, r) {
@@ -120,13 +138,13 @@ function deciderRole(a, r) {
   if (r.travelerId === me) return null;
   const decides = roles.can(a.member.role, 'approval.decide');
   if (decides && r.approval && r.approval.approverId === me) return 'assigned';
-  if (decides && isPooled(r, me)) return 'pool';
+  if (decides && isPooled(r, a.member)) return 'pool';
   if (roles.can(a.member.role, 'approval.override')) return 'override';
   return null;
 }
 
 /** May this member see the request (own, team, all, or as its decider)? */
-const canSee = (a, r) => roles.allowedAny(a.member, VIEW_PERMS, r, { pooled: isPooled(r, a.member.userId) });
+const canSee = (a, r) => roles.allowedAny(a.member, VIEW_PERMS, r, { pooled: isPooled(r, a.member) });
 
 /** A request of this company by id, or 404. */
 async function readRequest(svc, a, rid) {
@@ -301,22 +319,25 @@ async function draftFields(svc, a, { tier, departmentId, requestId, query, selec
   return { query, selection, rows, pricedAt, totalCents, evaluation: { ...ev, evaluatedAt: nowIso }, ...alts };
 }
 
+/** The cheapest option inside policy the traveler saw: a new draft that found none keeps the earlier one. */
+const keepCheapest = (draft, r) => (draft.cheapestWithin || !r.cheapestWithin ? draft : { ...draft, cheapestWithin: r.cheapestWithin });
+
 /** The draft a price check found changed or gone: the fresh rows, evaluated again, with fresh alternatives. */
 async function repricedDraft(svc, a, r, rc, nowIso) {
   const rows = { out: null, back: null, hotel: null };
   for (const c of COMPONENTS) rows[c] = rc.components[c] ? rc.components[c].row : null;
   const searched = await svc.composer.search(r.query);
-  return draftFields(svc, a, {
+  return keepCheapest(await draftFields(svc, a, {
     tier: r.tier, departmentId: r.departmentId, requestId: r.id, query: r.query, selection: r.selection, rows, pricedAt: rc.at, searched, nowIso,
-  });
+  }), r);
 }
 
 /**
- * A POST on a pending request past its expiry: commit the expiry (the clock's system actor, audit
- * 'request.expired'), then answer 409 'request_expired'. Nothing happens for any other request.
+ * A POST on a pending request past its expiry at nowIso (the POST's one clock reading): commit the expiry
+ * (the clock's system actor, audit 'request.expired'), then answer 409 'request_expired'. Nothing happens
+ * for any other request.
  */
-async function expireIfDue(svc, a, r) {
-  const nowIso = svc.repo.iso();
+async function expireIfDue(svc, a, r, nowIso) {
   const due = d => d && d.status === 'pending' && svc.policy.effectiveStatus(d, nowIso, a.org.timezone) === 'expired';
   if (!due(r)) return;
   await svc.repo.withRetry(async attempt => {
@@ -413,15 +434,17 @@ function passes(r, f, status) {
 }
 
 /**
- * One page of rows from an owner's records, newest stored first: reads whole store pages (each no larger
- * than the rows still wanted, so the cursor never skips a record) until `want` rows passed `accept`, the
- * records run out, or SCAN_CAP records were read. accept(record) → a row or null.
+ * One page of rows from an owner's records, newest stored first: reads whole store pages until `want` rows
+ * passed `accept`, the records run out, or SCAN_CAP records were read. accept(record) → a row or null.
+ * Every row of a store page read is kept (so the cursor never skips a record), and a store page is never
+ * smaller than PAGE_SIZE (so a filter that matches few records costs at most SCAN_CAP / PAGE_SIZE reads):
+ * a page holds `want` rows when that many match in the first store page, and at most want + PAGE_SIZE − 1.
  */
 async function scanPage(repo, kind, scope, { cursor = null, want = PAGE_SIZE, accept }) {
   const rows = [];
   let cur = cursor || null, scanned = 0;
   do {
-    const page = await repo.page(kind, scope, { limit: Math.min(200, want - rows.length), cursor: cur });
+    const page = await repo.page(kind, scope, { limit: Math.min(200, Math.max(want - rows.length, PAGE_SIZE)), cursor: cur });
     for (const row of await Promise.all(page.rows.map(accept))) if (row) rows.push(row);
     scanned += page.rows.length;
     cur = page.cursor;
@@ -641,7 +664,10 @@ const methods = {
     const can = {
       swap: self && status === 'draft' && Array.isArray(r.alternatives) && r.alternatives.length > 0,
       submit: self && status === 'draft',
-      cancel: (self && (status === 'draft' || status === 'pending')) || (status === 'approved' && ((self && today < r.query.departDate) || override)),
+      // An approved trip that has departed shows as 'past': override holders can still cancel it (never their
+      // own: the traveler's limit is the departure date, as the lifecycle has it).
+      cancel: (self && (status === 'draft' || status === 'pending'))
+        || ((status === 'approved' || status === 'past') && ((self && today < r.query.departDate) || (override && !self))),
       decide: deciding,
       override: deciding && role === 'override',
       message: ['draft', 'pending', 'approved', 'past'].includes(status) && (self || role !== null),
@@ -718,7 +744,7 @@ const methods = {
       });
     }
     const accept = scope === 'team'
-      ? r => (roles.allowed(a.member, 'request.view.team', r, { pooled: isPooled(r, me) }) ? rowOf(r) : null)
+      ? r => (roles.allowed(a.member, 'request.view.team', r, { pooled: isPooled(r, a.member) }) ? rowOf(r) : null)
       : rowOf;
     return scanPage(this.repo, KINDS.request, a.org.id, { cursor: o.cursor, want: PAGE_SIZE, accept });
   },
@@ -738,13 +764,13 @@ const methods = {
     const a = await loadActor(this.repo, actor);
     need(a, 'trip.request');
     const f = form && typeof form === 'object' ? form : {};
+    const nowIso = this.repo.iso();
     const r = await readRequest(this, a, rid);
     if (!canSee(a, r)) throw notFound();
-    await expireIfDue(this, a, r);
+    await expireIfDue(this, a, r, nowIso);
     if (formRev(f.rev) !== revOf(r)) throw race();
     const me = who(a);
-    const nowIso = this.repo.iso();
-    const opts = { now: nowIso, actor: me, member: a.member, pooled: isPooled(r, me.userId), org: a.org };
+    const opts = { now: nowIso, actor: me, member: a.member, pooled: isPooled(r, a.member), org: a.org };
     const alt = (Array.isArray(r.alternatives) ? r.alternatives : []).find(x => x && x.id === f.altId) || null;
     if (!alt) {
       // The lifecycle words the refusal (not a draft, not the traveler, or an option no longer listed).
@@ -757,10 +783,10 @@ const methods = {
     const priced = await this.composer.price(alt.selection, searched.query);
     if (priced.unavailable.length) throw gone();
     assertUsd(priced.rows);
-    const draft = await draftFields(this, a, {
+    const draft = keepCheapest(await draftFields(this, a, {
       tier: r.tier, departmentId: r.departmentId, requestId: r.id, query: searched.query, selection: alt.selection, rows: priced.rows,
       pricedAt: priced.pricedAt, searched, nowIso,
-    });
+    }), r);
     const event = { type: 'swap', alternative: alt, draft };
     this.policy.transition(r, event, opts);
     const docs = await this.repo.commit({
@@ -777,7 +803,10 @@ const methods = {
   /**
    * Confirm a trip or request approval (the traveler, draft only; POST /trips/:rid/submit). Always re-checks
    * the price first: a changed or unavailable price updates the draft instead (outcome 'repriced', no
-   * submit; one commit: request CAS with the re-priced, re-evaluated draft, audit 'request.repriced').
+   * submit; one commit: request CAS with the re-priced, re-evaluated draft, audit 'request.repriced'). So does
+   * a fresh evaluation worse than the stored one (within became out or blocked, or out became blocked): the
+   * re-evaluated draft, with its alternatives, is written instead (outcome 'repriced', no history line, audit
+   * 'request.repriced' naming the policy check).
    * Within policy and inside the budget → approved by policy with the budget hold (outcome
    * 'auto_approved'; audit 'request.auto_approved'). Otherwise, outOfPolicy 'approval' → pending with the
    * resolved approver or pool, links and expiresAt (outcome 'submitted'; audit 'request.submitted').
@@ -794,16 +823,18 @@ const methods = {
     const a = await loadActor(this.repo, actor);
     need(a, 'trip.request');
     const f = form && typeof form === 'object' ? form : {};
+    const nowIso = this.repo.iso();
     const first = await readRequest(this, a, rid);
     if (!canSee(a, first)) throw notFound();
-    await expireIfDue(this, a, first);
+    await expireIfDue(this, a, first, nowIso);
     const rev = formRev(f.rev);
     if (rev !== revOf(first)) throw race();
     const me = who(a);
     // The guards that need no price (a draft, the traveler), before the price check.
-    this.policy.transition(first, { type: 'submit', reason: null, approver: null, budget: null, draft: { totalCents: first.totalCents } }, {
-      now: this.repo.iso(), actor: me, member: a.member, org: a.org, recheck: { status: 'changed' },
+    const guards = d => this.policy.transition(d, { type: 'submit', reason: null, approver: null, budget: null, draft: { totalCents: d.totalCents } }, {
+      now: nowIso, actor: me, member: a.member, org: a.org, recheck: { status: 'changed' },
     });
+    guards(first);
     const category = typeof f.category === 'string' && REASON_CATEGORIES.includes(f.category) ? f.category : null;
     const reason = { text: plain(f.reason).slice(0, REASON_INPUT_MAX), category };
     const key = `${KINDS.request}:${first.id}`;
@@ -811,7 +842,6 @@ const methods = {
     return this.repo.withRetry(async attempt => {
       const r = attempt === 1 ? first : await readRequest(this, a, rid);
       if (revOf(r) !== rev) throw race();
-      const nowIso = this.repo.iso();
       const base = { now: nowIso, actor: me, member: a.member, org: a.org };
       const target = { kind: KINDS.request, id: r.id };
       const rc = await this.composer.recheck(r);
@@ -837,6 +867,30 @@ const methods = {
       const ctx = evalCtx(this, a.org, policy, searched, this.now());
       const budget = await budgetPreview(this, a.org, r.departmentId, tripPeriod(a.org, r.query), r.id);
       const evaluation = this.policy.evaluateTrip(r.rows, ctx, { budget: budgetCtx(budget) });
+      const stored = r.evaluation && Object.hasOwn(VERDICT_ORDER, r.evaluation.status) ? r.evaluation.status : 'within';
+      if (VERDICT_ORDER[evaluation.status] > VERDICT_ORDER[stored]) {
+        // The verdict got worse since the draft was written (the budget was used up, or the policy changed):
+        // write the re-evaluated draft, with its alternatives, instead of sending the form the traveler saw.
+        const draft = keepCheapest(await draftFields(this, a, {
+          tier: r.tier, departmentId: r.departmentId, requestId: r.id, query: r.query, selection: r.selection, rows: r.rows,
+          pricedAt: r.pricedAt, searched, nowIso,
+        }), r);
+        const docs = await this.repo.commit({
+          cas: [{
+            kind: KINDS.request, id: r.id, rev: revOf(r),
+            fn: d => {
+              guards(d);
+              Object.assign(d, structuredClone(draft), { updatedAt: nowIso });
+            },
+          }],
+          inserts: [auditInsert(this.repo, {
+            orgId: a.org.id, actor: me, action: 'request.repriced', target,
+            summary: `The policy check of ${tripOf(r)} changed before it was sent, so the trip was updated`,
+            changes: [{ path: 'evaluation.status', before: stored, after: draft.evaluation.status }],
+          })],
+        }).catch(asRace);
+        return { request: docs[key], outcome: 'repriced' };
+      }
       let approver = null;
       if (evaluation.status !== 'within') {
         const members = await membersById(this.repo, a.org.id);
@@ -872,8 +926,9 @@ const methods = {
 
   /**
    * Cancel (POST /trips/:rid/cancel): the traveler a draft, a pending request, or an approved one before
-   * the departure date; approval.override holders an approved one. Cancelling an approved request deletes
-   * its budget hold in the same commit. Audit 'request.cancelled'.
+   * the departure date; approval.override holders an approved one (the commit then checks their member
+   * record at the rev read, and a retry that finds the override gone answers 403). Cancelling an approved
+   * request deletes its budget hold in the same commit. Audit 'request.cancelled'.
    * @param {import('./types').MemberActor} actor
    * @param {string} rid
    * @param {{ rev: string|number }} form
@@ -881,21 +936,26 @@ const methods = {
    * @throws {AppError} 404; 403; 409 'invalid_transition'; 409 'departed'; 409 'request_expired'; 409 'conflict'
    */
   async cancel(actor, rid, form) {
-    const a = await loadActor(this.repo, actor);
+    const loaded = await loadActor(this.repo, actor);
     const f = form && typeof form === 'object' ? form : {};
-    const first = await readRequest(this, a, rid);
-    if (!canSee(a, first)) throw notFound();
-    await expireIfDue(this, a, first);
+    const nowIso = this.repo.iso();
+    const first = await readRequest(this, loaded, rid);
+    if (!canSee(loaded, first)) throw notFound();
+    await expireIfDue(this, loaded, first, nowIso);
     const rev = formRev(f.rev);
     if (rev !== revOf(first)) throw race();
-    const me = who(a);
     const key = `${KINDS.request}:${first.id}`;
     return this.repo.withRetry(async attempt => {
+      // Someone else's trip is cancelled on approval.override: a retry reads the canceller again, and the
+      // commit checks their member record at the rev read, as a decision does.
+      const a = attempt === 1 ? loaded : await loadActor(this.repo, actor);
       const r = attempt === 1 ? first : await readRequest(this, a, rid);
       if (revOf(r) !== rev) throw race();
-      const nowIso = this.repo.iso();
+      const me = who(a);
+      const self = r.travelerId === me.userId;
+      if (attempt > 1 && !self && !roles.can(a.member.role, 'approval.override')) throw forbidden(a.member.role, a.org.name);
       const event = { type: 'cancel' };
-      const opts = { now: nowIso, actor: me, member: a.member, pooled: isPooled(r, me.userId), org: a.org };
+      const opts = { now: nowIso, actor: me, member: a.member, pooled: isPooled(r, a.member), org: a.org };
       this.policy.transition(r, event, opts);
       const cas = [{ kind: KINDS.request, id: r.id, rev: revOf(r), fn: applyTransition(this, event, opts, 'cancelled') }];
       if (r.status === 'approved' && r.budget && typeof r.budget.budgetId === 'string') {
@@ -906,9 +966,10 @@ const methods = {
       }
       const docs = await this.repo.commit({
         cas,
+        checks: self ? [] : [{ kind: KINDS.member, id: memberId(a.org.id, me.userId), rev: revOf(a.member), server: true }],
         inserts: [auditInsert(this.repo, {
           orgId: a.org.id, actor: me, action: 'request.cancelled', target: { kind: KINDS.request, id: r.id },
-          summary: r.travelerId === me.userId ? `${me.name} cancelled ${tripOf(r)}` : `${me.name} cancelled ${tripOf(r)} as ${roles.LABELS[me.role] || me.role}`,
+          summary: self ? `${me.name} cancelled ${tripOf(r)}` : `${me.name} cancelled ${tripOf(r)} as ${roles.LABELS[me.role] || me.role}`,
         })],
       }).catch(asRace);
       return docs[key];
@@ -938,12 +999,12 @@ const methods = {
     if (!roles.canAny(first.member.role, DECIDE_PERMS)) throw forbidden(first.member.role, first.org.name);
     const f = form && typeof form === 'object' ? form : {};
     const r0 = await readRequest(this, first, rid);
-    const meId = first.member.userId;
     // The traveler always sees their own request; the lifecycle then refuses with 'self_approval'.
     if (!canSee(first, r0)) throw notFound();
     const action = f.action;
     if (action !== 'approve' && action !== 'deny') throw new AppError('invalid_action', 'Choose approve or deny.', 422);
-    await expireIfDue(this, first, r0);
+    const nowIso = this.repo.iso();
+    await expireIfDue(this, first, r0, nowIso);
     const rev = formRev(f.rev);
     if (rev !== revOf(r0)) throw race();
     const note = text(f.note, NOTE_INPUT_MAX, { multiline: true });
@@ -951,9 +1012,9 @@ const methods = {
     const key = `${KINDS.request}:${r0.id}`;
 
     // The guards that need no price (pending, never the traveler, who may decide, the note), before the price check.
-    const probe = { now: this.repo.iso(), actor: who(first), member: first.member, pooled: isPooled(r0, meId), org: first.org };
+    const probe = { now: nowIso, actor: who(first), member: first.member, pooled: isPooled(r0, first.member), org: first.org };
     if (action === 'deny') this.policy.transition(r0, { type: 'deny', note }, probe);
-    else this.policy.transition(r0, { type: 'approve', note, ackOverBudget: true, budget: null, draft: null }, { ...probe, recheck: { status: 'same' }, evaluation: r0.evaluation });
+    else this.policy.transition(r0, { type: 'approve', note, ackOverBudget: true, budget: null, draft: null }, { ...probe, recheck: { status: 'same' } });
 
     return this.repo.withRetry(async attempt => {
       const a = attempt === 1 ? first : await loadActor(this.repo, actor);
@@ -961,8 +1022,7 @@ const methods = {
       const r = attempt === 1 ? r0 : await readRequest(this, a, rid);
       if (revOf(r) !== rev) throw race();
       const me = who(a);
-      const nowIso = this.repo.iso();
-      const base = { now: nowIso, actor: me, member: a.member, pooled: isPooled(r, me.userId), org: a.org };
+      const base = { now: nowIso, actor: me, member: a.member, pooled: isPooled(r, a.member), org: a.org };
       const target = { kind: KINDS.request, id: r.id };
       const memberCheck = { kind: KINDS.member, id: memberId(a.org.id, me.userId), rev: revOf(a.member), server: true };
       const deciderLink = () => missingLinks(this.repo, a.org.id, [linkInsert(a.org.id, r.id, 'decider', me.userId, nowIso)]);
@@ -1003,13 +1063,11 @@ const methods = {
         return { request: docs[key], outcome: 'returned' };
       }
 
-      const policy = await tierPolicy(this.repo, a.org.id, r.tier);
-      const searched = await this.composer.search(r.query);
-      const ctx = evalCtx(this, a.org, policy, searched, this.now());
+      // The request keeps the evaluation it was submitted with (no opts.evaluation): that is the verdict the
+      // approver was shown and the one reports count. Only the budget is read fresh, for the hold.
       const budget = await budgetPreview(this, a.org, r.departmentId, tripPeriod(a.org, r.query), r.id);
-      const evaluation = this.policy.evaluateTrip(r.rows, ctx, { budget: budgetCtx(budget) });
       const event = { type: 'approve', note, ackOverBudget: ack, budget, draft: null };
-      const opts = { ...base, recheck: rc, evaluation };
+      const opts = { ...base, recheck: rc };
       const dry = this.policy.transition(r, event, opts);
       const approval = dry.next.approval || {};
       const cas = [{ kind: KINDS.request, id: r.id, rev: revOf(r), fn: applyTransition(this, event, opts, 'approved') }];
@@ -1052,16 +1110,17 @@ const methods = {
   async message(actor, rid, form) {
     const a = await loadActor(this.repo, actor);
     const f = form && typeof form === 'object' ? form : {};
+    const nowIso = this.repo.iso();
     const first = await readRequest(this, a, rid);
     if (!canSee(a, first)) throw notFound();
-    await expireIfDue(this, a, first);
+    await expireIfDue(this, a, first, nowIso);
     const said = text(f.text, MESSAGE_INPUT_MAX, { multiline: true });
     const me = who(a);
     const key = `${KINDS.request}:${first.id}`;
     return this.repo.withRetry(async attempt => {
       const r = attempt === 1 ? first : await readRequest(this, a, rid);
       const event = { type: 'message', text: said };
-      const opts = { now: this.repo.iso(), actor: me, member: a.member, pooled: isPooled(r, me.userId), org: a.org };
+      const opts = { now: nowIso, actor: me, member: a.member, pooled: isPooled(r, a.member), org: a.org };
       this.policy.transition(r, event, opts);
       const docs = await this.repo.commit({
         cas: [{ kind: KINDS.request, id: r.id, rev: revOf(r), server: true, fn: applyTransition(this, event, opts, 'message') }],
@@ -1095,7 +1154,7 @@ const methods = {
     const me = a.member.userId;
     const nowIso = this.repo.iso();
     const status = r => this.policy.effectiveStatus(r, nowIso, a.org.timezone);
-    const mine = r => r.travelerId !== me && !!r.approval && (r.approval.approverId === me || isPooled(r, me));
+    const mine = r => r.travelerId !== me && !!r.approval && (r.approval.approverId === me || isPooled(r, a.member));
 
     const links = await scanAll(this.repo, KINDS.reqLink, memberScope(a.org.id, me));
     const decideIds = new Set(), decidedIds = new Set();
@@ -1140,7 +1199,7 @@ const methods = {
     const page = await this.repo.page(KINDS.reqLink, memberScope(a.org.id, me), { limit: LINK_PAGE });
     const ids = new Set(page.rows.filter(l => l.role === 'approver' || l.role === 'pool').map(l => l.requestId));
     const reqs = await Promise.all([...ids].map(id => this.repo.getIn(KINDS.request, id, a.org.id)));
-    return reqs.filter(r => r && r.travelerId !== me && !!r.approval && (r.approval.approverId === me || isPooled(r, me))
+    return reqs.filter(r => r && r.travelerId !== me && !!r.approval && (r.approval.approverId === me || isPooled(r, a.member))
       && this.policy.effectiveStatus(r, nowIso, a.org.timezone) === 'pending').length;
   },
 

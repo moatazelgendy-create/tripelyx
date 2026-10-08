@@ -2,10 +2,14 @@
 // with Cache-Control no-store. BusinessService method exportCsv plus the pure CSV helpers.
 //
 // - UTF-8 with a BOM, CRLF line ends, every cell quoted when it holds a comma, quote, CR or LF.
-// - Cells starting with = + - @, a tab or a CR get a ' prefix (formula injection guard).
+// - Cells starting with = + - @, a tab or a CR get a ' prefix (formula injection guard), and so does any such
+//   character that follows a semicolon (spreadsheets in semicolon locales split a line on it, quotes or not).
+// - saved_by_switching_usd is reports.savedBySwitching([request]) (the Reports tile's own sum), blank for a
+//   request that is not approved.
 // - Times are local to the company's time zone ('YYYY-MM-DD HH:MM'); money in dollars with 2 decimals.
 // - Never a supplier cost, net rate, commission, markup, provider name or `internal` field.
-// - When the 5,000-request scan (constants.SCAN_CAP) is hit, a last note row says so.
+// - When the 5,000-request scan (constants.SCAN_CAP) is hit, a last note row says so (the filters run on the
+//   same 5,000 requests, so the note promises nothing more).
 
 const { AppError } = require('../lib/errors');
 const tz = require('./tz');
@@ -13,6 +17,7 @@ const { KINDS, SCAN_CAP, CURRENCY, REQUEST_STATUSES } = require('./constants');
 const { loadActor, need, who, auditInsert } = require('./actor');
 const { USER_ID_RE } = require('./repo');
 const { periodKey, periodLabel, currentPeriodKey, PERIOD_KEY_RE } = require('./budgets');
+const { savedBySwitching } = require('./reports');
 
 /** The columns, in order. price_source is always 'Demo price'; currency always 'USD'. */
 const CSV_COLUMNS = Object.freeze([
@@ -33,7 +38,9 @@ const BOM = '﻿';
 function csvCell(value) {
   if (value === null || value === undefined) return '';
   if (typeof value === 'number') return Number.isFinite(value) ? String(value) : '';
-  let s = String(value);
+  // A formula character after a semicolon, past any spaces or quotes, would start a cell where a line is
+  // split on semicolons: guard it like a leading one.
+  let s = String(value).replace(/;(?=[\s"]*[=+\-@\t\r])/g, ";'");
   if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
@@ -60,8 +67,6 @@ function requestRow(request, ctx) {
   const c = ctx || {};
   const timezone = c.timezone || 'UTC';
   const hotel = r.rows && r.rows.hotel ? r.rows.hotel : null;
-  const swapped = Array.isArray(r.history) && r.history.some(h => h && h.action === 'swapped');
-  const saved = swapped && Number.isInteger(r.originalTotalCents) && r.originalTotalCents > r.totalCents ? r.originalTotalCents - r.totalCents : 0;
   const violations = r.evaluation && Array.isArray(r.evaluation.violations) ? r.evaluation.violations : [];
   return [
     PRICE_SOURCE,
@@ -83,7 +88,7 @@ function requestRow(request, ctx) {
     violations.map(v => v.text).filter(t => typeof t === 'string' && t).join('; '),
     dollars(r.totalCents),
     r.cheapestWithin ? dollars(r.cheapestWithin.totalCents) : '',
-    dollars(saved),
+    r.status === 'approved' ? dollars(savedBySwitching([r])) : '',
     r.currency || CURRENCY,
   ];
 }
@@ -94,7 +99,7 @@ function requestRow(request, ctx) {
 const DEPARTMENT_ID_RE = /^dep_[A-Za-z0-9_-]{16}$/;
 const EFFECTIVE_STATUSES = Object.freeze([...REQUEST_STATUSES, 'past']);
 /** The last row when the scan stopped at SCAN_CAP. */
-const TRUNCATED_NOTE = `Based on the ${SCAN_CAP.toLocaleString('en-US')} most recent requests. Narrow the filters to export the rest.`;
+const TRUNCATED_NOTE = `Based on the ${SCAN_CAP.toLocaleString('en-US')} most recent requests.`;
 
 /** 'YYYY-MM-DD HH:MM' in the company's time zone ('' for a missing time). */
 function localTime(timezone, iso) {

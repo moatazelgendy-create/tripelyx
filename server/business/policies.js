@@ -44,15 +44,21 @@ const unique = list => [...new Set(list.filter(x => typeof x === 'string' && x))
 
 /**
  * The editor's choices and the codes normalizePolicy checks against: the inventory's airports and carriers,
- * and the countries of the starting rules, the inventory and the stored rules (so a saved policy always saves
- * again, whatever the inventory knows today).
+ * the countries of the starting rules and the inventory, and every code the stored rules use (blocked
+ * airlines, route exception airports, country caps), so a saved policy always saves again, and the editor can
+ * show it, whatever the inventory knows today. A stored code the inventory does not list is shown by its code.
  */
 function editorRefs(inventory, rules) {
-  const airports = inventory ? inventory.airports() : [];
-  const carriers = inventory ? inventory.carriers() : [];
+  const flights = (rules && rules.flights) || {};
+  const listed = { airports: inventory ? inventory.airports() : [], carriers: inventory ? inventory.carriers() : [] };
+  const storedAirports = unique((flights.routeOverrides || []).flatMap(o => (o ? [o.from, o.to] : [])))
+    .filter(code => !listed.airports.some(x => x.code === code));
+  const storedCarriers = unique(flights.blockedCarriers || []).filter(code => !listed.carriers.some(c => c.code === code));
+  const airports = [...listed.airports, ...storedAirports.map(code => ({ code, city: code, country: '' }))];
+  const carriers = [...listed.carriers, ...storedCarriers.map(code => ({ code, name: code }))];
   const countries = unique([
     ...DEFAULT_POLICIES.standard.hotels.countryCaps.map(c => c.country),
-    ...airports.map(x => x.country),
+    ...listed.airports.map(x => x.country),
     ...((rules && rules.hotels && rules.hotels.countryCaps) || []).map(c => c.country),
   ]).sort((x, y) => x.localeCompare(y, 'en'));
   return {
