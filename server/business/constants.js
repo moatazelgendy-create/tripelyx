@@ -18,6 +18,13 @@ const PAGE_SIZE = 50;
 const MEMBER_CAP = 1000;
 /** Aggregates page through at most this many requests and then say so. */
 const SCAN_CAP = 5000;
+/** Departments per company (listed with Repo.list, which is bounded at 200). */
+const DEPARTMENT_CAP = 200;
+
+/** Company sizes on the sign-up form (the same list as the /business enquiry form's "Company size"). */
+const COMPANY_SIZES = Object.freeze(['1-10 people', '11-50 people', '51-200 people', '201-1,000 people', 'More than 1,000 people']);
+/** The department every new company starts with (its Owner is placed in it). */
+const GENERAL_DEPARTMENT = 'General';
 
 /**
  * Record kinds in the generic store. server/business/repo.js is the only module that reads or writes them.
@@ -102,7 +109,8 @@ const AUDIT_ACTIONS = Object.freeze({
 const AUDIT_GROUPS = Object.freeze(Object.keys(AUDIT_ACTIONS));
 
 module.exports = {
-  BUSINESS_EMAIL, ORG_STATUSES, MEMBER_STATUSES, LIST_LIMIT, PAGE_SIZE, MEMBER_CAP, SCAN_CAP, KINDS, ID_PREFIX,
+  BUSINESS_EMAIL, ORG_STATUSES, MEMBER_STATUSES, LIST_LIMIT, PAGE_SIZE, MEMBER_CAP, SCAN_CAP, DEPARTMENT_CAP, COMPANY_SIZES,
+  GENERAL_DEPARTMENT, KINDS, ID_PREFIX,
   TIERS, TIER_LABELS, REQUEST_STATUSES, REASON_CATEGORIES, REASON_CATEGORY_LABELS, CABINS, CABIN_RANK, CABIN_LABELS,
   REQ_LINK_ROLES, OUT_OF_POLICY_MODES, BUDGET_PERIODS, APPROVAL_HOURS_RANGE, REASON_MIN_CHARS, DEFAULT_TIMEZONE,
   TIMEZONES, CURRENCY, AUDIT_ACTIONS, AUDIT_GROUPS,

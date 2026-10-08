@@ -24,6 +24,14 @@ const { TripService } = require('./trips/service');
 const { demoMediaRouter } = require('./routes/demoMedia');
 const { BusinessService } = require('./business/service');
 const { Repo } = require('./business/repo');
+const { createBusinessInventory } = require('./business/inventory');
+const { TripComposer } = require('./business/search');
+const { createPolicyEngine } = require('./business/policy');
+const { createExplainer } = require('./business/explain');
+const businessAlternatives = require('./business/alternatives');
+const businessDiff = require('./business/diff');
+const businessRoutes = require('./routes/business');
+const businessPlatform = require('./routes/businessPlatform');
 const { AppError } = require('./lib/errors');
 const { id } = require('./lib/ids');
 const { notFoundView, errorView } = require('./views/errors');
@@ -83,9 +91,26 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
   // Tripelyx Business (server/business): built only when ENABLE_BUSINESS is on, with Travel by Budget on or off.
   // It reaches the store only through its Repo. Its menu item, header class and footer link follow it
   // (ctx.businessNav, server/views/layout.js).
-  business = config.business.enabled
-    ? new BusinessService({ repo: new Repo({ store, now: clock, log }), accounts, config, now: clock, log })
-    : null;
+  // Its inventory is its own (server/business/inventory.js: demo where demo inventory is allowed, else
+  // "Supplier not connected yet"); it never calls BookingEngine or payments.
+  if (config.business.enabled) {
+    const bizInventory = createBusinessInventory(config, { registry });
+    business = new BusinessService({
+      repo: new Repo({ store, now: clock, log }),
+      accounts,
+      config,
+      now: clock,
+      log,
+      inventory: bizInventory,
+      composer: new TripComposer({ inventory: bizInventory, now: clock }),
+      policy: createPolicyEngine(),
+      alternatives: Object.freeze({
+        buildAlternatives: input => businessAlternatives.buildAlternatives(input),
+        compareTrips: (a, b) => businessDiff.compareTrips(a, b),
+      }),
+      explainer: createExplainer(config),
+    });
+  }
 
   const app = express();
   app.disable('x-powered-by');
@@ -183,8 +208,11 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
   // before /admin (it works with trips off too), then the Business routers (routes/business/index.js) after
   // /admin and before agentRouter, whose path-less r.use() header setters would otherwise run first (with
   // trips off: before pagesRouter). None defines GET /business: pagesRouter serves the company page.
+  const bizRouterDeps = business ? businessRoutes.createRouterDeps(ctx) : null;
+  if (business) app.use(businessPlatform.MOUNT, businessPlatform.router(ctx, bizRouterDeps));
+  if (tripService) app.use('/admin', adminRouter(ctx, { writeLimiter }));
+  if (business) app.use(businessRoutes.MOUNT, businessRoutes.router(ctx, bizRouterDeps));
   if (tripService) {
-    app.use('/admin', adminRouter(ctx, { writeLimiter }));
     app.use('/', agentRouter(ctx, { writeLimiter, computeLimiter, sameOrigin }));
     app.use('/', huntsRouter(ctx, { writeLimiter, computeLimiter, sameOrigin }));
     app.use('/', tripsRouter(ctx, { writeLimiter, computeLimiter }));

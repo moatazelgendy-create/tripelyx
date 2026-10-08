@@ -20,7 +20,8 @@ const { loadConfig } = require('../server/config');
 const { redactUrl } = require('../server/app');
 const { id } = require('../server/lib/ids');
 const { startApp, FIXED_NOW, quietLog } = require('./helpers');
-const { seedUser, client, seedOrg, seedMember, mutableClock, noInline, storeSnapshot } = require('./business-helpers');
+const { seedUser, client, seedOrg, seedMember, seedDepartment, seedBudget, mutableClock, noInline, storeSnapshot } = require('./business-helpers');
+const { defaultPolicy, DEFAULTS_NOTE } = require('../server/business/policy/defaults');
 
 const { KINDS } = constants;
 const fixed = () => new Date(FIXED_NOW);
@@ -857,7 +858,8 @@ test('app: ctx.business and its Repo exist only with Business on, with trips on 
     const signedIn = await fetch(app.base + path, { headers: { cookie } });
     assert.ok((await signedIn.text()).includes(user.name.split(' ')[0]), `${path}: the session is read as on any page`);
   }
-  for (const gone of ['../server/routes/business', '../server/routes/businessClient']) assert.throws(() => require(gone), /Cannot find module/);
+  assert.throws(() => require('../server/routes/businessClient'), /Cannot find module/);
+  assert.deepEqual(Object.keys(require('../server/routes/business')).sort(), ['FORM_OPTIONS', 'LIMITERS', 'METHODS', 'MOUNT', 'ROUTES', 'WHO', 'assertRoutes', 'createRouterDeps', 'router']);
 
   for (const env of [{}, { ENABLE_BUSINESS: 'false' }]) {
     const off = await startApp(env);
@@ -985,6 +987,32 @@ test('helpers: seeded companies and members have the §C3 shapes, and GETs leave
   assert.equal(om.tier, 'standard');
   assert.deepEqual((await repo.get(KINDS.userIndex, owner.user.id)).orgIds, [org.id]);
   assert.deepEqual((await repo.page(KINDS.audit, org.id)).rows.map(a => a.action), ['org.created']);
+  // What team.createCompany writes: the General department (the owner in it), three policies at version 1
+  // from policy/defaults.js and their version records.
+  assert.equal(om.departmentId, org.general.id);
+  assert.equal(om.by, null, 'the creator was added by nobody');
+  assert.deepEqual(org.general, { id: org.general.id, orgId: org.id, name: 'General', archivedAt: null, at: stored.at, updatedAt: stored.at, rev: 0 });
+  assert.deepEqual(org.owner, om);
+  for (const tier of constants.TIERS) {
+    const pol = await repo.getIn(KINDS.policy, `${org.id}.${tier}`, org.id);
+    assert.equal(pol.version, 1);
+    assert.deepEqual(pol.rules, defaultPolicy(tier));
+    assert.deepEqual(pol.updatedBy, { userId: owner.user.id, name: 'Olivia Owner', role: 'owner' });
+    const v1 = await repo.getIn(KINDS.policyVersion, `${org.id}.${tier}.v1`, org.id);
+    assert.deepEqual(v1, { orgId: org.id, tier, version: 1, rules: defaultPolicy(tier), at: stored.at, by: pol.updatedBy, note: DEFAULTS_NOTE, changes: [] });
+  }
+  const eng = await seedDepartment(app, org, { name: 'Engineering' });
+  const old = await seedDepartment(app, org, { name: 'Old Team', archived: true });
+  assert.equal(eng.name, 'Engineering');
+  assert.equal(eng.archivedAt, null);
+  assert.equal(old.archivedAt, stored.at.slice(0, 4) + old.archivedAt.slice(4));
+  const budget = await seedBudget(app, org, eng.id, { amountCents: 500000, commits: { btr_AAAAAAAAAAAAAAAA: 84200 } });
+  assert.equal(budget.periodKey, '2026-Q4');
+  assert.deepEqual(budget.commits, { btr_AAAAAAAAAAAAAAAA: 84200 });
+  assert.deepEqual(await repo.getIn(KINDS.budget, `${org.id}.${eng.id}.2026-Q4`, org.id), budget);
+  // (Entries of one commit share its moment, so only the set is compared.)
+  assert.deepEqual((await repo.page(KINDS.audit, org.id)).rows.map(a => a.action).sort(),
+    ['budget.set', 'department.archived', 'department.created', 'department.created', 'org.created']);
 
   const second = await seedOrg(app, owner, { name: 'Second Co' });
   assert.deepEqual((await repo.get(KINDS.userIndex, owner.user.id)).orgIds, [org.id, second.id], 'the company index grows under CAS');
@@ -1001,4 +1029,494 @@ test('helpers: seeded companies and members have the §C3 shapes, and GETs leave
   await client(app.base, owner.cookie).get('/my-trips');
   await client(app.base, owner.cookie).get('/business');
   assert.equal(storeSnapshot(app), before);
+});
+
+// ---------------------------------------------------------------------------------------------------
+// Stage 0 frozen interfaces (plan §L steps 8 to 14): the module surfaces Stage 1 builds against.
+
+const businessRoutes = require('../server/routes/business');
+const businessPlatform = require('../server/routes/businessPlatform');
+const { BusinessService, SERVICE_METHODS, METHOD_MODULE } = require('../server/business/service');
+const { createPolicyEngine, POLICY_ENGINE_METHODS } = require('../server/business/policy');
+const { DEFAULT_POLICIES, HOTEL_SCALE_PERCENT } = require('../server/business/policy/defaults');
+const { createBusinessInventory } = require('../server/business/inventory');
+const { TripComposer } = require('../server/business/search');
+const { createExplainer } = require('../server/business/explain');
+const dto = require('../server/business/dto');
+const tz = require('../server/business/tz');
+const { assertProvider, validateOffer, validateQuote } = require('../server/providers/contracts');
+const demoAirports = require('../server/providers/mock/demo-data/flights').airports;
+const fakes = require('./business-fakes');
+
+const NOT_BUILT = /\[business\] not built/;
+
+/** Problems with `value` against a dto deep schema: extra or missing keys at any level, wrong nesting. */
+function schemaProblems(value, schema, path = 'row') {
+  if (schema === true) return value !== null && typeof value === 'object' ? [`${path} should be a scalar`] : [];
+  if (Array.isArray(schema)) {
+    if (!Array.isArray(value)) return [`${path} should be a list`];
+    return value.flatMap((v, i) => schemaProblems(v, schema[0], `${path}[${i}]`));
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return [`${path} should be an object`];
+  const out = Object.keys(value).filter(k => !Object.hasOwn(schema, k)).map(k => `${path}.${k} is not allowed`);
+  for (const k of Object.keys(schema)) {
+    if (!Object.hasOwn(value, k)) out.push(`${path}.${k} is missing`);
+    else out.push(...schemaProblems(value[k], schema[k], `${path}.${k}`));
+  }
+  return out;
+}
+
+test('interfaces: every Stage 0 Business module loads with its frozen exports, and the stubs throw "[business] not built"', async () => {
+  const EXPECTED = {
+    team: ['COMPANY_FORM', 'methods'],
+    requests: ['HOME_ROWS', 'INBOX_TABS', 'LIST_SCOPES', 'PURPOSE_CHARS', 'methods'],
+    budgets: ['PERIOD_KEY_RE', 'committedCents', 'currentPeriodKey', 'methods', 'periodChoices', 'periodKey', 'periodLabel'],
+    policies: ['HISTORY_PAGE', 'methods'],
+    reports: ['COMING_SOON', 'RECENT_ROWS', 'TOP_REASONS', 'VIEWS', 'checklist', 'methods', 'outOfPolicyShare', 'reportTiles', 'savedBySwitching', 'topReasons'],
+    csv: ['BOM', 'CSV_COLUMNS', 'PRICE_SOURCE', 'csvCell', 'methods', 'requestRow', 'toCsv'],
+    lifecycle: ['EVENTS', 'HISTORY_MAX', 'MESSAGES_MAX', 'MESSAGE_CHARS', 'NOTE_MIN_CHARS', 'REASON_MAX_CHARS', 'TERMINAL', 'effectiveStatus', 'expiresAt', 'transition'],
+    approver: ['SKIP_REASONS', 'resolveApprover'],
+    alternatives: ['CHEAPEST_WITHIN_LABEL', 'MAX_ALTERNATIVES', 'MIN_SAVING_CENTS', 'alternativeId', 'buildAlternatives'],
+    explain: ['EXPLAINERS', 'EXPLAIN_TIMEOUT_MS', 'FORBIDDEN_TEXT', 'NOTE_MAX', 'RuleExplainer', 'SUMMARY_MAX', 'createExplainer', 'guardExplanation'],
+    diff: ['DIFF_FIELDS', 'compareTrips', 'giveUps', 'lineDeltas'],
+    inventory: ['createBusinessInventory'],
+    search: ['FLEX_DAYS', 'MAX_DAYS_AHEAD', 'MAX_PRICED_PER_LEG', 'MAX_SEARCHES', 'MAX_TRIP_DAYS', 'NIGHTS_RANGE', 'POOL_CAP', 'TripComposer', 'parseTripQuery'],
+    dto: ['FLIGHT_ROW_KEYS', 'HOTEL_ROW_KEYS', 'ROW_KEY_RE', 'assertRow', 'extraKeys', 'flightRow', 'hotelRow', 'parseRowKey', 'rowKey'],
+    recheck: ['recheck'],
+    tz: ['isTimeZone', 'localDate', 'localMidnightUtc', 'localToUtc', 'offsetMinutes', 'utcToLocal'],
+    'policy/schema': ['CAP_MODES', 'LIMITS', 'formFromPolicy', 'normalizePolicy', 'policyChanges'],
+    'policy/evaluate': ['RULE_IDS', 'STATUS_RANK', 'evaluateComponent', 'evaluateTrip', 'flightCap', 'hotelCap', 'priceToBeat'],
+    'policy/benchmark': ['benchmark', 'flightValues', 'hotelValues'],
+    'policy/describe': ['describe', 'limitsBar'],
+    'policy/index': ['POLICY_ENGINE_METHODS', 'createPolicyEngine'],
+    'policy/defaults': ['DEFAULTS_NOTE', 'DEFAULT_POLICIES', 'HOTEL_SCALE_PERCENT', 'defaultPolicy'],
+    'demo/flights': ['BusinessDemoFlights', 'FARE_TERMS', 'OFFER_CANCELLATION'],
+    'demo/hotels': ['BusinessDemoHotels'],
+    'demo/hotels-data': ['BUSINESS_CITIES', 'BUSINESS_HOTELS'],
+    service: ['BusinessService', 'METHOD_MODULE', 'OPTIONAL_DEPS', 'REQUIRED_DEPS', 'SERVICE_METHODS'],
+    types: [],
+  };
+  for (const [mod, names] of Object.entries(EXPECTED)) assert.deepEqual(Object.keys(require(`../server/business/${mod}`)).sort(), names, mod);
+
+  const m = name => require(`../server/business/${name}`);
+  const stubs = [
+    () => m('lifecycle').transition({}, { type: 'cancel' }, {}), () => m('lifecycle').effectiveStatus({}, FIXED_NOW), () => m('lifecycle').expiresAt(FIXED_NOW, 24, '2026-11-12', 'UTC'),
+    () => m('approver').resolveApprover({}, {}), () => m('alternatives').buildAlternatives({}), () => m('alternatives').alternativeId({}, {}),
+    () => m('diff').compareTrips({}, {}), () => m('diff').giveUps({}, {}), () => m('dto').extraKeys({}, true), () => m('dto').assertRow({}),
+    () => m('dto').parseRowKey('x'), () => m('search').parseTripQuery({}, {}), () => m('policy/schema').normalizePolicy({}, {}),
+    () => m('policy/schema').formFromPolicy({}), () => m('policy/schema').policyChanges({}, {}), () => m('policy/evaluate').evaluateTrip({}, {}, {}),
+    () => m('policy/evaluate').evaluateComponent({}, {}), () => m('policy/benchmark').benchmark([]), () => m('policy/describe').describe({}, {}),
+    () => m('policy/describe').limitsBar({}, {}, {}), () => m('budgets').periodKey('2026-11-12', 'quarter'), () => m('budgets').periodLabel('2026-Q4'),
+    () => m('csv').csvCell('x'), () => m('csv').toCsv([], []), () => m('reports').outOfPolicyShare([]), () => m('reports').reportTiles({}),
+    () => m('explain').guardExplanation({}, {}),
+  ];
+  for (const fn of stubs) assert.throws(fn, NOT_BUILT, String(fn));
+  await assert.rejects(m('recheck').recheck({}, {}), NOT_BUILT);
+  await assert.rejects(new (m('explain').RuleExplainer)().explain({}), NOT_BUILT);
+
+  // The frozen data that is final in Stage 0.
+  assert.equal(m('csv').CSV_COLUMNS.length, 21);
+  assert.deepEqual([m('csv').CSV_COLUMNS[0], m('csv').CSV_COLUMNS[20]], ['price_source', 'currency']);
+  assert.deepEqual(m('reports').COMING_SOON.map(t => t.label), ['Spend booked', 'Invoices']);
+  assert.ok(dto.ROW_KEY_RE.test('f.flt_fake_CAILHR_2026-11-12_1|LIGHT') && dto.ROW_KEY_RE.test('h.htl_fake_LHR_1|STD'));
+  for (const bad of ['flt_x|LIGHT', 'f.flt_x', 'f.flt_x|LI GHT', 'x.flt_x|A', `f.flt_${'a'.repeat(161)}|A`]) assert.ok(!dto.ROW_KEY_RE.test(bad), bad);
+  assert.deepEqual(m('demo/hotels-data').BUSINESS_HOTELS, []);
+  for (const c of m('demo/hotels-data').BUSINESS_CITIES) {
+    const a = demoAirports.find(x => x.iata === c.iata);
+    assert.ok(a && a.city === c.city && a.country === c.country, `${c.iata} is in the airport data as ${c.city}, ${c.country}`);
+  }
+
+  // The policy engine bundles 1P's pure rules for the service (this.policy).
+  const engine = createPolicyEngine();
+  assert.deepEqual(Object.keys(engine).sort(), [...POLICY_ENGINE_METHODS].sort());
+  assert.equal(POLICY_ENGINE_METHODS.length, 17);
+  assert.ok(Object.isFrozen(engine));
+  for (const name of POLICY_ENGINE_METHODS) assert.throws(() => engine[name]({}, {}, {}), NOT_BUILT, name);
+
+  // Factories never throw (the app boots on them); their methods do until Stage 1.
+  const explainer = createExplainer({ business: { explainer: 'rules' } });
+  assert.equal(explainer.name, 'rules');
+  await assert.rejects(explainer.explain({ violations: [], alternatives: [], noneWithin: true }), NOT_BUILT);
+  assert.throws(() => createExplainer({ business: { explainer: 'model' } }), /unknown explainer/);
+  const composer = new TripComposer({ inventory: { status: 'none' }, now: fixed });
+  assert.throws(() => composer.parseQuery({}, { today: '2026-10-09' }), NOT_BUILT);
+  await assert.rejects(composer.search({}), NOT_BUILT);
+});
+
+test('interfaces: createBusinessInventory picks overrides, live, demo or none, and never loads demo data without demo inventory', () => {
+  const demoRegistry = { get: () => ({ isDemo: true }) };
+  const none = createBusinessInventory({ allowDemoInventory: false }, { registry: demoRegistry });
+  assert.equal(none.status, 'none');
+  assert.equal(none.flights, null);
+  assert.equal(none.hotels, null);
+  const demo = createBusinessInventory({ allowDemoInventory: true }, { registry: demoRegistry });
+  assert.equal(demo.status, 'demo');
+  assert.equal(demo.flights.constructor.name, 'BusinessDemoFlights');
+  assert.equal(demo.hotels.constructor.name, 'BusinessDemoHotels');
+  assert.equal(demo.flights.isDemo, true);
+  const live = { isDemo: false };
+  const real = createBusinessInventory({ allowDemoInventory: true }, { registry: { get: () => live } });
+  assert.equal(real.status, 'live');
+  assert.equal(real.flights, live);
+  const f = {}, h = {};
+  const over = createBusinessInventory({ allowDemoInventory: false }, { registry: demoRegistry, overrides: { flights: f, hotels: h } });
+  assert.equal(over.status, 'demo');
+  assert.equal(over.flights, f);
+  assert.equal(over.hotels, h);
+  for (const inv of [none, demo]) assert.throws(() => inv.airports(), NOT_BUILT);
+});
+
+test('interfaces: the service facade carries exactly the frozen method list, one module per method, with checked dependencies', async t => {
+  assert.deepEqual([...SERVICE_METHODS], [
+    'createCompany', 'listCompaniesFor', 'getOrg', 'membership', 'listMembers', 'invite', 'inviteByToken', 'acceptInvite', 'revokeInvite',
+    'updateMember', 'removeMember', 'saveDepartment', 'listDepartments', 'saveSettings', 'exportCompany', 'listAudit', 'platformListOrgs',
+    'platformSetStatus', 'getPolicy', 'savePolicy', 'policyHistory', 'listBudgets', 'setBudget', 'searchTrip', 'createRequest', 'getRequest',
+    'listRequests', 'swap', 'submit', 'cancel', 'decide', 'message', 'inbox', 'inboxCount', 'liveCheck', 'dashboard', 'exportCsv',
+  ]);
+  assert.ok(Object.isFrozen(SERVICE_METHODS));
+  const owners = {};
+  for (const name of SERVICE_METHODS) {
+    assert.equal(typeof BusinessService.prototype[name], 'function', name);
+    owners[METHOD_MODULE[name]] = (owners[METHOD_MODULE[name]] || 0) + 1;
+  }
+  assert.deepEqual(owners, { team: 18, policies: 3, budgets: 2, requests: 12, reports: 1, csv: 1 });
+  assert.equal(METHOD_MODULE.inboxCount, 'requests');
+  assert.equal(METHOD_MODULE.platformSetStatus, 'team');
+
+  const repo = new Repo({ store: new MemoryStore(), now: fixed });
+  const config = loadConfig({ APP_ENV: 'development', ENABLE_BUSINESS: 'true' });
+  assert.throws(() => new BusinessService({ config, now: fixed }), /needs repo/);
+  assert.throws(() => new BusinessService({ repo, now: fixed }), /needs config/);
+  assert.throws(() => new BusinessService({ repo, config, now: 'soon' }), /needs now|must be a function/);
+  assert.throws(() => new BusinessService({ repo, config, now: fixed, store: {} }), /unknown BusinessService dependency: store/);
+  const deps = { inventory: fakes.fakeInventory(), composer: fakes.fakeComposer(), policy: fakes.fakePolicy(), alternatives: fakes.fakeAlternatives(), explainer: fakes.fakeExplainer() };
+  const svc = new BusinessService({ repo, config, now: fixed, log: quietLog, accounts: null, ...deps });
+  for (const k of Object.keys(deps)) assert.equal(svc[k], deps[k], k);
+  assert.equal(svc.repo, repo);
+  for (const name of SERVICE_METHODS) await assert.rejects(svc[name]({ user: null }), NOT_BUILT, name);
+  const bare = new BusinessService({ repo, config, now: fixed });
+  assert.deepEqual([bare.inventory, bare.composer, bare.policy, bare.alternatives, bare.explainer, bare.accounts], [null, null, null, null, null, null]);
+});
+
+test('interfaces: Business routers, the ROUTES table shape and the Business form parser', async t => {
+  assert.equal(businessRoutes.MOUNT, '/business');
+  assert.equal(businessPlatform.MOUNT, '/admin/business');
+  assert.deepEqual(businessRoutes.ROUTES, []);
+  assert.deepEqual(businessPlatform.ROUTES, []);
+  for (const file of ['public', 'traveler', 'admin']) {
+    const mod = require(`../server/routes/business/${file}`);
+    assert.deepEqual(Object.keys(mod).sort(), ['ROUTES', 'router'], file);
+    assert.ok(Object.isFrozen(mod.ROUTES));
+  }
+  const good = [
+    { method: 'GET', path: '/start', perm: null, own: false, limiter: [], who: 'anyone' },
+    { method: 'POST', path: '/signin', perm: null, own: false, limiter: ['bizAuthIp', 'bizAuthAccount'], who: 'anyone' },
+    { method: 'GET', path: '/app', perm: null, own: false, limiter: [], who: 'user' },
+    { method: 'GET', path: '/o/:orgId', perm: 'org.view', own: false, limiter: [], who: 'member' },
+    { method: 'POST', path: '/o/:orgId/trips/:rid/decide', perm: ['approval.decide', 'approval.override'], own: 'request', limiter: ['bizCompute'], who: 'member' },
+  ];
+  assert.equal(businessRoutes.assertRoutes(good), good);
+  assert.deepEqual(businessRoutes.assertRoutes([{ method: 'POST', path: '/:orgId/status', perm: null, own: false, limiter: ['bizWrite'], who: 'platform' }], { mount: businessPlatform.MOUNT }).length, 1);
+  const base = good[3];
+  const bad = {
+    'keys must be': { ...base, extra: 1 },
+    'method must be': { ...base, method: 'PUT' },
+    'relative to the mount': { ...base, path: '/business/o/:orgId' },
+    'perm must be': { ...base, perm: 'org.fly' },
+    "own 'request' needs": { ...base, own: 'request' },
+    'limiter must be': { ...base, limiter: ['writeLimiter'] },
+    'bizAuthAccount runs after': { ...good[1], limiter: ['bizAuthAccount'] },
+    'who must be': { ...base, who: 'admin' },
+    'a member route needs a perm': { ...base, perm: null },
+    'every /o/:orgId route is a member route': { ...base, perm: null, who: 'user' },
+    'every POST has a limiter': { ...base, method: 'POST' },
+  };
+  for (const [why, entry] of Object.entries(bad)) assert.throws(() => businessRoutes.assertRoutes([entry]), e => e instanceof TypeError && e.message.includes(why), why);
+  assert.throws(() => businessRoutes.assertRoutes([base, { ...base }]), /listed twice/);
+  assert.throws(() => businessRoutes.assertRoutes(null), /must be an array/);
+
+  const config = loadConfig({ APP_ENV: 'development', ENABLE_BUSINESS: 'true' });
+  const deps = businessRoutes.createRouterDeps({ config, log: quietLog });
+  assert.deepEqual(Object.keys(deps).sort(), ['form', 'limits', 'log', 'sameOrigin']);
+  assert.deepEqual(Object.keys(deps.limits).sort(), ['bizAuthAccount', 'bizAuthIp', 'bizCompute', 'bizWrite']);
+  assert.ok(Object.isFrozen(deps));
+  assert.equal(typeof businessRoutes.router({ config }, deps), 'function');
+  assert.equal(typeof businessPlatform.router({ config }, deps), 'function');
+  assert.deepEqual(businessRoutes.FORM_OPTIONS, { extended: false, limit: '64kb', parameterLimit: 4000 });
+
+  // The policy editor's form: 3,000 fields fit; repeated keys give arrays.
+  const app = express();
+  app.post('/f', deps.form, (req, res) => res.json({ n: Object.keys(req.body).length, carriers: req.body.blockedCarriers }));
+  const server = await new Promise(r => { const s = app.listen(0, () => r(s)); });
+  t.after(() => new Promise(r => server.close(r)));
+  const body = new URLSearchParams();
+  for (let i = 0; i < 2998; i++) body.append(`country.${i}.name`, 'x');
+  body.append('blockedCarriers', 'ZS');
+  body.append('blockedCarriers', 'ZC');
+  const res = await fetch(`http://127.0.0.1:${server.address().port}/f`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: body.toString() });
+  assert.deepEqual(await res.json(), { n: 2999, carriers: ['ZS', 'ZC'] });
+});
+
+test('interfaces: with Business on, trips on or off, the service holds its inventory, composer, policy engine, alternatives and explainer', async t => {
+  for (const env of [{ ENABLE_BUSINESS: 'true' }, { ENABLE_BUSINESS: 'true', ENABLE_TRIPS: 'false' }]) {
+    const app = await startApp(env);
+    t.after(app.close);
+    const svc = app.business;
+    assert.equal(svc.inventory.status, 'demo', 'development allows demo inventory');
+    assert.equal(svc.inventory.flights.constructor.name, 'BusinessDemoFlights');
+    assert.ok(svc.composer instanceof TripComposer);
+    assert.equal(svc.composer.inventory, svc.inventory);
+    assert.deepEqual(Object.keys(svc.policy).sort(), [...POLICY_ENGINE_METHODS].sort());
+    assert.deepEqual(Object.keys(svc.alternatives).sort(), ['buildAlternatives', 'compareTrips']);
+    assert.equal(svc.explainer.name, 'rules');
+    const page = await fetch(`${app.base}/business`);
+    assert.equal(page.status, 200, 'GET /business is the company page');
+    assert.match(await page.text(), /<h1/);
+    for (const path of ['/business/app', '/business/o/org_AAAAAAAAAAAAAAAA', '/admin/business']) assert.equal((await fetch(app.base + path)).status, 404, path);
+  }
+});
+
+test('interfaces: policy/defaults.js holds the final starting rules for each tier', () => {
+  assert.deepEqual(Object.keys(DEFAULT_POLICIES), ['standard', 'director', 'executive']);
+  assert.deepEqual(HOTEL_SCALE_PERCENT, { standard: 100, director: 115, executive: 130 });
+  assert.equal(DEFAULTS_NOTE, 'Starting rules suggested by Tripelyx');
+  const frozenDeep = v => !v || typeof v !== 'object' || (Object.isFrozen(v) && Object.values(v).every(frozenDeep));
+  assert.ok(frozenDeep(DEFAULT_POLICIES));
+  const copy = defaultPolicy('standard');
+  assert.deepEqual(copy, DEFAULT_POLICIES.standard);
+  assert.ok(!Object.isFrozen(copy) && !Object.isFrozen(copy.hotels.countryCaps[0]), 'a fresh mutable copy');
+  copy.hotels.defaultNightlyCents = 1;
+  assert.equal(DEFAULT_POLICIES.standard.hotels.defaultNightlyCents, 18000);
+  assert.throws(() => defaultPolicy('gold'), /unknown tier/);
+
+  const s = DEFAULT_POLICIES.standard;
+  assert.deepEqual(Object.keys(s), ['flights', 'hotels', 'trip']);
+  assert.deepEqual(Object.keys(s.flights), ['longHaulMinutes', 'shortHaul', 'longHaul', 'routeOverrides', 'blockedCarriers']);
+  assert.deepEqual(Object.keys(s.hotels), ['capBasis', 'defaultNightlyCents', 'countryCaps', 'maxStars', 'minAdvanceDays', 'refundableOnly']);
+  assert.deepEqual(s.trip, { maxTotalCents: null });
+  assert.equal(s.flights.longHaulMinutes, 360);
+  assert.deepEqual(s.flights.shortHaul, { cap: { mode: 'median_pct', pctTenths: 200, fallbackCents: 60000 }, maxCabin: 'economy', minAdvanceDays: 7, maxStops: 1, refundableOnly: false });
+  assert.deepEqual(s.flights.longHaul, { cap: { mode: 'median_pct', pctTenths: 200, fallbackCents: 150000 }, maxCabin: 'premium', minAdvanceDays: 14, maxStops: 1, refundableOnly: false });
+  assert.deepEqual([s.hotels.capBasis, s.hotels.defaultNightlyCents, s.hotels.maxStars], ['incl_taxes', 18000, 4]);
+  assert.deepEqual(s.hotels.countryCaps.find(c => c.country === 'United Kingdom'), { country: 'United Kingdom', nightlyCents: 26000, cities: [{ city: 'London', nightlyCents: 30000 }] });
+
+  const expectBands = { director: ['premium', 'business', 300, 7, 14], executive: ['premium', 'business', 400, 3, 3] };
+  for (const tier of ['director', 'executive']) {
+    const p = DEFAULT_POLICIES[tier];
+    const [shortCabin, longCabin, pct, shortAdvance, longAdvance] = expectBands[tier];
+    assert.deepEqual([p.flights.shortHaul.maxCabin, p.flights.longHaul.maxCabin], [shortCabin, longCabin], tier);
+    assert.deepEqual([p.flights.shortHaul.cap.pctTenths, p.flights.longHaul.cap.pctTenths], [pct, pct], tier);
+    assert.deepEqual([p.flights.shortHaul.cap.fallbackCents, p.flights.longHaul.cap.fallbackCents], [60000, 150000], tier);
+    assert.deepEqual([p.flights.shortHaul.minAdvanceDays, p.flights.longHaul.minAdvanceDays], [shortAdvance, longAdvance], tier);
+    assert.equal(p.hotels.maxStars, 5);
+    // Every hotel cap is Standard's × 1.15 or × 1.30, rounded to whole dollars.
+    const scale = cents => Math.round(cents * HOTEL_SCALE_PERCENT[tier] / 10000) * 100;
+    assert.equal(p.hotels.defaultNightlyCents, scale(s.hotels.defaultNightlyCents), tier);
+    assert.deepEqual(p.hotels.countryCaps, s.hotels.countryCaps.map(c => ({ country: c.country, nightlyCents: scale(c.nightlyCents), cities: c.cities.map(x => ({ city: x.city, nightlyCents: scale(x.nightlyCents) })) })), tier);
+  }
+  // Country and city names are exactly the airport data's (what cityFor() and hotel rows carry).
+  for (const c of s.hotels.countryCaps) {
+    assert.ok(demoAirports.some(a => a.country === c.country), c.country);
+    for (const city of c.cities) assert.ok(demoAirports.some(a => a.country === c.country && a.city === city.city), city.city);
+  }
+});
+
+test('interfaces: tz.js converts between UTC and company local time across DST', () => {
+  assert.ok(tz.isTimeZone('Africa/Cairo') && tz.isTimeZone('UTC'));
+  assert.ok(!tz.isTimeZone('Mars/Olympus') && !tz.isTimeZone('') && !tz.isTimeZone(null));
+  assert.equal(tz.offsetMinutes('Africa/Cairo', new Date('2026-10-09T09:00:00Z')), 180, 'Cairo summer time');
+  assert.equal(tz.offsetMinutes('Africa/Cairo', new Date('2026-11-12T09:00:00Z')), 120);
+  assert.equal(tz.offsetMinutes('Europe/London', new Date('2026-11-12T09:00:00Z')), 0);
+  assert.equal(tz.utcToLocal('Africa/Cairo', new Date('2026-11-12T06:35:00Z')), '2026-11-12T08:35');
+  assert.equal(tz.localToUtc('Africa/Cairo', '2026-11-12T08:35').toISOString(), '2026-11-12T06:35:00.000Z');
+  assert.equal(tz.localDate('Asia/Dubai', new Date('2026-11-12T21:00:00Z')), '2026-11-13');
+  assert.equal(tz.localMidnightUtc('Africa/Cairo', '2026-11-12'), '2026-11-11T22:00:00.000Z');
+  assert.equal(tz.localMidnightUtc('UTC', '2026-11-12'), '2026-11-12T00:00:00.000Z');
+  // A wall time in the spring-forward gap moves forward by the gap; a repeated hour takes the first one.
+  assert.equal(tz.localToUtc('Europe/London', '2026-03-29T01:30').toISOString(), '2026-03-29T01:30:00.000Z');
+  assert.equal(tz.localToUtc('Europe/London', '2026-10-25T01:30').toISOString(), '2026-10-25T00:30:00.000Z');
+  assert.equal(tz.localToUtc('America/New_York', '2026-03-08T02:30').toISOString(), '2026-03-08T07:30:00.000Z');
+  for (let h = 0; h < 48; h++) {
+    const at = new Date(Date.UTC(2026, 9, 24, h));
+    assert.equal(tz.localToUtc('Europe/London', tz.utcToLocal('Europe/London', at)).getTime() <= at.getTime(), true, 'round trip never lands later');
+  }
+});
+
+test('interfaces: the fakes are shaped like the typedefs: rows fit the dto schemas and the provider contracts', async () => {
+  const inv = fakes.fakeInventory();
+  assert.deepEqual(['status', 'flights', 'hotels', 'airports', 'carriers', 'cityFor'].map(k => k in inv), [true, true, true, true, true, true]);
+  assertProvider(inv.flights, 'flights');
+  assertProvider(inv.hotels, 'hotels');
+  assert.deepEqual(inv.cityFor('lhr'), { city: 'London', country: 'United Kingdom' });
+  assert.equal(inv.cityFor('XXX'), null);
+  for (const a of inv.airports()) assert.ok(demoAirports.some(d => d.iata === a.code && d.city === a.city && d.country === a.country && d.tz === a.tz), a.code);
+
+  const composer = fakes.fakeComposer({ inventory: inv, now: fixed });
+  const query = composer.parseQuery({ from: 'CAI', to: 'LHR', depart: '2026-11-12', return: '2026-11-16', hotel: '1', cabin: 'economy' }, { today: '2026-10-09' });
+  assert.deepEqual(query, { from: 'CAI', to: 'LHR', departDate: '2026-11-12', returnDate: '2026-11-16', cabin: 'economy', passengers: 1, datesFlexible: false, hotel: { city: 'London', country: 'United Kingdom', checkIn: '2026-11-12', checkOut: '2026-11-16' } });
+  const res = await composer.search(query);
+  assert.equal(inv.searches, 3, 'one search per leg');
+  assert.deepEqual(Object.keys(res).sort(), ['legs', 'pricedAt', 'query', 'status']);
+  assert.equal(res.pricedAt, FIXED_NOW);
+  const rows = [...res.legs.out.rows, ...res.legs.back.rows, ...res.legs.hotel.rows];
+  assert.equal(rows.length, 12 + 12 + 6);
+  for (const r of rows) {
+    assert.deepEqual(schemaProblems(r, r.kind === 'flight' ? dto.FLIGHT_ROW_KEYS : dto.HOTEL_ROW_KEYS), [], r.key);
+    assert.ok(dto.ROW_KEY_RE.test(r.key), r.key);
+    assert.equal(r.totalCents, r.available ? r.lines.reduce((n, l) => n + l.cents, 0) : null, r.key);
+    if (!r.available) assert.deepEqual(r.lines, []);
+  }
+  assert.ok(rows.some(r => !r.available) && rows.some(r => r.carrier && r.carrier.code === 'ZS') && rows.some(r => r.stops === 1));
+  const late = res.legs.out.rows.find(r => r.stops === 1);
+  assert.deepEqual(late.segments.map(x => [x.departLocal, x.arriveLocal, x.arriveDayOffset]), [['2026-11-12T22:10', '2026-11-13T03:55', 1], ['2026-11-13T05:25', '2026-11-13T08:35', 0]]);
+  assert.deepEqual(res.legs.out.benchmark, { medianCents: 38200, sampleSize: 4, excluded: [] });
+  for (const o of await inv.flights.search({ leg: 'out', from: 'CAI', to: 'LHR', date: '2026-11-12', cabin: 'economy' })) validateOffer(o, 'flights');
+  for (const o of await inv.hotels.search(query.hotel)) validateOffer(o, 'hotels');
+  validateQuote(await inv.hotels.quote({ offerId: 'htl_fake_LHR_1', optionId: 'STD', query: query.hotel }), 'hotels');
+
+  const pick = { out: res.legs.out.rows.find(r => r.key.endsWith('_1|FLEX')).key, back: res.legs.back.rows.find(r => r.key.endsWith('_1|FLEX')).key, hotel: 'h.htl_fake_LHR_1|DLX' };
+  const priced = await composer.price(pick, query);
+  assert.equal(inv.quotes, 4, 'the hotel quote above, then one quote per component');
+  assert.equal(priced.totalCents, priced.rows.out.totalCents + priced.rows.back.totalCents + priced.rows.hotel.totalCents);
+  await assert.rejects(composer.price({ ...pick, out: 'h.htl_fake_LHR_1|DLX' }, query), e => e.code === 'invalid_selection' && e.status === 422);
+  await assert.rejects(composer.price({ ...pick, back: null }, query), e => e.code === 'invalid_selection');
+  assert.throws(() => composer.parseQuery({ from: 'CAI', to: 'CAI', depart: '2026-10-01', cabin: 'first' }, { today: '2026-10-09' }), e => e.code === 'invalid_query' && e.status === 422 && Object.keys(e.details).sort().join() === 'cabin,depart,to');
+  const request = { selection: pick, query, rows: priced.rows };
+  assert.equal((await composer.recheck(request)).status, 'same');
+  inv.setPrice(pick.out, priced.rows.out.totalCents + 2900);
+  const changed = await composer.recheck(request);
+  assert.deepEqual([changed.status, changed.components.out.status, changed.components.hotel.status, changed.newTotalCents], ['changed', 'changed', 'same', priced.totalCents + 2900]);
+  inv.setUnavailable(pick.hotel);
+  const gone = await composer.recheck(request);
+  assert.deepEqual([gone.status, gone.newTotalCents, gone.components.hotel.row.available], ['unavailable', null, false]);
+  inv.clearOverrides();
+  const variants = await composer.variants(query, pick, { datesFlexible: true });
+  assert.ok(variants.candidates.length > 0 && variants.candidates.every(v => v.totalCents < priced.totalCents));
+  assert.deepEqual([...new Set(variants.candidates.map(v => v.change.kind))].sort(), ['dates', 'fare', 'flight', 'hotel', 'room', 'stops']);
+  assert.ok(variants.searches <= 20);
+  assert.deepEqual(composer.calls, { parseQuery: 2, search: 1, price: 3 + 3, variants: 1, recheck: 3 });
+  const off = fakes.fakeComposer({ inventory: fakes.fakeInventory({ status: 'none' }), now: fixed });
+  await assert.rejects(off.search(query), e => e.code === 'no_supplier' && e.status === 503);
+  assert.deepEqual(off.inventory.airports(), []);
+
+  // fakePolicy: fixed caps, the plan's statuses and the full PolicyEngine surface.
+  const policy = fakes.fakePolicy();
+  assert.deepEqual(POLICY_ENGINE_METHODS.filter(n => typeof policy[n] !== 'function'), []);
+  const ctx = { rules: defaultPolicy('standard'), policy: { tier: 'standard', version: 1 }, outOfPolicy: 'approval', today: '2026-10-09', benchmarks: {}, carriers: { ZS: 'Sahara Wings' }, orgName: 'Acme Inc' };
+  const zs = res.legs.out.rows.find(r => r.carrier.code === 'ZS' && r.optionId === 'LIGHT');
+  assert.equal(policy.evaluateComponent(zs, ctx).status, 'blocked');
+  assert.equal(policy.evaluateComponent(zs, ctx).violations[0].text, "Sahara Wings isn't used by Acme Inc.");
+  const cheap = res.legs.out.rows.find(r => r.key.endsWith('_2|LIGHT'));
+  assert.equal(policy.evaluateComponent(cheap, ctx).status, 'within');
+  const trip = policy.evaluateTrip({ out: cheap, back: null, hotel: null }, ctx, { budget: { remainingCents: 100, periodKey: '2026-Q4', departmentName: 'Engineering' } });
+  assert.deepEqual([trip.status, trip.violations.map(v => v.rule)], ['out', ['budget']]);
+  assert.equal(policy.evaluateTrip(priced.rows, { ...ctx, outOfPolicy: 'block' }, { budget: null }).status, 'blocked');
+  assert.equal(policy.calls.evaluateTrip, 2);
+});
+
+test('interfaces: fakePolicy runs the lifecycle and approver rules as lifecycle.js and approver.js state them', () => {
+  const policy = fakes.fakePolicy();
+  const at = '2026-10-01T09:00:00.000Z';
+  const m = (userId, role, extra = {}) => ({ orgId: 'org_x', userId, name: userId, role, status: 'active', departmentId: null, managerId: null, approverId: null, tier: 'standard', at, by: null, removedAt: null, rev: 0, ...extra });
+  const members = {
+    sam: m('sam', 'employee', { managerId: 'dana', approverId: 'gone' }), dana: m('dana', 'manager'), gone: m('gone', 'manager', { status: 'removed' }),
+    olivia: m('olivia', 'owner', { at: '2026-09-01T00:00:00.000Z' }), tara: m('tara', 'travel_admin'), fay: m('fay', 'finance'),
+  };
+  assert.deepEqual(policy.resolveApprover(members.sam, members), { approverId: 'dana', pool: false, poolIds: [], rule: 'manager', skipped: [{ userId: 'gone', reason: 'removed' }] });
+  assert.deepEqual(policy.resolveApprover({ ...members.sam, managerId: 'fay', approverId: null }, members), { approverId: null, pool: true, poolIds: ['olivia', 'tara'], rule: 'admin', skipped: [{ userId: 'fay', reason: 'cannot_approve' }] });
+  assert.equal(policy.resolveApprover(members.olivia, { olivia: members.olivia }).rule, null);
+
+  const org = { id: 'org_x', name: 'Acme Inc', timezone: 'Africa/Cairo', settings: { outOfPolicy: 'approval', approvalHours: 24, reasonMinChars: 10, budgetPeriod: 'quarter' } };
+  const now = FIXED_NOW;
+  const draft = { id: 'btr_x', travelerId: 'sam', status: 'draft', totalCents: 90000, query: { departDate: '2026-11-12' }, alternatives: [], messages: [], approval: null, expiresAt: null };
+  const samRef = { userId: 'sam', name: 'Sam', role: 'employee' };
+  const out = { status: 'out', violations: [{ rule: 'flight.cap' }], components: {}, totalCents: 90000, policy: { tier: 'standard', version: 1 } };
+  const same = { status: 'same' };
+  const approver = policy.resolveApprover(members.sam, members);
+  const submit = reason => policy.transition(draft, { type: 'submit', reason, approver, budget: null, draft: null }, { now, actor: samRef, member: members.sam, org, evaluation: out, recheck: same });
+  assert.throws(() => submit({ text: 'too short', category: null }), e => e.code === 'reason_too_short' && e.status === 422);
+  assert.throws(() => submit({ text: 'Client visit 4242 4242 4242 4242', category: 'other' }), e => e.code === 'card_number');
+  const sub = submit({ text: 'Client meeting moved to Monday', category: 'client_meeting' });
+  assert.equal(sub.outcome, 'submitted');
+  assert.equal(sub.next.status, 'pending');
+  assert.equal(sub.next.expiresAt, '2026-10-10T09:00:00.000Z', 'submittedAt + 24 h, before the departure midnight');
+  assert.deepEqual(sub.next.approval.approverId, 'dana');
+  const auto = policy.transition(draft, { type: 'submit', reason: null, approver: null, budget: { budgetId: 'b', periodKey: '2026-Q4', remainingCents: 1e6 }, draft: null }, { now, actor: samRef, member: members.sam, org, evaluation: { ...out, status: 'within', violations: [] }, recheck: same });
+  assert.deepEqual([auto.outcome, auto.next.status, auto.next.approval.mode, auto.history.by, auto.next.budget], ['auto_approved', 'approved', 'auto', { system: 'policy' }, { budgetId: 'b', periodKey: '2026-Q4', cents: 90000 }]);
+  assert.throws(() => policy.transition(draft, { type: 'submit', reason: null, approver, budget: null, draft: null }, { now, actor: samRef, member: members.sam, org, evaluation: { ...out, status: 'blocked' }, recheck: same }), e => e.code === 'policy_blocked');
+
+  const pending = { ...draft, ...sub.next };
+  const decide = (who, ev, extra = {}) => policy.transition(pending, ev, { now, actor: { userId: who, name: who, role: members[who].role }, member: members[who], org, evaluation: out, recheck: same, ...extra });
+  assert.throws(() => decide('sam', { type: 'approve', note: '' }), e => e.code === 'self_approval');
+  assert.throws(() => decide('fay', { type: 'approve', note: '' }), e => e.code === 'not_found');
+  assert.throws(() => decide('tara', { type: 'approve', note: 'ok' }), e => e.code === 'note_required', 'an override needs a note');
+  assert.equal(decide('tara', { type: 'approve', note: 'Approved for the client visit' }).next.approval.decidedAs, 'override');
+  assert.equal(decide('dana', { type: 'approve', note: '' }).next.approval.decidedAs, 'assigned');
+  assert.throws(() => decide('dana', { type: 'deny', note: 'no' }), e => e.code === 'note_required');
+  assert.throws(() => decide('dana', { type: 'approve', note: '', budget: { budgetId: 'b', periodKey: '2026-Q4', remainingCents: 100 } }), e => e.code === 'over_budget');
+  assert.equal(decide('dana', { type: 'approve', note: '', ackOverBudget: true, budget: { budgetId: 'b', periodKey: '2026-Q4', remainingCents: 100 } }).next.approval.overBudgetAck, true);
+  const back = decide('dana', { type: 'approve', note: '', draft: { totalCents: 95000 } }, { recheck: { status: 'changed', newTotalCents: 95000 } });
+  assert.deepEqual([back.outcome, back.next.status, back.next.returned.why, back.next.returned.toCents], ['returned', 'draft', 'price_changed', 95000]);
+  const later = '2026-10-10T09:00:00.000Z';
+  assert.throws(() => policy.transition(pending, { type: 'approve', note: '' }, { now: later, actor: { userId: 'dana' }, member: members.dana, org }), e => e.code === 'request_expired' && e.status === 409);
+  assert.equal(policy.transition(pending, { type: 'expire' }, { now: later, actor: { system: 'clock' }, member: null, org }).history.by.system, 'clock');
+  assert.equal(policy.effectiveStatus(pending, later, 'Africa/Cairo'), 'expired');
+  assert.equal(policy.effectiveStatus(pending, now, 'Africa/Cairo'), 'pending');
+  assert.equal(policy.effectiveStatus({ ...pending, status: 'approved' }, '2026-11-13T09:00:00.000Z', 'Africa/Cairo'), 'past');
+  assert.equal(policy.expiresAt('2026-11-11T20:00:00.000Z', 24, '2026-11-12', 'Africa/Cairo'), '2026-11-11T22:00:00.000Z', 'the departure midnight comes first');
+  const msg = decide('dana', { type: 'message', text: 'Which client is this for?' });
+  assert.deepEqual([msg.history, msg.next.messages.length], [null, 1]);
+  assert.throws(() => decide('fay', { type: 'message', text: 'hello there' }), e => e.code === 'not_found');
+  for (const status of ['denied', 'cancelled', 'expired']) {
+    assert.throws(() => policy.transition({ ...pending, status }, { type: 'cancel' }, { now, actor: samRef, member: members.sam, org }), e => e.code === 'invalid_transition', status);
+  }
+});
+
+test('interfaces: fakeAlternatives and fakeExplainer: ranked, capped, digit-free', async () => {
+  const inv = fakes.fakeInventory();
+  const composer = fakes.fakeComposer({ inventory: inv, now: fixed });
+  const policy = fakes.fakePolicy();
+  const alts = fakes.fakeAlternatives();
+  const explainer = fakes.fakeExplainer();
+  const query = composer.parseQuery({ from: 'CAI', to: 'LHR', depart: '2026-11-12', return: '2026-11-16', hotel: '1' }, { today: '2026-10-09' });
+  const selection = { out: `f.flt_fake_CAILHR_2026-11-12_1|FLEX`, back: `f.flt_fake_LHRCAI_2026-11-16_1|FLEX`, hotel: 'h.htl_fake_LHR_1|DLX' };
+  const pick = await composer.price(selection, query);
+  const ctx = { rules: defaultPolicy('standard'), policy: { tier: 'standard', version: 1 }, outOfPolicy: 'approval', today: '2026-10-09', benchmarks: {}, carriers: {}, orgName: 'Acme Inc' };
+  const pickEval = policy.evaluateTrip(pick.rows, ctx, { budget: null });
+  const variants = await composer.variants(query, selection, { datesFlexible: false });
+  const result = alts.buildAlternatives({ pick: { selection, query, rows: pick.rows, totalCents: pick.totalCents }, pickEval, candidates: variants.candidates, evaluate: v => policy.evaluateTrip(v.rows, ctx, { budget: null }), truncated: false });
+  assert.ok(result.alternatives.length >= 1 && result.alternatives.length <= 5);
+  assert.equal(result.noneWithin, result.cheapestWithin === null);
+  if (result.cheapestWithin) assert.equal(result.alternatives[0].id, result.cheapestWithin.id);
+  for (const a of result.alternatives) {
+    assert.match(a.id, /^[0-9a-f]{16}$/);
+    assert.ok(a.savesCents >= 100 && a.evaluation.status !== 'blocked');
+    assert.ok(!/[0-9$]/.test(a.label), a.label);
+  }
+  const cmp = alts.compareTrips({ rows: pick.rows, totalCents: pick.totalCents }, result.alternatives[0]);
+  assert.equal(cmp.totalCents.delta, result.alternatives[0].totalCents - pick.totalCents);
+  const input = { violations: pickEval.violations.map(v => ({ rule: v.rule })), alternatives: result.alternatives.map((a, i) => ({ id: a.id, kind: a.kind, withinPolicy: a.evaluation.status === 'within', savingsRank: i + 1, giveUps: [] })), noneWithin: result.noneWithin };
+  const said = await explainer.explain(input);
+  assert.deepEqual(said.order, input.alternatives.map(a => a.id));
+  assert.ok(!/[0-9]|[$€£¥]|\bUSD\b/.test(JSON.stringify([Object.values(said.notes), said.summary])), 'notes and summary carry no digits');
+  assert.deepEqual(explainer.inputs, [input]);
+});
+
+test('interfaces: Repo.listOrgs (the platform list) and Repo.listBusinessLeads', async t => {
+  const logs = [];
+  const app = await startApp({ ENABLE_BUSINESS: 'true' }, { log: { ...quietLog, warn: (...a) => logs.push(a.join(' ')) } });
+  t.after(app.close);
+  const owner = await seedUser(app, { name: 'Olivia Owner' });
+  const a = await seedOrg(app, owner, { name: 'Alpha Co' });
+  const b = await seedOrg(app, owner, { name: 'Beta Co', status: 'pending' });
+  const repo = new Repo({ store: app.store, now: app.ctx.now, log: { warn: (...x) => logs.push(x.join(' ')), error() {} } });
+  assert.deepEqual((await repo.listOrgs()).map(o => o.id), [b.id, a.id], 'newest first');
+  assert.deepEqual((await repo.listOrgs({ limit: 1 })).map(o => o.id), [b.id]);
+  assert.ok(logs.some(l => /listOrgs reached its limit of 1/.test(l)));
+  for (const limit of [0, 1001, 1.5]) await assert.rejects(repo.listOrgs({ limit }), RangeError);
+  await app.store.savePartnerLead({ name: 'A', email: 'a@example.com', kind: 'business', at: FIXED_NOW });
+  await app.store.savePartnerLead({ name: 'B', email: 'b@example.com', at: FIXED_NOW });
+  await app.store.savePartnerLead({ name: 'C', email: 'c@example.com', kind: 'Business', at: FIXED_NOW });
+  assert.deepEqual((await repo.listBusinessLeads()).map(l => l.name), ['A']);
+  for (const limit of [0, 201]) await assert.rejects(repo.listBusinessLeads({ limit }), RangeError);
 });

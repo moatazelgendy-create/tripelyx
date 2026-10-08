@@ -12,7 +12,7 @@
 //   memory store and Postgres hold the same thing.
 const crypto = require('node:crypto');
 const { AppError } = require('../lib/errors');
-const { KINDS } = require('./constants');
+const { KINDS, LIST_LIMIT } = require('./constants');
 
 /** An owner scope: org_, usr_ or mbr_ followed by 16 base64url characters (lib/ids.id() or memberScope()). */
 const SCOPE_RE = /^(org|usr|mbr)_[A-Za-z0-9_-]{16}$/;
@@ -213,6 +213,34 @@ class Repo {
       throw e;
     }
     return { rows: res.rows, cursor: res.cursor ? `${tag}.${res.cursor}` : null };
+  }
+
+  /**
+   * Every company, newest stored first: the one deliberate unscoped list, of biz_org only (biz_org has no
+   * owner scope). For the platform admin page; the caller checks isAdmin first. Logs a warning when it
+   * reaches the limit.
+   * @param {{ limit?: number }} [opts] 1 to 1,000 (constants.LIST_LIMIT)
+   * @returns {Promise<object[]>} biz_org records
+   */
+  async listOrgs({ limit = LIST_LIMIT } = {}) {
+    if (!Number.isInteger(limit) || limit < 1 || limit > LIST_LIMIT) throw new RangeError(`[business] listOrgs limit must be 1 to ${LIST_LIMIT}`);
+    const rows = (await this.store.listRecords(KINDS.org, { limit })).filter(o => o && typeof o.id === 'string' && ORG_ID_RE.test(o.id));
+    if (rows.length >= limit && this.log && typeof this.log.warn === 'function') {
+      this.log.warn(`[business] Repo.listOrgs reached its limit of ${limit}; older companies are missing.`);
+    }
+    return rows;
+  }
+
+  /**
+   * Company enquiries from the /business form: the newest partner leads (store.listPartnerLeads, at most
+   * `limit`) whose kind is exactly 'business' (validatePartnerLead keeps kind only for that value).
+   * For the platform admin page; the caller checks isAdmin first.
+   * @param {{ limit?: number }} [opts] 1 to 200
+   * @returns {Promise<object[]>}
+   */
+  async listBusinessLeads({ limit = 200 } = {}) {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new RangeError('[business] listBusinessLeads limit must be 1 to 200');
+    return (await this.store.listPartnerLeads({ limit })).filter(l => l && l.kind === 'business');
   }
 
   /**
