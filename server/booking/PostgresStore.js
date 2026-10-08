@@ -3,10 +3,11 @@ const fs = require('fs');
 // environment points at its own database via DATABASE_URL. Rows keep the queryable fields as columns
 // and the full normalized record as JSONB, so the schema doesn't churn as verticals evolve.
 const { Pool } = require('pg');
-const { planCommit, checkPageArgs, badCursor, encodeCursor, decodeCursor } = require('./MemoryStore');
+const { planCommit, checkPageArgs, badCursor, encodeCursor, decodeCursor, storable } = require('./MemoryStore');
 
-/** created_at::text as Postgres prints it (DateStyle ISO), e.g. "2026-10-09 09:00:00.123456+00". */
-const PG_TIMESTAMP = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{1,6})?[+-]\d{2}(?::\d{2}){0,2}$/;
+/** created_at::text as Postgres prints it (DateStyle ISO), e.g. "2026-10-09 09:00:00.123456+00". The
+ * offset is within what Postgres reads (±15:59:59). */
+const PG_TIMESTAMP = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{1,6})?[+-](?:0\d|1[0-5])(?::[0-5]\d){0,2}$/;
 /** Deadlock and serialization failures: the losing transaction is rolled back and reported as a conflict. */
 const RETRYABLE_PG = new Set(['40P01', '40001']);
 
@@ -289,7 +290,7 @@ class PostgresStore {
     if (cursor !== null && cursor !== undefined) {
       const at = decodeCursor(cursor);
       if (!Array.isArray(at) || at.length !== 2 || typeof at[0] !== 'string' || !PG_TIMESTAMP.test(at[0])
-        || typeof at[1] !== 'string' || !at[1] || at[1].length > 200) throw badCursor();
+        || !storable(at[1]) || !at[1] || at[1].length > 200) throw badCursor();
       args.push(at[0], at[1]);
       where.push('(created_at, id) < ($3::timestamptz, $4)');
     }
@@ -302,7 +303,8 @@ class PostgresStore {
         args,
       ));
     } catch (err) {
-      if (err.code === '22007' || err.code === '22008') throw badCursor(); // a timestamp Postgres can't read
+      // A cursor value Postgres can't read (class 22, data exception: a bad date, time, offset or byte).
+      if (cursor !== null && cursor !== undefined && typeof err.code === 'string' && err.code.startsWith('22')) throw badCursor();
       throw err;
     }
     const more = rows.length > limit;

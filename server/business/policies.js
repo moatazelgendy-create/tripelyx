@@ -3,10 +3,10 @@
 // STUB from Stage 0 with the frozen interface; Stage 1W-b builds it.
 //
 // - Validation and the change list come from the policy engine through this.policy (normalizePolicy,
-//   formFromPolicy, policyChanges, describe), never by requiring policy/* directly, so tests can inject
-//   test/business-fakes.fakePolicy().
+//   formFromPolicy, policyChanges, describe), never by requiring policy/schema, evaluate, benchmark or
+//   describe directly, so tests can inject test/business-fakes.fakePolicy().
 // - The editor's choices (airports, carriers, countries) come from this.inventory (airports(), carriers())
-//   plus the country names of policy/defaults.js.
+//   plus the country names of policy/defaults.js (plain, final data: require it directly).
 // - A save is one repo.commit: biz_policy CAS on the form's rev (version + 1, rules, updatedAt, updatedBy),
 //   the biz_policy_version insert (id `${orgId}.${tier}.v${version}`, note, changes), and audit
 //   'policy.published' (tier, from, to, changes). Nothing is written when the rules did not change.

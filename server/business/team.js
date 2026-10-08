@@ -28,7 +28,8 @@ const methods = {
    * for a signed-in account). One commit: biz_org (status 'pending', or 'active' with
    * config.business.selfServe), the Owner's biz_member (tier standard, department General), the user's
    * biz_user_index (insert, or CAS adding the id), the three biz_policy records at version 1 from
-   * policy/defaults.js with their biz_policy_version v1 (note DEFAULTS_NOTE, no changes), the "General"
+   * policy/defaults.js (defaultPolicy(tier); plain, final data, required directly) with their
+   * biz_policy_version v1 (note DEFAULTS_NOTE, no changes), the "General"
    * biz_department, and the audit entry 'org.created'. Nothing is written when any part fails.
    * @param {import('./types').UserActor} actor
    * @param {{ name: string, size: string, timezone?: string, ack?: string }} form ack '1' = the preview checkbox
@@ -90,7 +91,9 @@ const methods = {
 
   /**
    * The invite landing (GET /business/invite/:token; anyone holding the link). Reads by sha256(token) with
-   * repo.get (a token lookup). Writes nothing.
+   * repo.get (a token lookup). Writes nothing. Signed out, 'join' or 'signin' comes from
+   * this.accounts.emailInUse(invite.email) (Business never reads the accounts' user or user_email records:
+   * Repo refuses any kind but biz_*).
    * @param {import('./types').UserActor} actor actor.user may be null (signed out)
    * @param {string} token
    * @returns {Promise<import('./types').InviteLanding>}

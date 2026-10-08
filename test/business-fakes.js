@@ -4,7 +4,16 @@
 //
 //   fakeInventory()     types.BusinessInventory over crafted, deterministic rows (CAI, LHR, DXB; Mediterra
 //                       Airways and Sahara Wings; three "Fixture" hotels per city), with search and quote
-//                       counters and per-row price and availability overrides.
+//                       counters and per-row price and availability overrides. Its `flights` and `hotels`
+//                       providers pass assertProvider and their offers pass validateOffer, but they answer only
+//                       the fake's own queries ({ leg, from, to, date, cabin } and types.HotelQuery) and carry
+//                       no FlightDetails or HotelDetails: they serve fakeComposer, never the real TripComposer.
+//                       A provider-contract query (FlightQuery with departDate, HotelQuery with where) throws.
+//   overrideProvider()  the contract-shaped override for the REAL inventory seam
+//                       (createBusinessInventory(config, { overrides })): wraps a real provider
+//                       (BusinessDemoFlights, BusinessDemoHotels, any Mock*Provider) and changes the quoted price
+//                       or the availability of chosen options; everything else is the wrapped provider's own.
+//                       For 1I's recheck same/changed/unavailable tests and the Stage 3 price-change scenario.
 //   fakeComposer()      types.TripComposer over a fakeInventory, with call counters.
 //   fakePolicy()        types.PolicyEngine with FIXED caps (no medians, no advance-booking rules) and the
 //                       lifecycle, approver, effectiveStatus and expiresAt rules as lifecycle.js and approver.js
@@ -252,10 +261,20 @@ function fakeInventory({ status = 'demo' } = {}) {
   const on = status !== 'none';
   const peekFlightRows = (q, pricedAt) => (on ? craftFlightRows(q, pricedAt).map(r => applyOverride(r, overrides.get(r.key))) : []);
   const peekHotelRows = (q, pricedAt) => (on ? craftHotelRows(q, pricedAt).map(r => applyOverride(r, overrides.get(r.key))) : []);
+  /** The fake's own query vocabulary only: a provider-contract query would silently match nothing. */
+  const ownQuery = (vertical, q) => {
+    const ok = vertical === 'flights' ? q && typeof q.date === 'string' : q && typeof q.city === 'string';
+    if (!ok) {
+      throw new TypeError(`[fakes] fakeInventory().${vertical} answers only the fake's own queries (${vertical === 'flights' ? '{ leg, from, to, date, cabin }' : 'types.HotelQuery { city, country, checkIn, checkOut }'}) `
+        + 'for fakeComposer. To give the real TripComposer an override, wrap a real provider with overrideProvider().');
+    }
+    return q;
+  };
   const provider = vertical => ({
     name: vertical === 'flights' ? 'FakeFlights' : 'FakeHotels', vertical, isDemo: true,
     // Provider-contract shapes only (validateOffer/validateQuote pass); the details are not the demo providers'.
     async search(q) {
+      ownQuery(vertical, q);
       const rows = vertical === 'flights' ? inv.flightRows(q, q.pricedAt || '1970-01-01T00:00:00.000Z') : inv.hotelRows(q, q.pricedAt || '1970-01-01T00:00:00.000Z');
       const byOffer = new Map();
       for (const r of rows) byOffer.set(r.offerId, [...(byOffer.get(r.offerId) || []), r]);
@@ -263,6 +282,7 @@ function fakeInventory({ status = 'demo' } = {}) {
     },
     async getOffer(offerId, q) { return (await this.search(q)).find(o => o.id === offerId) || null; },
     async quote({ offerId, optionId, query }) {
+      ownQuery(vertical, query);
       const prefix = vertical === 'flights' ? 'f.' : 'h.';
       const row = inv.quoteRow(`${prefix}${offerId}|${optionId}`, query, query.pricedAt || '1970-01-01T00:00:00.000Z');
       if (!row || !row.available) throw new AppError('unavailable', 'This option is no longer available.', 409);
@@ -308,6 +328,73 @@ function fakeInventory({ status = 'demo' } = {}) {
     clearOverrides() { overrides.clear(); },
   };
   return inv;
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// overrideProvider
+
+/**
+ * A provider-contract override for the real inventory seam: createBusinessInventory(config, { overrides:
+ * { flights, hotels } }) (plan §F1). Wraps a real provider (BusinessDemoFlights, BusinessDemoHotels or any
+ * Mock*Provider) and passes every call through with the wrapped provider's own queries, offers, details and
+ * quotes (assertProvider, validateOffer and validateQuote pass), except for the options you change:
+ *   setPrice(offerId, optionId, deltaCents)  quote(): the first 'base' line moves by deltaCents (a whole number,
+ *       may be negative), so the quote's total moves by exactly that. search() and getOffer() are unchanged
+ *       (the composer prices every row through quote()). A base line that would go below 0 throws a RangeError.
+ *   setUnavailable(offerId, optionId[, unavailable = true])  search() and getOffer() show the option with
+ *       available:false; quote() throws AppError 'option_sold_out' 409, as the mock providers do.
+ *   clearOverrides()
+ *   calls  { search, getOffer, quote } counters; inner  the wrapped provider.
+ * book() and cancel() always throw: Business never books.
+ * @param {object} inner a provider that passes providers/contracts.assertProvider
+ * @returns {object} a provider (same name, vertical and isDemo) with the methods above
+ */
+function overrideProvider(inner) {
+  if (!inner || typeof inner.search !== 'function' || typeof inner.quote !== 'function' || typeof inner.getOffer !== 'function') {
+    throw new TypeError('[fakes] overrideProvider wraps a provider (search, getOffer, quote)');
+  }
+  const changes = new Map();
+  const calls = { search: 0, getOffer: 0, quote: 0 };
+  const keyOf = (offerId, optionId) => `${offerId}|${optionId}`;
+  const mark = offer => {
+    if (!offer || !offer.options.some(o => changes.get(keyOf(offer.id, o.id))?.unavailable)) return offer;
+    return { ...offer, options: offer.options.map(o => (changes.get(keyOf(offer.id, o.id))?.unavailable ? { ...o, available: false } : o)) };
+  };
+  return {
+    name: inner.name, vertical: inner.vertical, isDemo: inner.isDemo, inner, calls,
+    async search(query) {
+      calls.search += 1;
+      return (await inner.search(query)).map(mark);
+    },
+    async getOffer(offerId, query) {
+      calls.getOffer += 1;
+      return mark(await inner.getOffer(offerId, query));
+    },
+    async quote(input) {
+      calls.quote += 1;
+      const change = changes.get(keyOf(input.offerId, input.optionId));
+      if (change && change.unavailable) throw new AppError('option_sold_out', 'That option is sold out for your dates.', 409);
+      const q = await inner.quote(input);
+      if (!change || !change.deltaCents) return q;
+      const at = q.lines.findIndex(l => l.kind === 'base');
+      if (at < 0) throw new RangeError('[fakes] overrideProvider: the quote has no base line to move');
+      const amount = q.lines[at].amount + change.deltaCents;
+      if (amount < 0) throw new RangeError('[fakes] overrideProvider: the base line would go below 0');
+      return { ...q, lines: q.lines.map((l, i) => (i === at ? { ...l, amount } : l)) };
+    },
+    async book() { throw new AppError('not_supported', 'Business never books.', 400); },
+    async cancel() { throw new AppError('not_supported', 'Business never books.', 400); },
+    ...(typeof inner.lookups === 'function' ? { lookups: (...a) => inner.lookups(...a) } : {}),
+    setPrice(offerId, optionId, deltaCents) {
+      if (!Number.isInteger(deltaCents)) throw new RangeError('setPrice needs a whole number of cents');
+      changes.set(keyOf(offerId, optionId), { deltaCents });
+    },
+    setUnavailable(offerId, optionId, unavailable = true) {
+      if (unavailable) changes.set(keyOf(offerId, optionId), { unavailable: true });
+      else changes.delete(keyOf(offerId, optionId));
+    },
+    clearOverrides() { changes.clear(); },
+  };
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -575,12 +662,18 @@ function fakePolicy(options = {}) {
     let overCents = 0;
     if (!row.available) {
       violations.push({ rule: 'inventory.unavailable', component: row.kind === 'flight' ? row.leg : 'hotel', severity: 'block', limit: null, actual: null, text: 'Not available in demo data.' });
-    } else {
-      const actual = row.kind === 'flight' ? row.totalCents : row.nightlyInclCents;
-      if (cap.cents != null && actual > cap.cents) {
-        overCents = actual - cap.cents;
-        const rule = row.kind === 'flight' ? 'flight.cap' : 'hotel.cap';
-        violations.push({ rule, component: row.kind === 'flight' ? row.leg : 'hotel', severity: 'approval', limit: cap.cents, actual, text: `${format(overCents)} over the limit of ${format(cap.cents)}${row.kind === 'hotel' ? ' a night' : ''}.` });
+    } else if (row.kind === 'flight') {
+      if (cap.cents != null && row.totalCents > cap.cents) {
+        overCents = row.totalCents - cap.cents;
+        violations.push({ rule: 'flight.cap', component: row.leg, severity: 'approval', limit: cap.cents, actual: row.totalCents, text: `${format(overCents)} over the limit of ${format(cap.cents)}.` });
+      }
+    } else if (cap.cents != null) {
+      // Whole stay on the basis (incl_taxes: the row total) against cap × nights; limit, actual and overCents
+      // are stay totals, and the text quotes the nightly figures (evaluate.js hotel.cap).
+      const limit = cap.cents * row.nights;
+      if (row.totalCents > limit) {
+        overCents = row.totalCents - limit;
+        violations.push({ rule: 'hotel.cap', component: 'hotel', severity: 'approval', limit, actual: row.totalCents, text: `${format(row.nightlyInclCents)} a night is over the limit of ${format(cap.cents)} (taxes included).` });
       }
     }
     const blocked = violations.some(v => v.severity === 'block') || (ctx && ctx.outOfPolicy === 'block' && violations.length > 0);
@@ -588,6 +681,9 @@ function fakePolicy(options = {}) {
   }
 
   function evaluateTrip(rows, ctx, { budget = null } = {}) {
+    if (budget && (typeof budget.periodLabel !== 'string' || !budget.periodLabel)) {
+      throw new TypeError('[fake] BudgetCtx needs periodLabel (budgets.periodLabel(periodKey)): evaluate stays pure');
+    }
     const components = {};
     let status = 'within';
     const violations = [];
@@ -601,7 +697,7 @@ function fakePolicy(options = {}) {
       totalCents += rows[c].totalCents || 0;
     }
     if (budget && totalCents > budget.remainingCents) {
-      violations.push({ rule: 'budget', component: 'trip', severity: 'approval', limit: budget.remainingCents, actual: totalCents, text: `${budget.departmentName} has ${format(Math.max(0, budget.remainingCents))} left in ${budget.periodKey}.` });
+      violations.push({ rule: 'budget', component: 'trip', severity: 'approval', limit: budget.remainingCents, actual: totalCents, text: `This trip would use ${format(totalCents)} of the ${format(Math.max(0, budget.remainingCents))} left in ${budget.departmentName} for ${budget.periodLabel}` });
       if (status === 'within') status = 'out';
     }
     return { status, components, violations, totalCents, policy: { ...ctx.policy } };
@@ -812,7 +908,12 @@ function fakePolicy(options = {}) {
     hotelCap: () => ({ cents: opts.hotelCapCents, source: 'default', basis: 'incl_taxes' }),
     evaluateComponent,
     evaluateTrip,
-    priceToBeat: (capCents, hotelBenchmark) => (capCents == null ? null : hotelBenchmark && hotelBenchmark.medianCents != null ? Math.min(capCents, hotelBenchmark.medianCents) : capCents),
+    // min(cap, median) when both exist, else whichever exists, else null (evaluate.priceToBeat).
+    priceToBeat: (capCents, hotelBenchmark) => {
+      const median = hotelBenchmark && hotelBenchmark.medianCents != null ? hotelBenchmark.medianCents : null;
+      if (capCents == null) return median;
+      return median == null ? capCents : Math.min(capCents, median);
+    },
     describe(rules, { tier, version, orgName, carriers = {} }) {
       return {
         title: 'Your travel policy',
@@ -943,7 +1044,7 @@ function fakeExplainer() {
 }
 
 module.exports = {
-  fakeInventory, fakeComposer, fakePolicy, fakeAlternatives, fakeExplainer,
+  fakeInventory, overrideProvider, fakeComposer, fakePolicy, fakeAlternatives, fakeExplainer,
   FAKE_AIRPORTS, FAKE_CARRIERS, ITINERARIES, FARES, HOTELS, ROOMS, ROUTE_MINUTES, ROUTE_FARE_CENTS, FLIGHT_TAX_CENTS, CITY_NIGHTLY_CENTS,
   HOTEL_TAX_PERCENT, plainBenchmark,
 };

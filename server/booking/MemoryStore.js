@@ -5,6 +5,39 @@ const { AppError } = require('../lib/errors');
 const clone = v => (v === undefined ? undefined : structuredClone(v));
 const isPlainObject = v => !!v && typeof v === 'object' && !Array.isArray(v) && Object.getPrototypeOf(v) === Object.prototype;
 
+/** True for a string both stores hold alike: Postgres text and JSONB cannot hold NUL or an unpaired surrogate. */
+const storable = s => typeof s === 'string' && !s.includes('\u0000') && s.isWellFormed();
+
+/**
+ * The first reason `v` is not a JSON value both stores keep exactly as given, or null. JSON.stringify (the
+ * Postgres path) would silently drop undefined and functions and turn NaN into null, while structuredClone
+ * (the memory path) keeps some of them and throws on others, so anything but plain JSON is refused.
+ * @param {unknown} v
+ * @param {string} path where `v` sits, for the message
+ * @returns {string|null}
+ */
+function jsonProblem(v, path) {
+  if (v === null || typeof v === 'boolean') return null;
+  if (typeof v === 'string') return storable(v) ? null : `${path} holds a NUL or unpaired surrogate character`;
+  if (typeof v === 'number') return Number.isFinite(v) ? null : `${path} is not a finite number`;
+  if (Array.isArray(v)) {
+    for (let i = 0; i < v.length; i += 1) {
+      const p = jsonProblem(v[i], `${path}[${i}]`);
+      if (p) return p;
+    }
+    return null;
+  }
+  if (isPlainObject(v)) {
+    for (const k of Object.keys(v)) {
+      if (!storable(k)) return `${path} has a key with a NUL or unpaired surrogate character`;
+      const p = jsonProblem(v[k], `${path}.${k}`);
+      if (p) return p;
+    }
+    return null;
+  }
+  return `${path} is not plain JSON (${v === undefined ? 'undefined' : typeof v === 'object' ? Object.prototype.toString.call(v) : typeof v})`;
+}
+
 /** The most rows one listRecordsPage call returns. */
 const PAGE_MAX = 200;
 const COMMIT_LISTS = ['checks', 'updates', 'inserts', 'deletes'];
@@ -13,8 +46,9 @@ const OP_OF = { checks: 'check', updates: 'update', inserts: 'insert', deletes: 
 /**
  * Validate a commit() argument and return its operations in (kind, id) order, the order both stores
  * verify (and Postgres locks) them in, so the first failure they report is the same. Throws a TypeError for
- * a malformed call (unknown list, bad kind or id, a document that is not a plain object) and an Error when
- * one record appears twice: a commit touches each record at most once.
+ * a malformed call (unknown list, bad kind or id, a document that is not plain JSON all the way down: see
+ * jsonProblem) and an Error when one record appears twice: a commit touches each record at most once.
+ * Both stores refuse exactly the same inputs, before anything is written.
  * @param {object} spec { checks, updates, inserts, deletes }
  * @returns {Array<{ op: 'check'|'update'|'insert'|'delete', kind: string, id: string, rev?: number, next?: object, data?: object, userId?: string|null }>}
  */
@@ -31,7 +65,7 @@ function planCommit(spec = {}) {
     for (const item of items) {
       if (!isPlainObject(item)) throw new TypeError(`[store] commit ${list} entries must be objects`);
       const { kind, id } = item;
-      if (typeof kind !== 'string' || !kind || typeof id !== 'string' || !id || id.length > 200) throw new TypeError(`[store] commit ${list} entry needs a kind and an id`);
+      if (!storable(kind) || !kind || !storable(id) || !id || id.length > 200) throw new TypeError(`[store] commit ${list} entry needs a kind and an id`);
       const key = `${kind}:${id}`;
       if (seen.has(key)) throw new Error(`[store] commit touches ${key} more than once`);
       seen.add(key);
@@ -39,12 +73,16 @@ function planCommit(spec = {}) {
       if (list === 'checks') op.rev = item.rev;
       if (list === 'updates') {
         if (!isPlainObject(item.next)) throw new TypeError(`[store] commit update ${key} needs a plain object as next`);
+        const problem = jsonProblem(item.next, 'next');
+        if (problem) throw new TypeError(`[store] commit update ${key}: ${problem}`);
         op.rev = item.expectedRev;
         op.next = item.next;
       }
       if (list === 'deletes') op.rev = item.expectedRev;
       if (list === 'inserts') {
         if (!isPlainObject(item.data)) throw new TypeError(`[store] commit insert ${key} needs a plain object as data`);
+        const problem = jsonProblem(item.data, 'data');
+        if (problem) throw new TypeError(`[store] commit insert ${key}: ${problem}`);
         op.data = item.data;
         op.userId = item.userId ?? null;
       }
@@ -184,6 +222,11 @@ class MemoryStore {
    */
   async commit(spec) {
     const ops = planCommit(spec);
+    // Copy every payload before touching anything, so the apply loop below cannot throw part-way.
+    for (const o of ops) {
+      if (o.data) o.data = clone(o.data);
+      if (o.next) o.next = clone(o.next);
+    }
     for (const o of ops) {
       const r = this.records.get(`${o.kind}:${o.id}`);
       if (o.op === 'insert') {
@@ -197,11 +240,11 @@ class MemoryStore {
     for (const o of ops) {
       const key = `${o.kind}:${o.id}`;
       if (o.op === 'insert') {
-        this.records.set(key, { kind: o.kind, id: o.id, userId: o.userId, data: clone(o.data), createdAt: at, seq: (this.seq = (this.seq || 0) + 1) });
+        this.records.set(key, { kind: o.kind, id: o.id, userId: o.userId, data: o.data, createdAt: at, seq: (this.seq = (this.seq || 0) + 1) });
         docs[key] = clone(o.data);
       } else if (o.op === 'update') {
         const r = this.records.get(key);
-        r.data = { ...clone(o.next), rev: o.rev + 1 };
+        r.data = { ...o.next, rev: o.rev + 1 };
         docs[key] = clone(r.data);
       } else if (o.op === 'delete') {
         this.records.delete(key);
@@ -232,4 +275,4 @@ class MemoryStore {
   }
 }
 
-module.exports = { MemoryStore, planCommit, checkPageArgs, badCursor, encodeCursor, decodeCursor, PAGE_MAX };
+module.exports = { MemoryStore, planCommit, checkPageArgs, badCursor, encodeCursor, decodeCursor, jsonProblem, storable, PAGE_MAX };

@@ -73,8 +73,12 @@ const CABIN_RANK = Object.freeze({ economy: 0, premium: 1, business: 2 });
 /** Cabin → label. */
 const CABIN_LABELS = Object.freeze({ economy: 'Economy', premium: 'Premium economy', business: 'Business' });
 
-/** biz_req_link roles: the traveler's own link, the assigned approver's, and one per pool member. */
-const REQ_LINK_ROLES = Object.freeze(['traveler', 'approver', 'pool']);
+/**
+ * biz_req_link roles: the traveler's own link, the assigned approver's, one per pool member, and the
+ * decider's (written by every approve or deny, whatever decidedAs, so "Decided by you" also finds the
+ * decisions an approval.override holder made on requests assigned to someone else).
+ */
+const REQ_LINK_ROLES = Object.freeze(['traveler', 'approver', 'pool', 'decider']);
 
 /** Company settings (§B6, §C3). */
 const OUT_OF_POLICY_MODES = Object.freeze(['approval', 'block']);
@@ -92,7 +96,11 @@ const TIMEZONES = Object.freeze([
 /** Every amount is US dollars in phase 1. */
 const CURRENCY = 'USD';
 
-/** Audit groups and the actions in each (§C7). An action's group is the part before the dot. */
+/**
+ * Audit groups and the actions in each (§C7). An action's group is the part before the dot. Beyond the §C7
+ * table: 'request.repriced', for a submit whose price check found a changed or unavailable price and wrote
+ * the re-priced draft instead of submitting (every change carries its audit entry, D7).
+ */
 const AUDIT_ACTIONS = Object.freeze({
   org: Object.freeze(['org.created', 'org.confirmed', 'org.suspended', 'org.reactivated', 'org.settings_changed', 'org.exported']),
   member: Object.freeze(['member.invited', 'member.invite_revoked', 'member.joined', 'member.updated', 'member.role_changed', 'member.removed']),
@@ -100,7 +108,7 @@ const AUDIT_ACTIONS = Object.freeze({
   policy: Object.freeze(['policy.published']),
   budget: Object.freeze(['budget.set']),
   request: Object.freeze([
-    'request.drafted', 'request.swapped', 'request.auto_approved', 'request.submitted', 'request.approved', 'request.denied',
+    'request.drafted', 'request.swapped', 'request.repriced', 'request.auto_approved', 'request.submitted', 'request.approved', 'request.denied',
     'request.returned', 'request.cancelled', 'request.expired', 'request.message',
   ]),
   reports: Object.freeze(['reports.exported']),

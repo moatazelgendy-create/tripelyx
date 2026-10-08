@@ -49,11 +49,22 @@ const TOKEN_RUN = /[A-Za-z0-9_-]{43,}/g;
  * @returns {string}
  */
 function redactUrl(url) {
-  return String(url ?? '')
+  return redactText(url).slice(0, 500);
+}
+
+/** redactUrl's replacements on any text, uncut (an error's message and stack can quote the URL or a param). */
+function redactText(text) {
+  return String(text ?? '')
     .replace(/(\/business\/invite\/)[^/?#]*/gi, '$1[redacted]')
     .replace(/([?&;][^=&;#]*token)=[^&;#]*/gi, '$1=[redacted]')
-    .replace(TOKEN_RUN, '[token]')
-    .slice(0, 500);
+    .replace(TOKEN_RUN, '[token]');
+}
+
+/** An unexpected error as the log keeps it: its stack (or text) and code, redacted like the URL (D9). */
+function redactError(err) {
+  const text = err instanceof Error ? (err.stack || `${err.name}: ${err.message}`) : String(err);
+  const code = err && typeof err.code === 'string' ? ` [code ${err.code}]` : '';
+  return redactText(text + code);
 }
 
 async function createApp(config, { registryOverrides, tripOverrides, store: injectedStore, now, log = console } = {}) {
@@ -229,12 +240,17 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
   // eslint-disable-next-line no-unused-vars
   app.use((err, req, res, next) => {
     const known = err instanceof AppError;
-    const status = known ? err.status : (err.status === 400 && err.type === 'entity.parse.failed' ? 400 : 500);
+    // A client error raised by Express or the body parser (the router's URIError for a malformed escape in a
+    // path param; an http-errors error, expose true, for a body that can't be parsed or is too large) keeps
+    // its 4xx status and is not a server fault, so it isn't logged. Any other error is a 500.
+    const clientStatus = !known && err && Number.isInteger(err.status) && err.status >= 400 && err.status < 500
+      && (err.expose === true || err instanceof URIError) ? err.status : null;
+    const status = known ? err.status : (clientStatus ?? 500);
     const ref = id('err').slice(4, 14);
-    if (!known && status >= 500) log.error(`[error ${ref}] ${req.method} ${redactUrl(req.originalUrl)}`, err);
+    if (!known && status >= 500) log.error(`[error ${ref}] ${req.method} ${redactUrl(req.originalUrl)}`, redactError(err));
     const body = known
       ? { code: err.code, message: err.message, details: err.details }
-      : status === 400
+      : clientStatus
         ? { code: 'bad_request', message: 'The request could not be read.' }
         : { code: 'internal', message: 'Something went wrong on our side. Please try again.', ref };
     if (req.path.startsWith('/api/')) return res.status(status).json({ error: body });

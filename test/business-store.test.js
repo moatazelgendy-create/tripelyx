@@ -64,6 +64,7 @@ test('listPartnerLeads lists newest first and keeps store.leads', async () => {
 const { PostgresStore } = require('../server/booking/PostgresStore');
 const { AppError } = require('../server/lib/errors');
 const { Repo } = require('../server/business/repo');
+const { loadActor } = require('../server/business/actor');
 const { id } = require('../server/lib/ids');
 
 const pgUrl = process.env.TEST_DATABASE_URL;
@@ -267,5 +268,72 @@ for (const S of STORES) {
       const e = await store.listRecordsPage(k, { userId: OWNER_A, cursor }).catch(x => x);
       assert.ok(e instanceof AppError && e.code === 'bad_cursor' && e.status === 400, `cursor ${String(cursor).slice(0, 20)}: ${e && e.message}`);
     }
+    // Cursors shaped like a real Postgres one that Postgres still cannot read: an offset out of range, or an
+    // id holding a NUL (text columns cannot). Both stores answer bad_cursor, never a raw database error.
+    const enc = v => Buffer.from(JSON.stringify(v), 'utf8').toString('base64url');
+    const forged = ['2026-10-09 09:00:00+99', '2026-10-09 09:00:00+16', '2026-10-09 09:00:00-16', '2026-10-09 09:00:00+15:60']
+      .map(ts => [ts, 'a']).concat([['2026-10-09 09:00:00+00', 'r\u0000'], ['2026-10-09 09:00:00.5+00', 'a\ud800']]);
+    for (const at of forged) {
+      const e = await store.listRecordsPage(k, { userId: OWNER_A, cursor: enc(at) }).catch(x => x);
+      assert.ok(e instanceof AppError && e.code === 'bad_cursor' && e.status === 400, `cursor ${JSON.stringify(at)}: ${e && e.code} ${e && e.message}`);
+    }
+  });
+
+  test(`${S.name} commit: a nested value that is not plain JSON, or a string Postgres cannot hold, is refused before anything is written`, { skip: S.skip }, async t => {
+    const store = await open(t);
+    const k = `t_${sfx()}`;
+    await store.insertRecord(k, 'a', { v: 0, rev: 0 }, { userId: OWNER_A });
+    const bad = [
+      ['a function', { bad: { f: () => 1 } }], ['undefined', { bad: { u: undefined } }], ['undefined in a list', { bad: [1, undefined] }],
+      ['NaN', { n: NaN }], ['Infinity', { n: [Infinity] }], ['a Date', { d: new Date(0) }], ['a Map', { m: new Map() }],
+      ['a BigInt', { b: 1n }], ['a symbol', { s: Symbol('x') }], ['a NUL in a value', { s: 'x\u0000y' }],
+      ['a NUL in a key', { ['k\u0000']: 1 }], ['an unpaired surrogate', { s: 'x\ud800' }],
+    ];
+    for (const [name, data] of bad) {
+      for (const spec of [
+        { updates: [{ kind: k, id: 'a', expectedRev: 0, next: { v: 1 } }], inserts: [{ kind: k, id: 'b', data, userId: OWNER_A }] },
+        { inserts: [{ kind: k, id: 'b', data: { ok: true }, userId: OWNER_A }], updates: [{ kind: k, id: 'a', expectedRev: 0, next: data }] },
+      ]) {
+        await assert.rejects(store.commit(spec), TypeError, name);
+        assert.deepEqual(await readAll(store, k, ['a', 'b']), [{ v: 0, rev: 0 }, null], `${name}: nothing was written`);
+      }
+    }
+    await assert.rejects(store.commit({ inserts: [{ kind: k, id: 'nul\u0000', data: {} }] }), /kind and an id/, 'an id with a NUL');
+    assert.equal((await store.commit({ inserts: [{ kind: k, id: 'b', data: { s: 'é ✓ 😀', n: -0.5, z: null, l: [[], {}] }, userId: OWNER_A }] })).ok, true);
+    assert.deepEqual(await store.getRecord(k, 'b'), { s: 'é ✓ 😀', n: -0.5, z: null, l: [[], {}] });
+  });
+
+  test(`${S.name} under the Repo: forged cursors, ids with control characters and non-Business kinds never reach the database`, { skip: S.skip }, async t => {
+    const store = await open(t);
+    const repo = new Repo({ store, now: () => new Date('2026-10-10T09:00:00.000Z') });
+    const k = `biz_t_${letters()}`;
+    const org = id('org');
+    for (let i = 0; i < 3; i += 1) await repo.insert(k, `r${i}`, { orgId: org, i, rev: 0 }, { owner: org });
+    const p1 = await repo.page(k, org, { limit: 1 });
+    const tag = p1.cursor.slice(0, p1.cursor.indexOf('.'));
+    const enc = v => `${tag}.${Buffer.from(JSON.stringify(v), 'utf8').toString('base64url')}`;
+    for (const inner of [['2026-10-09 09:00:00+99', 'r1'], ['2026-10-09 09:00:00-16', 'r1'], ['2026-10-09 09:00:00+00', 'r\u0000'], 2, -1]) {
+      const e = await repo.page(k, org, { limit: 1, cursor: enc(inner) }).catch(x => x);
+      if (store.kind === 'memory' && inner === 2) { assert.ok(Array.isArray(e.rows), 'a real memory cursor'); continue; }
+      assert.ok(e instanceof AppError && e.status === 404, `${JSON.stringify(inner)}: ${e && e.message}`);
+    }
+    for (const bad of ['r\u0000', '\u0000', 'r1\n', 'r\u001f', 'r\u007f']) {
+      assert.equal(await repo.get(k, bad), null, JSON.stringify(bad));
+      assert.equal(await repo.getIn(k, bad, org), null, JSON.stringify(bad));
+      assert.equal(await repo.getIn(k, 'r1', `${org}\u0000`), null, JSON.stringify(bad));
+      assert.equal(await repo.del(k, bad), false, JSON.stringify(bad));
+      await assert.rejects(repo.commit({ checks: [{ kind: k, id: bad, rev: 0 }] }), e => e instanceof AppError && e.status === 404);
+      await assert.rejects(repo.insert(k, bad, { orgId: org }, { owner: org }), /bad record id/);
+    }
+    const e = await loadActor(repo, { org: { id: 'org_\u0000' }, user: { id: 'usr_x' } }).catch(x => x);
+    assert.ok(e instanceof AppError && e.status === 404, `loadActor: ${e && e.message}`);
+    // Reads and deletes refuse anything but a biz_* kind, as writes do: Business never sees sessions or users.
+    await store.insertRecord('session', 'sess_probe', { userId: 'usr_AAAAAAAAAAAAAAAA' }, { userId: 'usr_AAAAAAAAAAAAAAAA' });
+    for (const [name, call] of [
+      ['get', () => repo.get('user', 'usr_AAAAAAAAAAAAAAAA')], ['getIn', () => repo.getIn('user_email', 'a@b.com', org)],
+      ['list', () => repo.list('session', 'usr_AAAAAAAAAAAAAAAA')], ['page', () => repo.page('session', 'usr_AAAAAAAAAAAAAAAA')],
+      ['del', () => repo.del('session', 'sess_probe')], ['commit check', () => repo.commit({ checks: [{ kind: 'session', id: 'sess_probe', rev: 0 }] })],
+    ]) await assert.rejects(call(), /bad record kind/, name);
+    assert.ok(await store.getRecord('session', 'sess_probe'), 'the session is still there');
   });
 }

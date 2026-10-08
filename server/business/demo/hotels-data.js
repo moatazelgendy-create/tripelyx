@@ -2,10 +2,12 @@
 // checked against well-known hotel brands and none is used. Every rate, tax and term is demo data.
 // STUB from Stage 0: BUSINESS_HOTELS is empty until Stage 1I fills it; BUSINESS_CITIES is FINAL.
 //
-// To fill: 29 properties, 3 in each Business city and 2 more in Cairo (which already has demo hotels),
-// each city with a 3-star, a 4-star and a 5-star. Rates calibrated against policy/defaults.js Standard caps
+// To fill: 29 new properties: 3 in each of the 9 cities other than Cairo (a 3-star, a 4-star and a 5-star),
+// and 2 in Cairo (a 3-star and a 4-star: Cairo already has the demo data's CA-NILE, 5-star), so each of the
+// 10 cities has a 3-star, a 4-star and a 5-star. Rates calibrated against policy/defaults.js Standard caps
 // (taxes included): in each city one hotel under the cap, one straddling it (a cheap room under, a suite
-// over) and one above. Mixed cancellation (non-refundable; free_days 1 to 3). Per-country vat_pct and
+// over) and one above (in Cairo, CA-NILE is the one above: every room is over the $160 Cairo cap with taxes,
+// so the two new ones are under and straddling). Mixed cancellation (non-refundable; free_days 1 to 3). Per-country vat_pct and
 // city_tax_usd_per_night. Same raw shape as providers/mock/demo-data/hotels.js WITHOUT review_score and
 // review_count:
 //   { hotel_code, name, category, stars, area, city, country, blurb, amenities[], check_in, check_out,

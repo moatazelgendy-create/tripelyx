@@ -67,7 +67,9 @@ function checklist(input) { notBuilt(); }
 const methods = {
   /**
    * The role-aware home (view 'home', org.view) or the Reports page (view 'reports', reports.view).
-   * Sections the member's role does not reach are null (types.DashboardView).
+   * Sections the member's role does not reach are null (types.DashboardView). teamTrips (request.view.team)
+   * is the Manager home's "team trips this period": the HOME_ROWS newest requests the member reaches through
+   * roles.allowed 'request.view.team' (their own left out) departing in the period.
    * @param {import('./types').MemberActor} actor
    * @param {{ periodKey?: string|null, view?: 'home'|'reports' }} [opts] periodKey null = the current period
    * @returns {Promise<import('./types').DashboardView>}

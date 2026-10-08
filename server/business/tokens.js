@@ -23,14 +23,19 @@ function hashToken(token) {
   return crypto.createHash('sha256').update(String(token)).digest('hex');
 }
 
+/** A stored hash exactly as hashToken makes it: sha256 as 64 lowercase hex characters. */
+const HASH_RE = /^[0-9a-f]{64}$/;
+
 /**
- * Constant-time comparison of two hex hashes. False for anything that is not two equal-length hex strings.
+ * Constant-time comparison of two sha256 hashes (hashToken's output). False for anything that is not two
+ * 64-character lowercase hex strings: Node drops a trailing odd nibble when it decodes hex, so shorter or
+ * odd-length strings could compare equal when they differ.
  * @param {string} a
  * @param {string} b
  * @returns {boolean}
  */
 function sameHash(a, b) {
-  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length || !/^[0-9a-f]+$/.test(a) || !/^[0-9a-f]+$/.test(b)) return false;
+  if (typeof a !== 'string' || typeof b !== 'string' || !HASH_RE.test(a) || !HASH_RE.test(b)) return false;
   return crypto.timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
 }
 
@@ -43,4 +48,4 @@ function isToken(token) {
   return typeof token === 'string' && TOKEN_RE.test(token);
 }
 
-module.exports = { TOKEN_RE, newToken, hashToken, sameHash, isToken };
+module.exports = { TOKEN_RE, HASH_RE, newToken, hashToken, sameHash, isToken };

@@ -12,13 +12,15 @@
 //   flight.stops      stops ≤ maxStops (when not null)              "1 stop. Your policy allows nonstop only."
 //   flight.refundable fare.refundablePercent > 0 (when required)    "Your policy asks for a fare that refunds at least part of the price. Light refunds nothing."
 //   flight.carrier    no segment's carrier is blocked; severity block "Sahara Wings isn't used by Acme Inc"
-//   hotel.cap         basis total ≤ cap × nights (no per-night rounding)
+//   hotel.cap         basis total ≤ cap × nights (no per-night rounding); the violation's limit is cap × nights,
+//                     its actual the stay's basis total and overCents their difference (stay totals, never
+//                     per night); only the text quotes nightly amounts (Math.round(actual / nights) and the cap)
 //                                                                   "$340 a night is over the London limit of $300 (taxes included)"
 //   hotel.stars       stars ≤ maxStars                              "5-star hotel. Your policy allows up to 4 stars."
 //   hotel.advance     as flights, on checkIn
 //   hotel.refundable  cancellation.refundable (free, or partial with freeUntilHours > 0)
 //   trip.cap          totalCents ≤ maxTotalCents                    "The trip total is over your $2,500 trip limit by $310"
-//   budget            totalCents ≤ remainingCents; severity approval
+//   budget            totalCents ≤ remainingCents; severity approval; the period in words is budget.periodLabel
 //                                                                   "This trip would use $1,240 of the $900 left in Engineering for Q4 2026"
 //   inventory.unavailable  row.available; severity block            "Not available in demo data"
 // Status: any block violation → blocked; else with outOfPolicy 'block' any non-budget violation → blocked;
@@ -69,7 +71,8 @@ function evaluateComponent(row, ctx) { notBuilt(); }
  * Evaluate a whole trip: each component, then trip.cap on the total and the budget check.
  * @param {{ out: import('../types').FlightRow, back?: import('../types').FlightRow|null, hotel?: import('../types').HotelRow|null }} rows
  * @param {import('../types').EvalCtx} ctx
- * @param {{ budget: import('../types').BudgetCtx|null }} opts budget null: no budget for the period (no violation)
+ * @param {{ budget: import('../types').BudgetCtx|null }} opts budget null: no budget for the period (no violation);
+ *   budget.periodLabel is the period in words for the text (never computed here, so evaluate stays pure)
  * @returns {import('../types').TripEvaluation} components holds only the components given; totalCents = Σ rows
  */
 function evaluateTrip(rows, ctx, opts) { notBuilt(); }

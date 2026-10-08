@@ -12,7 +12,7 @@ const cards = require('../server/business/cards');
 const actorLib = require('../server/business/actor');
 const http = require('../server/business/http');
 const { Repo, SCOPE_RE, USER_ID_RE, IDENTITY_KEYS, memberScope } = require('../server/business/repo');
-const { createBusinessLimits, ACCOUNT_LIMIT } = require('../server/business/limits');
+const { createBusinessLimits, ACCOUNT_LIMIT, accountKey } = require('../server/business/limits');
 const { MemoryStore } = require('../server/booking/MemoryStore');
 const { Accounts, PLATFORM_ADMIN } = require('../server/accounts');
 const { AppError } = require('../server/lib/errors');
@@ -178,7 +178,9 @@ test('constants: the corporate kinds, tiers, statuses and the advisor-era names 
   for (const tz of constants.TIMEZONES) assert.doesNotThrow(() => new Intl.DateTimeFormat('en-US', { timeZone: tz }), tz);
   assert.deepEqual([...constants.AUDIT_GROUPS], ['org', 'member', 'department', 'policy', 'budget', 'request', 'reports']);
   for (const [group, actions] of Object.entries(constants.AUDIT_ACTIONS)) for (const a of actions) assert.ok(a.startsWith(`${group}.`), a);
-  assert.equal(Object.values(constants.AUDIT_ACTIONS).flat().length, 28, 'the §C7 table');
+  assert.equal(Object.values(constants.AUDIT_ACTIONS).flat().length, 29, 'the §C7 table plus request.repriced');
+  assert.ok(constants.AUDIT_ACTIONS.request.includes('request.repriced'), 'a re-priced draft on submit is audited (D7)');
+  assert.deepEqual([...constants.REQ_LINK_ROLES], ['traveler', 'approver', 'pool', 'decider']);
   for (const gone of ['STAGES', 'STAGE_LABELS', 'AUTO_LOCKED', 'MAX_OPTIONS', 'OPTION_KEYS', 'MAX_SHARES', 'RESPONSE_KINDS', 'WRONG_REASONS', 'REMINDER_KINDS', 'SHARE_KINDS', 'DEFAULT_COLORS']) {
     assert.ok(!(gone in constants), gone);
   }
@@ -202,6 +204,13 @@ test('tokens: 43 random characters, stored only as a hash, compared in constant 
   assert.equal(tokens.sameHash(h, `${h.slice(0, 63)}z`), false, 'not hex');
   assert.equal(tokens.sameHash(undefined, undefined), false);
   assert.equal(tokens.sameHash('', ''), false);
+  // Node drops a trailing odd nibble when it decodes hex: only whole sha256 hashes are compared.
+  assert.equal(tokens.sameHash('a', 'b'), false, 'odd length');
+  assert.equal(tokens.sameHash('abc', 'abd'), false, 'odd length');
+  assert.equal(tokens.sameHash(`${h}a`, `${h}b`), false, '65 characters');
+  assert.equal(tokens.sameHash(h.slice(0, 62), h.slice(0, 62)), false, 'not a sha256 hash');
+  assert.equal(tokens.sameHash(h.toUpperCase(), h.toUpperCase()), false, 'uppercase is not a stored hash');
+  assert.equal(tokens.sameHash(h, h), true);
 });
 
 // ---------------------------------------------------------------------------------------------------
@@ -547,6 +556,10 @@ test('limits: per IP for sign-up, per email after the form for sign-in, per user
   const over = await post('/signin', { form: { email: ' DANA@Acme.Example ', password: 'right' } });
   assert.equal(over.status, 429);
   assert.equal(await over.text(), 'rate_limited|Too many requests in a short time. Wait a few minutes and try again.');
+  // Control characters the account lookup turns into spaces and trims give no fresh budget either.
+  for (const e of ['dana@acme.example\x01', 'dana@acme.example\x7f', 'dana@acme.example\x1f', 'dana@acme.example\x01\x01', '\x02dana@acme.example', '\tDANA@acme.example\x03']) {
+    assert.equal((await post('/signin', { form: { email: e, password: 'right' } })).status, 429, JSON.stringify(e));
+  }
   assert.equal((await post('/signin', { form: { email: 'sam@acme.example', password: 'wrong' } })).status, 401, 'another address has its own budget');
   // Successful sign-ins do not count against the address.
   for (let i = 0; i < ACCOUNT_LIMIT + 2; i += 1) assert.equal((await post('/signin', { form: { email: 'ok@acme.example', password: 'right' } })).status, 303);
@@ -563,6 +576,19 @@ test('limits: per IP for sign-up, per email after the form for sign-in, per user
   assert.equal((await fetch(`${srv.base}/compute`, { headers: { 'x-user': 'usr_a' } })).status, 429);
   assert.equal((await fetch(`${srv.base}/compute`, { headers: { 'x-user': 'usr_b' } })).status, 200);
   assert.deepEqual(logged.filter(l => l[0] === 'warn' || !/must run after/.test(String(l[1]))), [], 'express-rate-limit reports no misconfiguration');
+});
+
+test('limits: the per-account key is the address Accounts.authenticate looks up, so every spelling that signs in shares one budget', async () => {
+  const accounts = new Accounts({ store: new MemoryStore(), config: loadConfig({}), now: () => new Date(FIXED_NOW) });
+  const user = await accounts.register({ name: 'Dana Lee', email: 'dana@acme.example', password: 'correct horse battery' });
+  const key = e => accountKey({ body: { email: e } });
+  const variants = ['dana@acme.example', ' DANA@Acme.Example ', 'dana@acme.example\x01', '\x7fdana@acme.example\x1f\x1f', `dana@acme.example${'\x00'.repeat(3)}`];
+  for (const e of variants) {
+    assert.equal((await accounts.authenticate({ email: e, password: 'correct horse battery' })).id, user.id, JSON.stringify(e));
+    assert.equal(key(e), key('dana@acme.example'), JSON.stringify(e));
+  }
+  assert.notEqual(key('sam@acme.example'), key('dana@acme.example'));
+  assert.match(key('dana@acme.example'), /^acct:[0-9a-f]{16}$/, 'a short hash, never the address');
 });
 
 test('limits: defaults come from config; the sign-up IP limit is 20 per 10 minutes', async t => {
@@ -832,6 +858,41 @@ test('app: the 500 log line carries the redacted URL', async t => {
   assert.equal(logged.length, 1);
   assert.match(logged[0][0], /^\[error [A-Za-z0-9_-]{10}\] GET \/business\/invite\/\[redacted\]\/accept$/);
   assert.ok(!JSON.stringify(logged[0][0]).includes(tok));
+  // The error itself is logged redacted too: a message or stack that quotes a token never reaches the log.
+  logged.length = 0;
+  const quoting = new Error(`Failed to decode param '${tok}%E0'`);
+  handler(quoting, { method: 'GET', originalUrl: `/business/invite/${tok}%E0`, path: `/business/invite/${tok}%E0` }, res, () => {});
+  assert.equal(res.statusCode, 500);
+  assert.equal(logged.length, 1);
+  for (const arg of logged[0]) {
+    const text = arg instanceof Error ? `${arg.message}\n${arg.stack}` : String(arg);
+    assert.ok(!text.includes(tok) && !text.includes(tok.slice(0, 20)), `a log argument quotes the token: ${text.slice(0, 120)}`);
+  }
+  assert.match(String(logged[0][1]), /Failed to decode param '\[token\]%E0'/, 'the redacted error is still logged');
+
+  // A client error from Express or the body parser (status 4xx, not an AppError) answers with that status
+  // and is not logged as a server fault: a malformed escape after a token is a 400, logged nowhere.
+  logged.length = 0;
+  for (const path of [`/book/flights/${tok}%E0`, `/business/invite/${tok}%E0`]) {
+    const r = await fetch(app.base + path);
+    assert.ok(r.status === 400 || r.status === 404, `${path}: ${r.status}`);
+    assert.ok(!(await r.text()).includes(tok));
+  }
+  const decode = new URIError(`Failed to decode param '${tok}%E0'`);
+  decode.status = 400;
+  handler(decode, { method: 'GET', originalUrl: `/business/invite/${tok}%E0`, path: `/business/invite/${tok}%E0` }, res, () => {});
+  assert.equal(res.statusCode, 400);
+  // The body parser's http-errors shape (expose true below 500).
+  const tooBig = Object.assign(new Error('request entity too large'), { status: 413, expose: true, type: 'entity.too.large' });
+  handler(tooBig, { method: 'POST', originalUrl: '/business/signin', path: '/business/signin' }, res, () => {});
+  assert.equal(res.statusCode, 413);
+  assert.match(String(res.body), /could not be read/);
+  assert.deepEqual(logged, [], 'client errors are not logged');
+  // Any other error that happens to carry a 4xx status (say a library's upstream 404) is a server fault.
+  const upstream = Object.assign(new Error('upstream said 404'), { status: 404 });
+  handler(upstream, { method: 'GET', originalUrl: '/business/app', path: '/business/app' }, res, () => {});
+  assert.equal(res.statusCode, 500);
+  assert.equal(logged.length, 1, 'a stray 4xx status on an unexpected error is still logged');
 });
 
 test('app: ctx.business and its Repo exist only with Business on, with trips on or off; the advisor-era mounts are gone', async t => {
@@ -1106,7 +1167,7 @@ test('interfaces: every Stage 0 Business module loads with its frozen exports, a
     () => m('dto').parseRowKey('x'), () => m('search').parseTripQuery({}, {}), () => m('policy/schema').normalizePolicy({}, {}),
     () => m('policy/schema').formFromPolicy({}), () => m('policy/schema').policyChanges({}, {}), () => m('policy/evaluate').evaluateTrip({}, {}, {}),
     () => m('policy/evaluate').evaluateComponent({}, {}), () => m('policy/benchmark').benchmark([]), () => m('policy/describe').describe({}, {}),
-    () => m('policy/describe').limitsBar({}, {}, {}), () => m('budgets').periodKey('2026-11-12', 'quarter'), () => m('budgets').periodLabel('2026-Q4'),
+    () => m('policy/describe').limitsBar({}, {}, {}),
     () => m('csv').csvCell('x'), () => m('csv').toCsv([], []), () => m('reports').outOfPolicyShare([]), () => m('reports').reportTiles({}),
     () => m('explain').guardExplanation({}, {}),
   ];
@@ -1408,7 +1469,7 @@ test('interfaces: the fakes are shaped like the typedefs: rows fit the dto schem
   assert.equal(policy.evaluateComponent(zs, ctx).violations[0].text, "Sahara Wings isn't used by Acme Inc.");
   const cheap = res.legs.out.rows.find(r => r.key.endsWith('_2|LIGHT'));
   assert.equal(policy.evaluateComponent(cheap, ctx).status, 'within');
-  const trip = policy.evaluateTrip({ out: cheap, back: null, hotel: null }, ctx, { budget: { remainingCents: 100, periodKey: '2026-Q4', departmentName: 'Engineering' } });
+  const trip = policy.evaluateTrip({ out: cheap, back: null, hotel: null }, ctx, { budget: { remainingCents: 100, periodKey: '2026-Q4', periodLabel: 'Q4 2026', departmentName: 'Engineering' } });
   assert.deepEqual([trip.status, trip.violations.map(v => v.rule)], ['out', ['budget']]);
   assert.equal(policy.evaluateTrip(priced.rows, { ...ctx, outOfPolicy: 'block' }, { budget: null }).status, 'blocked');
   assert.equal(policy.calls.evaluateTrip, 2);
@@ -1519,4 +1580,132 @@ test('interfaces: Repo.listOrgs (the platform list) and Repo.listBusinessLeads',
   await app.store.savePartnerLead({ name: 'C', email: 'c@example.com', kind: 'Business', at: FIXED_NOW });
   assert.deepEqual((await repo.listBusinessLeads()).map(l => l.name), ['A']);
   for (const limit of [0, 201]) await assert.rejects(repo.listBusinessLeads({ limit }), RangeError);
+});
+
+test('interfaces: the budget period helpers are built in Stage 0 (pure, like tz.js)', () => {
+  const b = require('../server/business/budgets');
+  assert.equal(b.periodKey('2026-11-12', 'quarter'), '2026-Q4');
+  assert.equal(b.periodKey('2026-01-01', 'quarter'), '2026-Q1');
+  assert.equal(b.periodKey('2026-03-31', 'quarter'), '2026-Q1');
+  assert.equal(b.periodKey('2026-04-01', 'quarter'), '2026-Q2');
+  assert.equal(b.periodKey('2026-11-12', 'month'), '2026-11');
+  for (const [date, period] of [['2026-02-30', 'quarter'], ['2026-11-12', 'year'], ['12/11/2026', 'month'], [null, 'month']]) {
+    assert.throws(() => b.periodKey(date, period), RangeError, `${date} ${period}`);
+  }
+  assert.equal(b.periodLabel('2026-Q4'), 'Q4 2026');
+  assert.equal(b.periodLabel('2026-11'), 'November 2026');
+  assert.equal(b.periodLabel('2027-01'), 'January 2027');
+  for (const bad of ['2026-Q5', '2026-13', '2026-1', 'Q4 2026', '']) assert.throws(() => b.periodLabel(bad), RangeError, bad);
+  for (const key of ['2026-Q4', '2026-11']) assert.match(key, b.PERIOD_KEY_RE);
+  assert.deepEqual(b.periodChoices('2026-Q4'), ['2026-Q2', '2026-Q3', '2026-Q4', '2027-Q1', '2027-Q2', '2027-Q3']);
+  assert.deepEqual(b.periodChoices('2026-Q1'), ['2025-Q3', '2025-Q4', '2026-Q1', '2026-Q2', '2026-Q3', '2026-Q4']);
+  assert.deepEqual(b.periodChoices('2026-11'), ['2026-09', '2026-10', '2026-11', '2026-12', '2027-01', '2027-02']);
+  assert.deepEqual(b.periodChoices('2026-02'), ['2025-12', '2026-01', '2026-02', '2026-03', '2026-04', '2026-05']);
+  const org = { timezone: 'Africa/Cairo', settings: { budgetPeriod: 'quarter' } };
+  assert.equal(b.currentPeriodKey(org, new Date(FIXED_NOW)), '2026-Q4');
+  assert.equal(b.currentPeriodKey(org, new Date('2026-12-31T22:30:00Z')), '2027-Q1', "Cairo's date, not UTC's");
+  assert.equal(b.currentPeriodKey({ ...org, timezone: 'UTC' }, new Date('2026-12-31T22:30:00Z')), '2026-Q4');
+  assert.equal(b.currentPeriodKey({ ...org, settings: { budgetPeriod: 'month' } }, new Date(FIXED_NOW)), '2026-10');
+  assert.equal(b.committedCents({ commits: { btr_a: 84200, btr_b: 15800 } }), 100000);
+  assert.equal(b.committedCents({ commits: { btr_a: 84200, btr_b: 15800 } }, 'btr_a'), 15800);
+  assert.equal(b.committedCents({ commits: {} }), 0);
+  assert.equal(b.committedCents(null), 0);
+  assert.throws(() => b.committedCents({ commits: { btr_a: 1.5 } }), RangeError);
+});
+
+test('interfaces: fakePolicy follows evaluate.js on Price to Beat, hotel cap units and the budget text', async () => {
+  const policy = fakes.fakePolicy();
+  // min(cap, median) when both exist, else whichever exists, else null.
+  assert.equal(policy.priceToBeat(30000, { medianCents: 26400 }), 26400);
+  assert.equal(policy.priceToBeat(25000, { medianCents: 26400 }), 25000);
+  assert.equal(policy.priceToBeat(null, { medianCents: 26400 }), 26400);
+  assert.equal(policy.priceToBeat(30000, { medianCents: null }), 30000);
+  assert.equal(policy.priceToBeat(30000, null), 30000);
+  assert.equal(policy.priceToBeat(null, null), null);
+  assert.equal(policy.priceToBeat(null, { medianCents: null }), null);
+
+  const inv = fakes.fakeInventory();
+  const composer = fakes.fakeComposer({ inventory: inv, now: fixed });
+  const query = composer.parseQuery({ from: 'CAI', to: 'LHR', depart: '2026-11-12', return: '2026-11-16', hotel: '1' }, { today: '2026-10-09' });
+  const res = await composer.search(query);
+  const grand = res.legs.hotel.rows.find(r => r.key === 'h.htl_fake_LHR_1|STD');
+  assert.equal(grand.nights, 4);
+  const ctx = { rules: defaultPolicy('standard'), policy: { tier: 'standard', version: 1 }, outOfPolicy: 'approval', today: '2026-10-09', benchmarks: {}, carriers: {}, orgName: 'Acme Inc' };
+  // hotel.cap: limit, actual and overCents are stay totals on the basis; the text quotes nightly amounts.
+  const e = policy.evaluateComponent(grand, ctx);
+  const v = e.violations.find(x => x.rule === 'hotel.cap');
+  assert.deepEqual({ limit: v.limit, actual: v.actual }, { limit: 30000 * 4, actual: grand.totalCents });
+  assert.equal(e.overCents, grand.totalCents - 30000 * 4);
+  assert.equal(e.cap.cents, 30000, 'the cap itself stays nightly');
+  assert.match(v.text, /a night is over the limit of \$300/);
+  // The budget violation reads as evaluate.js words it, with the period's label from BudgetCtx.
+  const cheap = res.legs.out.rows.find(r => r.key.endsWith('_2|LIGHT'));
+  const trip = policy.evaluateTrip({ out: cheap, back: null, hotel: null }, ctx, { budget: { remainingCents: 100, periodKey: '2026-Q4', periodLabel: 'Q4 2026', departmentName: 'Engineering' } });
+  const budget = trip.violations.find(x => x.rule === 'budget');
+  assert.equal(budget.text, `This trip would use ${require('../server/lib/money').format(cheap.totalCents)} of the $1 left in Engineering for Q4 2026`);
+  assert.throws(() => policy.evaluateTrip({ out: cheap, back: null, hotel: null }, ctx, { budget: { remainingCents: 100, periodKey: '2026-Q4', departmentName: 'Engineering' } }), /periodLabel/);
+});
+
+test('interfaces: fakeInventory providers refuse provider-contract queries; overrideProvider wraps a real provider for the real inventory seam', async () => {
+  const MockFlightProvider = require('../server/providers/mock/MockFlightProvider');
+  const MockHotelProvider = require('../server/providers/mock/MockHotelProvider');
+  const inv = fakes.fakeInventory();
+  // The fake's providers serve fakeComposer only: a contract-shaped query fails loudly instead of matching nothing.
+  await assert.rejects(inv.flights.search({ from: 'CAI', to: 'LHR', departDate: '2026-11-12', passengers: 1, cabin: 'economy' }), /overrideProvider/);
+  await assert.rejects(inv.hotels.search({ where: 'London', checkIn: '2026-11-12', checkOut: '2026-11-16', guests: 1 }), /overrideProvider/);
+  await assert.rejects(inv.flights.quote({ offerId: 'flt_fake_CAILHR_2026-11-12_1', optionId: 'LIGHT', query: { from: 'CAI', to: 'LHR', departDate: '2026-11-12', passengers: 1, cabin: 'economy' } }), /overrideProvider/);
+
+  const fq = { from: 'CAI', to: 'LHR', departDate: '2026-11-12', passengers: 1, cabin: 'economy' };
+  const hq = { where: 'Cairo', checkIn: '2026-11-12', checkOut: '2026-11-14', guests: 1 };
+  const innerF = new MockFlightProvider({ latencyMs: 0 }), innerH = new MockHotelProvider({ latencyMs: 0 });
+  const flights = fakes.overrideProvider(innerF), hotels = fakes.overrideProvider(innerH);
+  assertProvider(flights, 'flights');
+  assertProvider(hotels, 'hotels');
+  assert.deepEqual([flights.name, flights.vertical, flights.isDemo], [innerF.name, 'flights', true]);
+  // With nothing changed, everything is the wrapped provider's own (queries, offers, details, quotes).
+  const strip = q => ({ ...q, supplierQuoteRef: null });
+  assert.deepEqual(await flights.search(fq), await innerF.search(fq));
+  const [offer] = await hotels.search(hq);
+  for (const o of await flights.search(fq)) validateOffer(o, 'flights');
+  validateOffer(offer, 'hotels');
+  assert.ok(Array.isArray((await flights.search(fq))[0].details.segments), 'real FlightDetails');
+  const optionId = offer.options[0].id;
+  const same = await hotels.quote({ offerId: offer.id, optionId, query: hq });
+  validateQuote(same, 'hotels');
+  assert.deepEqual(strip(same), strip(await innerH.quote({ offerId: offer.id, optionId, query: hq })));
+  const sum = q => q.lines.reduce((n, l) => n + l.amount, 0);
+  // A price change moves the quote's total by exactly the delta (search unchanged).
+  hotels.setPrice(offer.id, optionId, 2900);
+  const changed = await hotels.quote({ offerId: offer.id, optionId, query: hq });
+  validateQuote(changed, 'hotels');
+  assert.equal(sum(changed), sum(same) + 2900);
+  assert.deepEqual(changed.lines.map(l => l.kind), same.lines.map(l => l.kind));
+  assert.deepEqual(await hotels.search(hq), await innerH.search(hq));
+  hotels.setPrice(offer.id, optionId, -sum(same) - 1);
+  await assert.rejects(hotels.quote({ offerId: offer.id, optionId, query: hq }), RangeError);
+  // Unavailable: the option shows available:false and quote() refuses as the mock providers do.
+  hotels.setUnavailable(offer.id, optionId);
+  const [marked] = await hotels.search(hq);
+  validateOffer(marked, 'hotels');
+  assert.equal(marked.options.find(o => o.id === optionId).available, false);
+  assert.equal((await hotels.getOffer(offer.id, hq)).options.find(o => o.id === optionId).available, false);
+  await assert.rejects(hotels.quote({ offerId: offer.id, optionId, query: hq }), e => e.code === 'option_sold_out' && e.status === 409);
+  hotels.clearOverrides();
+  assert.deepEqual(strip(await hotels.quote({ offerId: offer.id, optionId, query: hq })), strip(same));
+  assert.ok(hotels.calls.quote >= 5 && hotels.calls.search >= 2);
+  await assert.rejects(hotels.book({}), e => e.code === 'not_supported');
+  assert.throws(() => hotels.setPrice(offer.id, optionId, 1.5), RangeError);
+  // Through the documented seam.
+  const seam = createBusinessInventory({ allowDemoInventory: false }, { registry: { get: () => null }, overrides: { flights, hotels } });
+  assert.equal(seam.status, 'demo');
+  assert.equal(seam.flights, flights);
+  assert.equal(seam.hotels, hotels);
+});
+
+test('interfaces: accounts.emailInUse tells the invite landing whether to offer join or sign in', async () => {
+  const store = new MemoryStore();
+  const accounts = new Accounts({ store, config: loadConfig({}), now: fixed });
+  await accounts.register({ name: 'Dana Lee', email: 'dana@acme.example', password: 'correct horse battery' });
+  for (const e of ['dana@acme.example', ' DANA@Acme.Example ', 'dana@acme.example\x01']) assert.equal(await accounts.emailInUse(e), true, JSON.stringify(e));
+  for (const e of ['sam@acme.example', '', null, undefined, 'dana@acme.exampl']) assert.equal(await accounts.emailInUse(e), false, JSON.stringify(e));
 });

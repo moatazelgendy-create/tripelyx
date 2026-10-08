@@ -134,6 +134,20 @@ class Accounts {
     return user;
   }
 
+  /**
+   * Does an account already use this email? The same lookup register's email_taken check and authenticate
+   * make (lib/validate str, at most 120 characters, lowercased). For the Business invite landing, which
+   * shows "Create your account to join" or "Sign in to join" (types.InviteLanding 'join' or 'signin') to the
+   * holder of an invite for this address; never answer it to anyone else.
+   * @param {unknown} email
+   * @returns {Promise<boolean>}
+   */
+  async emailInUse(email) {
+    const key = str(email, 120).toLowerCase();
+    if (!key) return false;
+    return !!(await this.store.getRecord('user_email', key));
+  }
+
   async authenticate({ email, password }) {
     const fail = new AppError('invalid_login', 'That email and password don’t match an account.', 401);
     const link = await this.store.getRecord('user_email', str(email, 120).toLowerCase());

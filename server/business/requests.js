@@ -53,11 +53,15 @@ const methods = {
   async searchTrip(actor, raw) { notBuilt(); },
 
   /**
-   * Create a draft from a pick (trip.request; POST /trips). Re-parses the query, re-prices the selection
-   * (composer.price), re-searches the same legs for benchmarks, evaluates the trip with the budget preview,
-   * and when not within builds alternatives (composer.variants → alternatives.buildAlternatives →
-   * explainer.explain). One commit: biz_request insert (status draft; the traveler's name, manager,
-   * department and tier snapshotted), the traveler's biz_req_link, audit 'request.drafted'.
+   * Create a draft from a pick (trip.request; POST /trips). In this order: parse the raw query
+   * (composer.parseQuery); search the same legs again (composer.search) for the benchmarks; take that
+   * SearchResult.query (the query as searched: search() may have moved hotel.checkIn to the outbound
+   * arrival's local date, as it did for the results page) and use it for everything after, never the raw
+   * re-parse: price the selection with composer.price(selection, searched.query), store it as
+   * request.query. Then evaluate the trip with the budget preview, and when not within build alternatives
+   * (composer.variants(searched.query, …) → alternatives.buildAlternatives → explainer.explain). One commit:
+   * biz_request insert (status draft; the traveler's name, manager, department and tier snapshotted), the
+   * traveler's biz_req_link, audit 'request.drafted'.
    * @param {import('./types').MemberActor} actor
    * @param {{ query: import('./types').RawTripQuery, selection: { out?: string, back?: string, hotelKey?: string }, purpose: string }} input
    *   selection.hotelKey: the form's hotel radio (named hotelKey because `hotel` is the "I need a hotel" box)
@@ -82,7 +86,10 @@ const methods = {
 
   /**
    * The /trips lists, newest first, 50 per page. scope 'mine' (request.view.own), 'team' (request.view.team:
-   * the member's reports and department), 'all' (request.view.all) with filters.
+   * the requests roles.allowed(member, 'request.view.team', request, { pooled }) reaches, which is the
+   * member's own, those they are the assigned approver of, those of travelers they manage
+   * (travelerManagerId) and those they hold a pool link for; NOT their department's, so every Team row opens
+   * through memberGate), 'all' (request.view.all) with filters.
    * @param {import('./types').MemberActor} actor
    * @param {{ scope?: 'mine'|'team'|'all', status?: string, departmentId?: string, travelerId?: string,
    *   period?: string, cursor?: string|null }} [opts] status: an EffectiveStatus; period: a PeriodKey
@@ -106,7 +113,8 @@ const methods = {
 
   /**
    * Confirm a trip or request approval (the traveler, draft only; POST /trips/:rid/submit). Always re-checks
-   * the price first: a changed or unavailable price updates the draft (outcome 'repriced', no submit).
+   * the price first: a changed or unavailable price updates the draft instead (outcome 'repriced', no
+   * submit; one commit: request CAS with the re-priced, re-evaluated draft, audit 'request.repriced').
    * Within policy and inside the budget → approved by policy with the budget hold (outcome
    * 'auto_approved'; audit 'request.auto_approved'). Otherwise, outOfPolicy 'approval' → pending with the
    * resolved approver or pool, links and expiresAt (outcome 'submitted'; audit 'request.submitted').
@@ -116,8 +124,8 @@ const methods = {
    *   approval is needed (org.settings.reasonMinChars); category one of constants.REASON_CATEGORIES or blank
    * @returns {Promise<import('./types').SubmitResult>}
    * @throws {AppError} 422 'policy_blocked'; 422 'reason_too_short'; 422 'card_number'; 422 'no_approver'
-   *   ("No one else at Acme Inc can approve this yet …"); 409 'invalid_transition'; 409 'departed';
-   *   409 'conflict'; 404
+   *   ("No one else at Acme Inc can approve this yet …"); 422 'too_late' (the trip leaves too soon to wait
+   *   for an approval: the computed expiresAt is not after now); 409 'invalid_transition'; 409 'conflict'; 404
    */
   async submit(actor, rid, form) { notBuilt(); },
 
@@ -140,6 +148,9 @@ const methods = {
    * back to draft with `returned` (outcome 'returned', audit 'request.returned'); approve → request CAS,
    * budget hold (refused over budget unless ackOverBudget), a check on the decider's member rev, audit
    * 'request.approved' with decidedAs and overBudgetAck; deny → request CAS, audit 'request.denied'.
+   * Approve and deny also insert the decider's biz_req_link `${rid}.decider.${userId}` (role 'decider',
+   * whatever decidedAs) in the same commit, so "Decided by you" finds override decisions too. A request is
+   * decided at most once (approved and denied leave pending for good).
    * @param {import('./types').MemberActor} actor
    * @param {string} rid
    * @param {{ action: 'approve'|'deny', note?: string, ackOverBudget?: string, rev: string|number }} form
@@ -165,9 +176,10 @@ const methods = {
   async message(actor, rid, form) { notBuilt(); },
 
   /**
-   * The approvals inbox (approval.decide). Pages the member's 'approver' and 'pool' links (Repo.page on
-   * biz_req_link in member scope), getIn each request and keeps those whose effectiveStatus fits the tab;
-   * 'company' (approval.override only) pages the company's requests filtered to pending. Writes nothing.
+   * The approvals inbox (approval.decide). Pages the member's links (Repo.page on biz_req_link in member
+   * scope), getIn each request and keeps those that fit the tab: 'waiting' and 'expired' read the 'approver'
+   * and 'pool' links by effectiveStatus; 'decided' reads the 'decider' links (approval.decidedBy is the
+   * member); 'company' (approval.override only) pages the company's requests filtered to pending. Writes nothing.
    * @param {import('./types').MemberActor} actor
    * @param {{ tab?: 'waiting'|'decided'|'company'|'expired', cursor?: string|null }} [opts]
    * @returns {Promise<import('./types').InboxView>}

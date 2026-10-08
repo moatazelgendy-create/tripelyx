@@ -42,8 +42,10 @@ const FLEX_DAYS = 3;
  * today..today + 330; returnDate after departDate and ≤ departDate + 30; hotel: checkIn = departDate,
  * checkOut = returnDate, or checkIn + nights (1..14) one way; city and country from cityFor(to).
  * (search() moves checkIn to the outbound arrival's local date when every available outbound itinerary lands
- * on a later date, keeping the nights; SearchResult.query is the query as searched, and is what the results
- * form carries to POST /trips.)
+ * on a later date, keeping the nights; SearchResult.query is the query as searched. The results form carries
+ * only the RawTripQuery fields to POST /trips, never a check-in: createRequest parses them again, runs
+ * search() again (which moves checkIn the same way) and prices and stores that SearchResult.query. Nothing
+ * is ever priced with this function's output directly when a hotel is in the trip.)
  * @param {import('./types').RawTripQuery} raw
  * @param {{ today: string, airports: Array<{ code: string }>, cityFor: (iata: string) => { city: string, country: string }|null }} opts
  *   today: tz.localDate(org.timezone, now)

@@ -13,6 +13,7 @@
 const crypto = require('node:crypto');
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const { AppError } = require('../lib/errors');
+const { str } = require('../lib/validate');
 
 const MINUTE = 60 * 1000;
 const RATE_LIMITED = 'Too many requests in a short time. Wait a few minutes and try again.';
@@ -37,10 +38,13 @@ function ipKey(req) {
 /**
  * The email address being signed in to, as a short hash (never the address itself). Throws when the form
  * has not been parsed yet: the limiter is mounted in the wrong place.
+ * The address is normalised exactly as Accounts.authenticate looks it up (lib/validate str: control
+ * characters become spaces, trimmed, at most 120 characters; then lowercased), so every spelling that
+ * reaches one account shares one budget. Keep the two in step.
  */
 function accountKey(req) {
   if (!req.body || typeof req.body !== 'object') throw new Error('[business] bizAuthAccount must run after the form parser');
-  const email = String(req.body.email ?? '').trim().toLowerCase();
+  const email = str(req.body.email, 120).toLowerCase();
   return `acct:${crypto.createHash('sha256').update(email).digest('hex').slice(0, 16)}`;
 }
 

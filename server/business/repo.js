@@ -13,6 +13,7 @@
 const crypto = require('node:crypto');
 const { AppError } = require('../lib/errors');
 const { KINDS, LIST_LIMIT } = require('./constants');
+const { jsonProblem } = require('../booking/MemoryStore');
 
 /** An owner scope: org_, usr_ or mbr_ followed by 16 base64url characters (lib/ids.id() or memberScope()). */
 const SCOPE_RE = /^(org|usr|mbr)_[A-Za-z0-9_-]{16}$/;
@@ -34,8 +35,9 @@ const INSERT_ONLY = Object.freeze([KINDS.audit, KINDS.reqLink, KINDS.policyVersi
 /** Kinds that are never deleted: a removed member keeps a record with status 'removed' (§C3). */
 const NEVER_DELETED = Object.freeze([...INSERT_ONLY, KINDS.member, KINDS.org]);
 
-/** True for a string that can name a stored record (callers pass URL params straight in). */
-const validId = id => typeof id === 'string' && id.length > 0 && id.length <= 200;
+/** True for a string that can name a stored record (callers pass URL params straight in, and Express
+ * decodes %00 and friends, which Postgres text cannot hold): 1 to 200 characters, no control characters. */
+const validId = id => typeof id === 'string' && id.length > 0 && id.length <= 200 && !/[\u0000-\u001f\u007f]/.test(id);
 /** Ids written by Business: composite ids join parts with '.', never ':'. */
 const checkNewId = id => { if (!validId(id) || id.includes(':')) throw new Error('[business] bad record id'); };
 const checkKind = kind => { if (typeof kind !== 'string' || !/^biz_[a-z_]+$/.test(kind)) throw new Error('[business] bad record kind'); };
@@ -43,27 +45,18 @@ const checkKind = kind => { if (typeof kind !== 'string' || !/^biz_[a-z_]+$/.tes
 /** A plain object: not null, not an array, not a class instance or Date. */
 const isPlainObject = v => !!v && typeof v === 'object' && !Array.isArray(v) && Object.getPrototypeOf(v) === Object.prototype;
 
-function checkDoc(v, path) {
-  if (v === null || typeof v === 'string' || typeof v === 'boolean') return;
-  if (typeof v === 'number') { if (!Number.isFinite(v)) throw new Error(`[business] ${path} is not a finite number`); return; }
-  if (Array.isArray(v)) { v.forEach((x, i) => checkDoc(x, `${path}[${i}]`)); return; }
-  if (typeof v === 'object' && Object.getPrototypeOf(v) === Object.prototype) {
-    for (const [k, x] of Object.entries(v)) checkDoc(x, `${path}.${k}`);
-    return;
-  }
-  throw new Error(`[business] ${path} is not plain JSON (${v === undefined ? 'undefined' : Object.prototype.toString.call(v)})`);
-}
-
 /**
  * Throws unless `doc` is a plain object of JSON values (no undefined, NaN, Infinity, Date, class
- * instances or functions anywhere; not an array at the top).
+ * instances or functions anywhere; not an array at the top; no NUL or unpaired surrogate in any string).
+ * The same rule store.commit applies (MemoryStore.jsonProblem), so both stores hold the same document.
  * @param {unknown} doc
  */
 function assertDoc(doc) {
   if (!isPlainObject(doc)) {
     throw new Error('[business] a record must be a plain object');
   }
-  checkDoc(doc, 'data');
+  const problem = jsonProblem(doc, 'data');
+  if (problem) throw new Error(`[business] ${problem}`);
 }
 
 /**
@@ -142,6 +135,7 @@ class Repo {
    * @returns {Promise<object|null>}
    */
   async get(kind, id) {
+    checkKind(kind);
     if (!validId(id)) return null;
     return this.store.getRecord(kind, id);
   }
@@ -155,6 +149,7 @@ class Repo {
    * @returns {Promise<object|null>}
    */
   async getIn(kind, id, orgId) {
+    checkKind(kind);
     if (!validId(orgId)) return null;
     const d = await this.get(kind, id);
     if (!d) return null;
@@ -173,6 +168,7 @@ class Repo {
    * @returns {Promise<object[]>}
    */
   async list(kind, scope, { limit = BOUNDED_LIST, by = 'at' } = {}) {
+    checkKind(kind);
     this.assertScope(scope);
     if (!Number.isInteger(limit) || limit < 1 || limit > BOUNDED_LIST) throw new RangeError(`[business] list limit must be 1 to ${BOUNDED_LIST}; use page()`);
     const rows = await this.store.listRecords(kind, { userId: scope, limit });
@@ -195,6 +191,7 @@ class Repo {
    * @returns {Promise<{ rows: object[], cursor: string|null }>} cursor is null on the last page
    */
   async page(kind, scope, { limit = 50, cursor = null } = {}) {
+    checkKind(kind);
     this.assertScope(scope);
     if (!Number.isInteger(limit) || limit < 1 || limit > PAGE_MAX) throw new RangeError(`[business] page limit must be 1 to ${PAGE_MAX}`);
     const tag = crypto.createHash('sha256').update(`${kind}|${scope}`).digest('base64url').slice(0, 10);
@@ -355,6 +352,7 @@ class Repo {
    * @returns {Promise<boolean>} whether one was removed
    */
   async del(kind, id) {
+    checkKind(kind);
     if (NEVER_DELETED.includes(kind)) throw new Error(`[business] ${kind} records are never deleted`);
     if (!validId(id)) return false;
     return this.store.deleteRecord(kind, id);

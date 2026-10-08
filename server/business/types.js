@@ -229,7 +229,8 @@
 /**
  * `biz_req_link`, id `${requestId}.${role}.${userId}`, owner repo.memberScope(orgId, userId). Insert-only.
  * A hint for "my requests" and the inbox; every read re-validates the request with getIn and roles.allowed.
- * @typedef {{ orgId: string, requestId: string, userId: string, role: 'traveler'|'approver'|'pool', at: string }} ReqLink
+ * role 'decider' is written by every approve or deny (any decidedAs), for "Decided by you" (constants.REQ_LINK_ROLES).
+ * @typedef {{ orgId: string, requestId: string, userId: string, role: 'traveler'|'approver'|'pool'|'decider', at: string }} ReqLink
  */
 
 /**
@@ -413,6 +414,10 @@
  *   hotel ('1' = I need a hotel), nights (1..14; only used one way with a hotel),
  *   cabin ('economy'|'premium'|'business'), flex ('1' = my dates can move by up to 3 days).
  * POST /trips repeats them as hidden fields, plus out, back, hotelKey (Selection keys) and purpose.
+ * There is no check-in field, on purpose: the hotel dates are never taken from a form. POST /trips
+ * re-parses these fields and runs composer.search again, which moves hotel.checkIn exactly as it did for
+ * the results page; createRequest prices the selection with that SearchResult.query (the query as
+ * searched) and stores it as request.query, never the raw re-parse (see requests.createRequest).
  * @typedef {Record<string, string>} RawTripQuery
  */
 
@@ -522,7 +527,8 @@
  * composer.search(query). Rows are sorted by totalCents (unavailable last). truncated: more than
  * search.MAX_PRICED_PER_LEG (60) options, the rest not priced.
  * @typedef {object} SearchResult
- * @property {TripQuery} query as searched: hotel.checkIn may have moved to the outbound arrival's local date
+ * @property {TripQuery} query as searched: hotel.checkIn may have moved to the outbound arrival's local date.
+ *   This, not the parsed form, is the query to price a selection with and to store on a request.
  * @property {{ out: FlightLegResult, back: FlightLegResult|null, hotel: HotelLegResult|null }} legs
  * @property {string} pricedAt
  * @property {InventoryStatus} status
@@ -584,7 +590,11 @@
  * @property {string} orgName ("Sahara Wings isn't used by Acme Inc")
  */
 
-/** The budget check of evaluateTrip. @typedef {{ remainingCents: number, periodKey: PeriodKey, departmentName: string }} BudgetCtx */
+/**
+ * The budget check of evaluateTrip. periodLabel is budgets.periodLabel(periodKey) ('Q4 2026'), filled in by
+ * the caller so evaluate stays pure: "This trip would use $1,240 of the $900 left in Engineering for Q4 2026".
+ * @typedef {{ remainingCents: number, periodKey: PeriodKey, periodLabel: string, departmentName: string }} BudgetCtx
+ */
 
 /**
  * One broken rule. rule is one of evaluate.RULE_IDS: 'flight.cap', 'flight.cabin', 'flight.advance',
@@ -594,7 +604,9 @@
  * @property {string} rule
  * @property {Component|'trip'} component
  * @property {'approval'|'block'} severity block: flight.carrier and inventory.unavailable
- * @property {number|string|null} limit cents, days, stops, stars, a cabin or a carrier code
+ * @property {number|string|null} limit cents, days, stops, stars, a cabin or a carrier code. Money is what the rule
+ *   compares: flight.cap the leg's cap and total; hotel.cap the WHOLE STAY on the cap basis (limit = nightly cap ×
+ *   nights, actual = the stay's basis total), never per night; trip.cap and budget the trip total
  * @property {number|string|null} actual
  * @property {string} text plain English with amounts formatted by lib/money, no em dash
  */
@@ -605,7 +617,9 @@
  * @property {PolicyStatus} status any block violation → blocked; else in 'block' mode any non-budget violation → blocked; else any → out
  * @property {Violation[]} violations
  * @property {{ cents: number|null, source: string, haul?: 'short'|'long', basis?: 'incl_taxes'|'excl_taxes' }} cap
- * @property {number} overCents how far over the cap (0 when within or no cap)
+ *   cents: a flight's cap, or a hotel's NIGHTLY cap (types.HotelCap)
+ * @property {number} overCents how far over the cap, in the units the rule compares: a flight's total minus its
+ *   cap; for a hotel the stay's basis total minus cap × nights (a stay total). 0 when within or no cap
  */
 
 /**
@@ -641,7 +655,9 @@
 
 /**
  * A cheaper way to make the trip (alternatives.buildAlternatives). id = sha256 of the selection and query,
- * 16 hex characters. label and giveUps hold no digits and no currency signs.
+ * 16 hex characters. label holds no digits and no currency signs (nor do the explainer's notes and summary).
+ * giveUps may hold times, counts and percentages ('Leaves 07:05 instead of 13:40', '1 checked bag instead of
+ * 2', 'Refunds nothing (yours refunds 70%)') but never an amount of money or a currency sign.
  * @typedef {object} Alternative
  * @property {string} id
  * @property {ChangeKind} kind
@@ -832,6 +848,9 @@
  * @property {Checklist|null} checklist owner, travel admin
  * @property {{ count: number, rows: InboxRow[] }|null} waiting approval.decide: the 5 oldest waiting for you
  * @property {RequestRow[]} myTrips the 5 newest of the member's own
+ * @property {RequestRow[]|null} teamTrips request.view.team: the 5 newest team requests (roles.allowed with
+ *   'request.view.team', the member's own left out) departing in the period, for the Manager home's "team trips
+ *   this period"
  * @property {PolicyDescription} policy the member's own tier at a glance
  * @property {{ count: number }|null} pendingCompany request.view.all
  * @property {OutOfPolicyShare|null} outOfPolicyShare reports.view
@@ -888,8 +907,8 @@
 
 /**
  * service.inbox(actor, { tab, cursor }). Tabs: 'waiting' ("Waiting for you", oldest first), 'decided'
- * ("Decided by you"), 'company' (override holders: every pending request; null count otherwise),
- * 'expired' (no actions).
+ * ("Decided by you": the member's 'decider' links, so override decisions show too), 'company' (override
+ * holders: every pending request; null count otherwise), 'expired' (no actions).
  * @typedef {{ tab: 'waiting'|'decided'|'company'|'expired', counts: { waiting: number, decided: number,
  *   company: number|null, expired: number }, rows: InboxRow[], cursor: string|null }} InboxView
  */
@@ -962,8 +981,9 @@
 
 /**
  * service.inviteByToken({ user }, token): the invite landing. state:
- *   'join'            signed out, no account with the email → create an account to join
- *   'signin'          signed out, an account already uses the email → sign in to join
+ *   'join'            signed out, no account with the email (this.accounts.emailInUse(invite.email) false)
+ *                     → create an account to join
+ *   'signin'          signed out, an account already uses the email (emailInUse true) → sign in to join
  *   'accept'          signed in with the invited email → join
  *   'other_email'     signed in with another email → refused (copy in plan §B6)
  *   'member'          already an active member → link to the workspace
