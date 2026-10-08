@@ -22,12 +22,24 @@
 //   to still name this invite. Accepting, revoking and removing the member clear it.
 // - D4: config.business.maxOrgsPerUser counts biz_user_index.orgIds, re-checked inside the index cas.
 // - D5: the account's email must be exactly the invite's (the token was sent to it); no takeover.
+// - An invite carries its inviter's authority only while they hold it: accepting re-reads the inviter, who
+//   must still be an active member able to grant the invite's role, and checks their record's rev in the
+//   same commit (a demotion racing the accept wins, and the accept answers 410). A new invite for the same
+//   email may replace only an invite whose role the new inviter could grant.
 // - D8: org.ownerIds changes in the same commit as the member, against the org rev the actor read, so two
 //   owners demoting (or removing) each other at once: exactly one wins, the other gets 409; the cas fn
 //   refuses an empty list (422 'last_owner').
 // - Every admin write also checks the acting member's own rev, so a change made by someone whose role was
 //   taken away a moment earlier never lands.
+// - Joins and removals of different people change only counters on biz_org, so they cas it against the rev
+//   read at commit time (its fn re-checks status and the cap) and retry; departments cas the org against the
+//   rev read before listing them, which serializes creates and renames (unique names, the 200 cap).
 // - Audit summaries never carry a full email: Finance reads the activity log without members.manage.
+// - Company members see the org without the platform's statusBy and statusNote (orgView), and a platform
+//   change is recorded under the name "Tripelyx". The platform methods ask accounts.isPlatformAdmin each time.
+// - A confirmed company that takes a new name (a new nameKey) goes back to 'pending' until Tripelyx confirms
+//   it again (not with config.business.selfServe). The settings form is stale only when a setting changed
+//   after it was loaded (org.settingsRev, the org rev of the last settings change), not on every org write.
 const crypto = require('node:crypto');
 const { AppError } = require('../lib/errors');
 const { id } = require('../lib/ids');
@@ -38,7 +50,7 @@ const {
 } = require('./constants');
 const { ROLES, LABELS, can, assignableBy } = require('./roles');
 const v = require('./validate');
-const { loadActor, need, who, platformActor, auditInsert, memberId, notFound, forbidden, suspended } = require('./actor');
+const { loadActor, need, who, auditInsert, memberId, notFound, forbidden, suspended } = require('./actor');
 const { conflict, ORG_ID_RE, USER_ID_RE } = require('./repo');
 const { newToken, hashToken, sameHash, isToken } = require('./tokens');
 const { defaultPolicy, DEFAULTS_NOTE } = require('./policy/defaults');
@@ -58,6 +70,10 @@ const EXPORT_CAP = 20000;
 const FILTER_PAGES = 25;
 /** Platform list order: waiting companies first. */
 const STATUS_ORDER = Object.freeze({ pending: 0, active: 1, suspended: 2 });
+/** Retries for server-side writes whose only contention is a counter on biz_org (each round lets one through). */
+const COUNTER_TRIES = 10;
+/** How a platform change appears to the company: Tripelyx, never the staff member's own name. */
+const PLATFORM_NAME = 'Tripelyx';
 /** The member fields updateMember may change, in the order changes are listed. */
 const MEMBER_FIELDS = Object.freeze(['role', 'departmentId', 'managerId', 'approverId', 'tier']);
 const FIELD_WORDS = Object.freeze({ departmentId: 'department', managerId: 'manager', approverId: 'approver', tier: 'policy tier' });
@@ -105,9 +121,11 @@ const nameKeyOf = name => String(name).normalize('NFKC').toLowerCase().replace(/
 const deptKey = name => String(name).normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().replace(/\s+/g, ' ').trim();
 /** Can this invite still be accepted at `nowIso`? */
 const usable = (inv, nowIso) => !!inv && !inv.acceptedAt && !inv.revokedAt && typeof inv.expiresAt === 'string' && inv.expiresAt > nowIso;
+/** A form's rev (an integer or a digit string) as an integer, or NaN. */
+const formRevOf = rev => (typeof rev === 'number' ? rev : /^\d{1,9}$/.test(String(rev ?? '')) ? Number(rev) : NaN);
 /** Does a form's rev (an integer or a digit string) match the record's? */
 function sameRev(rev, doc) {
-  const n = typeof rev === 'number' ? rev : /^\d{1,9}$/.test(String(rev ?? '')) ? Number(rev) : NaN;
+  const n = formRevOf(rev);
   return Number.isInteger(n) && n === (doc.rev ?? 0);
 }
 /** The owner list after `userId` becomes (or stops being) an owner. */
@@ -115,10 +133,27 @@ function nextOwners(ownerIds, userId, owner) {
   const rest = (Array.isArray(ownerIds) ? ownerIds : []).filter(x => x !== userId);
   return owner ? [...rest, userId] : rest;
 }
-/** "Tripelyx" in any case, width, accent or spacing (checked on validate.text() output). */
+/**
+ * Letters and digits that read as one of t, r, i, p, e, l, y, x (Cyrillic and Greek look-alikes, small
+ * capitals, 1, 3, |, !), folded to that Latin letter. i and l (and 1, |, !) read alike, so both fold to 'i'.
+ */
+const CONFUSABLE = Object.freeze({
+  'т': 't', 'τ': 't', 'ᴛ': 't', '7': 't',
+  'г': 'r', 'ʀ': 'r',
+  'і': 'i', 'ӏ': 'i', 'ι': 'i', 'ı': 'i', 'ɪ': 'i', 'ǀ': 'i', '1': 'i', '|': 'i', '!': 'i', 'l': 'i', 'ʟ': 'i',
+  'р': 'p', 'ρ': 'p', 'ᴘ': 'p',
+  'е': 'e', 'є': 'e', 'ε': 'e', 'ᴇ': 'e', '3': 'e',
+  'у': 'y', 'ү': 'y', 'γ': 'y', 'υ': 'y', 'ʏ': 'y',
+  'х': 'x', 'χ': 'x', '×': 'x', 'ⅹ': 'x',
+});
+/** "Tripelyx" in any case, width, accent or spacing, or spelled with look-alike letters (on validate.text() output). */
 function namesTripelyx(name) {
-  const s = String(name).toLowerCase();
-  return s.includes('tripelyx') || s.normalize('NFKD').replace(/\p{M}/gu, '').replace(/[^a-z0-9]/g, '').includes('tripelyx');
+  const s = String(name).normalize('NFKC').toLowerCase();
+  if (s.includes('tripelyx')) return true;
+  const bare = s.normalize('NFKD').replace(/\p{M}/gu, '');
+  if (bare.replace(/[^a-z0-9]/g, '').includes('tripelyx')) return true;
+  const folded = [...bare].map(ch => CONFUSABLE[ch] || ch).join('').replace(/[^a-z]/g, '');
+  return folded.includes('tripeiyx');
 }
 /** A company name: required, ≤ 80 characters of NFKC text, never naming Tripelyx. */
 function companyName(x) {
@@ -145,6 +180,53 @@ function inviteView(inv, departmentsById) {
     publicId: inv.publicId, email: inv.email, role: inv.role, roleLabel: LABELS[inv.role], departmentName: dep ? dep.name : null,
     expiresAt: inv.expiresAt, at: inv.at,
   };
+}
+
+/** Can this member (still) hand out `role` through an invite: active, members.manage, and a role theirs may grant. */
+const canGrant = (m, role) => !!m && m.status === 'active' && can(m.role, 'members.manage') && assignableBy(m.role).includes(role);
+
+/**
+ * The company as its members see it: every Org field, but never which Tripelyx staff member changed its
+ * status or the note they wrote (statusBy and statusNote are null), and not the internal settingsRev.
+ */
+function orgView(org) {
+  const { settingsRev: _settingsRev, ...rest } = org; // eslint-disable-line no-unused-vars
+  return { ...rest, statusBy: null, statusNote: null };
+}
+
+/** The org rev a settings form must be at least (the rev the last settings change wrote; 0 before any). */
+const settingsRevOf = org => (Number.isInteger(org.settingsRev) ? org.settingsRev : 0);
+
+/**
+ * The platform admin behind a platform call. The isAdmin flag on the actor is only a first filter: the
+ * service asks accounts.isPlatformAdmin (ADMIN_EMAILS and the platform_admin record, D1) every time, so a
+ * made-up user, a flag set on an ordinary account or a revoked admin all get 404.
+ * @this {{ accounts: object|null }} the service
+ */
+async function platformUser(actor) {
+  if (!isAdmin(actor) || !this.accounts || typeof this.accounts.isPlatformAdmin !== 'function') throw notFound();
+  if (await this.accounts.isPlatformAdmin(actor.user) !== true) throw notFound();
+  return actor.user;
+}
+
+/**
+ * Was the company still pending when Tripelyx last paused it? The newest 'org.suspended' entry of its
+ * activity log says (a paused company writes nothing else, so it is on the first page). Then making it
+ * active is its confirmation, not a reactivation.
+ */
+async function pausedWhilePending(repo, orgId) {
+  let cursor = null;
+  for (let reads = 0; reads < FILTER_PAGES; reads += 1) {
+    const page = await repo.page(KINDS.audit, orgId, { limit: PAGE_SIZE, cursor });
+    const hit = page.rows.find(e => e && e.orgId === orgId && e.action === 'org.suspended');
+    if (hit) {
+      const change = (Array.isArray(hit.changes) ? hit.changes : []).find(c => c && c.path === 'status');
+      return !!change && change.before === 'pending';
+    }
+    cursor = page.cursor;
+    if (!cursor) break;
+  }
+  return false;
 }
 
 /** The check entry that keeps the acting member's own record (and so their role) unchanged until the commit lands. */
@@ -182,12 +264,14 @@ async function scanAll(repo, kind, scope, cap = SCAN_CAP) {
 }
 
 /**
- * A user's company index (biz_user_index, id and owner the user id). It is keyed by the user's own id and
- * holds no company data, so it is read by id like a token lookup (it has no orgId for getIn to check).
+ * A user's company index (biz_user_index, id and owner the user id), read through the user's own scope
+ * (Repo.list, so the only by-id read left here is the invite-token lookup, §I7). There is one per user; the
+ * limit of 2 never reaches Repo.list's "limit reached" warning.
  */
 async function userIndex(repo, userId) {
-  const d = await repo.get(KINDS.userIndex, userId);
-  return d && d.userId === userId && Array.isArray(d.orgIds) ? d : null;
+  const rows = await repo.list(KINDS.userIndex, userId, { limit: 2 });
+  const d = rows.find(x => x && x.userId === userId);
+  return d && Array.isArray(d.orgIds) ? d : null;
 }
 
 /** The index entry that adds orgId for userId under the D4 cap: an insert, or a cas re-checking the count. */
@@ -306,14 +390,15 @@ const methods = {
   },
 
   /**
-   * The company, for a member (org.view).
+   * The company, for a member (org.view), as members see it: statusBy and statusNote (who at Tripelyx last
+   * changed its status, and their internal note) are always null.
    * @param {import('./types').MemberActor} actor
    * @returns {Promise<import('./types').Org>}
    */
   async getOrg(actor) {
     const a = await loadActor(this.repo, actor);
     need(a, 'org.view');
-    return a.org;
+    return orgView(a.org);
   },
 
   /**
@@ -364,7 +449,9 @@ const methods = {
     let invites = null;
     if (manage) {
       const nowIso = this.repo.iso();
-      invites = (await scanAll(this.repo, KINDS.invite, orgId)).rows.filter(i => i && i.orgId === orgId && usable(i, nowIso))
+      // Only invites that can still be accepted: unused, unexpired, and from someone who may still grant the role.
+      invites = (await scanAll(this.repo, KINDS.invite, orgId)).rows
+        .filter(i => i && i.orgId === orgId && usable(i, nowIso) && canGrant(byId[i.invitedBy], i.role))
         .sort((x, y) => (x.at < y.at ? 1 : x.at > y.at ? -1 : 0)).map(i => inviteView(i, depById));
     }
     return { members, cursor: page.cursor, invites, departments, warnings, memberCount: a.org.memberCount };
@@ -411,6 +498,11 @@ const methods = {
       const pid = pointerId(orgId, f.email);
       const pointer = await this.repo.getIn(KINDS.inviteEmail, pid, orgId);
       const prev = pointer && pointer.inviteHash ? await this.repo.getIn(KINDS.invite, pointer.inviteHash, orgId) : null;
+      // A pending invite that could still be accepted is replaced only by someone who could grant its role
+      // (revokeInvite's rule), so a Travel Admin cannot swap an Owner's Finance invite for one of their own.
+      const prevInviter = usable(prev, at) && isUserId(prev.invitedBy) ? active.get(prev.invitedBy) : null;
+      const prevLive = !!prevInviter && canGrant(prevInviter, prev.role);
+      if (prevLive && !assignableBy(a.member.role).includes(prev.role)) throw forbidden(a.member.role, a.org.name);
       const inv = {
         orgId, publicId: id(ID_PREFIX.invite), tokenHash: hash, email: f.email, role: f.role, departmentId: f.departmentId,
         managerId: f.managerId, approverId: f.approverId, tier: f.tier, invitedBy: a.member.userId, at,
@@ -432,7 +524,7 @@ const methods = {
         changes: [{ path: 'role', before: null, after: f.role }, { path: 'tier', before: null, after: f.tier }],
       }));
       await commitOnce(this.repo, { cas, inserts, checks: [actorCheck(a)] });
-      return { token, invite: inviteView(inv, depById), replaced: usable(prev, at), orgName: a.org.name };
+      return { token, invite: inviteView(inv, depById), replaced: prevLive, orgName: a.org.name };
     }, { tries: 4 });
   },
 
@@ -444,26 +536,29 @@ const methods = {
    * @param {import('./types').UserActor} actor actor.user may be null (signed out)
    * @param {string} token
    * @returns {Promise<import('./types').InviteLanding>}
-   * @throws {AppError} 410 'invite_gone' for a malformed, unknown, expired, revoked, replaced or used token;
-   *   403 'org_suspended' when Tripelyx has paused the company (the same answer acceptInvite gives)
+   * @throws {AppError} 410 'invite_gone' for a malformed, unknown, expired, revoked, replaced or used token, one
+   *   whose inviter can no longer grant its role, or (signed in) one older than the user's removal; 403
+   *   'org_suspended' when Tripelyx has paused the company (the same answers acceptInvite gives)
    */
   async inviteByToken(actor, token) {
-    const { inv, org } = await usableInvite.call(this, token);
+    const { inv, org, inviter } = await usableInvite.call(this, token);
     const user = actor && actor.user && isUserId(actor.user.id) ? actor.user : null;
-    const [dep, inviter] = await Promise.all([
-      inv.departmentId ? this.repo.getIn(KINDS.department, inv.departmentId, org.id) : null,
-      isUserId(inv.invitedBy) ? this.repo.getIn(KINDS.member, memberId(org.id, inv.invitedBy), org.id) : null,
-    ]);
+    const dep = inv.departmentId ? await this.repo.getIn(KINDS.department, inv.departmentId, org.id) : null;
     let state = null;
     if (user && await this.membership({ user }, org.id)) state = 'member';
     else if (org.status === 'pending') state = 'pending_company';
     else if (user) state = String(user.email || '').toLowerCase() === inv.email ? 'accept' : 'other_email';
     else state = (await this.accounts.emailInUse(inv.email)) ? 'signin' : 'join';
+    if (state === 'accept') {
+      // The landing never offers an accept that acceptInvite would refuse (a removed member's older invite).
+      const existing = await this.repo.getIn(KINDS.member, memberId(org.id, user.id), org.id);
+      if (existing && !rejoinable(existing, inv)) throw inviteGone();
+    }
     return {
       org: { id: org.id, name: org.name, status: org.status },
       invite: {
         publicId: inv.publicId, email: inv.email, emailMasked: maskEmail(inv.email), role: inv.role, roleLabel: LABELS[inv.role],
-        departmentName: dep ? dep.name : null, invitedByName: inviter ? inviter.name : '', expiresAt: inv.expiresAt,
+        departmentName: dep ? dep.name : null, invitedByName: inviter.name || '', expiresAt: inv.expiresAt,
       },
       state,
     };
@@ -472,10 +567,12 @@ const methods = {
   /**
    * Join a company from an invite (POST /invite/:token/accept, or /join right after accounts.register with
    * emailProof { via: 'invite', orgId, at }). The account's email must equal the invite's (D5); the pointer
-   * must still point at this invite (D3); D4 cap. One commit: invite CAS (acceptedAt, acceptedBy), pointer
-   * CAS (inviteHash null), the biz_member insert (or CAS of a removed member back to active, only for an
-   * invite created after removedAt), org CAS (memberCount + 1; ownerIds for an owner), user index insert or
-   * CAS, audit 'member.joined'.
+   * must still point at this invite (D3); D4 cap; the inviter must still be an active member who may grant
+   * the invite's role. One commit: invite CAS (acceptedAt, acceptedBy), pointer CAS (inviteHash null), the
+   * biz_member insert (or CAS of a removed member back to active, only for an invite created at or after
+   * removedAt), org CAS (memberCount + 1; ownerIds for an owner; against the rev read at commit time, so
+   * joins of different people never block each other), user index insert or CAS, a check of the inviter's
+   * member rev, audit 'member.joined'.
    * @param {import('./types').UserActor} actor
    * @param {string} token
    * @returns {Promise<{ org: import('./types').Org, member: import('./types').Member }>}
@@ -487,7 +584,7 @@ const methods = {
     if (!user || !isUserId(user.id)) throw notFound();
     const max = this.config.business.maxOrgsPerUser;
     return this.repo.withRetry(async () => {
-      const { hash, inv, org, pointer } = await usableInvite.call(this, token);
+      const { hash, inv, org, pointer, inviter } = await usableInvite.call(this, token);
       if (org.status === 'pending') throw companyPending(org.name);
       const email = String(user.email || '').toLowerCase();
       if (email !== inv.email) throw emailMismatch(inv.email, email);
@@ -495,7 +592,7 @@ const methods = {
       const existing = await this.repo.getIn(KINDS.member, mid, org.id);
       if (existing && existing.status === 'active') throw youAreMember();
       // A removed member comes back only through an invite created after they were removed (D3).
-      if (existing && !(typeof existing.removedAt === 'string' && inv.at > existing.removedAt)) throw inviteGone();
+      if (existing && !rejoinable(existing, inv)) throw inviteGone();
       const index = await userIndex(this.repo, user.id);
       if (index && !index.orgIds.includes(org.id) && index.orgIds.length >= max) throw tooMany(max);
       if ((org.memberCount || 0) >= MEMBER_CAP) throw companyFull();
@@ -522,7 +619,8 @@ const methods = {
           fn: d => { if (d.inviteHash !== hash) throw inviteGone(); d.inviteHash = null; },
         },
         {
-          kind: KINDS.org, id: org.id, rev: org.rev ?? 0, server: true,
+          // Counters only, re-checked here: the rev read at commit time (another join just retries).
+          kind: KINDS.org, id: org.id, rev: null,
           fn: d => {
             if (d.status === 'pending') throw companyPending(d.name);
             if (d.status !== 'active') throw suspended();
@@ -549,9 +647,12 @@ const methods = {
         orgId: org.id, actor: { userId: user.id, name, role: inv.role }, action: 'member.joined', target: { kind: KINDS.member, id: user.id },
         summary: `${name} joined as ${LABELS[inv.role]}`, changes: [{ path: 'role', before: null, after: inv.role }],
       }));
-      const docs = await commitOnce(this.repo, { cas, inserts });
-      return { org: docs[`${KINDS.org}:${org.id}`], member: docs[`${KINDS.member}:${mid}`] };
-    }, { tries: 4 });
+      // The inviter keeps the role that lets them grant this one until the join lands (a racing demotion or
+      // removal wins, and the retry answers 410).
+      const checks = [{ kind: KINDS.member, id: memberId(org.id, inviter.userId), rev: inviter.rev ?? 0, server: true }];
+      const docs = await commitOnce(this.repo, { cas, inserts, checks });
+      return { org: orgView(docs[`${KINDS.org}:${org.id}`]), member: docs[`${KINDS.member}:${mid}`] };
+    }, { tries: COUNTER_TRIES });
   },
 
   /**
@@ -747,14 +848,15 @@ const methods = {
         })],
       });
       return docs[`${KINDS.member}:${mid}`];
-    }, { tries: 4 });
+    }, { tries: COUNTER_TRIES });
   },
 
   /**
    * Create, rename or archive a department (departments.manage). No departmentId → create (audit
    * 'department.created'); with a name change → 'department.renamed'; archive '1' → 'department.archived'
    * (its budgets and history stay; members keep it until changed). Names are unique per company,
-   * case-insensitive, ≤ 80; at most constants.DEPARTMENT_CAP.
+   * case-insensitive, ≤ 80; at most constants.DEPARTMENT_CAP. Creates and renames cas the org against the
+   * rev read before the departments were listed, so racing ones run one after another and see each other.
    * @param {import('./types').MemberActor} actor
    * @param {{ departmentId?: string, name?: string, archive?: string, rev?: string|number }} form
    * @returns {Promise<import('./types').Department>}
@@ -766,6 +868,9 @@ const methods = {
       const a = await loadActor(this.repo, actor);
       need(a, 'departments.manage');
       const orgId = a.org.id;
+      // Read before the list below: a create or rename that lands in between moves the org rev, so this
+      // commit loses and the retry lists again (the cap and unique names hold under races).
+      const serialize = { kind: KINDS.org, id: orgId, rev: a.org.rev ?? 0, server: true, fn: () => undefined };
       const all = await this.repo.list(KINDS.department, orgId);
       const at = this.repo.iso();
       const actorName = who(a).name;
@@ -778,6 +883,7 @@ const methods = {
         if (taken(name, null)) throw departmentExists();
         const depId = id(ID_PREFIX.department);
         const docs = await commitOnce(this.repo, {
+          cas: [serialize],
           checks: [actorCheck(a)],
           inserts: [
             { kind: KINDS.department, id: depId, data: { id: depId, orgId, name, archivedAt: null, at, updatedAt: at, rev: 0 }, owner: orgId },
@@ -815,12 +921,15 @@ const methods = {
         }));
       }
       const docs = await commitOnce(this.repo, {
-        cas: [{ kind: KINDS.department, id: dep.id, rev: dep.rev ?? 0, fn: d => { d.name = next.name; d.archivedAt = next.archivedAt; d.updatedAt = at; } }],
+        cas: [
+          { kind: KINDS.department, id: dep.id, rev: dep.rev ?? 0, fn: d => { d.name = next.name; d.archivedAt = next.archivedAt; d.updatedAt = at; } },
+          ...(renamed ? [serialize] : []),
+        ],
         checks: [actorCheck(a)],
         inserts: audits,
       });
       return docs[`${KINDS.department}:${dep.id}`];
-    }, { tries: 4 });
+    }, { tries: COUNTER_TRIES });
   },
 
   /**
@@ -837,60 +946,83 @@ const methods = {
   /**
    * Save company settings. name and timezone need settings.company; outOfPolicy ('approval'|'block'),
    * approvalHours (4..168) and budgetPeriod ('quarter'|'month') need settings.travel. Changing a field whose
-   * permission the member lacks → 403. One commit: org CAS (form rev), audit 'org.settings_changed' with changes.
+   * permission the member lacks → 403. One commit: org CAS, audit 'org.settings_changed' with changes.
+   * The form's rev is the org rev it was loaded at. It is stale (409, before any field is checked) when a
+   * setting changed after that (org.settingsRev) or when the org never had that rev; other org writes in
+   * between (joins, removals, status) leave it current. A confirmed company whose name changes beyond case,
+   * spacing and punctuation (nameKey) goes back to 'pending' until Tripelyx confirms it again (not with
+   * config.business.selfServe); the audit entry lists that status change.
    * @param {import('./types').MemberActor} actor
    * @param {{ name?: string, timezone?: string, outOfPolicy?: string, approvalHours?: string, budgetPeriod?: string, rev: string|number }} form
-   * @returns {Promise<import('./types').Org>}
+   * @returns {Promise<import('./types').Org>} as getOrg shows it
    * @throws {AppError} 422 'invalid_settings' with details; 403; 409 'conflict'
    */
   async saveSettings(actor, form) {
     const f0 = form && typeof form === 'object' ? form : {};
-    const a = await loadActor(this.repo, actor);
-    const role = a.member.role;
-    if (!can(role, 'settings.company') && !can(role, 'settings.travel')) need(a, 'settings.company');
-    const org = a.org;
-    const s = org.settings || {};
-    const f = v.collect('invalid_settings', {
-      name: () => (given(f0, 'name') ? companyName(f0.name) : org.name),
-      timezone: () => (given(f0, 'timezone') ? v.oneOf(f0.timezone, TIMEZONES) : org.timezone),
-      outOfPolicy: () => (given(f0, 'outOfPolicy') ? v.oneOf(f0.outOfPolicy, OUT_OF_POLICY_MODES) : s.outOfPolicy),
-      approvalHours: () => (given(f0, 'approvalHours') ? approvalHours(f0.approvalHours) : s.approvalHours),
-      budgetPeriod: () => (given(f0, 'budgetPeriod') ? v.oneOf(f0.budgetPeriod, BUDGET_PERIODS) : s.budgetPeriod),
-    });
-    const fields = [
-      ['name', org.name, f.name, 'settings.company'],
-      ['timezone', org.timezone, f.timezone, 'settings.company'],
-      ['settings.outOfPolicy', s.outOfPolicy, f.outOfPolicy, 'settings.travel'],
-      ['settings.approvalHours', s.approvalHours, f.approvalHours, 'settings.travel'],
-      ['settings.budgetPeriod', s.budgetPeriod, f.budgetPeriod, 'settings.travel'],
-    ];
-    const changes = [];
-    for (const [path, before, after, perm] of fields) {
-      if (before === after) continue;
-      need(a, perm);
-      changes.push({ path, before: before ?? null, after });
-    }
-    if (!sameRev(f0.rev, org)) throw conflict();
-    if (!changes.length) return org;
-    const at = this.repo.iso();
-    const docs = await this.repo.commit({
-      cas: [{
-        kind: KINDS.org, id: org.id, rev: org.rev ?? 0,
-        fn: d => {
-          d.name = f.name;
-          d.nameKey = nameKeyOf(f.name);
-          d.timezone = f.timezone;
-          d.settings = { ...d.settings, outOfPolicy: f.outOfPolicy, approvalHours: f.approvalHours, budgetPeriod: f.budgetPeriod };
-          d.updatedAt = at;
-        },
-      }],
-      checks: [actorCheck(a, { server: false })],
-      inserts: [auditInsert(this.repo, {
-        orgId: org.id, actor: who(a), action: 'org.settings_changed', target: { kind: KINDS.org, id: org.id },
-        summary: `${who(a).name} changed the company settings`, changes,
-      })],
-    });
-    return docs[`${KINDS.org}:${org.id}`];
+    const formRev = formRevOf(f0.rev);
+    return this.repo.withRetry(async () => {
+      const a = await loadActor(this.repo, actor);
+      const role = a.member.role;
+      if (!can(role, 'settings.company') && !can(role, 'settings.travel')) need(a, 'settings.company');
+      const org = a.org;
+      if (!Number.isInteger(formRev) || formRev > (org.rev ?? 0) || formRev < settingsRevOf(org)) throw conflict();
+      const s = org.settings || {};
+      const f = v.collect('invalid_settings', {
+        name: () => (given(f0, 'name') ? companyName(f0.name) : org.name),
+        timezone: () => (given(f0, 'timezone') ? v.oneOf(f0.timezone, TIMEZONES) : org.timezone),
+        outOfPolicy: () => (given(f0, 'outOfPolicy') ? v.oneOf(f0.outOfPolicy, OUT_OF_POLICY_MODES) : s.outOfPolicy),
+        approvalHours: () => (given(f0, 'approvalHours') ? approvalHours(f0.approvalHours) : s.approvalHours),
+        budgetPeriod: () => (given(f0, 'budgetPeriod') ? v.oneOf(f0.budgetPeriod, BUDGET_PERIODS) : s.budgetPeriod),
+      });
+      const fields = [
+        ['name', org.name, f.name, 'settings.company'],
+        ['timezone', org.timezone, f.timezone, 'settings.company'],
+        ['settings.outOfPolicy', s.outOfPolicy, f.outOfPolicy, 'settings.travel'],
+        ['settings.approvalHours', s.approvalHours, f.approvalHours, 'settings.travel'],
+        ['settings.budgetPeriod', s.budgetPeriod, f.budgetPeriod, 'settings.travel'],
+      ];
+      const changes = [];
+      for (const [path, before, after, perm] of fields) {
+        if (before === after) continue;
+        need(a, perm);
+        changes.push({ path, before: before ?? null, after });
+      }
+      if (!changes.length) return orgView(org);
+      const at = this.repo.iso();
+      // A new name is a new identity for Tripelyx to confirm before anyone else joins.
+      const reconfirm = org.status === 'active' && !this.config.business.selfServe && nameKeyOf(f.name) !== nameKeyOf(org.name);
+      if (reconfirm) changes.push({ path: 'status', before: 'active', after: 'pending' });
+      const actorName = who(a).name;
+      const docs = await this.repo.commit({
+        cas: [{
+          kind: KINDS.org, id: org.id, rev: org.rev ?? 0, server: true,
+          fn: d => {
+            if (settingsRevOf(d) > formRev) throw conflict();
+            d.name = f.name;
+            d.nameKey = nameKeyOf(f.name);
+            d.timezone = f.timezone;
+            d.settings = { ...d.settings, outOfPolicy: f.outOfPolicy, approvalHours: f.approvalHours, budgetPeriod: f.budgetPeriod };
+            if (reconfirm) {
+              d.status = 'pending';
+              d.statusAt = at;
+              d.statusBy = null;
+              d.statusNote = null;
+            }
+            d.settingsRev = (d.rev ?? 0) + 1;
+            d.updatedAt = at;
+          },
+        }],
+        checks: [actorCheck(a, { server: false })],
+        inserts: [auditInsert(this.repo, {
+          orgId: org.id, actor: who(a), action: 'org.settings_changed', target: { kind: KINDS.org, id: org.id },
+          summary: reconfirm
+            ? `${actorName} changed the company settings. Tripelyx will confirm the new name before anyone else can join.`
+            : `${actorName} changed the company settings`,
+          changes,
+        })],
+      });
+      return orgView(docs[`${KINDS.org}:${org.id}`]);
+    }, { tries: COUNTER_TRIES });
   },
 
   /**
@@ -921,7 +1053,7 @@ const methods = {
       version: 1,
       exportedAt,
       note: `Tripelyx Business preview. Amounts are whole US cents from demo prices: nothing was booked or charged. Questions: ${BUSINESS_EMAIL}.`,
-      org: a.org,
+      org: orgView(a.org),
       members: members.rows,
       departments: sortDepartments(departments.rows),
       policies: TIERS.map(t => policies.rows.find(p => p.tier === t)).filter(Boolean),
@@ -980,12 +1112,12 @@ const methods = {
    * Every company for the platform admin page (/admin/business): repo.listOrgs plus each creator's email and
    * the similar-name hint; company enquiries from repo.listBusinessLeads. Never requests, policies, budgets,
    * member lists or audit contents.
-   * @param {import('./types').UserActor} actor actor.user.isAdmin must be true
+   * @param {import('./types').UserActor} actor actor.user.isAdmin must be true, and accounts.isPlatformAdmin(actor.user) is asked again
    * @returns {Promise<import('./types').PlatformView>}
    * @throws {AppError} 404 'not_found' for anyone who is not a platform admin
    */
   async platformListOrgs(actor) {
-    if (!isAdmin(actor)) throw notFound();
+    await platformUser.call(this, actor);
     const orgs = await this.repo.listOrgs();
     const byKey = new Map();
     for (const o of orgs) {
@@ -1010,11 +1142,12 @@ const methods = {
 
   /**
    * Confirm, suspend or reactivate a company (platform admin). pending → active ('org.confirmed'), active →
-   * suspended ('org.suspended', note required), suspended → active ('org.reactivated'). One commit: org CAS
-   * (form rev; statusBy, statusAt, statusNote), the company's audit entry with actor.platformActor(user).
-   * A pending company may also be suspended (a company Tripelyx will not confirm); asking for the status a
-   * company already has changes nothing.
-   * @param {import('./types').UserActor} actor actor.user.isAdmin must be true
+   * suspended ('org.suspended', note required), suspended → active ('org.reactivated', or 'org.confirmed'
+   * when it was paused before Tripelyx ever confirmed it). One commit: org CAS (form rev; statusBy, statusAt,
+   * statusNote), the company's audit entry with actor { platformAdmin: user id, name: 'Tripelyx' } (the
+   * company never sees the staff member's name or note). A pending company may also be suspended (a company
+   * Tripelyx will not confirm); asking for the status a company already has changes nothing.
+   * @param {import('./types').UserActor} actor actor.user.isAdmin must be true, and accounts.isPlatformAdmin(actor.user) is asked again
    * @param {string} orgId
    * @param {{ status: 'active'|'suspended', note?: string, rev: string|number }} form
    * @returns {Promise<import('./types').Org>}
@@ -1022,7 +1155,7 @@ const methods = {
    *   409 'conflict'
    */
   async platformSetStatus(actor, orgId, form) {
-    if (!isAdmin(actor)) throw notFound();
+    const user = await platformUser.call(this, actor);
     if (typeof orgId !== 'string' || !ORG_ID_RE.test(orgId)) throw notFound();
     const org = await this.repo.getIn(KINDS.org, orgId, orgId);
     if (!org) throw notFound();
@@ -1034,17 +1167,17 @@ const methods = {
     if (f.status === 'suspended' && !f.note) throw invalid('invalid_status', { note: 'Write a short note on why this company is paused.' });
     if (!sameRev(f0.rev, org)) throw conflict();
     if (org.status === f.status) return org;
-    const action = f.status === 'suspended' ? 'org.suspended' : org.status === 'pending' ? 'org.confirmed' : 'org.reactivated';
+    const confirming = org.status === 'pending' || (org.status === 'suspended' && await pausedWhilePending(this.repo, org.id));
+    const action = f.status === 'suspended' ? 'org.suspended' : confirming ? 'org.confirmed' : 'org.reactivated';
     const verb = { 'org.confirmed': 'confirmed', 'org.suspended': 'paused', 'org.reactivated': 'reactivated' }[action];
     const at = this.repo.iso();
-    const user = actor.user;
     const docs = await this.repo.commit({
       cas: [{
         kind: KINDS.org, id: org.id, rev: org.rev ?? 0,
         fn: d => { d.status = f.status; d.statusBy = user.id; d.statusAt = at; d.statusNote = f.note || null; d.updatedAt = at; },
       }],
       inserts: [auditInsert(this.repo, {
-        orgId: org.id, actor: platformActor(user), action, target: { kind: KINDS.org, id: org.id },
+        orgId: org.id, actor: { platformAdmin: user.id, name: PLATFORM_NAME }, action, target: { kind: KINDS.org, id: org.id },
         summary: `Tripelyx ${verb} ${org.name}`, changes: [{ path: 'status', before: org.status, after: f.status }],
       })],
     });
@@ -1053,10 +1186,11 @@ const methods = {
 };
 
 /**
- * The invite behind a token if it can still be used, with its company and pointer. Malformed, unknown,
- * used, revoked, replaced (the pointer names another invite) or expired → 410; a missing company → 410; a
- * suspended company → 403. Not a service method (service.js carries only SERVICE_METHODS), so the
- * methods call it as usableInvite.call(this, token).
+ * The invite behind a token if it can still be used, with its company, pointer and inviter. Malformed,
+ * unknown, used, revoked, replaced (the pointer names another invite) or expired → 410; a missing company
+ * → 410; a suspended company → 403; an inviter who is no longer an active member able to grant the
+ * invite's role (removed, demoted, or never a member) → 410. Not a service method (service.js carries only
+ * SERVICE_METHODS), so the methods call it as usableInvite.call(this, token).
  * @this {{ repo: import('./repo').Repo }} the service
  */
 async function usableInvite(token) {
@@ -1070,7 +1204,18 @@ async function usableInvite(token) {
   const org = await this.repo.getIn(KINDS.org, inv.orgId, inv.orgId);
   if (!org) throw inviteGone();
   if (org.status === 'suspended') throw suspended();
-  return { hash, inv, org, pointer };
+  const inviter = isUserId(inv.invitedBy) ? await this.repo.getIn(KINDS.member, memberId(org.id, inv.invitedBy), org.id) : null;
+  if (!inviter || inviter.userId !== inv.invitedBy || !canGrant(inviter, inv.role)) throw inviteGone();
+  return { hash, inv, org, pointer, inviter };
+}
+
+/**
+ * May this removed member come back through `inv`? Only through an invite made at or after their removal
+ * (D3). "At" counts: while they were active no invite for their email could be made (already_member), and
+ * removal revoked any pending one, so an invite with the same timestamp was made after the removal.
+ */
+function rejoinable(existing, inv) {
+  return typeof existing.removedAt === 'string' && typeof inv.at === 'string' && inv.at >= existing.removedAt;
 }
 
 /**

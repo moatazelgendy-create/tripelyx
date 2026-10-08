@@ -37,11 +37,14 @@ const sha32 = s => crypto.createHash('sha256').update(s).digest('hex').slice(0, 
  * join() invites someone and accepts the invite, so every member comes in the way real ones do.
  */
 async function setup({ env = {}, clock = mutableClock(FIXED_NOW) } = {}) {
-  const app = await startApp({ ENABLE_BUSINESS: 'true', ...env }, { now: clock.now });
+  const app = await startApp({ ENABLE_BUSINESS: 'true', ADMIN_EMAILS: 'ops@example.com', ...env }, { now: clock.now });
   const svc = app.business;
   svc.policy = fakePolicy();
   const repo = svc.repo;
-  const adminUser = { ...(await seedUser(app, { name: 'Pat Platform', email: 'ops@example.com' })).user, isAdmin: true };
+  // A real platform admin (D1): a listed email and a platform_admin record; the service asks accounts each time.
+  const pat = await seedUser(app, { name: 'Pat Platform', email: 'ops@example.com' });
+  await app.accounts.grantPlatformAdmin(pat.user.id, { by: 'test' });
+  const adminUser = { ...pat.user, isAdmin: true };
   const admin = { user: adminUser };
   const actorOf = (orgId, u) => ({ org: { id: orgId }, user: u.user || u });
   async function company(owner, { name = 'Acme Inc', confirm = true, ...form } = {}) {
@@ -652,12 +655,13 @@ test('settings: name and time zone need settings.company, the travel rules need 
 
   org = await svc.saveSettings(acme.owner, { name: 'Acme Travel Group', timezone: 'Europe/London', outOfPolicy: 'block', approvalHours: '48', budgetPeriod: 'month', rev: org.rev });
   assert.deepEqual([org.name, org.nameKey, org.timezone, org.settings], ['Acme Travel Group', 'acmetravelgroup', 'Europe/London', { outOfPolicy: 'block', approvalHours: 48, reasonMinChars: 10, budgetPeriod: 'month' }]);
+  assert.equal(org.status, 'pending', 'a new name goes back to Tripelyx for confirmation');
   const e = (await audits(acme.id))[0];
-  assert.deepEqual([e.action, e.summary], ['org.settings_changed', 'Olivia Owner changed the company settings']);
+  assert.deepEqual([e.action, e.summary], ['org.settings_changed', 'Olivia Owner changed the company settings. Tripelyx will confirm the new name before anyone else can join.']);
   assert.deepEqual(e.changes, [
     { path: 'name', before: 'Acme Inc', after: 'Acme Travel Group' }, { path: 'timezone', before: 'Africa/Cairo', after: 'Europe/London' },
     { path: 'settings.outOfPolicy', before: 'approval', after: 'block' }, { path: 'settings.approvalHours', before: 24, after: 48 },
-    { path: 'settings.budgetPeriod', before: 'quarter', after: 'month' },
+    { path: 'settings.budgetPeriod', before: 'quarter', after: 'month' }, { path: 'status', before: 'active', after: 'pending' },
   ]);
 
   // A Travel Admin changes the travel rules; the company's name and time zone only as they are.
@@ -913,7 +917,7 @@ test('platform: only platform admins list and change companies; pending first, c
   let o = await svc.platformSetStatus(admin, twin.id, { status: 'active', rev: 0 });
   assert.deepEqual([o.status, o.statusBy, o.statusAt, o.statusNote], ['active', admin.user.id, FIXED_NOW, null]);
   let e = (await audits(twin.id))[0];
-  assert.deepEqual([e.action, e.actor, e.summary, e.changes], ['org.confirmed', { platformAdmin: admin.user.id, name: 'Pat Platform' }, 'Tripelyx confirmed ACME, Inc.', [{ path: 'status', before: 'pending', after: 'active' }]]);
+  assert.deepEqual([e.action, e.actor, e.summary, e.changes], ['org.confirmed', { platformAdmin: admin.user.id, name: 'Tripelyx' }, 'Tripelyx confirmed ACME, Inc.', [{ path: 'status', before: 'pending', after: 'active' }]]);
   await rejectsWith(svc.platformSetStatus(admin, twin.id, { status: 'suspended', note: 'A stale form', rev: 0 }), 409, 'conflict');
   const noNote = await svc.platformSetStatus(admin, twin.id, { status: 'suspended', note: '  ', rev: o.rev }).catch(x => x);
   assert.deepEqual([noNote.code, noNote.details], ['invalid_status', { note: 'Write a short note on why this company is paused.' }]);
@@ -1088,11 +1092,12 @@ test('PostgresStore: two owners racing to demote each other 200 times: exactly o
   t.after(() => store.close());
   const now = () => new Date(FIXED_NOW);
   const config = loadConfig({ APP_ENV: 'development', ENABLE_BUSINESS: 'true' });
-  const svc = new BusinessService({ repo: new Repo({ store, now }), config, now, policy: fakePolicy() });
   const user = name => ({ id: id('usr'), name, email: `${name.toLowerCase().replace(/\W+/g, '.')}.${crypto.randomBytes(3).toString('hex')}@example.com` });
+  const admin = { user: { ...user('Pat Platform'), isAdmin: true } };
+  const accounts = { isPlatformAdmin: async u => !!u && u.id === admin.user.id };
+  const svc = new BusinessService({ repo: new Repo({ store, now }), config, now, policy: fakePolicy(), accounts });
   const a = user('Ada Owner'), b = user('Bo Owner');
   const { org } = await svc.createCompany({ user: a }, FORM);
-  const admin = { user: { ...user('Pat Platform'), isAdmin: true } };
   await svc.platformSetStatus(admin, org.id, { status: 'active', rev: org.rev });
   const { token } = await svc.invite({ org: { id: org.id }, user: a }, { email: b.email, role: 'owner' });
   await svc.acceptInvite({ user: b }, token);
@@ -1108,7 +1113,44 @@ test('PostgresStore: two owners racing to demote each other 200 times: exactly o
   assert.deepEqual(owners.map(m => m.userId), after.ownerIds);
 });
 
-test('a bare service on a MemoryStore (no app) runs the team methods, and reads by id only the user index and invite tokens', async () => {
+test('PostgresStore: 8 people join at once and 8 are removed at once, all landing; racing department creates keep the 200 cap', { skip: !pgUrl && 'TEST_DATABASE_URL not set', timeout: 120000 }, async t => {
+  const store = new PostgresStore({ connectionString: pgUrl, ssl: false });
+  await store.init();
+  t.after(() => store.close());
+  const now = () => new Date(FIXED_NOW);
+  const config = loadConfig({ APP_ENV: 'development', ENABLE_BUSINESS: 'true' });
+  const user = name => ({ id: id('usr'), name, email: `${name.toLowerCase().replace(/\W+/g, '.')}.${crypto.randomBytes(3).toString('hex')}@example.com` });
+  const admin = { user: { ...user('Pat Platform'), isAdmin: true } };
+  const repo = new Repo({ store, now });
+  const svc = new BusinessService({ repo, config, now, policy: fakePolicy(), accounts: { isPlatformAdmin: async u => !!u && u.id === admin.user.id } });
+  const a = user('Ada Owner');
+  const { org } = await svc.createCompany({ user: a }, FORM);
+  await svc.platformSetStatus(admin, org.id, { status: 'active', rev: org.rev });
+  const owner = { org: { id: org.id }, user: a };
+  const people = [];
+  for (let i = 0; i < 8; i += 1) {
+    const u = user(`Joiner ${i}`);
+    people.push({ u, token: (await svc.invite(owner, { email: u.email, role: 'employee' })).token });
+  }
+  const joined = await Promise.allSettled(people.map(p => svc.acceptInvite({ user: p.u }, p.token)));
+  assert.deepEqual(joined.filter(r => r.status === 'rejected').map(r => `${r.reason.status} ${r.reason.code}`), []);
+  assert.equal((await repo.getIn(KINDS.org, org.id, org.id)).memberCount, 9);
+  const removed = await Promise.allSettled(joined.map(r => svc.removeMember(owner, r.value.member.userId, { rev: r.value.member.rev })));
+  assert.deepEqual(removed.filter(r => r.status === 'rejected').map(r => `${r.reason.status} ${r.reason.code}`), []);
+  assert.equal((await repo.getIn(KINDS.org, org.id, org.id)).memberCount, 1);
+
+  const have = (await repo.list(KINDS.department, org.id)).length;
+  const fill = Array.from({ length: 199 - have }, (_, i) => {
+    const depId = id('dep');
+    return { kind: KINDS.department, id: depId, data: { id: depId, orgId: org.id, name: `Team ${i}`, archivedAt: null, at: FIXED_NOW, updatedAt: FIXED_NOW, rev: 0 }, owner: org.id };
+  });
+  await repo.commit({ inserts: fill });
+  const four = await Promise.allSettled([0, 1, 2, 3].map(i => svc.saveDepartment(owner, { name: `Last ${i}` })));
+  assert.equal(four.filter(r => r.status === 'fulfilled').length, 1);
+  assert.equal((await svc.listDepartments(owner)).length, 200);
+});
+
+test('a bare service on a MemoryStore (no app) runs the team methods, and reads by id only invite tokens (I7)', async () => {
   const store = new MemoryStore();
   const now = () => new Date(FIXED_NOW);
   const config = loadConfig({ APP_ENV: 'development', ENABLE_BUSINESS: 'true' });
@@ -1121,12 +1163,13 @@ test('a bare service on a MemoryStore (no app) runs the team methods, and reads 
     if (caller.includes('/server/business/team.js')) read.add(kind);
     return get(kind, key);
   };
-  const svc = new BusinessService({ repo, config, now, policy: fakePolicy() });
+  const admin = { user: { id: id('usr'), name: 'Pat Platform', email: 'ops@example.com', isAdmin: true } };
+  // accounts only answers who is a platform admin here; it has no emailInUse.
+  const svc = new BusinessService({ repo, config, now, policy: fakePolicy(), accounts: { isPlatformAdmin: async u => !!u && u.id === admin.user.id } });
   const ada = { id: id('usr'), name: 'Ada Owner', email: 'ada@example.com' };
   const bo = { id: id('usr'), name: 'Bo Builder', email: 'bo@example.com' };
   const { org, member } = await svc.createCompany({ user: ada }, FORM);
   assert.equal(member.role, 'owner');
-  const admin = { user: { id: id('usr'), name: 'Pat Platform', email: 'ops@example.com', isAdmin: true } };
   const ownerActor = { org: { id: org.id }, user: ada };
   const { token } = await svc.invite(ownerActor, { email: 'bo@example.com', role: 'employee' });
   assert.equal((await svc.inviteByToken({ user: null }, token)).state, 'pending_company', 'a pending company needs no account lookup');
@@ -1146,5 +1189,297 @@ test('a bare service on a MemoryStore (no app) runs the team methods, and reads 
   await svc.listAudit(ownerActor);
   await svc.platformListOrgs(admin);
   await svc.removeMember(ownerActor, bo.id, { rev: bm.rev + 1 });
-  assert.deepEqual([...read].sort(), [KINDS.invite, KINDS.userIndex].sort(), 'every other read is scoped (getIn, list, page)');
+  assert.deepEqual([...read], [KINDS.invite], 'every other read is scoped (getIn, list, page)');
+});
+
+// ---------------------------------------------------------------------------------------------------
+// Review round 1
+
+test('an invite carries its inviter\'s authority only while they still hold it: removed or demoted inviters\' invites answer 410, also when the demotion races the accept', async t => {
+  const { app, svc, repo, company, join, member, org } = await setup();
+  t.after(app.close);
+  const olivia = await seedUser(app, { name: 'Olivia Owner' });
+  const acme = await company(olivia);
+
+  // A removed Travel Admin's Travel Admin invite to a second address.
+  const tara = await join(acme, acme.owner, 'travel_admin', { name: 'Tara Admin', email: 'tara@acme.com' });
+  const taraAlt = await svc.invite(tara.actor, { email: 'tara.home@example.com', role: 'travel_admin' });
+  assert.equal((await svc.listMembers(acme.owner)).invites.length, 1);
+  await svc.removeMember(acme.owner, tara.user.id, { rev: tara.member.rev });
+  const home = await seedUser(app, { name: 'Tara Home', email: 'tara.home@example.com' });
+  await rejectsWith(svc.inviteByToken({ user: null }, taraAlt.token), 410, 'invite_gone');
+  await rejectsWith(svc.inviteByToken({ user: home.user }, taraAlt.token), 410, 'invite_gone');
+  await rejectsWith(svc.acceptInvite({ user: home.user }, taraAlt.token), 410, 'invite_gone');
+  assert.deepEqual((await svc.listMembers(acme.owner)).invites, [], 'the People page no longer lists it');
+
+  // An Owner demoted to Employee: the Owner invite she made no longer makes an Owner.
+  const mallory = await join(acme, acme.owner, 'owner', { name: 'Mallory', email: 'mallory@acme.com' });
+  const alt = await svc.invite(mallory.actor, { email: 'mallory.alt@example.com', role: 'owner' });
+  await svc.updateMember(acme.owner, mallory.user.id, { role: 'employee', rev: mallory.member.rev });
+  const malt = await seedUser(app, { name: 'Mallory Alt', email: 'mallory.alt@example.com' });
+  await rejectsWith(svc.acceptInvite({ user: malt.user }, alt.token), 410, 'invite_gone');
+  assert.deepEqual((await org(acme.id)).ownerIds, [olivia.user.id]);
+  assert.equal(await svc.membership({ user: malt.user }, acme.id), null);
+
+  // A Travel Admin demoted to Employee: her earlier Travel Admin invite is gone; a Manager invite from a
+  // current Travel Admin still works.
+  const tess = await join(acme, acme.owner, 'travel_admin', { name: 'Tess Admin' });
+  const friend = await svc.invite(tess.actor, { email: 'friend@example.com', role: 'travel_admin' });
+  const mate = await svc.invite(tess.actor, { email: 'mate@example.com', role: 'manager' });
+  const tessNow = await member(acme.id, tess.user.id);
+  const fr = await seedUser(app, { name: 'Friend', email: 'friend@example.com' });
+  const mt = await seedUser(app, { name: 'Mate', email: 'mate@example.com' });
+  assert.equal((await svc.acceptInvite({ user: mt.user }, mate.token)).member.role, 'manager');
+  await svc.updateMember(acme.owner, tess.user.id, { role: 'employee', rev: tessNow.rev });
+  await rejectsWith(svc.acceptInvite({ user: fr.user }, friend.token), 410, 'invite_gone');
+
+  // The race: the inviter loses the role after the accept read it and before its commit lands. The accept
+  // checks the inviter's record in the same commit, so it reads again and answers 410.
+  const tom = await join(acme, acme.owner, 'travel_admin', { name: 'Tom Admin' });
+  const late = await svc.invite(tom.actor, { email: 'late@example.com', role: 'travel_admin' });
+  const lateUser = await seedUser(app, { name: 'Late', email: 'late@example.com' });
+  const orig = repo.commit.bind(repo);
+  let fired = 0;
+  repo.commit = async spec => {
+    if (!fired && spec.inserts.some(i => i.data && i.data.action === 'member.joined')) {
+      fired += 1;
+      await repo.cas(KINDS.member, `${acme.id}.${tom.user.id}`, null, d => { d.role = 'employee'; });
+    }
+    return orig(spec);
+  };
+  try {
+    await rejectsWith(svc.acceptInvite({ user: lateUser.user }, late.token), 410, 'invite_gone');
+  } finally {
+    repo.commit = orig;
+  }
+  assert.equal(fired, 1);
+  assert.equal(await svc.membership({ user: lateUser.user }, acme.id), null);
+});
+
+test('a Travel Admin cannot cancel an Owner\'s Finance invite by inviting the same email again', async t => {
+  const { app, svc, repo, company, join } = await setup();
+  t.after(app.close);
+  const olivia = await seedUser(app, { name: 'Olivia Owner' });
+  const acme = await company(olivia);
+  const tara = await join(acme, acme.owner, 'travel_admin', { name: 'Tara Admin' });
+  const fin = await svc.invite(acme.owner, { email: 'cfo@acme.com', role: 'finance' });
+  await rejectsWith(svc.revokeInvite(tara.actor, fin.invite.publicId), 403, 'forbidden');
+  await rejectsWith(svc.invite(tara.actor, { email: 'cfo@acme.com', role: 'travel_admin' }), 403, 'forbidden');
+  const stored = await repo.get(KINDS.invite, crypto.createHash('sha256').update(fin.token).digest('hex'));
+  assert.equal(stored.revokedAt, null, 'the Owner\'s invite is untouched');
+  const cfo = await seedUser(app, { name: 'Casey CFO', email: 'cfo@acme.com' });
+  assert.equal((await svc.acceptInvite({ user: cfo.user }, fin.token)).member.role, 'finance');
+  // An Owner may still replace an Owner's invite, and a Travel Admin may replace one she could grant.
+  const emp = await svc.invite(acme.owner, { email: 'pat@acme.com', role: 'employee' });
+  assert.equal((await svc.invite(tara.actor, { email: 'pat@acme.com', role: 'manager' })).replaced, true);
+  await rejectsWith(svc.inviteByToken({ user: null }, emp.token), 410, 'invite_gone');
+  const own = await svc.invite(acme.owner, { email: 'dee@acme.com', role: 'owner' });
+  assert.equal((await svc.invite(acme.owner, { email: 'dee@acme.com', role: 'employee' })).replaced, true);
+  await rejectsWith(svc.inviteByToken({ user: null }, own.token), 410, 'invite_gone');
+});
+
+test('unrelated joins and removals at the same moment all land: 8 accepts, then 8 removals, with the count kept right', async t => {
+  const { app, svc, company, org, audits } = await setup();
+  t.after(app.close);
+  const olivia = await seedUser(app, { name: 'Olivia Owner' });
+  const acme = await company(olivia);
+  const people = [];
+  for (let i = 0; i < 8; i += 1) {
+    const u = await seedUser(app, { name: `Joiner ${i}` });
+    people.push({ u, token: (await svc.invite(acme.owner, { email: u.user.email, role: i % 2 ? 'owner' : 'employee' })).token });
+  }
+  const joined = await Promise.allSettled(people.map(p => svc.acceptInvite({ user: p.u.user }, p.token)));
+  assert.deepEqual(joined.filter(r => r.status === 'rejected').map(r => `${r.reason.status} ${r.reason.code}`), []);
+  let o = await org(acme.id);
+  assert.equal(o.memberCount, 9);
+  assert.equal(o.ownerIds.length, 5);
+  assert.equal((await audits(acme.id)).filter(e => e.action === 'member.joined').length, 8);
+
+  const employees = joined.map(r => r.value.member).filter(m => m.role === 'employee');
+  const removed = await Promise.allSettled(employees.map(m => svc.removeMember(acme.owner, m.userId, { rev: m.rev })));
+  assert.deepEqual(removed.filter(r => r.status === 'rejected').map(r => `${r.reason.status} ${r.reason.code}`), []);
+  o = await org(acme.id);
+  assert.equal(o.memberCount, 5);
+  assert.equal(o.ownerIds.length, 5);
+});
+
+test('departments: racing creates keep names unique and the cap at 200, so General stays on every list', async t => {
+  const { app, svc, repo, company, join } = await setup();
+  t.after(app.close);
+  const olivia = await seedUser(app, { name: 'Olivia Owner' });
+  const acme = await company(olivia);
+  const tara = await join(acme, acme.owner, 'travel_admin', { name: 'Tara Admin' });
+  const two = await Promise.allSettled([svc.saveDepartment(acme.owner, { name: 'Sales' }), svc.saveDepartment(tara.actor, { name: 'sales' })]);
+  assert.equal(two.filter(r => r.status === 'fulfilled').length, 1);
+  const lost = two.find(r => r.status === 'rejected').reason;
+  assert.deepEqual([lost.status, lost.code], [409, 'department_exists']);
+  // Renames racing a create to the same name: one name only.
+  const ops = await Promise.allSettled([
+    svc.saveDepartment(acme.owner, { name: 'Marketing' }),
+    (async () => { const d = (await svc.listDepartments(acme.owner)).find(x => /^sales$/i.test(x.name)); return svc.saveDepartment(tara.actor, { departmentId: d.id, name: 'marketing', rev: d.rev }); })(),
+  ]);
+  assert.equal(ops.filter(r => r.status === 'fulfilled').length, 1);
+  assert.equal((await svc.listDepartments(acme.owner)).filter(d => /^marketing$/i.test(d.name)).length, 1);
+
+  // Fill to 199, then 4 creates at once: exactly one lands.
+  const have = (await repo.list(KINDS.department, acme.id)).length;
+  const fill = Array.from({ length: 199 - have }, (_, i) => {
+    const depId = id('dep');
+    return { kind: KINDS.department, id: depId, data: { id: depId, orgId: acme.id, name: `Team ${i}`, archivedAt: null, at: FIXED_NOW, updatedAt: FIXED_NOW, rev: 0 }, owner: acme.id };
+  });
+  await repo.commit({ inserts: fill });
+  const four = await Promise.allSettled([0, 1, 2, 3].map(i => svc.saveDepartment(i % 2 ? tara.actor : acme.owner, { name: `Last ${i}` })));
+  assert.equal(four.filter(r => r.status === 'fulfilled').length, 1);
+  for (const r of four.filter(x => x.status === 'rejected')) assert.deepEqual([r.reason.code, r.reason.details.name], ['invalid_department', 'A company can have up to 200 departments.']);
+  const all = await svc.listDepartments(acme.owner);
+  assert.equal(all.length, 200);
+  assert.ok(all.some(d => d.name === 'General'));
+  assert.equal(recordsOf(app, KINDS.department).filter(d => d.orgId === acme.id).length, 200);
+});
+
+test('a removed member re-invited in the same millisecond lands on "accept" and can accept', async t => {
+  const { app, svc, company, join } = await setup();
+  t.after(app.close);
+  const olivia = await seedUser(app, { name: 'Olivia Owner' });
+  const acme = await company(olivia);
+  const lee = await join(acme, acme.owner, 'employee', { name: 'Lee Leaver', email: 'lee@example.com' });
+  await svc.removeMember(acme.owner, lee.user.id, { rev: lee.member.rev });
+  const back = await svc.invite(acme.owner, { email: 'lee@example.com', role: 'employee' });
+  assert.equal((await svc.inviteByToken({ user: lee.user }, back.token)).state, 'accept');
+  const { member } = await svc.acceptInvite({ user: lee.user }, back.token);
+  assert.deepEqual([member.status, member.removedAt], ['active', null]);
+});
+
+test('platform: a company Tripelyx never confirmed is "confirmed" when it first becomes active, even after a pause', async t => {
+  const { app, svc, admin, company, audits } = await setup();
+  t.after(app.close);
+  const pia = await seedUser(app, { name: 'Pia Pending' });
+  const pend = await company(pia, { name: 'Pending Co', confirm: false });
+  let o = await svc.platformSetStatus(admin, pend.id, { status: 'suspended', note: 'Waiting for details', rev: pend.org.rev });
+  o = await svc.platformSetStatus(admin, pend.id, { status: 'active', rev: o.rev });
+  assert.deepEqual((await audits(pend.id)).map(e => e.action), ['org.confirmed', 'org.suspended', 'org.created']);
+  assert.equal((await audits(pend.id))[0].summary, 'Tripelyx confirmed Pending Co');
+  // Once confirmed, a pause and its end are a reactivation.
+  o = await svc.platformSetStatus(admin, pend.id, { status: 'suspended', note: 'A check', rev: o.rev });
+  await svc.platformSetStatus(admin, pend.id, { status: 'active', rev: o.rev });
+  assert.equal((await audits(pend.id))[0].action, 'org.reactivated');
+});
+
+test('platform: the service asks accounts who is a platform admin; a made-up user, a flag on a normal account or a revoked admin get 404', async t => {
+  const { app, svc, admin } = await setup();
+  t.after(app.close);
+  const olivia = await seedUser(app, { name: 'Olivia Owner' });
+  const { org } = await svc.createCompany({ user: olivia.user }, FORM);
+  const forged = { user: { id: 'usr_AAAAAAAAAAAAAAAA', isAdmin: true, name: 'Nobody' } };
+  const eve = await seedUser(app, { name: 'Eve', email: 'eve@example.com' });
+  const flagged = { user: { ...eve.user, isAdmin: true } };
+  for (const who of [forged, flagged]) {
+    await rejectsWith(svc.platformListOrgs(who), 404, 'not_found');
+    await rejectsWith(svc.platformSetStatus(who, org.id, { status: 'active', rev: org.rev }), 404, 'not_found');
+  }
+  const real = app.accounts.isPlatformAdmin;
+  app.accounts.isPlatformAdmin = async () => false; // revoked since the page loaded
+  try {
+    await rejectsWith(svc.platformListOrgs(admin), 404, 'not_found');
+    await rejectsWith(svc.platformSetStatus(admin, org.id, { status: 'active', rev: org.rev }), 404, 'not_found');
+  } finally {
+    app.accounts.isPlatformAdmin = real;
+  }
+  assert.equal((await app.business.repo.getIn(KINDS.org, org.id, org.id)).status, 'pending');
+  assert.equal((await svc.platformSetStatus(admin, org.id, { status: 'active', rev: org.rev })).status, 'active');
+});
+
+test('the company never sees who at Tripelyx changed its status or the internal note: getOrg, the export and the activity log', async t => {
+  const { app, svc, admin, company, join } = await setup();
+  t.after(app.close);
+  const olivia = await seedUser(app, { name: 'Olivia Owner' });
+  const acme = await company(olivia);
+  const emp = await join(acme, acme.owner, 'employee', { name: 'Eli Employee' });
+  let o = await svc.getOrg(acme.owner);
+  o = await svc.platformSetStatus(admin, acme.id, { status: 'suspended', note: 'Fraud flag from ops review', rev: o.rev });
+  o = await svc.platformSetStatus(admin, acme.id, { status: 'active', note: 'Cleared after a call', rev: o.rev });
+  assert.equal(o.statusNote, 'Cleared after a call', 'the platform admin keeps the note');
+  const seen = await svc.getOrg(emp.actor);
+  assert.deepEqual([seen.status, seen.statusAt, seen.statusBy, seen.statusNote], ['active', FIXED_NOW, null, null]);
+  const out = (await svc.exportCompany(acme.owner)).json;
+  for (const secret of ['Cleared after a call', 'Fraud flag', 'Pat Platform']) assert.ok(!out.includes(secret), secret);
+  assert.equal(JSON.parse(out).org.statusBy, null);
+  const log = await svc.listAudit(acme.owner, { group: 'org' });
+  assert.ok(log.rows.filter(e => e.actor.platformAdmin).every(e => e.actor.name === 'Tripelyx'));
+  assert.ok(!JSON.stringify(log.rows).includes('Pat Platform'));
+});
+
+test('settings: a stale form answers 409 before any permission check, and changes outside the settings do not make the form stale', async t => {
+  const { app, svc, company, join } = await setup();
+  t.after(app.close);
+  const olivia = await seedUser(app, { name: 'Olivia Owner' });
+  const acme = await company(olivia);
+  const tara = await join(acme, acme.owner, 'travel_admin', { name: 'Tara Admin' });
+  // Tara loads the form; Olivia changes the time zone; Tara posts the whole form as she saw it.
+  const seen = await svc.getOrg(tara.actor);
+  await svc.saveSettings(acme.owner, { timezone: 'Europe/London', rev: seen.rev });
+  const full = { name: seen.name, timezone: seen.timezone, approvalHours: '48', outOfPolicy: 'approval', budgetPeriod: 'quarter', rev: seen.rev };
+  await rejectsWith(svc.saveSettings(tara.actor, full), 409, 'conflict');
+  assert.equal((await svc.getOrg(acme.owner)).timezone, 'Europe/London', 'nothing was overwritten');
+  // Someone joins between loading and saving: the settings form is still current.
+  const form = await svc.getOrg(acme.owner);
+  await join(acme, acme.owner, 'employee', { name: 'Newbie' });
+  const saved = await svc.saveSettings(acme.owner, { approvalHours: '36', rev: form.rev });
+  assert.equal(saved.settings.approvalHours, 36);
+  assert.equal(saved.timezone, 'Europe/London');
+  // ...but a settings change in between still makes it stale, and a rev from the future is refused too.
+  await rejectsWith(svc.saveSettings(tara.actor, { approvalHours: '40', rev: form.rev }), 409, 'conflict');
+  await rejectsWith(svc.saveSettings(tara.actor, { approvalHours: '40', rev: saved.rev + 5 }), 409, 'conflict');
+  assert.equal((await svc.saveSettings(tara.actor, { approvalHours: '40', rev: saved.rev })).settings.approvalHours, 40);
+});
+
+test('settings: a confirmed company that takes a new name goes back to Tripelyx before anyone else joins; spelling-only changes and self-serve keep it active', async t => {
+  const { app, svc, admin, company, join, audits } = await setup();
+  t.after(app.close);
+  const eve = await seedUser(app, { name: 'Eve' });
+  const co = await company(eve, { name: 'Eve Test Co' });
+  let o = await svc.saveSettings(co.owner, { name: 'EVE test co.', rev: co.org.rev });
+  assert.equal(o.status, 'active', 'case, spacing and punctuation keep the confirmation');
+  const { token } = await svc.invite(co.owner, { email: 'victim@globex.example', role: 'employee' });
+  o = await svc.saveSettings(co.owner, { name: 'Globex Corporation', rev: o.rev });
+  assert.equal(o.status, 'pending');
+  assert.equal((await svc.inviteByToken({ user: null }, token)).state, 'pending_company');
+  const victim = await seedUser(app, { name: 'Vic', email: 'victim@globex.example' });
+  await rejectsWith(svc.acceptInvite({ user: victim.user }, token), 409, 'company_pending');
+  // Members keep working while Tripelyx looks.
+  const sam = await join(co, co.owner, 'employee', { name: 'Sam' }).catch(e => e);
+  assert.equal(sam.code, 'company_pending');
+  assert.equal((await svc.listMembers(co.owner)).memberCount, 1);
+  const row = (await svc.platformListOrgs(admin)).orgs.find(r => r.id === co.id);
+  assert.equal(row.status, 'pending');
+  await svc.platformSetStatus(admin, co.id, { status: 'active', rev: row.rev });
+  assert.equal((await audits(co.id))[0].action, 'org.confirmed');
+  await svc.acceptInvite({ user: victim.user }, token);
+
+  // With self-serve on, nobody confirms companies, so a rename keeps it active.
+  const app2 = await startApp({ ENABLE_BUSINESS: 'true', BUSINESS_SELF_SERVE: 'true' }, { now: () => new Date(FIXED_NOW) });
+  t.after(app2.close);
+  const u2 = await seedUser(app2);
+  const made = await app2.business.createCompany({ user: u2.user }, FORM);
+  const renamed = await app2.business.saveSettings({ org: { id: made.org.id }, user: u2.user }, { name: 'Another Name', rev: made.org.rev });
+  assert.equal(renamed.status, 'active');
+});
+
+test('company names that read as "Tripelyx" with look-alike letters or digits are refused; ordinary names pass', async t => {
+  const { app, svc, company } = await setup({ env: { BUSINESS_MAX_ORGS_PER_USER: '10' } });
+  t.after(app.close);
+  const u = await seedUser(app);
+  const lookAlikes = [
+    'Тripelyx Support', 'Tripеlyx Travel', 'Trіpelyx', 'TRIРELYX', 'Tripelух', 'Tr1pelyx Business', 'Tripe1yx', 'TRIP3LYX', 'Trip|elyx',
+    'ᴛʀɪᴘᴇʟʏx', 'Τripelyx', 'Tripelyχ', 'Tripeӏyx',
+  ];
+  for (const name of lookAlikes) {
+    await assert.rejects(svc.createCompany({ user: u.user }, { ...FORM, name }),
+      e => e.status === 422 && e.code === 'invalid_company' && e.details.name === "Choose your own company's name.", name);
+  }
+  for (const name of ['Triple X Logistics', 'Stripe Lynx', 'Trip Lux', 'Pelyx Tri']) {
+    assert.equal((await svc.createCompany({ user: u.user }, { ...FORM, name })).org.name, name);
+  }
+  const co = await company(u, { name: 'Plain Co' });
+  await assert.rejects(svc.saveSettings(co.owner, { name: 'Тripelyx', rev: co.org.rev }), e => e.code === 'invalid_settings' && e.details.name === "Choose your own company's name.");
 });
