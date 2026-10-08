@@ -204,3 +204,22 @@ test('Our Brands lists the Tripelyx AI Travel Agent as a brand card next to Alam
   assert.ok(footerOf(book.text).includes(COPYRIGHT));
   assert.match((await get(off, '/nope')).text, /<a class="btn btn-navy btn-lg" href="\/">Back to home /);
 });
+
+test('the laptop and phone picture on Home and Technology shows the coming summer\'s dates and no sample price or rating', async t => {
+  const { sampleStayYear } = require('../server/views/home');
+  assert.equal(sampleStayYear(new Date('2026-10-09T09:00:00Z')), 2027, 'after this summer: next summer');
+  assert.equal(sampleStayYear(new Date('2027-03-01T00:00:00Z')), 2027, 'before the summer: this summer');
+  assert.equal(sampleStayYear(new Date('2027-07-15T23:59:00Z')), 2027, 'on Jul 15 the stay starts today');
+  assert.equal(sampleStayYear(new Date('2027-07-16T00:00:00Z')), 2028, 'the day after: next summer');
+
+  const app = await live();
+  t.after(app.close);
+  const year = sampleStayYear(app.ctx.now());
+  for (const path of ['/', '/technology']) {
+    const devices = part((await get(app, path)).text, /<div class="devices" aria-hidden="true">[\s\S]*?<div class="phone-btn">Book Now<\/div>/);
+    assert.ok(devices, `${path}: the picture is there`);
+    assert.ok(devices.includes(`<small>Check in</small><b>Jul 15, ${year}</b>`) && devices.includes(`<small>Check out</small><b>Jul 20, ${year}</b>`), `${path}: Jul 15 to 20, ${year}`);
+    assert.match(devices, /<div class="phone-title">Luxury Beach Apartment<\/div>\s*<div class="phone-place"><svg class="icon"[^>]*><use href="#i-pin"\/><\/svg> New Alamein, North Coast<\/div>\s*<div class="phone-stay"><b>5 nights<\/b> · 2 guests<\/div>/);
+    assert.doesNotMatch(devices, /2025|\$|review|rating|night<|i-star/, `${path}: no past dates, prices or ratings`);
+  }
+});

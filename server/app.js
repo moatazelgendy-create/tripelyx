@@ -107,6 +107,7 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
     payments,
     publicConfig: publicConfig(config),
     assetVersion: ASSET_VERSION,
+    now: clock,
     envBanner: config.appEnv === 'production' ? null
       : `${config.appEnv === 'staging' ? 'Staging' : 'Development'} build · demo inventory · payments in ${config.payment.mode} mode — no real charges`,
     alameinGoUrl: config.alameinGoUrl,
