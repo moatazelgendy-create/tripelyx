@@ -2,8 +2,8 @@
 // §B6, §B7, §C3, §D, §I5, §I8). Every method is a BusinessService method (service.js assigns `methods` onto
 // its prototype), so `this` is the service: this.repo, this.accounts, this.config, this.now, this.log,
 // this.policy (resolveApprover for the People warnings).
-// STUB from Stage 0 with the frozen interface; Stage 1W-a builds it (from 1C's service.js:451-725, rewritten
-// on Repo.commit with D3, D4, D5 and D8).
+// Built in Stage 1W-a from 1C's service.js:451-725, rewritten on Repo.commit with D3, D4, D5 and D8, the
+// corporate roles and copy, and departments.
 //
 // Rules for every method here:
 // - Company methods take `actor` (req.biz.actor) and start with actor.loadActor(this.repo, actor) (404 for a
@@ -15,12 +15,195 @@
 // - Times come from this.repo.iso(). Names go through validate.text; emails through validate.email.
 // Errors common to all: 404 'not_found', 403 'forbidden', 403 'org_suspended', 409 'conflict', 422 with
 // per-field details (code named per method).
-const { DEFAULT_TIMEZONE, COMPANY_SIZES } = require('./constants');
-
-function notBuilt() { throw new Error('[business] not built'); }
+//
+// How the D-rules are kept:
+// - D3: one pending invite per (company, email). The biz_invite_email pointer names it; a new invite moves
+//   the pointer and revokes the old invite ('replaced') in the same commit, and accepting needs the pointer
+//   to still name this invite. Accepting, revoking and removing the member clear it.
+// - D4: config.business.maxOrgsPerUser counts biz_user_index.orgIds, re-checked inside the index cas.
+// - D5: the account's email must be exactly the invite's (the token was sent to it); no takeover.
+// - D8: org.ownerIds changes in the same commit as the member, against the org rev the actor read, so two
+//   owners demoting (or removing) each other at once: exactly one wins, the other gets 409; the cas fn
+//   refuses an empty list (422 'last_owner').
+// - Every admin write also checks the acting member's own rev, so a change made by someone whose role was
+//   taken away a moment earlier never lands.
+// - Audit summaries never carry a full email: Finance reads the activity log without members.manage.
+const crypto = require('node:crypto');
+const { AppError } = require('../lib/errors');
+const { id } = require('../lib/ids');
+const {
+  DEFAULT_TIMEZONE, COMPANY_SIZES, KINDS, ID_PREFIX, TIERS, TIMEZONES, OUT_OF_POLICY_MODES, BUDGET_PERIODS,
+  APPROVAL_HOURS_RANGE, REASON_MIN_CHARS, GENERAL_DEPARTMENT, MEMBER_CAP, DEPARTMENT_CAP, PAGE_SIZE, SCAN_CAP, AUDIT_GROUPS,
+  CURRENCY, BUSINESS_EMAIL,
+} = require('./constants');
+const { ROLES, LABELS, can, assignableBy } = require('./roles');
+const v = require('./validate');
+const { loadActor, need, who, platformActor, auditInsert, memberId, notFound, forbidden, suspended } = require('./actor');
+const { conflict, ORG_ID_RE, USER_ID_RE } = require('./repo');
+const { newToken, hashToken, sameHash, isToken } = require('./tokens');
+const { defaultPolicy, DEFAULTS_NOTE } = require('./policy/defaults');
 
 /** The sign-up form's company fields and their defaults. */
 const COMPANY_FORM = Object.freeze({ sizes: COMPANY_SIZES, defaultTimezone: DEFAULT_TIMEZONE });
+
+const DAY = 86400000;
+/** An invite's public id (lib/ids.id('inv')) and a department id (id('dep')). */
+const PUBLIC_ID_RE = /^inv_[A-Za-z0-9_-]{16}$/;
+const DEPARTMENT_ID_RE = /^dep_[A-Za-z0-9_-]{16}$/;
+/** Rows per store call when a method reads a whole kind (members, invites, an export). */
+const SCAN_PAGE = 200;
+/** A company export reads at most this many records of each kind. */
+const EXPORT_CAP = 20000;
+/** A filtered activity page reads at most this many store pages, then offers "Show older". */
+const FILTER_PAGES = 25;
+/** Platform list order: waiting companies first. */
+const STATUS_ORDER = Object.freeze({ pending: 0, active: 1, suspended: 2 });
+/** The member fields updateMember may change, in the order changes are listed. */
+const MEMBER_FIELDS = Object.freeze(['role', 'departmentId', 'managerId', 'approverId', 'tier']);
+const FIELD_WORDS = Object.freeze({ departmentId: 'department', managerId: 'manager', approverId: 'approver', tier: 'policy tier' });
+
+// ---------------------------------------------------------------------------------------------------
+// Errors
+
+const fieldError = message => new AppError('invalid_field', message, 422);
+const invalid = (code, details) => new AppError(code, 'Check the highlighted fields.', 422, details);
+const inviteGone = () => new AppError('invite_gone', "This invite link can't be used anymore. Ask your company's travel admin for a new one.", 410);
+const lastOwner = () => new AppError('last_owner', 'A company needs at least one Owner. Make someone else an Owner first.', 422);
+const removeSelf = () => new AppError('remove_self', "You can't remove yourself. Ask another Owner or Travel Admin.", 422);
+const companyFull = () => new AppError('company_full', `A company can have up to ${MEMBER_CAP.toLocaleString('en-US')} people in the preview.`, 409);
+const alreadyMember = () => new AppError('already_member', 'This person is already on your team.', 409);
+const youAreMember = () => new AppError('already_member', "You're already in this company.", 409);
+const notPending = () => new AppError('invite_not_pending', 'This invite was already used, cancelled or has expired.', 409);
+const departmentExists = () => new AppError('department_exists', 'There is already a department with this name.', 409);
+const companyPending = name => new AppError('company_pending', `${name} is waiting for Tripelyx to confirm it. Try this link again once it's confirmed.`, 409);
+const tooMany = max => new AppError('too_many_companies',
+  `You're already in ${max} ${max === 1 ? 'company' : 'companies'}, the most one account can join in the preview.`, 422);
+const emailMismatch = (inviteEmail, userEmail) => new AppError('invite_email_mismatch',
+  `This invite is for ${maskEmail(inviteEmail)}. You're signed in as ${userEmail}. Sign out to use it, or ask your admin to invite ${userEmail}.`, 403);
+
+// ---------------------------------------------------------------------------------------------------
+// Small helpers
+
+const blank = x => x === undefined || x === null || String(x).trim() === '';
+const given = (form, key) => Object.hasOwn(form, key) && form[key] !== undefined;
+const yes = x => x === true || x === '1' || x === 'on' || x === 'true';
+const addDays = (iso, days) => new Date(Date.parse(iso) + days * DAY).toISOString();
+const isUserId = x => typeof x === 'string' && USER_ID_RE.test(x);
+const isAdmin = actor => !!(actor && actor.user && actor.user.isAdmin === true && isUserId(actor.user.id));
+/** The pointer id of one (company, email): `${orgId}.${sha256(email).slice(0, 32)}` (D3). */
+const pointerId = (orgId, email) => `${orgId}.${crypto.createHash('sha256').update(String(email)).digest('hex').slice(0, 32)}`;
+/** "d***@acme.com": an email as audit entries and other people's screens may show it. */
+function maskEmail(email) {
+  const s = String(email || '');
+  const at = s.lastIndexOf('@');
+  if (at < 1) return '***';
+  return `${s.slice(0, 1)}***${s.slice(at)}`;
+}
+/** The platform's "similar name" key: lowercased letters and digits only. */
+const nameKeyOf = name => String(name).normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+/** A comparison key for department names (case- and accent-insensitive, spaces squeezed). */
+const deptKey = name => String(name).normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().replace(/\s+/g, ' ').trim();
+/** Can this invite still be accepted at `nowIso`? */
+const usable = (inv, nowIso) => !!inv && !inv.acceptedAt && !inv.revokedAt && typeof inv.expiresAt === 'string' && inv.expiresAt > nowIso;
+/** Does a form's rev (an integer or a digit string) match the record's? */
+function sameRev(rev, doc) {
+  const n = typeof rev === 'number' ? rev : /^\d{1,9}$/.test(String(rev ?? '')) ? Number(rev) : NaN;
+  return Number.isInteger(n) && n === (doc.rev ?? 0);
+}
+/** The owner list after `userId` becomes (or stops being) an owner. */
+function nextOwners(ownerIds, userId, owner) {
+  const rest = (Array.isArray(ownerIds) ? ownerIds : []).filter(x => x !== userId);
+  return owner ? [...rest, userId] : rest;
+}
+/** "Tripelyx" in any case, width, accent or spacing (checked on validate.text() output). */
+function namesTripelyx(name) {
+  const s = String(name).toLowerCase();
+  return s.includes('tripelyx') || s.normalize('NFKD').replace(/\p{M}/gu, '').replace(/[^a-z0-9]/g, '').includes('tripelyx');
+}
+/** A company name: required, ≤ 80 characters of NFKC text, never naming Tripelyx. */
+function companyName(x) {
+  const s = v.text(x, 80, { required: true });
+  if (namesTripelyx(s)) throw fieldError("Choose your own company's name.");
+  return s;
+}
+/** The account's name as a member record keeps it. */
+const memberName = user => v.text(user && user.name, 80);
+/** Departments: active first, then archived; each by name. */
+function sortDepartments(list) {
+  return [...list].sort((a, b) => (!!a.archivedAt - !!b.archivedAt)
+    || String(a.name).localeCompare(String(b.name), 'en', { sensitivity: 'base' }) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+/** People-page order within one page: active first, then by role, then by name. */
+function memberOrder(a, b) {
+  return ((a.status !== 'active') - (b.status !== 'active')) || (ROLES.indexOf(a.role) - ROLES.indexOf(b.role))
+    || String(a.name).localeCompare(String(b.name), 'en', { sensitivity: 'base' }) || (a.userId < b.userId ? -1 : 1);
+}
+/** A pending invite as the People page and the copy-link page show it. */
+function inviteView(inv, departmentsById) {
+  const dep = inv.departmentId ? departmentsById.get(inv.departmentId) : null;
+  return {
+    publicId: inv.publicId, email: inv.email, role: inv.role, roleLabel: LABELS[inv.role], departmentName: dep ? dep.name : null,
+    expiresAt: inv.expiresAt, at: inv.at,
+  };
+}
+
+/** The check entry that keeps the acting member's own record (and so their role) unchanged until the commit lands. */
+function actorCheck(a, { server = true } = {}) {
+  return { kind: KINDS.member, id: memberId(a.org.id, a.member.userId), rev: a.member.rev ?? 0, server };
+}
+
+/**
+ * repo.commit, with a taken id turned into a retryable conflict: every id written here is random except the
+ * deterministic ones (the user index, a member, an invite pointer), and a duplicate on those means a racing
+ * writer got there first, so withRetry re-reads and decides again.
+ */
+async function commitOnce(repo, spec) {
+  try {
+    return await repo.commit(spec);
+  } catch (e) {
+    if (e instanceof AppError && e.code === 'already_exists') throw conflict({ retryable: true });
+    throw e;
+  }
+}
+
+/** Every record of a kind under one owner, newest stored first, reading at most `cap` (Repo.page). */
+async function scanAll(repo, kind, scope, cap = SCAN_CAP) {
+  const rows = [];
+  let cursor = null;
+  do {
+    const page = await repo.page(kind, scope, { limit: SCAN_PAGE, cursor });
+    rows.push(...page.rows);
+    cursor = page.cursor;
+  } while (cursor && rows.length < cap);
+  if (cursor && repo.log && typeof repo.log.warn === 'function') {
+    repo.log.warn(`[business] team read the first ${rows.length} ${kind} records of a company and stopped.`);
+  }
+  return { rows, truncated: !!cursor };
+}
+
+/**
+ * A user's company index (biz_user_index, id and owner the user id). It is keyed by the user's own id and
+ * holds no company data, so it is read by id like a token lookup (it has no orgId for getIn to check).
+ */
+async function userIndex(repo, userId) {
+  const d = await repo.get(KINDS.userIndex, userId);
+  return d && d.userId === userId && Array.isArray(d.orgIds) ? d : null;
+}
+
+/** The index entry that adds orgId for userId under the D4 cap: an insert, or a cas re-checking the count. */
+function indexAdd(index, userId, orgId, max) {
+  if (!index) return { insert: { kind: KINDS.userIndex, id: userId, data: { userId, orgIds: [orgId], rev: 0 }, owner: userId } };
+  return {
+    cas: {
+      kind: KINDS.userIndex, id: userId, rev: index.rev ?? 0, server: true,
+      fn: d => {
+        if (d.orgIds.includes(orgId)) return;
+        if (d.orgIds.length >= max) throw tooMany(max);
+        d.orgIds.push(orgId);
+      },
+    },
+  };
+}
 
 const methods = {
   /**
@@ -38,7 +221,65 @@ const methods = {
    *   it contains "tripelyx" (NFKC, case-insensitive), size, timezone, ack }; 422 'too_many_companies' at
    *   config.business.maxOrgsPerUser ("You're already in 3 companies, the most one account can join in the preview.")
    */
-  async createCompany(actor, form) { notBuilt(); },
+  async createCompany(actor, form) {
+    const user = actor && actor.user;
+    if (!user || !isUserId(user.id)) throw notFound();
+    const f0 = form && typeof form === 'object' ? form : {};
+    const biz = this.config.business;
+    const max = biz.maxOrgsPerUser;
+    const f = v.collect('invalid_company', {
+      name: () => companyName(f0.name),
+      size: () => v.oneOf(f0.size, COMPANY_SIZES),
+      timezone: () => v.oneOf(f0.timezone, TIMEZONES, { blank: DEFAULT_TIMEZONE }),
+      ack: () => {
+        if (!yes(f0.ack)) throw fieldError("Tick this box to confirm you won't enter real employee travel plans yet.");
+        return true;
+      },
+    });
+    return this.repo.withRetry(async () => {
+      const index = await userIndex(this.repo, user.id);
+      if (index && index.orgIds.length >= max) throw tooMany(max);
+      const at = this.repo.iso();
+      const orgId = id(ID_PREFIX.org);
+      const depId = id(ID_PREFIX.department);
+      const name = memberName(user);
+      const by = { userId: user.id, name, role: 'owner' };
+      const org = {
+        id: orgId, name: f.name, nameKey: nameKeyOf(f.name), status: biz.selfServe ? 'active' : 'pending', size: f.size,
+        currency: CURRENCY, timezone: f.timezone,
+        settings: { outOfPolicy: 'approval', approvalHours: biz.approvalHours, reasonMinChars: REASON_MIN_CHARS, budgetPeriod: 'quarter' },
+        ownerIds: [user.id], memberCount: 1, createdBy: user.id, at, updatedAt: at, statusBy: null, statusAt: null, statusNote: null, rev: 0,
+      };
+      const general = { id: depId, orgId, name: GENERAL_DEPARTMENT, archivedAt: null, at, updatedAt: at, rev: 0 };
+      const member = {
+        orgId, userId: user.id, email: String(user.email || '').toLowerCase(), name, role: 'owner', status: 'active', departmentId: depId,
+        managerId: null, approverId: null, tier: 'standard', at, by: null, removedAt: null, rev: 0,
+      };
+      const policies = TIERS.flatMap(tier => {
+        const rules = defaultPolicy(tier);
+        return [
+          { kind: KINDS.policy, id: `${orgId}.${tier}`, data: { orgId, tier, version: 1, rules, updatedAt: at, updatedBy: by, rev: 0 }, owner: orgId },
+          {
+            kind: KINDS.policyVersion, id: `${orgId}.${tier}.v1`, owner: orgId,
+            data: { orgId, tier, version: 1, rules: defaultPolicy(tier), at, by, note: DEFAULTS_NOTE, changes: [] },
+          },
+        ];
+      });
+      const idx = indexAdd(index, user.id, orgId, max);
+      const docs = await commitOnce(this.repo, {
+        inserts: [
+          { kind: KINDS.org, id: orgId, data: org, owner: null },
+          { kind: KINDS.department, id: depId, data: general, owner: orgId },
+          { kind: KINDS.member, id: memberId(orgId, user.id), data: member, owner: orgId },
+          ...(idx.insert ? [idx.insert] : []),
+          ...policies,
+          auditInsert(this.repo, { orgId, actor: by, action: 'org.created', target: { kind: KINDS.org, id: orgId }, summary: `${name} created ${f.name}` }),
+        ],
+        cas: idx.cas ? [idx.cas] : [],
+      });
+      return { org: docs[`${KINDS.org}:${orgId}`], member: docs[`${KINDS.member}:${memberId(orgId, user.id)}`] };
+    }, { tries: 5 });
+  },
 
   /**
    * The companies the user belongs to (active memberships only), in biz_user_index order: the switcher
@@ -46,14 +287,34 @@ const methods = {
    * @param {import('./types').UserActor|import('./types').MemberActor} actor only actor.user is read
    * @returns {Promise<import('./types').CompanyLink[]>}
    */
-  async listCompaniesFor(actor) { notBuilt(); },
+  async listCompaniesFor(actor) {
+    const user = actor && actor.user;
+    if (!user || !isUserId(user.id)) return [];
+    const index = await userIndex(this.repo, user.id);
+    if (!index) return [];
+    const out = [];
+    for (const orgId of index.orgIds) {
+      if (typeof orgId !== 'string' || !ORG_ID_RE.test(orgId)) continue;
+      const [org, m] = await Promise.all([
+        this.repo.getIn(KINDS.org, orgId, orgId),
+        this.repo.getIn(KINDS.member, memberId(orgId, user.id), orgId),
+      ]);
+      if (!org || !m || m.userId !== user.id || m.status !== 'active') continue;
+      out.push({ id: org.id, name: org.name, status: org.status, role: m.role, roleLabel: LABELS[m.role] });
+    }
+    return out;
+  },
 
   /**
    * The company, for a member (org.view).
    * @param {import('./types').MemberActor} actor
    * @returns {Promise<import('./types').Org>}
    */
-  async getOrg(actor) { notBuilt(); },
+  async getOrg(actor) {
+    const a = await loadActor(this.repo, actor);
+    need(a, 'org.view');
+    return a.org;
+  },
 
   /**
    * The signed-in user's own active membership in a company, or null (no throw for a non-member, a bad id
@@ -62,7 +323,12 @@ const methods = {
    * @param {string} orgId
    * @returns {Promise<import('./types').Member|null>}
    */
-  async membership(actor, orgId) { notBuilt(); },
+  async membership(actor, orgId) {
+    const user = actor && actor.user;
+    if (!user || !isUserId(user.id) || typeof orgId !== 'string' || !ORG_ID_RE.test(orgId)) return null;
+    const m = await this.repo.getIn(KINDS.member, memberId(orgId, user.id), orgId);
+    return m && m.userId === user.id && m.status === 'active' ? m : null;
+  },
 
   /**
    * The People page (members.view): members 50 per page (constants.PAGE_SIZE, Repo.page), pending invites
@@ -72,7 +338,37 @@ const methods = {
    * @param {{ cursor?: string|null }} [opts]
    * @returns {Promise<import('./types').PeopleView>}
    */
-  async listMembers(actor, opts) { notBuilt(); },
+  async listMembers(actor, opts) {
+    const a = await loadActor(this.repo, actor);
+    need(a, 'members.view');
+    const orgId = a.org.id;
+    const manage = can(a.member.role, 'members.manage');
+    const cursor = opts && typeof opts === 'object' ? opts.cursor ?? null : null;
+    const page = await this.repo.page(KINDS.member, orgId, { limit: PAGE_SIZE, cursor });
+    const all = (await scanAll(this.repo, KINDS.member, orgId)).rows.filter(m => m && m.orgId === orgId);
+    const byId = Object.fromEntries(all.map(m => [m.userId, m]));
+    const departments = sortDepartments(await this.repo.list(KINDS.department, orgId));
+    const depById = new Map(departments.map(d => [d.id, d]));
+    const ref = userId => (userId && byId[userId] ? { userId, name: byId[userId].name } : null);
+    const members = page.rows.filter(m => m && m.orgId === orgId).sort(memberOrder).map(m => {
+      const dep = m.departmentId ? depById.get(m.departmentId) : null;
+      return {
+        userId: m.userId, name: m.name, email: manage ? m.email : null, role: m.role, roleLabel: LABELS[m.role], status: m.status,
+        department: dep ? { id: dep.id, name: dep.name } : null, manager: ref(m.managerId), approver: ref(m.approverId), tier: m.tier,
+        at: m.at, rev: m.rev ?? 0,
+      };
+    });
+    const warnings = all.filter(m => m.status === 'active').sort(memberOrder)
+      .filter(m => this.policy.resolveApprover(m, byId).rule === null)
+      .map(m => `${m.name} has no one who can approve their trips`);
+    let invites = null;
+    if (manage) {
+      const nowIso = this.repo.iso();
+      invites = (await scanAll(this.repo, KINDS.invite, orgId)).rows.filter(i => i && i.orgId === orgId && usable(i, nowIso))
+        .sort((x, y) => (x.at < y.at ? 1 : x.at > y.at ? -1 : 0)).map(i => inviteView(i, depById));
+    }
+    return { members, cursor: page.cursor, invites, departments, warnings, memberCount: a.org.memberCount };
+  },
 
   /**
    * Create an invite link (members.manage; POST /people/invite answers 200 with the show-once link page).
@@ -87,7 +383,58 @@ const methods = {
    *   this company, managerId/approverId: active members, tier); 409 'already_member' (an active member has
    *   the email); 409 'company_full' at constants.MEMBER_CAP
    */
-  async invite(actor, form) { notBuilt(); },
+  async invite(actor, form) {
+    const f0 = form && typeof form === 'object' ? form : {};
+    return this.repo.withRetry(async () => {
+      const a = await loadActor(this.repo, actor);
+      need(a, 'members.manage');
+      const orgId = a.org.id;
+      const departments = await this.repo.list(KINDS.department, orgId);
+      const depById = new Map(departments.map(d => [d.id, d]));
+      const active = new Map((await scanAll(this.repo, KINDS.member, orgId)).rows
+        .filter(m => m && m.orgId === orgId && m.status === 'active').map(m => [m.userId, m]));
+      const f = v.collect('invalid_invite', {
+        email: () => v.email(f0.email),
+        role: () => v.oneOf(f0.role, ROLES),
+        departmentId: () => pickDepartment(f0.departmentId, depById, null),
+        managerId: () => pickMember(f0.managerId, active, { self: null, current: null }),
+        approverId: () => pickMember(f0.approverId, active, { self: null, current: null }),
+        tier: () => v.oneOf(f0.tier, TIERS, { blank: 'standard' }),
+      });
+      if (!assignableBy(a.member.role).includes(f.role)) throw forbidden(a.member.role, a.org.name);
+      if ([...active.values()].some(m => m.email === f.email)) throw alreadyMember();
+      if ((a.org.memberCount || 0) >= MEMBER_CAP) throw companyFull();
+
+      const at = this.repo.iso();
+      const token = newToken();
+      const hash = hashToken(token);
+      const pid = pointerId(orgId, f.email);
+      const pointer = await this.repo.getIn(KINDS.inviteEmail, pid, orgId);
+      const prev = pointer && pointer.inviteHash ? await this.repo.getIn(KINDS.invite, pointer.inviteHash, orgId) : null;
+      const inv = {
+        orgId, publicId: id(ID_PREFIX.invite), tokenHash: hash, email: f.email, role: f.role, departmentId: f.departmentId,
+        managerId: f.managerId, approverId: f.approverId, tier: f.tier, invitedBy: a.member.userId, at,
+        expiresAt: addDays(at, this.config.business.inviteDays), acceptedAt: null, acceptedBy: null, revokedAt: null, revokedReason: null, rev: 0,
+      };
+      const cas = [];
+      const inserts = [{ kind: KINDS.invite, id: hash, data: inv, owner: orgId }];
+      if (pointer) cas.push({ kind: KINDS.inviteEmail, id: pid, rev: pointer.rev ?? 0, server: true, fn: d => { d.inviteHash = hash; } });
+      else inserts.push({ kind: KINDS.inviteEmail, id: pid, data: { orgId, inviteHash: hash, rev: 0 }, owner: orgId });
+      if (prev && !prev.acceptedAt && !prev.revokedAt) {
+        cas.push({
+          kind: KINDS.invite, id: prev.tokenHash, rev: prev.rev ?? 0, server: true,
+          fn: d => { d.revokedAt = at; d.revokedReason = 'replaced'; },
+        });
+      }
+      inserts.push(auditInsert(this.repo, {
+        orgId, actor: who(a), action: 'member.invited', target: { kind: KINDS.invite, id: inv.publicId },
+        summary: `${who(a).name} invited ${maskEmail(f.email)} as ${LABELS[f.role]}`,
+        changes: [{ path: 'role', before: null, after: f.role }, { path: 'tier', before: null, after: f.tier }],
+      }));
+      await commitOnce(this.repo, { cas, inserts, checks: [actorCheck(a)] });
+      return { token, invite: inviteView(inv, depById), replaced: usable(prev, at), orgName: a.org.name };
+    }, { tries: 4 });
+  },
 
   /**
    * The invite landing (GET /business/invite/:token; anyone holding the link). Reads by sha256(token) with
@@ -97,9 +444,30 @@ const methods = {
    * @param {import('./types').UserActor} actor actor.user may be null (signed out)
    * @param {string} token
    * @returns {Promise<import('./types').InviteLanding>}
-   * @throws {AppError} 410 'invite_gone' for a malformed, unknown, expired, revoked, replaced or used token
+   * @throws {AppError} 410 'invite_gone' for a malformed, unknown, expired, revoked, replaced or used token;
+   *   403 'org_suspended' when Tripelyx has paused the company (the same answer acceptInvite gives)
    */
-  async inviteByToken(actor, token) { notBuilt(); },
+  async inviteByToken(actor, token) {
+    const { inv, org } = await usableInvite.call(this, token);
+    const user = actor && actor.user && isUserId(actor.user.id) ? actor.user : null;
+    const [dep, inviter] = await Promise.all([
+      inv.departmentId ? this.repo.getIn(KINDS.department, inv.departmentId, org.id) : null,
+      isUserId(inv.invitedBy) ? this.repo.getIn(KINDS.member, memberId(org.id, inv.invitedBy), org.id) : null,
+    ]);
+    let state = null;
+    if (user && await this.membership({ user }, org.id)) state = 'member';
+    else if (org.status === 'pending') state = 'pending_company';
+    else if (user) state = String(user.email || '').toLowerCase() === inv.email ? 'accept' : 'other_email';
+    else state = (await this.accounts.emailInUse(inv.email)) ? 'signin' : 'join';
+    return {
+      org: { id: org.id, name: org.name, status: org.status },
+      invite: {
+        publicId: inv.publicId, email: inv.email, emailMasked: maskEmail(inv.email), role: inv.role, roleLabel: LABELS[inv.role],
+        departmentName: dep ? dep.name : null, invitedByName: inviter ? inviter.name : '', expiresAt: inv.expiresAt,
+      },
+      state,
+    };
+  },
 
   /**
    * Join a company from an invite (POST /invite/:token/accept, or /join right after accounts.register with
@@ -114,7 +482,77 @@ const methods = {
    * @throws {AppError} 410 'invite_gone'; 409 'company_pending' (not confirmed yet); 403 'org_suspended';
    *   403 'invite_email_mismatch'; 409 'already_member'; 422 'too_many_companies'; 409 'company_full'
    */
-  async acceptInvite(actor, token) { notBuilt(); },
+  async acceptInvite(actor, token) {
+    const user = actor && actor.user;
+    if (!user || !isUserId(user.id)) throw notFound();
+    const max = this.config.business.maxOrgsPerUser;
+    return this.repo.withRetry(async () => {
+      const { hash, inv, org, pointer } = await usableInvite.call(this, token);
+      if (org.status === 'pending') throw companyPending(org.name);
+      const email = String(user.email || '').toLowerCase();
+      if (email !== inv.email) throw emailMismatch(inv.email, email);
+      const mid = memberId(org.id, user.id);
+      const existing = await this.repo.getIn(KINDS.member, mid, org.id);
+      if (existing && existing.status === 'active') throw youAreMember();
+      // A removed member comes back only through an invite created after they were removed (D3).
+      if (existing && !(typeof existing.removedAt === 'string' && inv.at > existing.removedAt)) throw inviteGone();
+      const index = await userIndex(this.repo, user.id);
+      if (index && !index.orgIds.includes(org.id) && index.orgIds.length >= max) throw tooMany(max);
+      if ((org.memberCount || 0) >= MEMBER_CAP) throw companyFull();
+      // The invite's links as they stand now: an archived department or a removed manager is dropped.
+      const dep = inv.departmentId ? await this.repo.getIn(KINDS.department, inv.departmentId, org.id) : null;
+      const activeId = async uid => {
+        if (!isUserId(uid) || uid === user.id) return null;
+        const m = await this.repo.getIn(KINDS.member, memberId(org.id, uid), org.id);
+        return m && m.status === 'active' ? uid : null;
+      };
+      const at = this.repo.iso();
+      const name = memberName(user);
+      const fields = {
+        email: inv.email, name, role: inv.role, status: 'active', departmentId: dep && !dep.archivedAt ? dep.id : null,
+        managerId: await activeId(inv.managerId), approverId: await activeId(inv.approverId), tier: inv.tier, at, by: inv.invitedBy, removedAt: null,
+      };
+      const cas = [
+        {
+          kind: KINDS.invite, id: hash, rev: inv.rev ?? 0, server: true,
+          fn: d => { if (!usable(d, at)) throw inviteGone(); d.acceptedAt = at; d.acceptedBy = user.id; },
+        },
+        {
+          kind: KINDS.inviteEmail, id: pointerId(org.id, inv.email), rev: pointer.rev ?? 0, server: true,
+          fn: d => { if (d.inviteHash !== hash) throw inviteGone(); d.inviteHash = null; },
+        },
+        {
+          kind: KINDS.org, id: org.id, rev: org.rev ?? 0, server: true,
+          fn: d => {
+            if (d.status === 'pending') throw companyPending(d.name);
+            if (d.status !== 'active') throw suspended();
+            if ((d.memberCount || 0) >= MEMBER_CAP) throw companyFull();
+            d.memberCount = (d.memberCount || 0) + 1;
+            if (inv.role === 'owner') d.ownerIds = nextOwners(d.ownerIds, user.id, true);
+            d.updatedAt = at;
+          },
+        },
+      ];
+      const inserts = [];
+      if (existing) {
+        cas.push({
+          kind: KINDS.member, id: mid, rev: existing.rev ?? 0, server: true,
+          fn: d => { if (d.status === 'active') throw youAreMember(); Object.assign(d, fields); },
+        });
+      } else {
+        inserts.push({ kind: KINDS.member, id: mid, data: { orgId: org.id, userId: user.id, ...fields, rev: 0 }, owner: org.id });
+      }
+      const idx = indexAdd(index, user.id, org.id, max);
+      if (idx.insert) inserts.push(idx.insert);
+      else cas.push(idx.cas);
+      inserts.push(auditInsert(this.repo, {
+        orgId: org.id, actor: { userId: user.id, name, role: inv.role }, action: 'member.joined', target: { kind: KINDS.member, id: user.id },
+        summary: `${name} joined as ${LABELS[inv.role]}`, changes: [{ path: 'role', before: null, after: inv.role }],
+      }));
+      const docs = await commitOnce(this.repo, { cas, inserts });
+      return { org: docs[`${KINDS.org}:${org.id}`], member: docs[`${KINDS.member}:${mid}`] };
+    }, { tries: 4 });
+  },
 
   /**
    * Revoke a pending invite by its publicId (members.manage; roles.assignableBy must cover its role). One
@@ -125,7 +563,37 @@ const methods = {
    * @returns {Promise<import('./types').Invite>}
    * @throws {AppError} 404 unknown or another company's; 409 'invite_not_pending'
    */
-  async revokeInvite(actor, publicId) { notBuilt(); },
+  async revokeInvite(actor, publicId) {
+    return this.repo.withRetry(async () => {
+      const a = await loadActor(this.repo, actor);
+      need(a, 'members.manage');
+      if (typeof publicId !== 'string' || !PUBLIC_ID_RE.test(publicId)) throw notFound();
+      const orgId = a.org.id;
+      const inv = (await scanAll(this.repo, KINDS.invite, orgId)).rows.find(i => i && i.orgId === orgId && i.publicId === publicId);
+      if (!inv) throw notFound();
+      if (!assignableBy(a.member.role).includes(inv.role)) throw forbidden(a.member.role, a.org.name);
+      const at = this.repo.iso();
+      if (!usable(inv, at)) throw notPending();
+      const pid = pointerId(orgId, inv.email);
+      const pointer = await this.repo.getIn(KINDS.inviteEmail, pid, orgId);
+      const cas = [{
+        kind: KINDS.invite, id: inv.tokenHash, rev: inv.rev ?? 0, server: true,
+        fn: d => { if (!usable(d, at)) throw notPending(); d.revokedAt = at; d.revokedReason = 'manual'; },
+      }];
+      if (pointer && pointer.inviteHash === inv.tokenHash) {
+        cas.push({ kind: KINDS.inviteEmail, id: pid, rev: pointer.rev ?? 0, server: true, fn: d => { d.inviteHash = null; } });
+      }
+      const docs = await commitOnce(this.repo, {
+        cas,
+        checks: [actorCheck(a)],
+        inserts: [auditInsert(this.repo, {
+          orgId, actor: who(a), action: 'member.invite_revoked', target: { kind: KINDS.invite, id: inv.publicId },
+          summary: `${who(a).name} cancelled the invite for ${maskEmail(inv.email)}`,
+        })],
+      });
+      return docs[`${KINDS.invite}:${inv.tokenHash}`];
+    }, { tries: 4 });
+  },
 
   /**
    * Change a member's role, department, manager, approver or tier (members.manage). Both the member's
@@ -140,7 +608,75 @@ const methods = {
    * @throws {AppError} 404; 403 'forbidden'; 422 'invalid_member' with details (managerId or approverId equal
    *   to the member's own id: "Choose someone else."); 422 'last_owner'; 409 'conflict' (stale rev)
    */
-  async updateMember(actor, userId, form) { notBuilt(); },
+  async updateMember(actor, userId, form) {
+    const f0 = form && typeof form === 'object' ? form : {};
+    const a = await loadActor(this.repo, actor);
+    need(a, 'members.manage');
+    const orgId = a.org.id;
+    if (!isUserId(userId)) throw notFound();
+    const mid = memberId(orgId, userId);
+    const target = await this.repo.getIn(KINDS.member, mid, orgId);
+    if (!target || target.userId !== userId || target.status !== 'active') throw notFound();
+    const grant = assignableBy(a.member.role);
+    if (!grant.includes(target.role)) throw forbidden(a.member.role, a.org.name);
+
+    const depById = new Map((await this.repo.list(KINDS.department, orgId)).map(d => [d.id, d]));
+    const people = new Map();
+    for (const k of ['managerId', 'approverId']) {
+      const uid = f0[k];
+      if (!blank(uid) && isUserId(String(uid)) && !people.has(uid)) {
+        const m = await this.repo.getIn(KINDS.member, memberId(orgId, uid), orgId);
+        if (m && m.status === 'active' && m.userId === uid) people.set(uid, m);
+      }
+    }
+    const f = v.collect('invalid_member', {
+      role: () => (given(f0, 'role') && !blank(f0.role) ? v.oneOf(f0.role, ROLES) : target.role),
+      departmentId: () => (given(f0, 'departmentId') ? pickDepartment(f0.departmentId, depById, target.departmentId) : target.departmentId),
+      managerId: () => (given(f0, 'managerId') ? pickMember(f0.managerId, people, { self: userId, current: target.managerId }) : target.managerId),
+      approverId: () => (given(f0, 'approverId') ? pickMember(f0.approverId, people, { self: userId, current: target.approverId }) : target.approverId),
+      tier: () => (given(f0, 'tier') && !blank(f0.tier) ? v.oneOf(f0.tier, TIERS) : target.tier),
+    });
+    if (f.role !== target.role && !grant.includes(f.role)) throw forbidden(a.member.role, a.org.name);
+    if (!sameRev(f0.rev, target)) throw conflict();
+    const changes = MEMBER_FIELDS.filter(k => (f[k] ?? null) !== (target[k] ?? null)).map(k => ({ path: k, before: target[k] ?? null, after: f[k] ?? null }));
+    if (!changes.length) return target;
+
+    const at = this.repo.iso();
+    const ownerChange = (target.role === 'owner') !== (f.role === 'owner');
+    const cas = [{
+      kind: KINDS.member, id: mid, rev: target.rev ?? 0,
+      fn: d => {
+        if (d.status !== 'active') throw notFound();
+        for (const c of changes) d[c.path] = c.after;
+      },
+    }];
+    if (ownerChange) {
+      // D8: against the org as this actor read it, so a racing owner change makes this one a 409.
+      if (!nextOwners(a.org.ownerIds, userId, f.role === 'owner').length) throw lastOwner();
+      cas.push({
+        kind: KINDS.org, id: orgId, rev: a.org.rev ?? 0,
+        fn: d => {
+          const owners = nextOwners(d.ownerIds, userId, f.role === 'owner');
+          if (!owners.length) throw lastOwner();
+          d.ownerIds = owners;
+          d.updatedAt = at;
+        },
+      });
+    }
+    const roleChanged = f.role !== target.role;
+    const actorName = who(a).name;
+    const summary = roleChanged
+      ? `${actorName} changed ${target.name}'s role from ${LABELS[target.role]} to ${LABELS[f.role]}`
+      : `${actorName} changed ${target.name}'s ${listWords(changes.map(c => FIELD_WORDS[c.path]))}`;
+    const docs = await this.repo.commit({
+      cas,
+      checks: a.member.userId === userId ? [] : [actorCheck(a, { server: false })],
+      inserts: [auditInsert(this.repo, {
+        orgId, actor: who(a), action: roleChanged ? 'member.role_changed' : 'member.updated', target: { kind: KINDS.member, id: userId }, summary, changes,
+      })],
+    });
+    return docs[`${KINDS.member}:${mid}`];
+  },
 
   /**
    * Remove a member (members.manage; assignableBy must cover their role). The record stays with status
@@ -153,7 +689,66 @@ const methods = {
    * @returns {Promise<import('./types').Member>}
    * @throws {AppError} 404; 403; 422 'last_owner'; 422 'remove_self'; 409 'conflict'
    */
-  async removeMember(actor, userId, form) { notBuilt(); },
+  async removeMember(actor, userId, form) {
+    const f0 = form && typeof form === 'object' ? form : {};
+    return this.repo.withRetry(async () => {
+      const a = await loadActor(this.repo, actor);
+      need(a, 'members.manage');
+      const orgId = a.org.id;
+      if (!isUserId(userId)) throw notFound();
+      if (userId === a.member.userId) throw removeSelf();
+      const mid = memberId(orgId, userId);
+      const target = await this.repo.getIn(KINDS.member, mid, orgId);
+      if (!target || target.userId !== userId || target.status !== 'active') throw notFound();
+      if (!assignableBy(a.member.role).includes(target.role)) throw forbidden(a.member.role, a.org.name);
+      if (!sameRev(f0.rev, target)) throw conflict();
+      const wasOwner = target.role === 'owner' || (Array.isArray(a.org.ownerIds) && a.org.ownerIds.includes(userId));
+      if (wasOwner && !nextOwners(a.org.ownerIds, userId, false).length) throw lastOwner();
+      const at = this.repo.iso();
+      const cas = [
+        { kind: KINDS.member, id: mid, rev: target.rev ?? 0, fn: d => { if (d.status !== 'active') throw notFound(); d.status = 'removed'; d.removedAt = at; } },
+        {
+          // An owner's removal is checked against the org as this actor read it (D8: a racing owner change
+          // makes it a 409); anyone else's only needs the count kept right, so a racing join just retries.
+          kind: KINDS.org, id: orgId, rev: wasOwner ? a.org.rev ?? 0 : null,
+          fn: d => {
+            const owners = nextOwners(d.ownerIds, userId, false);
+            if (!owners.length) throw lastOwner();
+            d.ownerIds = owners;
+            d.memberCount = Math.max(0, (d.memberCount || 0) - 1);
+            d.updatedAt = at;
+          },
+        },
+      ];
+      const index = await userIndex(this.repo, userId);
+      if (index && index.orgIds.includes(orgId)) {
+        cas.push({ kind: KINDS.userIndex, id: userId, rev: index.rev ?? 0, server: true, fn: d => { d.orgIds = d.orgIds.filter(x => x !== orgId); } });
+      }
+      // A pending invite for their email goes too, so it cannot bring them straight back (D3).
+      const pid = pointerId(orgId, target.email);
+      const pointer = target.email ? await this.repo.getIn(KINDS.inviteEmail, pid, orgId) : null;
+      const pending = pointer && pointer.inviteHash ? await this.repo.getIn(KINDS.invite, pointer.inviteHash, orgId) : null;
+      if (pointer && pointer.inviteHash) {
+        cas.push({ kind: KINDS.inviteEmail, id: pid, rev: pointer.rev ?? 0, server: true, fn: d => { d.inviteHash = null; } });
+        if (pending && !pending.acceptedAt && !pending.revokedAt) {
+          cas.push({
+            kind: KINDS.invite, id: pending.tokenHash, rev: pending.rev ?? 0, server: true,
+            fn: d => { if (!d.acceptedAt && !d.revokedAt) { d.revokedAt = at; d.revokedReason = 'removed'; } },
+          });
+        }
+      }
+      const docs = await commitOnce(this.repo, {
+        cas,
+        checks: [actorCheck(a, { server: false })],
+        inserts: [auditInsert(this.repo, {
+          orgId, actor: who(a), action: 'member.removed', target: { kind: KINDS.member, id: userId },
+          summary: `${who(a).name} removed ${target.name} (${LABELS[target.role]})`,
+          changes: [{ path: 'status', before: 'active', after: 'removed' }],
+        })],
+      });
+      return docs[`${KINDS.member}:${mid}`];
+    }, { tries: 4 });
+  },
 
   /**
    * Create, rename or archive a department (departments.manage). No departmentId → create (audit
@@ -165,14 +760,79 @@ const methods = {
    * @returns {Promise<import('./types').Department>}
    * @throws {AppError} 422 'invalid_department' (details.name); 409 'department_exists'; 409 'conflict'; 404
    */
-  async saveDepartment(actor, form) { notBuilt(); },
+  async saveDepartment(actor, form) {
+    const f0 = form && typeof form === 'object' ? form : {};
+    return this.repo.withRetry(async () => {
+      const a = await loadActor(this.repo, actor);
+      need(a, 'departments.manage');
+      const orgId = a.org.id;
+      const all = await this.repo.list(KINDS.department, orgId);
+      const at = this.repo.iso();
+      const actorName = who(a).name;
+      // Archived departments keep their name, but a new or renamed one may reuse it.
+      const taken = (name, exceptId) => all.some(d => d.id !== exceptId && !d.archivedAt && deptKey(d.name) === deptKey(name));
+
+      if (blank(f0.departmentId)) {
+        const { name } = v.collect('invalid_department', { name: () => v.text(f0.name, 80, { required: true }) });
+        if (all.length >= DEPARTMENT_CAP) throw invalid('invalid_department', { name: `A company can have up to ${DEPARTMENT_CAP} departments.` });
+        if (taken(name, null)) throw departmentExists();
+        const depId = id(ID_PREFIX.department);
+        const docs = await commitOnce(this.repo, {
+          checks: [actorCheck(a)],
+          inserts: [
+            { kind: KINDS.department, id: depId, data: { id: depId, orgId, name, archivedAt: null, at, updatedAt: at, rev: 0 }, owner: orgId },
+            auditInsert(this.repo, {
+              orgId, actor: who(a), action: 'department.created', target: { kind: KINDS.department, id: depId },
+              summary: `${actorName} added the ${name} department`, changes: [{ path: 'name', before: null, after: name }],
+            }),
+          ],
+        });
+        return docs[`${KINDS.department}:${depId}`];
+      }
+
+      const depId = String(f0.departmentId);
+      if (!DEPARTMENT_ID_RE.test(depId)) throw notFound();
+      const dep = await this.repo.getIn(KINDS.department, depId, orgId);
+      if (!dep) throw notFound();
+      const next = { name: dep.name, archivedAt: dep.archivedAt };
+      if (given(f0, 'name')) next.name = v.collect('invalid_department', { name: () => v.text(f0.name, 80, { required: true }) }).name;
+      if (yes(f0.archive) && !dep.archivedAt) next.archivedAt = at;
+      if (!sameRev(f0.rev, dep)) throw conflict();
+      const renamed = next.name !== dep.name;
+      if (renamed && !next.archivedAt && taken(next.name, dep.id)) throw departmentExists();
+      if (!renamed && next.archivedAt === dep.archivedAt) return dep;
+      const audits = [];
+      if (renamed) {
+        audits.push(auditInsert(this.repo, {
+          orgId, actor: who(a), action: 'department.renamed', target: { kind: KINDS.department, id: dep.id },
+          summary: `${actorName} renamed the ${dep.name} department to ${next.name}`, changes: [{ path: 'name', before: dep.name, after: next.name }],
+        }));
+      }
+      if (next.archivedAt !== dep.archivedAt) {
+        audits.push(auditInsert(this.repo, {
+          orgId, actor: who(a), action: 'department.archived', target: { kind: KINDS.department, id: dep.id },
+          summary: `${actorName} archived the ${next.name} department`, changes: [{ path: 'archivedAt', before: null, after: at }],
+        }));
+      }
+      const docs = await commitOnce(this.repo, {
+        cas: [{ kind: KINDS.department, id: dep.id, rev: dep.rev ?? 0, fn: d => { d.name = next.name; d.archivedAt = next.archivedAt; d.updatedAt = at; } }],
+        checks: [actorCheck(a)],
+        inserts: audits,
+      });
+      return docs[`${KINDS.department}:${dep.id}`];
+    }, { tries: 4 });
+  },
 
   /**
    * Every department of the company (org.view), by name, archived last.
    * @param {import('./types').MemberActor} actor
    * @returns {Promise<import('./types').Department[]>}
    */
-  async listDepartments(actor) { notBuilt(); },
+  async listDepartments(actor) {
+    const a = await loadActor(this.repo, actor);
+    need(a, 'org.view');
+    return sortDepartments((await this.repo.list(KINDS.department, a.org.id)).filter(d => d && d.orgId === a.org.id));
+  },
 
   /**
    * Save company settings. name and timezone need settings.company; outOfPolicy ('approval'|'block'),
@@ -183,7 +843,55 @@ const methods = {
    * @returns {Promise<import('./types').Org>}
    * @throws {AppError} 422 'invalid_settings' with details; 403; 409 'conflict'
    */
-  async saveSettings(actor, form) { notBuilt(); },
+  async saveSettings(actor, form) {
+    const f0 = form && typeof form === 'object' ? form : {};
+    const a = await loadActor(this.repo, actor);
+    const role = a.member.role;
+    if (!can(role, 'settings.company') && !can(role, 'settings.travel')) need(a, 'settings.company');
+    const org = a.org;
+    const s = org.settings || {};
+    const f = v.collect('invalid_settings', {
+      name: () => (given(f0, 'name') ? companyName(f0.name) : org.name),
+      timezone: () => (given(f0, 'timezone') ? v.oneOf(f0.timezone, TIMEZONES) : org.timezone),
+      outOfPolicy: () => (given(f0, 'outOfPolicy') ? v.oneOf(f0.outOfPolicy, OUT_OF_POLICY_MODES) : s.outOfPolicy),
+      approvalHours: () => (given(f0, 'approvalHours') ? approvalHours(f0.approvalHours) : s.approvalHours),
+      budgetPeriod: () => (given(f0, 'budgetPeriod') ? v.oneOf(f0.budgetPeriod, BUDGET_PERIODS) : s.budgetPeriod),
+    });
+    const fields = [
+      ['name', org.name, f.name, 'settings.company'],
+      ['timezone', org.timezone, f.timezone, 'settings.company'],
+      ['settings.outOfPolicy', s.outOfPolicy, f.outOfPolicy, 'settings.travel'],
+      ['settings.approvalHours', s.approvalHours, f.approvalHours, 'settings.travel'],
+      ['settings.budgetPeriod', s.budgetPeriod, f.budgetPeriod, 'settings.travel'],
+    ];
+    const changes = [];
+    for (const [path, before, after, perm] of fields) {
+      if (before === after) continue;
+      need(a, perm);
+      changes.push({ path, before: before ?? null, after });
+    }
+    if (!sameRev(f0.rev, org)) throw conflict();
+    if (!changes.length) return org;
+    const at = this.repo.iso();
+    const docs = await this.repo.commit({
+      cas: [{
+        kind: KINDS.org, id: org.id, rev: org.rev ?? 0,
+        fn: d => {
+          d.name = f.name;
+          d.nameKey = nameKeyOf(f.name);
+          d.timezone = f.timezone;
+          d.settings = { ...d.settings, outOfPolicy: f.outOfPolicy, approvalHours: f.approvalHours, budgetPeriod: f.budgetPeriod };
+          d.updatedAt = at;
+        },
+      }],
+      checks: [actorCheck(a, { server: false })],
+      inserts: [auditInsert(this.repo, {
+        orgId: org.id, actor: who(a), action: 'org.settings_changed', target: { kind: KINDS.org, id: org.id },
+        summary: `${who(a).name} changed the company settings`, changes,
+      })],
+    });
+    return docs[`${KINDS.org}:${org.id}`];
+  },
 
   /**
    * The company's data as JSON (settings.company; POST /settings/export answers it as a download): the
@@ -192,16 +900,81 @@ const methods = {
    * @param {import('./types').MemberActor} actor
    * @returns {Promise<import('./types').CompanyExport>}
    */
-  async exportCompany(actor) { notBuilt(); },
+  async exportCompany(actor) {
+    const a = await loadActor(this.repo, actor);
+    need(a, 'settings.company');
+    const orgId = a.org.id;
+    const read = async kind => {
+      const r = await scanAll(this.repo, kind, orgId, EXPORT_CAP);
+      return { rows: r.rows.filter(x => x && x.orgId === orgId), truncated: r.truncated };
+    };
+    const members = await read(KINDS.member);
+    const departments = await read(KINDS.department);
+    const policies = await read(KINDS.policy);
+    const versions = await read(KINDS.policyVersion);
+    const budgets = await read(KINDS.budget);
+    const requests = await read(KINDS.request);
+    const audit = await read(KINDS.audit);
+    const exportedAt = this.repo.iso();
+    const data = {
+      format: 'tripelyx-business-company-export',
+      version: 1,
+      exportedAt,
+      note: `Tripelyx Business preview. Amounts are whole US cents from demo prices: nothing was booked or charged. Questions: ${BUSINESS_EMAIL}.`,
+      org: a.org,
+      members: members.rows,
+      departments: sortDepartments(departments.rows),
+      policies: TIERS.map(t => policies.rows.find(p => p.tier === t)).filter(Boolean),
+      policyVersions: versions.rows.sort((x, y) => TIERS.indexOf(x.tier) - TIERS.indexOf(y.tier) || x.version - y.version),
+      budgets: budgets.rows,
+      requests: requests.rows,
+      audit: audit.rows,
+      truncated: Object.fromEntries(Object.entries({ members, departments, policies, versions, budgets, requests, audit })
+        .filter(([, r]) => r.truncated).map(([k]) => [k, true])),
+    };
+    const counts = `${data.members.length} members, ${data.requests.length} requests`;
+    await this.repo.commit({
+      checks: [actorCheck(a, { server: false })],
+      inserts: [auditInsert(this.repo, {
+        orgId, actor: who(a), action: 'org.exported', target: { kind: KINDS.org, id: orgId },
+        summary: `${who(a).name} downloaded the company data (${counts})`,
+      })],
+    });
+    return { filename: `tripelyx-company-${orgId}.json`, json: JSON.stringify(data, null, 2) };
+  },
 
   /**
    * The activity log (audit.view), newest first, 50 per page (Repo.page), optionally one group.
+   * An unknown group shows every group.
    * @param {import('./types').MemberActor} actor
    * @param {{ group?: string|null, cursor?: string|null }} [opts] group: one of constants.AUDIT_GROUPS
    * @returns {Promise<import('./types').Page<import('./types').AuditEntry>>}
    * @throws {AppError} 404 for a foreign or damaged cursor
    */
-  async listAudit(actor, opts) { notBuilt(); },
+  async listAudit(actor, opts) {
+    const a = await loadActor(this.repo, actor);
+    need(a, 'audit.view');
+    const orgId = a.org.id;
+    const o = opts && typeof opts === 'object' ? opts : {};
+    const group = AUDIT_GROUPS.includes(o.group) ? o.group : null;
+    let cursor = o.cursor ?? null;
+    const mine = e => e && e.orgId === orgId;
+    if (!group) {
+      const page = await this.repo.page(KINDS.audit, orgId, { limit: PAGE_SIZE, cursor });
+      return { rows: page.rows.filter(mine), cursor: page.cursor };
+    }
+    // One group: read store pages no larger than what is still missing, so every row read either goes on
+    // this page or is skipped, and the cursor (after the last row read) loses nothing. A rare group stops
+    // after FILTER_PAGES reads and offers "Show older" with the rows found so far.
+    const rows = [];
+    for (let reads = 0; reads < FILTER_PAGES && rows.length < PAGE_SIZE; reads += 1) {
+      const page = await this.repo.page(KINDS.audit, orgId, { limit: PAGE_SIZE - rows.length, cursor });
+      rows.push(...page.rows.filter(e => mine(e) && e.group === group));
+      cursor = page.cursor;
+      if (!cursor) break;
+    }
+    return { rows, cursor };
+  },
 
   /**
    * Every company for the platform admin page (/admin/business): repo.listOrgs plus each creator's email and
@@ -211,12 +984,36 @@ const methods = {
    * @returns {Promise<import('./types').PlatformView>}
    * @throws {AppError} 404 'not_found' for anyone who is not a platform admin
    */
-  async platformListOrgs(actor) { notBuilt(); },
+  async platformListOrgs(actor) {
+    if (!isAdmin(actor)) throw notFound();
+    const orgs = await this.repo.listOrgs();
+    const byKey = new Map();
+    for (const o of orgs) {
+      const k = o.nameKey || nameKeyOf(o.name || '');
+      if (!byKey.has(k)) byKey.set(k, []);
+      byKey.get(k).push(o);
+    }
+    const rows = [];
+    for (const o of orgs) {
+      const creator = isUserId(o.createdBy) ? await this.repo.getIn(KINDS.member, memberId(o.id, o.createdBy), o.id) : null;
+      const k = o.nameKey || nameKeyOf(o.name || '');
+      rows.push({
+        id: o.id, name: o.name, status: o.status, size: o.size, at: o.at, creatorEmail: creator ? creator.email : '',
+        memberCount: o.memberCount || 0, timezone: o.timezone, similarNames: k ? byKey.get(k).filter(x => x.id !== o.id).map(x => x.name) : [],
+        rev: o.rev ?? 0,
+      });
+    }
+    // Stable: pending first, then active, then suspended; each newest first (listOrgs order).
+    rows.sort((x, y) => (STATUS_ORDER[x.status] ?? 3) - (STATUS_ORDER[y.status] ?? 3));
+    return { orgs: rows, leads: await this.repo.listBusinessLeads({ limit: 200 }) };
+  },
 
   /**
    * Confirm, suspend or reactivate a company (platform admin). pending → active ('org.confirmed'), active →
    * suspended ('org.suspended', note required), suspended → active ('org.reactivated'). One commit: org CAS
    * (form rev; statusBy, statusAt, statusNote), the company's audit entry with actor.platformActor(user).
+   * A pending company may also be suspended (a company Tripelyx will not confirm); asking for the status a
+   * company already has changes nothing.
    * @param {import('./types').UserActor} actor actor.user.isAdmin must be true
    * @param {string} orgId
    * @param {{ status: 'active'|'suspended', note?: string, rev: string|number }} form
@@ -224,7 +1021,93 @@ const methods = {
    * @throws {AppError} 404 (not an admin, unknown company); 422 'invalid_status' (details.status, details.note);
    *   409 'conflict'
    */
-  async platformSetStatus(actor, orgId, form) { notBuilt(); },
+  async platformSetStatus(actor, orgId, form) {
+    if (!isAdmin(actor)) throw notFound();
+    if (typeof orgId !== 'string' || !ORG_ID_RE.test(orgId)) throw notFound();
+    const org = await this.repo.getIn(KINDS.org, orgId, orgId);
+    if (!org) throw notFound();
+    const f0 = form && typeof form === 'object' ? form : {};
+    const f = v.collect('invalid_status', {
+      status: () => v.oneOf(f0.status, ['active', 'suspended']),
+      note: () => v.text(f0.note, 300, { multiline: true }),
+    });
+    if (f.status === 'suspended' && !f.note) throw invalid('invalid_status', { note: 'Write a short note on why this company is paused.' });
+    if (!sameRev(f0.rev, org)) throw conflict();
+    if (org.status === f.status) return org;
+    const action = f.status === 'suspended' ? 'org.suspended' : org.status === 'pending' ? 'org.confirmed' : 'org.reactivated';
+    const verb = { 'org.confirmed': 'confirmed', 'org.suspended': 'paused', 'org.reactivated': 'reactivated' }[action];
+    const at = this.repo.iso();
+    const user = actor.user;
+    const docs = await this.repo.commit({
+      cas: [{
+        kind: KINDS.org, id: org.id, rev: org.rev ?? 0,
+        fn: d => { d.status = f.status; d.statusBy = user.id; d.statusAt = at; d.statusNote = f.note || null; d.updatedAt = at; },
+      }],
+      inserts: [auditInsert(this.repo, {
+        orgId: org.id, actor: platformActor(user), action, target: { kind: KINDS.org, id: org.id },
+        summary: `Tripelyx ${verb} ${org.name}`, changes: [{ path: 'status', before: org.status, after: f.status }],
+      })],
+    });
+    return docs[`${KINDS.org}:${org.id}`];
+  },
 };
+
+/**
+ * The invite behind a token if it can still be used, with its company and pointer. Malformed, unknown,
+ * used, revoked, replaced (the pointer names another invite) or expired → 410; a missing company → 410; a
+ * suspended company → 403. Not a service method (service.js carries only SERVICE_METHODS), so the
+ * methods call it as usableInvite.call(this, token).
+ * @this {{ repo: import('./repo').Repo }} the service
+ */
+async function usableInvite(token) {
+  if (!isToken(token)) throw inviteGone();
+  const hash = hashToken(token);
+  const inv = await this.repo.get(KINDS.invite, hash);
+  if (!inv || !sameHash(inv.tokenHash, hash) || !usable(inv, this.repo.iso())) throw inviteGone();
+  if (typeof inv.orgId !== 'string' || !ORG_ID_RE.test(inv.orgId)) throw inviteGone();
+  const pointer = await this.repo.getIn(KINDS.inviteEmail, pointerId(inv.orgId, inv.email), inv.orgId);
+  if (!pointer || pointer.inviteHash !== hash) throw inviteGone();
+  const org = await this.repo.getIn(KINDS.org, inv.orgId, inv.orgId);
+  if (!org) throw inviteGone();
+  if (org.status === 'suspended') throw suspended();
+  return { hash, inv, org, pointer };
+}
+
+/**
+ * A department choice: blank → none; the member's current one stays even if archived since; otherwise an
+ * active department of this company.
+ */
+function pickDepartment(value, depById, current) {
+  if (blank(value)) return null;
+  const s = String(value);
+  if (s === current) return s;
+  const dep = depById.get(s);
+  if (!dep || dep.archivedAt) throw fieldError("Choose one of your company's departments.");
+  return s;
+}
+
+/** A manager or approver choice: blank → none; never the member themself; the current one stays; otherwise an active member. */
+function pickMember(value, activeById, { self, current }) {
+  if (blank(value)) return null;
+  const s = String(value);
+  if (self && s === self) throw fieldError('Choose someone else.');
+  if (current && s === current) return s;
+  if (!activeById.has(s)) throw fieldError('Choose someone on your team.');
+  return s;
+}
+
+/** Approval expiry in whole hours, 4 to 168. */
+function approvalHours(x) {
+  const [min, max] = APPROVAL_HOURS_RANGE;
+  const s = String(x ?? '').trim();
+  if (!/^\d{1,3}$/.test(s) || Number(s) < min || Number(s) > max) throw fieldError(`Enter a number of hours from ${min} to ${max}.`);
+  return Number(s);
+}
+
+/** "department", "department and manager", "department, manager and tier". */
+function listWords(words) {
+  if (words.length <= 1) return words.join('');
+  return `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}`;
+}
 
 module.exports = { methods, COMPANY_FORM };
