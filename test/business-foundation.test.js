@@ -961,7 +961,7 @@ test('app: Business with trips off builds accounts and reads the session on /bus
   assert.equal(plainOff.business, null);
 });
 
-test('app: platform admins are seeded at boot (a no-op until Stage 1S), and admin behaviour is unchanged', async t => {
+test('app: platform admins are seeded at boot, and a listed email signed up after boot needs a granted record (D1)', async t => {
   const seen = [];
   const real = Accounts.prototype.seedPlatformAdmins;
   Accounts.prototype.seedPlatformAdmins = async function seed(opts) { seen.push(opts && typeof opts.log); return real.call(this, opts); };
@@ -971,10 +971,12 @@ test('app: platform admins are seeded at boot (a no-op until Stage 1S), and admi
     const off = await startApp({ ENABLE_TRIPS: 'false' });
     t.after(off.close);
     assert.deepEqual(seen, ['object'], 'once per app with accounts, with the logger');
-    assert.deepEqual(await app.accounts.seedPlatformAdmins({ log: quietLog }), { granted: [], missing: [] });
-    // Today's rule: the email is listed in ADMIN_EMAILS (Stage 1S adds the record check).
+    assert.deepEqual(await app.accounts.seedPlatformAdmins({ log: quietLog }), { granted: [], missing: ['o***@example.com'] });
+    // D1: the email is listed in ADMIN_EMAILS and an active platform_admin record exists (test/accounts-security.test.js).
     const ops = await seedUser(app, { name: 'Ops Person', email: 'ops@example.com' });
     const ada = await seedUser(app, { name: 'Ada Lovelace', email: 'ada@example.com' });
+    assert.equal((await fetch(`${app.base}/admin`, { headers: { cookie: ops.cookie } })).status, 404, 'signed up after boot: not an admin yet');
+    await app.accounts.grantPlatformAdmin(ops.user.id, { by: 'test' });
     assert.equal((await fetch(`${app.base}/admin`, { headers: { cookie: ops.cookie } })).status, 200);
     assert.equal((await fetch(`${app.base}/admin`, { headers: { cookie: ada.cookie } })).status, 404);
     assert.equal(await app.accounts.isPlatformAdmin(ops.user), true);
@@ -1007,7 +1009,7 @@ test('accounts: grantPlatformAdmin and revokePlatformAdmin write and compare-and
   await assert.rejects(accounts.grantPlatformAdmin(ops.id, { by: 'self' }), /needs by/);
   await assert.rejects(accounts.grantPlatformAdmin(ops.id), /needs by/);
   assert.equal((await accounts.grantPlatformAdmin('usr_NOBODYNOBODYNOBO', { by: 'test' }).catch(e => e)).status, 404);
-  // The record changes nothing yet: today's rule is the email list alone (Stage 1S).
+  // Listed in ADMIN_EMAILS with an active record: a platform admin.
   assert.equal(await accounts.isPlatformAdmin(ops), true);
 });
 

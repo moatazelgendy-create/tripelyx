@@ -129,6 +129,7 @@ test('the account name sits in .header-name with Business on, and an admin keeps
   assert.match(header, /<a class="btn btn-ghost btn-sm" href="\/my-trips"><svg[\s\S]*?<\/svg> <span class="header-name">Bartholomew-Alexander<\/span><\/a>/);
   assert.doesNotMatch(header, /header-admin/);
   const admin = await seedUser(app, { name: 'Dana Boss', email: 'boss@example.com' });
+  await app.accounts.grantPlatformAdmin(admin.user.id, { by: 'test' }); // D1: listed and granted
   const adminHeader = headerOf((await get(app, '/plan', admin.cookie)).text);
   assert.match(adminHeader, /<a class="text-link header-admin" href="\/admin">Admin<\/a>/);
   assert.match(adminHeader, /<span class="header-name">Dana<\/span>/);
