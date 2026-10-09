@@ -1,10 +1,11 @@
 // "Plan a work trip" (/business/o/:orgId/trips/new, plan §B4, §B6, §F3): the search form. It is a GET form to
 // /trips/search, so a search can be shared, bookmarked and run again; nothing is stored until the traveler
 // picks options and presses Review trip. With no supplier connected it shows the "Supplier not connected yet"
-// panel, the fields disabled and no Search button; so it does, with a "Waiting for confirmation" panel that says
-// "Search opens once Tripelyx confirms your company.", while live search waits for Tripelyx to confirm the
-// company (go-live design §5.5; the service refuses such a search with the same sentence, which is then not said
-// twice). A search the form must fix comes back here with each field's message.
+// panel (for a company that already has trips priced on live prices, while live search is off: "Trip search is
+// turned off for now.", parts.SEARCH_OFF), the fields disabled and no Search button; so it does, with a "Waiting
+// for confirmation" panel that says "Search opens once Tripelyx confirms your company.", while live search waits
+// for Tripelyx to confirm the company (go-live design §5.5; the service refuses such a search with the same
+// sentence, which is then not said twice). A search the form must fix comes back here with each field's message.
 const { html } = require('../../lib/html');
 const { icon } = require('../icons');
 const tz = require('../../business/tz');
@@ -57,9 +58,10 @@ function airportSelect({ id, name, label, value, airports, error }) {
 /**
  * @param {object} ctx
  * @param {{ org: object, inventory: { status: string, airports: Function }, values: ReturnType<typeof formValues>,
- *   errors?: Record<string, string>, error?: string|null, departmentName: string|null, tierLabel: string }} m
+ *   errors?: Record<string, string>, error?: string|null, departmentName: string|null, tierLabel: string,
+ *   liveTrips?: boolean }} m liveTrips: search is off and the company already has trips priced on live prices
  */
-function tripNewView(ctx, { org, inventory, values, errors = {}, error = null, departmentName, tierLabel }) {
+function tripNewView(ctx, { org, inventory, values, errors = {}, error = null, departmentName, tierLabel, liveTrips = false }) {
   const base = `/business/o/${org.id}`;
   // Live prices are searched by confirmed companies only: a pending one sees when its search opens.
   const waiting = f.awaitingConfirmation({ business: { inventory } }, org);
@@ -115,7 +117,7 @@ function tripNewView(ctx, { org, inventory, values, errors = {}, error = null, d
   const who = html`<p class="bz-search-who">${icon('shield')}<span>Your department: ${departmentName || 'None yet'} · Your policy: ${tierLabel}</span></p>`;
 
   return html`${p.pageHead({ title: 'Plan a work trip', sub: 'Your policy shows on every option as you search. Nothing is booked.' })}
-  ${waiting ? p.confirmPanel() : off ? p.supplierPanel() : ''}
+  ${waiting ? p.confirmPanel() : off ? p.supplierPanel({ liveTrips }) : ''}
   ${waiting && error === SEARCH_CLOSED ? '' : p.errorBox(error)}
   <form class="bz-card bz-search" method="get" action="${base}/trips/search">
     ${fields}

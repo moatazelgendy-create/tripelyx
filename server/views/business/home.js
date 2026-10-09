@@ -15,7 +15,10 @@
 // so Spent "shows once booking is open"; a company Tripelyx has not confirmed yet is told its search opens once
 // it is confirmed, with no "Plan a work trip" button. A live totals box that counts no request (nothing priced
 // in the period, or a company that priced nothing yet) holds budgets the company set, so it says so
-// (format.LIVE_UNCOUNTED), never that the amounts came from the suppliers.
+// (format.LIVE_UNCOUNTED), never that the amounts came from the suppliers. With live search off (status 'none')
+// a company that already has trips priced on live prices (liveTrips) is told trip search is turned off for now
+// and its trips keep their prices (parts.SEARCH_OFF, NO_TRIPS.textSearchOff), never that Tripelyx hasn't
+// connected airlines and hotels; any other company sees "Supplier not connected yet" as before.
 const { html } = require('../../lib/html');
 const { icon } = require('../icons');
 const { LABELS, can } = require('../../business/roles');
@@ -57,9 +60,10 @@ function budgetTable(rows, { label, timeZone, demo, source = 'demo', bookable = 
 
 /**
  * @param {object} ctx
- * @param {{ org: object, member: object, dash: import('../../business/types').DashboardView, inventoryStatus: string }} m
+ * @param {{ org: object, member: object, dash: import('../../business/types').DashboardView, inventoryStatus: string,
+ *   liveTrips?: boolean }} m liveTrips: search is off and the company already has trips priced on live prices
  */
-function homeView(ctx, { org, member, dash, inventoryStatus }) {
+function homeView(ctx, { org, member, dash, inventoryStatus, liveTrips = false }) {
   const base = `/business/o/${org.id}`;
   const timeZone = f.safeZone(org.timezone);
   const map = places(ctx);
@@ -137,7 +141,7 @@ function homeView(ctx, { org, member, dash, inventoryStatus }) {
 
   if (can(role, 'trip.request')) {
     blocks.push(section('bz-h-plan', 'Plan a work trip', inventoryStatus === 'none'
-      ? p.supplierPanel({ level: 3 })
+      ? p.supplierPanel({ level: 3, liveTrips })
       : waiting ? html`<div class="bz-card bz-plan"><p>${f.SEARCH_AFTER_CONFIRM}</p></div>`
       : html`<div class="bz-card bz-plan"><p>${sandbox ? "Search flights and hotels from our suppliers' test systems, with" : `Search ${inventoryStatus === 'demo' ? 'demo ' : ''}flights and hotels with`} your policy shown on every option. Out-of-policy picks come with cheaper options before you ask for approval.</p>
         <p><a class="btn btn-navy bz-btn" href="${base}/trips/new">${icon('plane')}<span>Plan a work trip</span></a></p></div>`, { iconName: 'plane' }));
@@ -146,7 +150,7 @@ function homeView(ctx, { org, member, dash, inventoryStatus }) {
   blocks.push(section('bz-h-mine', 'My trips', dash.myTrips.length
     ? tripTable({ base, map, rows: dash.myTrips, timeZone, caption: 'Your newest trips' })
     // No second button: "Plan a work trip" above is the one way to start.
-    : p.emptyState({ title: p.NO_TRIPS.title, text: inventoryStatus === 'none' ? p.NO_TRIPS.textNoSupplier : waiting ? p.NO_TRIPS.textWaiting : p.NO_TRIPS.text, iconName: 'calendar' }),
+    : p.emptyState({ title: p.NO_TRIPS.title, text: inventoryStatus === 'none' ? (liveTrips ? p.NO_TRIPS.textSearchOff : p.NO_TRIPS.textNoSupplier) : waiting ? p.NO_TRIPS.textWaiting : p.NO_TRIPS.text, iconName: 'calendar' }),
   { iconName: 'calendar', action: dash.myTrips.length ? { href: `${base}/trips`, label: 'All your trips' } : null }));
 
   const pol = dash.policy || { sub: '', lines: [] };
