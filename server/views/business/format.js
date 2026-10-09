@@ -184,6 +184,9 @@ function inventorySource(inventory) {
 /** The workspace's price source: ctx.business.inventory's (null with no supplier). */
 const ctxSource = ctx => inventorySource(ctx && ctx.business ? ctx.business.inventory : null);
 
+/** Whether trips can be searched here: some inventory runs (demo, supplier test data or live), not 'none'. */
+const searchable = ctx => Boolean(ctx && ctx.business && ctx.business.inventory && ctx.business.inventory.status !== 'none');
+
 /** The least real source of some rows (a trip's out, back and hotel), 'demo' when there are none. */
 const rowsSource = rows => leastReal((rows || []).filter(Boolean).map(r => sourceOf(r))) || 'demo';
 
@@ -221,4 +224,5 @@ module.exports = {
   safeZone, zoneLabel, money, plural, percent, duration, day, dayRange, clock24, timeIn, dayIn, dateTimeIn, whenIn,
   pricedAtText, timeLeft, WEEKDAYS, MONTHS,
   SOURCE_TOTALS, inventorySource, ctxSource, rowsSource, totalsSource, sourceOf, leastReal, requestSource, isSource,
+  searchable,
 };

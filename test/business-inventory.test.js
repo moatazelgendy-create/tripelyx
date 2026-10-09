@@ -20,7 +20,7 @@ const { overrideProvider } = require('./business-fakes');
 const MINUTE = 60000;
 const PRESSURE = /\b(hurry|limited|selling out|last chance|act now|almost gone|don[’']t miss|only \d+ left|ending soon|book now|still available|prices? (?:will|may) (?:rise|go up)|countdown|typically|usually|predict|(?<!(?:can[’']t be|cannot be|never|not) )guarantee[ds]?\b|identical)\b/i;
 const flightQuery = (from, to, departDate, cabin = 'economy') => ({ from, to, departDate, cabin, passengers: 1 });
-const demoInventory = () => createBusinessInventory({ allowDemoInventory: true }, { registry: { get: () => null } });
+const demoInventory = () => createBusinessInventory({ business: { demoInventory: true } });
 
 /** Local wall time 'YYYY-MM-DDTHH:MM' read at a fixed offset (minutes east of UTC), as epoch ms. */
 const utcOf = (local, offset) => Date.parse(`${local}:00Z`) - offset * MINUTE;
@@ -288,23 +288,29 @@ test('demo hotels: offers come from this.hotels, carry no rating, and price with
 // ---------------------------------------------------------------------------------------------------------
 // The inventory seam
 
-test('inventory: overrides, then real providers, then Business demo inventory, else none', () => {
+test('inventory: overrides, then Business demo inventory (BUSINESS_DEMO_INVENTORY), else none; never the shared registry', () => {
   const flights = overrideProvider(new BusinessDemoFlights());
-  assert.equal(createBusinessInventory({ allowDemoInventory: false }, { registry: { get: () => null }, overrides: { flights } }).status, 'demo');
-  const live = v => ({ name: `Live${v}`, vertical: v, isDemo: false });
-  const reg = { get: v => live(v) };
-  const l = createBusinessInventory({ allowDemoInventory: true }, { registry: reg });
-  assert.equal(l.status, 'live');
-  assert.deepEqual(l.carriers(), [], 'a real supplier names its own carriers');
-  assert.equal(l.airports().length, FLIGHT_DATA.airports.length);
+  assert.equal(createBusinessInventory({ business: { demoInventory: false } }, { overrides: { flights } }).status, 'demo');
   const d = demoInventory();
   assert.equal(d.status, 'demo');
   assert.ok(d.flights instanceof BusinessDemoFlights && d.hotels instanceof BusinessDemoHotels);
   assert.equal(d.flights.latencyMs, 0);
+  // The shared provider registry (the one /book runs on) is never Business's, whatever it holds: a real pair, the
+  // mock providers, or nothing. Business inventory comes from its own suppliers or its own demo only.
+  const live = v => ({ name: `Live${v}`, vertical: v, isDemo: false });
   const demoRegistry = { get: v => (v === 'flights' ? new MockFlightProvider() : new MockHotelProvider()) };
-  const d2 = createBusinessInventory({ allowDemoInventory: true }, { registry: demoRegistry });
-  assert.ok(d2.flights instanceof BusinessDemoFlights, 'the registry\'s mock providers are never used');
-  const none = createBusinessInventory({ allowDemoInventory: false }, { registry: demoRegistry });
+  for (const registry of [{ get: v => live(v) }, demoRegistry, { get: () => null }]) {
+    const on = createBusinessInventory({ business: { demoInventory: true } }, { registry });
+    assert.equal(on.status, 'demo');
+    assert.ok(on.flights instanceof BusinessDemoFlights && on.hotels instanceof BusinessDemoHotels, 'Business demo, never the registry');
+    const off = createBusinessInventory({ business: { demoInventory: false } }, { registry });
+    assert.deepEqual([off.status, off.source, off.flights, off.hotels], ['none', null, null, null], 'no live pair taken from the registry');
+  }
+  // ALLOW_DEMO_INVENTORY alone (as on www) gives Business nothing: only config.business.demoInventory does.
+  for (const config of [{ allowDemoInventory: true }, { allowDemoInventory: true, business: {} }, { allowDemoInventory: true, business: { demoInventory: 'true' } }, {}, null]) {
+    assert.equal(createBusinessInventory(config, { registry: demoRegistry }).status, 'none', JSON.stringify(config));
+  }
+  const none = createBusinessInventory({ business: { demoInventory: false } }, { registry: demoRegistry });
   assert.equal(none.status, 'none');
   assert.equal(none.flights, null);
   assert.equal(none.hotels, null);
@@ -335,19 +341,24 @@ test('inventory: airports with time zones, the demo carriers, and the hotel city
   for (const c of BUSINESS_CITIES) assert.deepEqual(inv.cityFor(c.iata), { city: c.city, country: c.country }, c.iata);
 });
 
-test('inventory: production gives "Supplier not connected yet" and never loads the demo data', () => {
+test('inventory: production and www give "Supplier not connected yet" and never load the demo data', () => {
   const { execFileSync } = require('node:child_process');
-  const code = `
-    const { loadConfig } = require('./server/config');
-    const { createRegistry } = require('./server/providers/registry');
-    const { createBusinessInventory } = require('./server/business/inventory');
-    const config = loadConfig({ APP_ENV: 'production', DATABASE_URL: 'postgres://x/prod', ENABLE_BUSINESS: 'true', ENABLE_TRIPS: 'false' });
-    const inv = createBusinessInventory(config, { registry: createRegistry(config) });
-    const loaded = Object.keys(require.cache).filter(f => /demo-data|business[\\\\/]demo[\\\\/]/.test(f));
-    process.stdout.write(JSON.stringify({ allow: config.allowDemoInventory, status: inv.status, airports: inv.airports().length, loaded }));
-  `;
-  const out = JSON.parse(execFileSync(process.execPath, ['-e', code], { cwd: require('node:path').join(__dirname, '..'), encoding: 'utf8' }));
-  assert.deepEqual(out, { allow: false, status: 'none', airports: 0, loaded: [] });
+  const run = env => {
+    const code = `
+      const { loadConfig } = require('./server/config');
+      const { createBusinessInventory } = require('./server/business/inventory');
+      const config = loadConfig(${JSON.stringify(env)});
+      const inv = createBusinessInventory(config);
+      const loaded = Object.keys(require.cache).filter(f => /demo-data|business[\\\\/]demo[\\\\/]/.test(f));
+      process.stdout.write(JSON.stringify({ allow: config.allowDemoInventory, demo: config.business.demoInventory, status: inv.status, airports: inv.airports().length, loaded }));
+    `;
+    return JSON.parse(execFileSync(process.execPath, ['-e', code], { cwd: require('node:path').join(__dirname, '..'), encoding: 'utf8' }));
+  };
+  assert.deepEqual(run({ APP_ENV: 'production', DATABASE_URL: 'postgres://x/prod', ENABLE_BUSINESS: 'true', ENABLE_TRIPS: 'false' }),
+    { allow: false, demo: false, status: 'none', airports: 0, loaded: [] });
+  // www: staging with demo inventory allowed for /book, BUSINESS_DEMO_INVENTORY unset.
+  assert.deepEqual(run({ APP_ENV: 'staging', DATABASE_URL: 'memory', ALLOW_DEMO_INVENTORY: 'true', ENABLE_TRIPS: 'true', ENABLE_BUSINESS: 'true' }),
+    { allow: true, demo: false, status: 'none', airports: 0, loaded: [] });
 });
 
 // ---------------------------------------------------------------------------------------------------------

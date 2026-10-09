@@ -173,10 +173,10 @@ test('carriers(): the supplier airlines plus the test airline in sandbox; demo c
   assert.ok(!supplierCarriers('live').some(c => c.code === 'ZZ'));
   sandbox[0].name = 'changed';
   assert.notEqual(inventoryOf(GOOD).carriers()[0].name, 'changed', 'a fresh list each time');
-  const demo = createBusinessInventory({ allowDemoInventory: true, business: {} }, { registry: noRegistry });
+  const demo = createBusinessInventory({ allowDemoInventory: true, business: { demoInventory: true } }, { registry: noRegistry });
   assert.equal(demo.status, 'demo');
   assert.ok(demo.carriers().length > 0 && !demo.carriers().some(c => c.code === 'ZZ'));
-  const none = createBusinessInventory({ allowDemoInventory: false, business: {} }, { registry: noRegistry });
+  const none = createBusinessInventory({ allowDemoInventory: false, business: { demoInventory: false } }, { registry: noRegistry });
   assert.deepEqual([none.status, none.carriers(), none.problem], ['none', [], null]);
 });
 

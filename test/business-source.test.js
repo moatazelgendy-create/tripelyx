@@ -80,7 +80,7 @@ test('sourceOf never throws and reads anything it does not recognise as demo (ne
 });
 
 test('every demo, fake and fixture id in the repo reads as demo', () => {
-  const inv = createBusinessInventory({ allowDemoInventory: true }, { registry: { get: () => null } });
+  const inv = createBusinessInventory({ business: { demoInventory: true } });
   const codes = inv.airports().map(a => a.code);
   assert.ok(codes.length >= 10, 'the demo airports');
   const flights = new BusinessDemoFlights();

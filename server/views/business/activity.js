@@ -4,7 +4,8 @@
 // trips priced on demo data, so with demo inventory the list sits in one demo container with a note saying so
 // (§F6). With real suppliers (real-suppliers design §2.3) the container and its note follow the workspace's
 // price source: supplier test data gets the dashed outline, the TEST DATA tag and "Includes supplier test
-// data". With no supplier (production) the amounts are the company's own budgets and carry no price label.
+// data". With no supplier (www and production) the amounts are the company's own budgets and limits, in a plain
+// list with a note that says so and no price label.
 const { html } = require('../../lib/html');
 const { pageHead, tabs, pager, emptyState } = require('./parts');
 const f = require('./format');
@@ -18,6 +19,8 @@ const GROUP_LABELS = Object.freeze({
   org: 'Company', member: 'People', department: 'Departments', policy: 'Policy', budget: 'Budgets', request: 'Trips', reports: 'Reports',
 });
 const AMOUNTS_NOTE = 'Demo prices: amounts here are budgets your company set or trips priced on demo data. Nothing is charged.';
+/** With no supplier (www and production today, go-live design §3.4): the amounts listed are the company's own. */
+const AMOUNTS_NOTE_PLAIN = 'Amounts here are budgets and limits your company set.';
 /** The note by the workspace's price source ('demo' is AMOUNTS_NOTE, as before). */
 const AMOUNTS_NOTES = Object.freeze({
   demo: AMOUNTS_NOTE,
@@ -71,7 +74,9 @@ function activityView(ctx, shell, { page, group, moreHref }) {
   // are budgets the company set, never demo prices or test data.
   const source = f.ctxSource(ctx);
   const list = !rows.length ? null : !source
-    ? html`<div class="bz-activity"><ul class="bz-activity-list">${rows}</ul></div>`
+    ? html`<div class="bz-activity"><ul class="bz-activity-list">${rows}</ul>
+          <p class="bz-meta bz-activity-note">${icon('info')}<span>${AMOUNTS_NOTE_PLAIN}</span></p>
+        </div>`
     : source === 'demo'
       ? html`<div class="bz-demo-box bz-activity" data-price-source="demo">
           <ul class="bz-activity-list">${rows}</ul>
@@ -89,4 +94,4 @@ function activityView(ctx, shell, { page, group, moreHref }) {
   return shellView(ctx, shell, { title: TITLE, body });
 }
 
-module.exports = { activityView, actorText, summaryText, TITLE, EMPTY, GROUP_LABELS, AMOUNTS_NOTE, AMOUNTS_NOTES };
+module.exports = { activityView, actorText, summaryText, TITLE, EMPTY, GROUP_LABELS, AMOUNTS_NOTE, AMOUNTS_NOTES, AMOUNTS_NOTE_PLAIN };

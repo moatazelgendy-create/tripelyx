@@ -27,7 +27,7 @@ function chooserView(ctx, { user, companies, max, waiting = null, note = null })
       </section>`
     : '';
   const body = list.length
-    ? html`${cardHead(TITLE, `Signed in as ${user.name}. Pick a company to open its workspace.`)}
+    ? html`${cardHead(TITLE, `Signed in as ${user.name}. Pick a company to open its workspace.`, ctx)}
       ${notice(note)}
       ${admin}
       <ul class="bz-pub-list">${list.map(c => html`<li class="bz-pub-org">
@@ -35,7 +35,7 @@ function chooserView(ctx, { user, companies, max, waiting = null, note = null })
         <a class="btn btn-navy bz-btn" href="/business/o/${c.id}">Open<span class="sr-only"> ${c.name}</span></a>
       </li>`)}</ul>
       ${list.length < max ? html`<p><a class="bz-pub-more" href="${START}">${icon('plus')}<span>Create another company</span></a></p>` : ''}`
-    : html`${cardHead(TITLE, admin ? `Signed in as ${user.name}.` : `Signed in as ${user.name}. You're not in a company yet.`)}
+    : html`${cardHead(TITLE, admin ? `Signed in as ${user.name}.` : `Signed in as ${user.name}. You're not in a company yet.`, ctx)}
       ${notice(note)}
       ${admin}
       <section class="bz-pub-section" aria-labelledby="bz-create-title">

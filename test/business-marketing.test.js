@@ -18,7 +18,10 @@ const mk = require('../server/views/business/marketing');
 
 const now = () => new Date(FIXED_NOW);
 const ON = { ENABLE_BUSINESS: 'true' };
+// www's settings: demo inventory for /book and the trip planner, none for Business (BUSINESS_DEMO_INVENTORY unset).
 const LIVE = { APP_ENV: 'staging', ENABLE_TRIPS: 'true', ALLOW_DEMO_INVENTORY: 'true', PAYMENT_MODE: 'test', DATABASE_URL: 'memory', PUBLIC_BASE_URL: 'https://www.tripelyx.com', ...ON };
+// The preview's: the same, with Business demo inventory turned on (.github/workflows/preview.yml).
+const PREVIEW = { ...LIVE, BUSINESS_DEMO_INVENTORY: 'true' };
 const CORPORATE_NAV = [['/', 'Home'], ['/brands', 'Our Brands'], ['/technology', 'Technology'], ['/business', 'Business'], ['/partners', 'Partners'], ['/about', 'About'], ['/contact', 'Contact']];
 const CORPORATE_FOOTER = [['/brands', 'Our Brands'], ['/technology', 'Technology'], ['/partners', 'Partners'], ['/about', 'About'], ['/contact', 'Contact']];
 const COMPANY_SIZES = ['1-10 people', '11-50 people', '51-200 people', '201-1,000 people', 'More than 1,000 people'];
@@ -29,7 +32,8 @@ const PRESSURE = /\b(hurry|limited|selling out|last chance|act now|almost gone|d
 const NO_CLAIMS = /testimonial|trusted by|\bcustomers?\b|\bclients?\b|\brat(?:ed|ing|ings)\b|\breviews?\b|\bstars?\b|★|award|ai-travel-agent|AI Travel Agent/i;
 // The advisor product this page once described is gone (plan §K, W1A row).
 const ADVISOR = /advisor|agency|agencies|proposal|your client|markup|commission|real inventory|Budget Trip Engine/i;
-const HEADINGS = [
+/** The headings, in order; with no supplier yet or live prices (open), no heading calls Business a preview. */
+const headingsFor = ({ open = false } = {}) => [
   ['h1', 'Company travel, with your rules built in.'],
   ['h2', 'What would you like to do?'],
   ['h2', 'Every work trip in one place.'],
@@ -40,9 +44,9 @@ const HEADINGS = [
   ['h2', 'Built for everyone who touches a work trip'],
   ['h3', 'Employees'], ['h3', 'Managers'], ['h3', 'Travel admins'], ['h3', 'Finance'],
   ['h2', 'Every choice measured against your own limits.'],
-  ['h2', 'Questions about the preview?'],
+  ['h2', open ? 'Questions?' : 'Questions about the preview?'],
   ['h2', 'Where it stands today'],
-  ['h3', 'In the preview now'], ['h3', 'Coming next'],
+  ['h3', open ? 'Available now' : 'In the preview now'], ['h3', 'Coming next'],
   ['h2', "Bring your company's travel into one place."],
   ['h2', 'Tell us about your company.'],
 ];
@@ -108,10 +112,10 @@ function assertCorporateBusiness(page) {
 }
 
 /** The sections in the homepage's order, then each one's headings; no level skipped; every field labelled. */
-function assertStructure(page) {
+function assertStructure(page, { open = false } = {}) {
   const main = mainOf(page);
   assert.deepEqual([...main.matchAll(/<section [^>]*\bid="([^"]+)"/g)].map(m => m[1]), mk.SECTIONS, 'the sections, in order');
-  assert.deepEqual(headings(main), HEADINGS, 'the headings, in order, one h1');
+  assert.deepEqual(headings(main), headingsFor({ open }), 'the headings, in order, one h1');
   const levels = [...page.matchAll(/<h([1-6])\b/g)].map(m => Number(m[1]));
   assert.equal(levels[0], 1);
   levels.forEach((l, i) => assert.ok(!i || l <= levels[i - 1] + 1, `h${levels[i - 1]} then h${l} skips a level`));
@@ -129,10 +133,10 @@ function assertStructure(page) {
 }
 
 test('/business, with Business on, is a corporate page with the homepage sections in order and the company form', async t => {
-  const app = await startApp(LIVE, { store: new MemoryStore(), now });
+  const app = await startApp(PREVIEW, { store: new MemoryStore(), now });
   t.after(app.close);
   assert.ok(app.ctx.trips && app.ctx.business, 'trips and Business run');
-  assert.equal(app.ctx.business.inventory.status, 'demo', 'demo inventory is allowed here');
+  assert.equal(app.ctx.business.inventory.status, 'demo', 'the preview turns Business demo inventory on');
   const page = await get(app, '/business');
   assertCorporateBusiness(page);
   assertStructure(page.text);
@@ -200,6 +204,25 @@ test('/business, with Business on, is a corporate page with the homepage section
   assert.deepEqual((await app.store.listPartnerLeads()).map(l => [l.type, l.company]).sort(), [['1-10 people', 'North Pier'], ['51-200 people', 'Blue Door Logistics']]);
 });
 
+test('/business with www\'s settings: no supplier and no Business demo, so the page says so and never says demo', async t => {
+  const app = await startApp(LIVE, { store: new MemoryStore(), now });
+  t.after(app.close);
+  assert.equal(app.ctx.business.inventory.status, 'none', 'ALLOW_DEMO_INVENTORY alone never gives Business demo inventory');
+  const page = await get(app, '/business');
+  assertCorporateBusiness(page);
+  assertStructure(page.text, { open: true });
+  const main = mainOf(page.text);
+  assert.match(sectionOf(main, 'bz-hero'), /<p class="eyebrow eyebrow-light">Tripelyx Business<\/p>/);
+  assert.ok(textOf(sectionOf(main, 'bz-hero')).includes(mk.NOTES.none));
+  assert.equal(mk.NOTES.none, 'Trip search turns on once we connect airlines and hotels. Nothing is booked or charged yet.');
+  assert.deepEqual(listItems(sectionOf(main, 'bz-today'), 'Available'), mk.PREVIEW_NOW_NO_SUPPLIER);
+  assert.match(sectionOf(main, 'bz-support'), /<h2 id="bz-support-title" class="section-title">Questions\?<\/h2>/);
+  assert.ok(!textOf(main).includes(mk.SAVINGS_DEMO));
+  assert.doesNotMatch(textOf(page.text), /demo/i);
+  // www keeps its companies in its real database: nothing on the page calls Business a preview (go-live review).
+  assert.doesNotMatch(textOf(page.text), /\bpreview\b/i);
+});
+
 test('/business renders with Travel by Budget off when Business is on, and is the 404 page whenever Business is off', async t => {
   const offTrips = await startApp({ ENABLE_TRIPS: 'false', ...ON }, { now });
   t.after(offTrips.close);
@@ -243,13 +266,14 @@ test('without a running workspace every button is "Talk to us" and nothing links
 test('with no supplier connected the page says so and claims no demo data or search', () => {
   const page = view({ inventory: { status: 'none' } });
   assertHonestCopy(page, 'none');
-  assertStructure(page);
+  assertStructure(page, { open: true });
+  assert.doesNotMatch(textOf(page), /\bpreview\b/i, 'none: never called a preview');
   const main = mainOf(page);
   assert.deepEqual(hrefs(sectionOf(main, 'bz-hero')), ['/business/start', '/business/signin']);
   assert.ok(textOf(sectionOf(main, 'bz-hero')).includes(mk.NOTES.none));
   assert.doesNotMatch(textOf(sectionOf(main, 'bz-hero')), /demo data/);
   const today = sectionOf(main, 'bz-today');
-  assert.deepEqual(listItems(today, 'In the preview'), mk.PREVIEW_NOW_NO_SUPPLIER);
+  assert.deepEqual(listItems(today, 'Available'), mk.PREVIEW_NOW_NO_SUPPLIER);
   assert.deepEqual(listItems(today, 'Coming soon'), mk.COMING_NEXT_NO_SUPPLIER);
   assert.ok(!textOf(main).includes(mk.SAVINGS_DEMO), 'no demo prices to speak of');
   // A missing inventory reads the same way.
@@ -258,9 +282,16 @@ test('with no supplier connected the page says so and claims no demo data or sea
   // Live inventory (never today): no demo-data wording and no "Real airline and hotel connections" to come.
   const live = mainOf(view({ inventory: { status: 'live' } }));
   assert.ok(textOf(sectionOf(live, 'bz-hero')).includes(mk.NOTES.live));
-  assert.deepEqual(listItems(sectionOf(live, 'bz-today'), 'In the preview'), mk.PREVIEW_NOW_LIVE);
+  assert.deepEqual(listItems(sectionOf(live, 'bz-today'), 'Available'), mk.PREVIEW_NOW_LIVE);
   assert.deepEqual(listItems(sectionOf(live, 'bz-today'), 'Coming soon'), mk.COMING_NEXT_LIVE);
   assert.doesNotMatch(textOf(live), /demo/i);
+  assert.doesNotMatch(textOf(live), /\bpreview\b/i, 'live: never called a preview');
+  // Demo and supplier test data keep the preview's words.
+  for (const status of ['demo', 'sandbox']) {
+    const m = mainOf(view({ inventory: { status } }));
+    assert.match(sectionOf(m, 'bz-hero'), /<p class="eyebrow eyebrow-light">Tripelyx Business · Preview<\/p>/, status);
+    assert.match(sectionOf(m, 'bz-support'), /Questions about the preview\?/, status);
+  }
 });
 
 test('the account name sits in .header-name with Business on, and an admin keeps the Admin link', async t => {

@@ -380,13 +380,14 @@ test('the preview boot hook end to end: loadConfig, createApp, runPreviewSeed, s
   const { createApp } = require('../server/app');
   const { runPreviewSeed } = require(HOOK);
   const env = {
-    APP_ENV: 'staging', DATABASE_URL: 'memory', ENABLE_BUSINESS: 'true', ALLOW_DEMO_INVENTORY: 'true',
+    APP_ENV: 'staging', DATABASE_URL: 'memory', ENABLE_BUSINESS: 'true', ALLOW_DEMO_INVENTORY: 'true', BUSINESS_DEMO_INVENTORY: 'true',
     PREVIEW_PASSWORD: SECRET, PREVIEW_SEED: 'business', ADMIN_EMAILS: ADMIN,
   };
   const config = loadConfig(env);
   assert.ok(!JSON.stringify(config).includes(SECRET), 'the config keeps no password text');
   const built = await createApp(config, { log: quietLog });
   t.after(() => built.store.close && built.store.close());
+  assert.equal(built.business.inventory.status, 'demo', 'the preview turns Business demo inventory on (BUSINESS_DEMO_INVENTORY)');
   const { lines, log } = recordingLog();
   // The hook passes no env: the seed reads process.env, as on the preview.
   const was = process.env.PREVIEW_PASSWORD;
@@ -422,7 +423,7 @@ test('seed refuses a store that is not the in-memory one, production, Business o
   await demo.seed(base);
   await assert.rejects(demo.seed(base), /already here/);
   // A staging preview (APP_ENV=staging, DATABASE_URL=memory) is allowed: the hook's own config.
-  const staging = await startApp({ APP_ENV: 'staging', DATABASE_URL: 'memory', ENABLE_BUSINESS: 'true', ADMIN_EMAILS: ADMIN, ALLOW_DEMO_INVENTORY: 'true' }, { log: quietLog });
+  const staging = await startApp({ APP_ENV: 'staging', DATABASE_URL: 'memory', ENABLE_BUSINESS: 'true', ADMIN_EMAILS: ADMIN, ALLOW_DEMO_INVENTORY: 'true', BUSINESS_DEMO_INVENTORY: 'true' }, { log: quietLog });
   t.after(staging.close);
   const r = await demo.seed({ ...staging, config: staging.config, log, now: staging.ctx.now });
   assert.equal(r.companies.length, 2);
@@ -521,7 +522,7 @@ test('the preview boot hook on supplier test keys, with the settings the preview
   t.after(() => blocked.restore());
   const env = {
     APP_ENV: 'staging', PORT: '4100', TRUST_PROXY: 'true', HTTPS_ONLY: 'true', DATABASE_URL: 'memory', PAYMENT_MODE: 'test',
-    ALLOW_DEMO_INVENTORY: 'true', ENABLE_TRIPS: 'true', ENABLE_BUSINESS: 'true', ADMIN_EMAILS: demo.DEMO_ADMIN_EMAIL, PREVIEW_SEED: 'business',
+    ALLOW_DEMO_INVENTORY: 'true', BUSINESS_DEMO_INVENTORY: 'true', ENABLE_TRIPS: 'true', ENABLE_BUSINESS: 'true', ADMIN_EMAILS: demo.DEMO_ADMIN_EMAIL, PREVIEW_SEED: 'business',
     PREVIEW_PASSWORD: SECRET,
     BUSINESS_FLIGHT_SUPPLIER: 'duffel', DUFFEL_ACCESS_TOKEN: SANDBOX_ENV.DUFFEL_ACCESS_TOKEN, BUSINESS_ALLOW_SUPPLIER_TEST: 'true',
     BUSINESS_HOTEL_SUPPLIER: 'liteapi', LITEAPI_API_KEY: SANDBOX_ENV.LITEAPI_API_KEY,

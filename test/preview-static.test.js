@@ -256,8 +256,12 @@ test('the deployment settings boot the app with Business on, the memory store, d
   const env = Object.fromEntries([...block.matchAll(/^\s+([A-Z_]+): "([^"]*)"/gm)].map(m => [m[1], m[2]]));
   assert.deepEqual(env, {
     APP_ENV: 'staging', PORT: '4100', TRUST_PROXY: 'true', HTTPS_ONLY: 'true', DATABASE_URL: 'memory', PAYMENT_MODE: 'test',
-    ALLOW_DEMO_INVENTORY: 'true', ENABLE_TRIPS: 'true', ENABLE_BUSINESS: 'true', ADMIN_EMAILS: DEMO_ADMIN, PREVIEW_SEED: 'business',
+    ALLOW_DEMO_INVENTORY: 'true', ENABLE_TRIPS: 'true', ENABLE_BUSINESS: 'true', BUSINESS_DEMO_INVENTORY: 'true', ADMIN_EMAILS: DEMO_ADMIN,
+    PREVIEW_SEED: 'business',
   });
+  // Business's own demo switch is named once, here: the preview shows Business demo inventory with no supplier key,
+  // which www (APP_ENV=staging too, infra/app.yaml BUSINESS_DEMO_INVENTORY 'false') never does.
+  assert.equal((code(workflow).match(/BUSINESS_DEMO_INVENTORY/g) || []).length, 1, 'BUSINESS_DEMO_INVENTORY is set once');
   assert.match(block, /PREVIEW_PASSWORD: env\.PREVIEW_PASSWORD,/);
   // The platform admin is always the demo address, written here: no repository variable or secret can put a real
   // address into the container settings or the public run log.
@@ -275,6 +279,9 @@ test('the deployment settings boot the app with Business on, the memory store, d
   assert.equal(config.databaseUrl, 'memory');
   assert.equal(config.business.enabled, true);
   assert.equal(config.allowDemoInventory, true);
+  assert.equal(config.business.demoInventory, true, 'Business demo inventory on the preview');
+  assert.equal(loadConfig({ ...env, BUSINESS_DEMO_INVENTORY: '', PREVIEW_PASSWORD: 'a-test-password-only' }).business.demoInventory, false,
+    'without it, staging (as on www) has no Business demo inventory');
   assert.equal(config.payment.mode, 'test');
   assert.equal(config.trustProxy, true);
   assert.ok(config.preview.gate);

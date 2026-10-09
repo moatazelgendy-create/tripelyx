@@ -153,6 +153,16 @@ const NO_SUPPLIER = Object.freeze({
   text: "Tripelyx hasn't connected airlines and hotels for company travel. Your policies, people and budgets work today, and search turns on when suppliers are connected.",
 });
 
+/**
+ * The empty "your trips" list (the Trips page and home): how to start one, or, with no supplier, when search
+ * turns on instead of asking for a trip nobody can plan yet.
+ */
+const NO_TRIPS = Object.freeze({
+  title: 'No work trips yet.',
+  text: "Plan one and you'll see your policy as you search.",
+  textNoSupplier: 'Trip search turns on when Tripelyx connects airlines and hotels.',
+});
+
 function supplierPanel({ level = 2 } = {}) {
   return html`<section class="bz-card bz-supplier" aria-labelledby="bz-supplier-title">
     ${heading(level, html` class="bz-supplier-title" id="bz-supplier-title"`, html`${icon('plug')}<span>${NO_SUPPLIER.title}</span>`)}
@@ -737,7 +747,7 @@ module.exports = {
   policyBadge, statusPill, violationList, limitsBar, rowCard, altCard, alternativesPanel,
   dataTable, emptyState, notice, errorBox, actionBar,
   pageHead, tabs, pager, kvList, checklist, verdict, outsideToggle, copyLink, charCount, budgetBar,
-  DEMO_RIBBON, NO_SUPPLIER, BADGES, PILLS, CHEAPEST_WITHIN_LABEL, PIN_BADGE, ALT_HEADING, ALT_SUB, ALT_TRUNCATED, ALT_NONE,
+  DEMO_RIBBON, NO_SUPPLIER, NO_TRIPS, BADGES, PILLS, CHEAPEST_WITHIN_LABEL, PIN_BADGE, ALT_HEADING, ALT_SUB, ALT_TRUNCATED, ALT_NONE,
   UNAVAILABLE,
   // Price sources (real-suppliers design §2.3)
   SANDBOX_RIBBON, LIVE_RIBBON, APPROVED_PILLS, ALT_SUBS, LIMIT_CHIPS, LIMITS_NOTES, LIMITS_CHECKED, limitsNote, fromSearch, NO_STARS, UNAVAILABLE_BY_SOURCE, unavailableText, paidAtHotel, tripSource,

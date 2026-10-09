@@ -10,7 +10,7 @@ const { icon } = require('../icons');
 const { layout } = require('../layout');
 const { errorBox } = require('./parts');
 const { zoneLabel } = require('./format');
-const { COMPANY_SIZES, TIMEZONES, DEFAULT_TIMEZONE, BUSINESS_EMAIL } = require('../../business/constants');
+const { COMPANY_SIZES, TIMEZONES, DEFAULT_TIMEZONE, BUSINESS_EMAIL, SIGNUP_ACK, signupAck } = require('../../business/constants');
 
 /** Where the public pages point. */
 const START = '/business/start';
@@ -20,12 +20,19 @@ const SIGNIN = '/business/signin';
 const START_TITLE = 'Create your company workspace';
 const AT_CAP_TITLE = "You've reached the company limit";
 const ZONE_HINT = 'We show times, like when a request expires, in this time zone.';
+/** The public cards' eyebrow while flights and hotels are demo data or supplier test data (a preview). */
 const EYEBROW = 'Tripelyx Business · Preview';
+/** The eyebrow otherwise (no supplier yet, or live prices): what isn't open is said where it matters, not here. */
+const EYEBROW_OPEN = 'Tripelyx Business';
+/** Preview wording only with demo inventory or supplier test data (go-live design §3.4). */
+const previewing = ctx => {
+  const status = ctx && ctx.business && ctx.business.inventory ? ctx.business.inventory.status : null;
+  return status === 'demo' || status === 'sandbox';
+};
 const START_LEAD = 'Set up your travel policy, budgets and team. Tripelyx confirms each new company before teammates can join.';
 const START_LEAD_SELF_SERVE = 'Set up your travel policy, budgets and team.';
-const ACK_TEXT = "I understand this is a preview with demo data, and I won't enter real employee travel plans yet.";
-/** The same consent with no demo inventory (production): there is no demo data to name. */
-const ACK_TEXT_PLAIN = "I understand this is a preview, and I won't enter real employee travel plans yet.";
+/** The consent box with demo inventory; every status's box and its error are constants.SIGNUP_ACK. */
+const ACK_TEXT = SIGNUP_ACK.demo.box;
 const CURRENCY_TEXT = 'US dollars (USD). More currencies later.';
 const EMAIL_TAKEN = 'An account with this email already exists. Sign in to add your company to it.';
 const ACCOUNT_READY = "Your account is ready, but creating the company didn't work. Try again.";
@@ -143,9 +150,14 @@ function publicPage(ctx, { title, body, wide = false, description }) {
   });
 }
 
-/** The eyebrow and heading of a public card. */
-function cardHead(title, lead) {
-  return html`<p class="eyebrow bz-pub-eyebrow">${EYEBROW}</p><h1>${title}</h1>${lead ? html`<p class="bz-pub-lead">${lead}</p>` : ''}`;
+/**
+ * The eyebrow and heading of a public card.
+ * @param {string} title
+ * @param {*} lead
+ * @param {object} ctx the app context: the eyebrow says "Preview" only with demo or supplier test data
+ */
+function cardHead(title, lead, ctx) {
+  return html`<p class="eyebrow bz-pub-eyebrow">${previewing(ctx) ? EYEBROW : EYEBROW_OPEN}</p><h1>${title}</h1>${lead ? html`<p class="bz-pub-lead">${lead}</p>` : ''}`;
 }
 
 /** The sign-out button (POST /business/signout), with where to land afterwards. */
@@ -165,7 +177,7 @@ function workspaceForbiddenView(ctx, { message, reason = 'role' } = {}) {
   const text = String(message || '');
   const at = text.indexOf(BUSINESS_EMAIL);
   const said = at < 0 ? text : html`${text.slice(0, at)}<a href="mailto:${BUSINESS_EMAIL}">${BUSINESS_EMAIL}</a>${text.slice(at + BUSINESS_EMAIL.length)}`;
-  const body = html`${cardHead(title, '')}
+  const body = html`${cardHead(title, '', ctx)}
     <div class="alert alert-info bz-alert" role="status">${icon('info')}<span>${said}</span></div>
     <p class="bz-inline"><a class="btn btn-navy bz-btn" href="/business/app">Your companies</a></p>`;
   return publicPage(ctx, { title, body });
@@ -216,11 +228,11 @@ function startView(ctx, { user = null, values = {}, accountErrors = {}, companyE
       </div>
     </fieldset>`}
     ${companyFields(values, companyErrors)}
-    ${checkField({ id: 'bz-ack', name: 'ack', label: ctx && ctx.business && ctx.business.inventory && ctx.business.inventory.status === 'demo' ? ACK_TEXT : ACK_TEXT_PLAIN, checked: values.ack === '1', error: companyErrors.ack, required: true })}
+    ${checkField({ id: 'bz-ack', name: 'ack', label: signupAck(ctx && ctx.business && ctx.business.inventory ? ctx.business.inventory.status : null).box, checked: values.ack === '1', error: companyErrors.ack, required: true })}
     <div class="bz-inline"><button class="btn btn-navy bz-btn" type="submit">Create workspace</button></div>
   </form>`;
   const title = atCap ? AT_CAP_TITLE : START_TITLE;
-  const body = html`${cardHead(title, lead)}
+  const body = html`${cardHead(title, lead, ctx)}
     ${accountReady ? html`<div class="alert alert-info bz-alert" role="status">${icon('info')}<span>${ACCOUNT_READY}</span></div>` : ''}
     ${takenBox}${errorBox(error)}
     ${atCap ? html`<div class="alert alert-info bz-alert" role="status">${icon('info')}<span>${atCap}</span></div><p><a class="btn btn-navy bz-btn" href="/business/app">Your companies</a></p>` : ''}
@@ -245,7 +257,7 @@ function startView(ctx, { user = null, values = {}, accountErrors = {}, companyE
  *   next: a same-site path to land on (kept in a hidden field); invite: next is an invite landing
  */
 function signinView(ctx, { values = {}, error = null, next = null, invite = false } = {}) {
-  const body = html`${cardHead(SIGNIN_TITLE, invite ? 'Sign in with the account for your invite, and you will come back to it to join.' : 'Use your Tripelyx account. Every company you belong to opens from here.')}
+  const body = html`${cardHead(SIGNIN_TITLE, invite ? 'Sign in with the account for your invite, and you will come back to it to join.' : 'Use your Tripelyx account. Every company you belong to opens from here.', ctx)}
     ${errorBox(error)}
     <form class="bz-form bz-pub-form" method="post" action="${SIGNIN}">
       ${next ? html`<input type="hidden" name="next" value="${next}">` : ''}
@@ -263,5 +275,5 @@ function signinView(ctx, { values = {}, error = null, next = null, invite = fals
 module.exports = {
   startView, signinView, publicPage, cardHead, signOutForm, maskEmail, zoneOption, workspaceForbiddenView,
   textField, textArea, selectField, checkField, fieldError,
-  START, SIGNIN, START_TITLE, AT_CAP_TITLE, ZONE_HINT, EYEBROW, START_LEAD, ACK_TEXT, CURRENCY_TEXT, EMAIL_TAKEN, ACCOUNT_READY, SIGNIN_TITLE, INVITE_HINT,
+  START, SIGNIN, START_TITLE, AT_CAP_TITLE, ZONE_HINT, EYEBROW, EYEBROW_OPEN, previewing, START_LEAD, ACK_TEXT, CURRENCY_TEXT, EMAIL_TAKEN, ACCOUNT_READY, SIGNIN_TITLE, INVITE_HINT,
 };

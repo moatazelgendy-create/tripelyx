@@ -34,7 +34,7 @@ const { str, EMAIL } = require('../../lib/validate');
 const { gates: makeGates } = require('../../business/http');
 const { send, clientError, routesOf, mountTable, publicHeaders, bizPublicHeaders } = require('./table');
 const { safeLocal, text, oneOf, collect } = require('../../business/validate');
-const { COMPANY_SIZES, TIMEZONES, DEFAULT_TIMEZONE } = require('../../business/constants');
+const { COMPANY_SIZES, TIMEZONES, DEFAULT_TIMEZONE, signupAck } = require('../../business/constants');
 const { startView, signinView } = require('../../views/business/auth');
 const { inviteView, inviteProblemView, GONE } = require('../../views/business/invite');
 const { chooserView } = require('../../views/business/chooser');
@@ -116,14 +116,16 @@ const ROUTES = routesOf(TABLE);
 // Sign-up checks made before an account exists (the service checks everything again)
 
 const fieldError = message => new AppError('invalid_field', message, 422);
-const ACK_MESSAGE = "Tick this box to confirm you won't enter real employee travel plans yet.";
 const NAME_MESSAGE = "Enter your company's name.";
 const SIZE_MESSAGE = "Choose your company's size.";
 /** A signed-in sign-up that carries another email (a form opened while signed out, sent after signing in). */
 const signedInAsText = email => `You're signed in as ${email}. Sign out to create the company with a new account.`;
 
-/** The company fields' messages, keyed as createCompany keys them ({} when they look right). */
-function companyProblems(c) {
+/**
+ * The company fields' messages, keyed as createCompany keys them ({} when they look right). `status`: the
+ * Business inventory's, so the consent error matches the box the page showed (constants.SIGNUP_ACK).
+ */
+function companyProblems(c, status) {
   try {
     collect('invalid_company', {
       name: () => {
@@ -137,7 +139,7 @@ function companyProblems(c) {
         return c.size;
       },
       timezone: () => oneOf(c.timezone, TIMEZONES, { blank: DEFAULT_TIMEZONE }),
-      ack: () => { if (c.ack !== '1') throw fieldError(ACK_MESSAGE); return true; },
+      ack: () => { if (c.ack !== '1') throw fieldError(signupAck(status).error); return true; },
     });
     return {};
   } catch (e) {
@@ -156,7 +158,7 @@ function accountProblems(b) {
   return out;
 }
 
-const tooManyText = max => `You're already in ${max} ${max === 1 ? 'company' : 'companies'}, the most one account can join in the preview.`;
+const tooManyText = max => `You're already in ${max} ${max === 1 ? 'company' : 'companies'}, the most one account can join for now.`;
 const one = v => (typeof v === 'string' ? v : '');
 
 // ---------------------------------------------------------------------------------------------------------
@@ -316,7 +318,7 @@ function router(ctx, deps) {
       if (signedIn && postedEmail && postedEmail !== String(signedIn.email || '').toLowerCase()) {
         return send(res, 409, startView(ctx, { user: signedIn, values, error: signedInAsText(signedIn.email), selfServe: biz.selfServe }));
       }
-      const companyErrors = companyProblems(company);
+      const companyErrors = companyProblems(company, svc.inventory ? svc.inventory.status : null);
       const accountErrors = signedIn ? {} : accountProblems(b);
       if (Object.keys(companyErrors).length || Object.keys(accountErrors).length) {
         return send(res, 422, startView(ctx, { user: signedIn, values, accountErrors, companyErrors, error: 'Check the highlighted fields.', selfServe: biz.selfServe }));

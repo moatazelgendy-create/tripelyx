@@ -133,6 +133,7 @@ const ROUTE_PERMS = Object.freeze({
   '/business POST /o/:orgId/settings/export': ['settings.company', false, 'member'],
   '/admin/business GET /': [null, false, 'platform'],
   '/admin/business POST /:orgId/status': [null, false, 'platform'],
+  '/admin/business POST /house': [null, false, 'platform'],
 });
 const permOf = r => ROUTE_PERMS[keyOf(r)][0];
 
@@ -529,7 +530,7 @@ test('service: every method refuses an actor naming a company the user is not in
     message: [B.requests.pending.id, { text: 'Hello there' }], inbox: [{ tab: 'waiting' }], inboxCount: [], liveCheck: [B.requests.pending.id],
     dashboard: [{ view: 'home' }], exportCsv: [{}],
   };
-  const SKIP = new Set(['createCompany', 'listCompaniesFor', 'membership', 'inviteByToken', 'acceptInvite', 'platformListOrgs', 'platformSetStatus']);
+  const SKIP = new Set(['createCompany', 'listCompaniesFor', 'membership', 'inviteByToken', 'acceptInvite', 'platformListOrgs', 'platformSetStatus', 'platformCreateHouseCompany']);
   for (const name of SERVICE_METHODS) {
     if (SKIP.has(name)) continue;
     assert.ok(ARGS[name], `arguments for ${name}`);
@@ -670,14 +671,17 @@ test('routes: public and platform routes: made-up and malformed tokens and ids a
         for (const C of [A, B]) await sameAsMadeUp(`${label} member on ${C.name}`, p.http, r, urlOf(r, { orgId: C.id }), urlOf(r, { orgId: MADE_UP.orgId }), C, { status: 404 });
       }
     } else if (r.mount === businessPlatform.MOUNT) {
-      // The company list is for platform admins only: everyone else gets the plain 404, with no company in it.
+      // The company list and "Create Tripelyx Inc" are for platform admins only: everyone else gets the plain
+      // Business 404 (no environment banner, go-live design §3.4), with no company in it, and writes nothing.
+      const before = storeSnapshot(w.app);
       for (const p of [A.people.owner, B.people.owner, w.both]) {
-        const res = await p.http.get(urlOf(r, {}));
-        const ref = await p.http.get('/admin/no-such-page');
+        const res = r.method === 'GET' ? await p.http.get(urlOf(r, {})) : await p.http.post(urlOf(r, {}), {});
+        const ref = await p.http.get('/business/no-such-page');
         assert.equal(res.status, 404, `${label} as a member`);
         assert.equal(res.text, ref.text, `${label}: the plain 404`);
         assert.doesNotMatch(res.text, /Acme Inc|Globex Ltd|org_/, `${label}: no company named`);
       }
+      assert.equal(storeSnapshot(w.app), before, `${label}: nothing written`);
     } else if (r.method === 'GET') {
       // Pages with no ids: signed in as Globex, nothing of Acme (and the other way round).
       for (const [p, other] of [[B.people.employee, /Acme|acme[-.]/], [A.people.employee, /Globex|globex[-.]/]]) {

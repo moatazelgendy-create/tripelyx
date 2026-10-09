@@ -9,14 +9,24 @@ const { pageHead, kvList } = require('./parts');
 const { icon } = require('../icons');
 const f = require('./format');
 const { shellView } = require('./shell');
-const { textField, selectField, zoneOption, CURRENCY_TEXT } = require('./auth');
+const { textField, selectField, zoneOption, fieldError, CURRENCY_TEXT } = require('./auth');
 const { OUT_OF_POLICY } = require('./policies');
-const { TIMEZONES, APPROVAL_HOURS_RANGE, BUSINESS_EMAIL } = require('../../business/constants');
+const { TIMEZONES, APPROVAL_HOURS_RANGE, BUSINESS_EMAIL, HOUSE_NAME_FIXED } = require('../../business/constants');
 
 const TITLE = 'Settings';
 const RENAME_WARNING = 'Changing the name sends your company back to Tripelyx to confirm. Until then, no one new can join.';
 const BOOK_FIRST = 'Book first, approver can cancel within 24 hours. Available once booking is live.';
 const PERIODS = Object.freeze([['quarter', 'Quarter'], ['month', 'Month']]);
+/**
+ * The time zone hint, by where the workspace's prices come from (go-live design §3.4): demo price times only
+ * with demo inventory; with no supplier (www and production today) nothing is priced, so no price times.
+ */
+const ZONE_HINTS = Object.freeze({
+  demo: 'Approval deadlines, activity and demo price times show in this zone.',
+  sandbox: 'Approval deadlines, activity and price times show in this zone.',
+  live: 'Approval deadlines, activity and price times show in this zone.',
+  none: 'Approval deadlines and activity show in this zone.',
+});
 const DELETE_TEXT = `To delete this company's data, write to ${BUSINESS_EMAIL}.`;
 /** DELETE_TEXT with the address as a mailto link. */
 const deleteLine = () => html`To delete this company's data, write to <a href="mailto:${BUSINESS_EMAIL}">${BUSINESS_EMAIL}</a>.`;
@@ -39,15 +49,16 @@ function settingsView(ctx, shell, { org, rev = null, canCompany, canTravel, self
   const s = org.settings || {};
   const mode = pick(values, 'outOfPolicy', s.outOfPolicy) === 'block' ? 'block' : 'approval';
   const [minH, maxH] = APPROVAL_HOURS_RANGE;
-  const warnRename = org.status === 'active' && !selfServe;
-  // Demo price times exist only with demo inventory (production has none to show).
-  const zoneHint = ctx.business && ctx.business.inventory && ctx.business.inventory.status === 'demo'
-    ? 'Approval deadlines, activity and demo price times show in this zone.'
-    : 'Approval deadlines and activity show in this zone.';
+  // Tripelyx's own company keeps its name (go-live design §3.8): shown, never a field.
+  const house = org.house === true;
+  const warnRename = !house && org.status === 'active' && !selfServe;
+  const zoneHint = ZONE_HINTS[f.ctxSource(ctx) || 'none'] || ZONE_HINTS.none;
   const company = canCompany
     ? html`<fieldset class="bz-fieldset bz-stack"><legend>Company</legend>
         ${warnRename ? html`<div class="alert alert-warning bz-alert" role="note" id="bz-set-name-warning">${icon('alert')}<span>${RENAME_WARNING}</span></div>` : ''}
-        ${textField({ id: 'bz-set-name', name: 'name', label: 'Company name', value: pick(values, 'name', org.name), error: errors.name, maxlength: 80, required: true, autocomplete: 'organization' })}
+        ${house
+    ? html`<div class="field"><span class="label">Company name</span><p class="bz-pub-fixed">${org.name}</p><p class="field-hint" id="bz-set-name-fixed">${HOUSE_NAME_FIXED}</p>${fieldError('bz-set-name', errors.name)}</div>`
+    : textField({ id: 'bz-set-name', name: 'name', label: 'Company name', value: pick(values, 'name', org.name), error: errors.name, maxlength: 80, required: true, autocomplete: 'organization' })}
         ${selectField({ id: 'bz-set-zone', name: 'timezone', label: 'Time zone', options: TIMEZONES.map(z => [z, zoneOption(z)]), value: pick(values, 'timezone', org.timezone), error: errors.timezone, hint: zoneHint })}
       </fieldset>`
     : html`<section class="bz-card bz-stack" aria-labelledby="bz-set-company"><h2 id="bz-set-company">Company</h2>
@@ -97,4 +108,4 @@ function settingsView(ctx, shell, { org, rev = null, canCompany, canTravel, self
   return shellView(ctx, shell, { title: TITLE, body, notice, error });
 }
 
-module.exports = { settingsView, TITLE, RENAME_WARNING, BOOK_FIRST, DELETE_TEXT };
+module.exports = { settingsView, TITLE, RENAME_WARNING, BOOK_FIRST, DELETE_TEXT, ZONE_HINTS };

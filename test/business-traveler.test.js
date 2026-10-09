@@ -484,7 +484,8 @@ test('production config: the trip form says "Supplier not connected yet", search
   assert.doesNotMatch(main, /href="[^"]*\/trips\/new"/, 'no link to a search that cannot run');
   res = await c.get(`${B}/trips`, h);
   main = checkPage('/trips (production)', res, { priced: false });
-  assert.match(textOf(main), /No work trips yet\./);
+  assert.match(textOf(main), /No work trips yet\. Trip search turns on when Tripelyx connects airlines and hotels\./, 'when search turns on, not "plan one"');
+  assert.doesNotMatch(textOf(main), /Plan one/);
   assert.doesNotMatch(main, /href="[^"]*\/trips\/new"/);
 });
 
@@ -708,7 +709,7 @@ test('home, policy and lists for each role: what each reaches, empty states, fil
   // Lists.
   res = await c.sam.get(`${B}/trips`);
   main = checkPage('/trips empty', res);
-  assert.match(textOf(main), /No work trips yet\./);
+  assert.match(textOf(main), /No work trips yet\. Plan one and you'll see your policy as you search\./, 'with search: how to start one');
   assert.equal((await c.sam.get(`${B}/trips?scope=team`)).status, 403);
   assert.equal((await c.sam.get(`${B}/trips?scope=all`)).status, 403);
   assert.equal((await c.dana.get(`${B}/trips?scope=all`)).status, 403);

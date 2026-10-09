@@ -10,13 +10,16 @@
 // section says whether companies see supplier test data or live prices, and a supplier setting that switched
 // them off (inventory.problem: a sentence that names the variable, never its value) is shown here and
 // nowhere else. With demo inventory, or no supplier and no problem, the page is as it was.
+// Tripelyx's own company (go-live design §3.8): a panel with one button, "Create Tripelyx Inc", while there is
+// none; then its name and company id.
 const { html } = require('../../lib/html');
 const { layout } = require('../layout');
 const { icon } = require('../icons');
-const { statusPill, notice, errorBox, dataTable, emptyState } = require('./parts');
+const { statusPill, notice, errorBox, dataTable, emptyState, kvList } = require('./parts');
 const f = require('./format');
 const { textArea, zoneOption } = require('./auth');
 const { adminTabs } = require('../trips/admin');
+const { HOUSE_COMPANY_NAME, HOUSE_NAME_FIXED } = require('../../business/constants');
 
 const TITLE = 'Companies';
 const MOUNT = '/admin/business';
@@ -32,6 +35,10 @@ const SUPPLIER_STATES = Object.freeze({
   live: 'Companies search live supplier prices. Booking is not open, so nothing is booked or charged.',
 });
 const HOTELS_OFF = 'Hotels are not connected, so companies can request flights only.';
+const HOUSE_TITLE = "Tripelyx's own company";
+const HOUSE_INTRO = `The company Tripelyx itself travels with, named ${HOUSE_COMPANY_NAME}. Sign-up refuses any name that says Tripelyx, so it's made here, once. You'll be its Owner, and it's active straight away.`;
+/** Under the house company's name and id: why the id is shown (a setting for one company asks for it). */
+const HOUSE_MADE = `${HOUSE_NAME_FIXED} Keep the company id: Tripelyx settings that apply to one company ask for it.`;
 const SUPPLIER_OFF = 'Companies see "Supplier not connected yet" until this is fixed.';
 
 /**
@@ -50,6 +57,26 @@ function supplierSection(ctx) {
     ${state ? html`<p>${state}</p>` : ''}
     ${state && inv.hotelsConnected === false ? html`<p class="bz-meta">${HOTELS_OFF}</p>` : ''}
     ${problem ? html`<div class="alert alert-warning bz-alert" role="status">${icon('alert')}<span class="bz-plat-problem">A supplier setting needs attention: ${problem}${inv.status === 'none' ? ` ${SUPPLIER_OFF}` : ''}</span></div>` : ''}
+  </section>`;
+}
+
+/**
+ * The "Tripelyx's own company" panel: the button while there is none (POST /admin/business/house), then the
+ * company's name and id.
+ * @param {{ id: string, name: string, status: string }|null} house PlatformView.house
+ */
+function housePanel(house) {
+  if (house) {
+    return html`<section class="bz-section bz-card" aria-labelledby="bz-plat-house">
+      <div class="bz-card-head"><h2 id="bz-plat-house">${HOUSE_TITLE}</h2>${statusPill(house.status, { kind: 'org' })}</div>
+      ${kvList([['Name', house.name], ['Company id', html`<code>${house.id}</code>`]])}
+      <p class="bz-meta">${HOUSE_MADE}</p>
+    </section>`;
+  }
+  return html`<section class="bz-section bz-card" aria-labelledby="bz-plat-house">
+    <h2 id="bz-plat-house">${HOUSE_TITLE}</h2>
+    <p>${HOUSE_INTRO}</p>
+    <form class="bz-inline-form" method="post" action="${MOUNT}/house"><button class="btn btn-navy bz-btn" type="submit">Create ${HOUSE_COMPANY_NAME}</button></form>
   </section>`;
 }
 
@@ -122,7 +149,7 @@ function platformView(ctx, { data, notice: ok = null, error = null, form = null 
   })}
   </section>`;
   const inner = html`<p class="bz-meta">Confirm a company once you know it is real. Until then, its people can't join by invite. Times in UTC.</p>
-    ${notice(ok)}${errorBox(error)}${supplierSection(ctx)}
+    ${notice(ok)}${errorBox(error)}${housePanel(data.house || null)}${supplierSection(ctx)}
     ${orgs.length ? sections : emptyState({ title: 'No companies yet.', text: 'Companies show up here when someone creates a workspace at /business/start.', iconName: 'layers' })}
     ${enquiries}`;
   if (ctx.trips) {
@@ -131,7 +158,8 @@ function platformView(ctx, { data, notice: ok = null, error = null, form = null 
       ${adminTabs(ctx, MOUNT)}
       <div class="bz-stack">${inner}</div>
     </div>`;
-    return layout({ title: `${TITLE} · Admin`, body, ctx, noindex: true, styles: ['/css/business.css'] });
+    // The trips admin chrome, without the site's environment banner: no Business page wears it (go-live design §3.4).
+    return layout({ title: `${TITLE} · Admin`, body, ctx: { ...ctx, envBanner: null }, noindex: true, styles: ['/css/business.css'] });
   }
   const body = html`<div class="bz-pub-main"><div class="container bz-plat"><div class="bz-pub-card bz-pub-wide">
     <p class="eyebrow bz-pub-eyebrow">Tripelyx admin</p><h1>${TITLE}</h1>
@@ -140,4 +168,6 @@ function platformView(ctx, { data, notice: ok = null, error = null, form = null 
   return layout({ title: `${TITLE} · Admin`, body, ctx, noindex: true, corporate: true, styles: ['/css/business.css'], bodyClass: 'bz-pub' });
 }
 
-module.exports = { platformView, alsoSimilar, supplierSection, TITLE, NOTE_HINT, SUPPLIER_STATES, HOTELS_OFF, SUPPLIER_OFF };
+module.exports = {
+  platformView, alsoSimilar, supplierSection, housePanel, TITLE, NOTE_HINT, SUPPLIER_STATES, HOTELS_OFF, SUPPLIER_OFF, HOUSE_TITLE, HOUSE_INTRO, HOUSE_MADE,
+};

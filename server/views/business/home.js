@@ -35,7 +35,7 @@ function section(id, title, body, { iconName = null, action = null, cls = '' } =
  * it is one demo container (what trips commit is priced from demo data); in production it is the company's
  * own figures.
  */
-function budgetTable(rows, { label, timeZone, demo, source = 'demo' }) {
+function budgetTable(rows, { label, timeZone, demo, source = 'demo', searchable = true }) {
   const cell = c => (c === null || c === undefined ? 'No budget set' : p.amount(c));
   const table = p.dataTable({
     caption: `Budgets for ${label}`,
@@ -47,7 +47,7 @@ function budgetTable(rows, { label, timeZone, demo, source = 'demo' }) {
     ]),
     empty: `No budgets for ${label}. Without a budget, trips are checked against the policy only.`,
   });
-  const body = html`${table}<p class="bz-muted">Committed is what approved trips hold. Spent shows once real bookings exist.</p>`;
+  const body = html`${table}<p class="bz-muted">Committed is what approved trips hold. ${searchable ? 'Spent shows once real bookings exist.' : 'Spent shows once booking is open.'}</p>`;
   return demo ? p.demoBox(body, { pricedAt: null, timeZone, cls: 'bz-budgets-box', source, totals: true }) : html`<div class="bz-budgets-box">${body}</div>`;
 }
 
@@ -112,7 +112,7 @@ function homeView(ctx, { org, member, dash, inventoryStatus }) {
   }
 
   if (dash.budgets) {
-    blocks.push(section('bz-h-budgets', `Budgets, ${dash.periodLabel}`, budgetTable(dash.budgets, { label: dash.periodLabel, timeZone, demo: totalsBox, source: totals }), {
+    blocks.push(section('bz-h-budgets', `Budgets, ${dash.periodLabel}`, budgetTable(dash.budgets, { label: dash.periodLabel, timeZone, demo: totalsBox, source: totals, searchable: inventoryStatus !== 'none' }), {
       iconName: 'wallet', action: { href: `${base}/budgets`, label: 'All budgets' },
     }));
     if (role === 'finance' && can(role, 'reports.view') && !tiles.length) {
@@ -137,7 +137,7 @@ function homeView(ctx, { org, member, dash, inventoryStatus }) {
   blocks.push(section('bz-h-mine', 'My trips', dash.myTrips.length
     ? tripTable({ base, map, rows: dash.myTrips, timeZone, caption: 'Your newest trips' })
     // No second button: "Plan a work trip" above is the one way to start.
-    : p.emptyState({ title: 'No work trips yet.', text: "Plan one and you'll see your policy as you search.", iconName: 'calendar' }),
+    : p.emptyState({ title: p.NO_TRIPS.title, text: inventoryStatus === 'none' ? p.NO_TRIPS.textNoSupplier : p.NO_TRIPS.text, iconName: 'calendar' }),
   { iconName: 'calendar', action: dash.myTrips.length ? { href: `${base}/trips`, label: 'All your trips' } : null }));
 
   const pol = dash.policy || { sub: '', lines: [] };

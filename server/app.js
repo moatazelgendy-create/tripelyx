@@ -36,6 +36,7 @@ const { createPreviewGate } = require('./lib/previewGate');
 const { AppError } = require('./lib/errors');
 const { id } = require('./lib/ids');
 const { notFoundView, errorView } = require('./views/errors');
+const { withoutEnvBanner, isBusinessPath, sendNotFound: bizNotFound } = require('./business/http');
 
 const ASSET_VERSION = Date.now().toString(36);
 
@@ -120,10 +121,11 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
   // Tripelyx Business (server/business): built only when ENABLE_BUSINESS is on, with Travel by Budget on or off.
   // It reaches the store only through its Repo. Its menu item, header class and footer link follow it
   // (ctx.businessNav, server/views/layout.js).
-  // Its inventory is its own (server/business/inventory.js: demo where demo inventory is allowed, else
-  // "Supplier not connected yet"); it never calls BookingEngine or payments.
+  // Its inventory is its own (server/business/inventory.js: its suppliers, else its demo where
+  // BUSINESS_DEMO_INVENTORY allows it, else "Supplier not connected yet"), never the registry /book runs on; it
+  // never calls BookingEngine or payments.
   if (config.business.enabled) {
-    const bizInventory = createBusinessInventory(config, { registry, fetch: businessFetch, now: clock, log });
+    const bizInventory = createBusinessInventory(config, { fetch: businessFetch, now: clock, log });
     business = new BusinessService({
       repo: new Repo({ store, now: clock, log }),
       accounts,
@@ -244,7 +246,14 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
   // /admin and before agentRouter, whose path-less r.use() header setters would otherwise run first (with
   // trips off: before pagesRouter). None defines GET /business: pagesRouter serves the company page.
   const bizRouterDeps = business ? businessRoutes.createRouterDeps(ctx) : null;
-  if (business) app.use(businessPlatform.MOUNT, businessPlatform.router(ctx, bizRouterDeps));
+  if (business) {
+    // One mount answers every /admin/business path: the platform router's table, then, for any other path
+    // there, a Business 404 (no environment banner), never the trips admin center's.
+    const platform = express.Router();
+    platform.use(businessPlatform.router(ctx, bizRouterDeps));
+    platform.use(function bizPlatformNotFound(req, res) { bizNotFound(ctx, res); });
+    app.use(businessPlatform.MOUNT, platform);
+  }
   if (tripService) app.use('/admin', adminRouter(ctx, { writeLimiter }));
   if (business) app.use(businessRoutes.MOUNT, businessRoutes.router(ctx, bizRouterDeps));
   if (tripService) {
@@ -254,9 +263,13 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
   }
   app.use('/', pagesRouter(ctx, { writeLimiter }));
 
+  // A Business page (with Business on) never wears the environment banner, its 404s and errors included
+  // (go-live design §3.4); every other page keeps it, exactly as before.
+  const pageCtx = req => (business && isBusinessPath(req.path) ? withoutEnvBanner(ctx) : ctx);
+
   app.use((req, res) => {
     if (req.path.startsWith('/api/')) return res.status(404).json({ error: { code: 'not_found', message: 'Not found.' } });
-    res.status(404).type('html').send(String(notFoundView(ctx)));
+    res.status(404).type('html').send(String(notFoundView(pageCtx(req))));
   });
 
   // Errors: known AppErrors are shown as-is; anything else gets a generic message and a reference id
@@ -278,7 +291,7 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
         ? { code: 'bad_request', message: 'The request could not be read.' }
         : { code: 'internal', message: 'Something went wrong on our side. Please try again.', ref };
     if (req.path.startsWith('/api/')) return res.status(status).json({ error: body });
-    res.status(status).type('html').send(String(errorView(ctx, { status, ...body })));
+    res.status(status).type('html').send(String(errorView(pageCtx(req), { status, ...body })));
   });
 
   return { app, engine, store, registry, payments, ctx, tripService, accounts, agent, hunts, business };

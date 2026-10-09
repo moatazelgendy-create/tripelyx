@@ -51,9 +51,32 @@ function requireUserPage(req, res, next) {
   next();
 }
 
-/** The default 403 page: the app's error page with the message. Stage 2 may pass its own view. */
+/**
+ * The app context for a Business page drawn in the site's own layout (a 404, a 403): the same, without the
+ * environment banner (go-live design §3.4). Business never shows "demo inventory · payments in test mode": its
+ * workspace and public pages don't, and neither do its refusals. Consumer pages keep their banner.
+ * @param {object} ctx
+ * @returns {object}
+ */
+function withoutEnvBanner(ctx) {
+  return ctx && ctx.envBanner ? { ...ctx, envBanner: null } : ctx;
+}
+
+/**
+ * Is this request path a Business one (/business, /business/..., /admin/business, /admin/business/...)? Case
+ * does not matter (Express routes ignore it). The app's own 404 and error pages leave the banner off these when
+ * Business runs.
+ * @param {unknown} p req.path
+ * @returns {boolean}
+ */
+function isBusinessPath(p) {
+  const s = String(p || '').toLowerCase();
+  return s === '/business' || s.startsWith('/business/') || s === '/admin/business' || s.startsWith('/admin/business/');
+}
+
+/** The default 403 page: the app's error page with the message (no environment banner). Stage 2 may pass its own view. */
 function defaultForbiddenView(ctx, { message }) {
-  return errorView(ctx, { status: 403, message });
+  return errorView(withoutEnvBanner(ctx), { status: 403, message });
 }
 
 /** The workspace refusals drawn in the shell (lead decision L2-1). */
@@ -94,7 +117,7 @@ async function sendInShell(ctx, res, biz, { status, title, message }, fallback) 
  */
 function sendNotFound(ctx, res, { biz = null } = {}) {
   privateHeaders(res);
-  const plain = () => { res.status(404).type('html').send(String(notFoundView(ctx))); };
+  const plain = () => { res.status(404).type('html').send(String(notFoundView(withoutEnvBanner(ctx)))); };
   const known = knownBiz(biz || (res.req && res.req.biz));
   if (!known || !ctx.business) return plain();
   return sendInShell(ctx, res, known, { status: 404, ...NOT_AVAILABLE }, plain);
@@ -112,7 +135,7 @@ function sendNotFound(ctx, res, { biz = null } = {}) {
  */
 function sendForbidden(ctx, res, info, view = defaultForbiddenView, { biz = null } = {}) {
   privateHeaders(res);
-  const plain = () => { res.status(403).type('html').send(String(view(ctx, { ...info, label: info.role ? LABELS[info.role] : null }))); };
+  const plain = () => { res.status(403).type('html').send(String(view(withoutEnvBanner(ctx), { ...info, label: info.role ? LABELS[info.role] : null }))); };
   const known = info.reason === 'role' ? knownBiz(biz || (res.req && res.req.biz)) : null;
   if (!known || !ctx.business) return plain();
   return sendInShell(ctx, res, known, { status: 403, title: ROLE_TITLE, message: info.message }, plain);
@@ -292,5 +315,5 @@ function gates(ctx, { forbiddenView = defaultForbiddenView } = {}) {
 
 module.exports = {
   requireUserPage, requireUser: requireUserPage, memberGate, noStore, gates, sendNotFound, sendForbidden, shellContext,
-  navFor, defaultForbiddenView, privateHeaders, bizErrorPages, NAV, NOT_AVAILABLE,
+  navFor, defaultForbiddenView, privateHeaders, bizErrorPages, withoutEnvBanner, isBusinessPath, NAV, NOT_AVAILABLE,
 };

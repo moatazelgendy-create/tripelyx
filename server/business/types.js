@@ -92,7 +92,8 @@
 
 /**
  * Who calls a service method that needs no company: createCompany, listCompaniesFor, membership,
- * inviteByToken (user may be null there), acceptInvite, platformListOrgs, platformSetStatus.
+ * inviteByToken (user may be null there), acceptInvite, platformListOrgs, platformSetStatus,
+ * platformCreateHouseCompany.
  * @typedef {{ user: User|null }} UserActor
  */
 
@@ -147,10 +148,11 @@
  * 'pending' in the same commit as the rename, until Tripelyx confirms it again (not with config.business.selfServe).
  * @typedef {object} Org
  * @property {string} id
- * @property {string} name NFKC text ≤ 80, never containing "tripelyx"
+ * @property {string} name NFKC text ≤ 80, never containing "tripelyx" (but for the house company, HOUSE_COMPANY_NAME)
  * @property {string} nameKey lowercased letters and digits of the name (the platform's "similar name" hint)
  * @property {OrgStatus} status
- * @property {string} size one of the sign-up's company sizes ('1-10 people' … 'More than 1,000 people')
+ * @property {string|null} size one of the sign-up's company sizes ('1-10 people' … 'More than 1,000 people'); null
+ *   for the house company, which no form made
  * @property {'USD'} currency
  * @property {string} timezone one of constants.TIMEZONES (default 'Africa/Cairo')
  * @property {OrgSettings} settings
@@ -167,6 +169,8 @@
  *   changes in between leave an open settings form current.
  * @property {string} [previousName] the name Tripelyx confirmed, written when a rename sends a confirmed company back
  *   to 'pending' (saveSettings). Only platformListOrgs reads it (PlatformOrgRow.previousName); members' views leave it out.
+ * @property {true} [house] Tripelyx's own company (go-live design §3.8): only platformCreateHouseCompany sets it, with
+ *   the biz_house record (id HOUSE_ID, owner the company, { orgId, at, by }) in the same commit; its name never changes
  * @property {number} rev
  */
 
@@ -1216,10 +1220,15 @@
  * @property {string|null} statusNote the note of the last status change (the pause note; staff only)
  * @property {string|null} statusAt when the status last changed
  * @property {string|null} previousName the name Tripelyx confirmed before a rename sent the company back to 'pending'
+ * @property {boolean} house Tripelyx's own company
  * @property {number} rev
  */
 
-/** service.platformListOrgs({ user }): pending first, then active, then suspended. leads: kind 'business' only (≤ 200). @typedef {{ orgs: PlatformOrgRow[], leads: object[] }} PlatformView */
+/**
+ * service.platformListOrgs({ user }): pending first, then active, then suspended. leads: kind 'business' only (≤ 200).
+ * house: Tripelyx's own company, or null while there is none (the "Create Tripelyx Inc" panel).
+ * @typedef {{ orgs: PlatformOrgRow[], leads: object[], house: { id: string, name: string, status: OrgStatus }|null }} PlatformView
+ */
 
 /**
  * What the workspace shell needs (http.shellContext; frozen in Stage 0).
@@ -1232,9 +1241,10 @@
 //     alternatives and the explainer ONLY through `this.*`, so tests can hand in test/business-fakes.js.
 
 /**
- * inventory.createBusinessInventory(config, { registry, overrides, fetch, now, log }). status 'none' (production
- * today): flights and hotels null, airports() and carriers() empty, cityFor() null. A configured real supplier
- * that cannot work (a problem) gives 'none' with `problem` set, never demo.
+ * inventory.createBusinessInventory(config, { overrides, fetch, now, log }). status 'none' (www and production
+ * today: no supplier and no BUSINESS_DEMO_INVENTORY): flights and hotels null, airports() and carriers() empty,
+ * cityFor() null. A configured real supplier that cannot work (a problem) gives 'none' with `problem` set, never
+ * demo. Never the shared provider registry.
  * @typedef {object} BusinessInventory
  * @property {InventoryStatus} status
  * @property {object|null} flights a FlightProvider (providers/contracts.js): BusinessDemoFlights in demo,

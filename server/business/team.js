@@ -40,13 +40,16 @@
 // - A confirmed company that takes a new name (a new nameKey) goes back to 'pending' until Tripelyx confirms
 //   it again (not with config.business.selfServe). The settings form is stale only when a setting changed
 //   after it was loaded (org.settingsRev, the org rev of the last settings change), not on every org write.
+// - Tripelyx's own company (go-live design §3.8) is the one company named Tripelyx: only
+//   platformCreateHouseCompany makes it (createCompany's commit with the house flag), its biz_house record
+//   (one fixed id, insert-only) goes in the same commit so there is only ever one, and its name never changes.
 const crypto = require('node:crypto');
 const { AppError } = require('../lib/errors');
 const { id } = require('../lib/ids');
 const {
   DEFAULT_TIMEZONE, COMPANY_SIZES, KINDS, ID_PREFIX, TIERS, TIMEZONES, OUT_OF_POLICY_MODES, BUDGET_PERIODS,
   APPROVAL_HOURS_RANGE, REASON_MIN_CHARS, GENERAL_DEPARTMENT, MEMBER_CAP, DEPARTMENT_CAP, PAGE_SIZE, SCAN_CAP, AUDIT_GROUPS,
-  CURRENCY, BUSINESS_EMAIL,
+  CURRENCY, BUSINESS_EMAIL, HOUSE_COMPANY_NAME, HOUSE_ID, HOUSE_NAME_FIXED, signupAck,
 } = require('./constants');
 const { ROLES, LABELS, can, assignableBy } = require('./roles');
 const v = require('./validate');
@@ -70,13 +73,15 @@ const EXPORT_CAP = 20000;
 /** Each exported request's price_source, in the requests CSV's words (csv.js price_source). */
 const PRICE_SOURCE_LABELS = Object.freeze({ demo: 'Demo price', sandbox: 'Supplier test data', live: 'Supplier price' });
 /**
- * The export's note: with only demo requests (or none) the preview note word for word; with any supplier
- * request, that each request's price_source names where its amounts came from.
+ * The export's note: with only demo requests (or none, under demo inventory) the preview note word for word;
+ * with any supplier request, that each request's price_source names where its amounts came from; with no
+ * request and no demo inventory (www and production today: go-live design §3.4), the plain export note, which
+ * names nothing that isn't there.
  */
 const EXPORT_NOTES = Object.freeze({
   demo: `Tripelyx Business preview. Amounts are whole US cents from demo prices: nothing was booked or charged. Questions: ${BUSINESS_EMAIL}.`,
   supplier: `Tripelyx Business preview. Amounts are whole US cents from demo prices, supplier test data or supplier prices, as each request's price_source says: nothing was booked or charged. Questions: ${BUSINESS_EMAIL}.`,
-  plain: `Tripelyx Business preview. Amounts are whole US cents: nothing was booked or charged. Questions: ${BUSINESS_EMAIL}.`,
+  plain: `Tripelyx Business export. Amounts are whole US cents. Nothing was booked or charged. Questions: ${BUSINESS_EMAIL}.`,
 });
 /** A request as the export carries it: its own fields, with price_source (the CSV's words) for its stored source. */
 function exportedRequest(r) {
@@ -86,9 +91,10 @@ function exportedRequest(r) {
 }
 
 /**
- * Which export note fits: any supplier request names each request's price_source; requests that are all demo
- * came from demo prices; with no requests at all, demo prices are named only under demo inventory (with no
- * supplier, as on production, every amount is the company's own).
+ * Which export note fits, from the requests and the inventory's status: any supplier request names each
+ * request's price_source; requests that are all demo came from demo prices; with no requests at all, demo
+ * prices are named only under demo inventory (with no supplier, as on www and production, every amount is the
+ * company's own).
  */
 function exportNote(requests, inventory) {
   if (requests.some(r => requestSource(r) !== 'demo')) return EXPORT_NOTES.supplier;
@@ -115,14 +121,14 @@ const invalid = (code, details) => new AppError(code, 'Check the highlighted fie
 const inviteGone = () => new AppError('invite_gone', "This invite link can't be used anymore. Ask your company's travel admin for a new one.", 410);
 const lastOwner = () => new AppError('last_owner', 'A company needs at least one Owner. Make someone else an Owner first.', 422);
 const removeSelf = () => new AppError('remove_self', "You can't remove yourself. Ask another Owner or Travel Admin.", 422);
-const companyFull = () => new AppError('company_full', `A company can have up to ${MEMBER_CAP.toLocaleString('en-US')} people in the preview.`, 409);
+const companyFull = () => new AppError('company_full', `A company can have up to ${MEMBER_CAP.toLocaleString('en-US')} people for now.`, 409);
 const alreadyMember = () => new AppError('already_member', 'This person is already on your team.', 409);
 const youAreMember = () => new AppError('already_member', "You're already in this company.", 409);
 const notPending = () => new AppError('invite_not_pending', 'This invite was already used, cancelled or has expired.', 409);
 const departmentExists = () => new AppError('department_exists', 'There is already a department with this name.', 409);
 const companyPending = name => new AppError('company_pending', `${name} is waiting for Tripelyx to confirm it. Try this link again once it's confirmed.`, 409);
 const tooMany = max => new AppError('too_many_companies',
-  `You're already in ${max} ${max === 1 ? 'company' : 'companies'}, the most one account can join in the preview.`, 422);
+  `You're already in ${max} ${max === 1 ? 'company' : 'companies'}, the most one account can join for now.`, 422);
 const emailMismatch = (inviteEmail, userEmail) => new AppError('invite_email_mismatch',
   `This invite is for ${maskEmail(inviteEmail)}. You're signed in as ${userEmail}. Sign out to use it, or ask your admin to invite ${userEmail}.`, 403);
 
@@ -184,10 +190,13 @@ function namesTripelyx(name) {
   const folded = [...bare].map(ch => CONFUSABLE[ch] || ch).join('').replace(/[^a-z]/g, '');
   return folded.includes('tripeiyx');
 }
-/** A company name: required, ≤ 80 characters of NFKC text, never naming Tripelyx. */
-function companyName(x) {
+/**
+ * A company name: required, ≤ 80 characters of NFKC text, never naming Tripelyx. `house` (only
+ * platformCreateHouseCompany passes it, with HOUSE_COMPANY_NAME) skips that last check and nothing else.
+ */
+function companyName(x, { house = false } = {}) {
   const s = v.text(x, 80, { required: true });
-  if (namesTripelyx(s)) throw fieldError("Choose your own company's name.");
+  if (!house && namesTripelyx(s)) throw fieldError("Choose your own company's name.");
   return s;
 }
 /** The account's name as a member record keeps it. */
@@ -318,6 +327,87 @@ function indexAdd(index, userId, orgId, max) {
   };
 }
 
+/**
+ * Tripelyx's own company, or null while there is none: the company the biz_house record names
+ * (Repo.houseOrgId), when it is there and carries house: true.
+ * @param {import('./repo').Repo} repo
+ * @returns {Promise<import('./types').Org|null>}
+ */
+async function houseOf(repo) {
+  const orgId = await repo.houseOrgId();
+  const org = orgId ? await repo.getIn(KINDS.org, orgId, orgId) : null;
+  return org && org.house === true ? org : null;
+}
+
+/**
+ * The one commit that makes a company, for createCompany and platformCreateHouseCompany: biz_org (status
+ * 'pending', or 'active' with config.business.selfServe), the Owner's biz_member (tier standard, department
+ * General), the user's biz_user_index (insert, or CAS adding the id), the three biz_policy records at version 1
+ * from policy/defaults.js with their biz_policy_version v1 (note DEFAULTS_NOTE, no changes), the "General"
+ * biz_department, and the audit entry. Nothing is written when any part fails. `house` (passed only by
+ * platformCreateHouseCompany, go-live design §3.8) makes Tripelyx's own company: 'active' at once, house: true,
+ * the biz_house record (id HOUSE_ID) inserted in the same commit, so a second one can never be made, and the
+ * audit entry 'org.house_created' under the name "Tripelyx". Run inside repo.withRetry: a taken id is a
+ * retryable conflict (commitOnce).
+ * @this {object} the service
+ * @param {{ id: string, email?: string, name?: string }} user the signed-in account, the company's Owner
+ * @param {{ name: string, size: string|null, timezone: string }} f the checked company fields
+ * @param {{ house?: boolean }} [opts]
+ * @returns {Promise<{ org: import('./types').Org, member: import('./types').Member }>}
+ */
+async function makeCompany(user, f, { house = false } = {}) {
+  const biz = this.config.business;
+  const max = biz.maxOrgsPerUser;
+  const index = await userIndex(this.repo, user.id);
+  if (index && index.orgIds.length >= max) throw tooMany(max);
+  const at = this.repo.iso();
+  const orgId = id(ID_PREFIX.org);
+  const depId = id(ID_PREFIX.department);
+  const name = memberName(user);
+  const by = { userId: user.id, name, role: 'owner' };
+  const org = {
+    id: orgId, name: f.name, nameKey: nameKeyOf(f.name), status: house || biz.selfServe ? 'active' : 'pending', size: f.size,
+    currency: CURRENCY, timezone: f.timezone,
+    settings: { outOfPolicy: 'approval', approvalHours: biz.approvalHours, reasonMinChars: REASON_MIN_CHARS, budgetPeriod: 'quarter' },
+    ownerIds: [user.id], memberCount: 1, createdBy: user.id, at, updatedAt: at, statusBy: null, statusAt: null, statusNote: null, rev: 0,
+    ...(house ? { house: true } : {}),
+  };
+  const general = { id: depId, orgId, name: GENERAL_DEPARTMENT, archivedAt: null, at, updatedAt: at, rev: 0 };
+  const member = {
+    orgId, userId: user.id, email: String(user.email || '').toLowerCase(), name, role: 'owner', status: 'active', departmentId: depId,
+    managerId: null, approverId: null, tier: 'standard', at, by: null, removedAt: null, rev: 0,
+  };
+  const policies = TIERS.flatMap(tier => {
+    const rules = defaultPolicy(tier);
+    return [
+      { kind: KINDS.policy, id: `${orgId}.${tier}`, data: { orgId, tier, version: 1, rules, updatedAt: at, updatedBy: by, rev: 0 }, owner: orgId },
+      {
+        kind: KINDS.policyVersion, id: `${orgId}.${tier}.v1`, owner: orgId,
+        data: { orgId, tier, version: 1, rules: defaultPolicy(tier), at, by, note: DEFAULTS_NOTE, changes: [] },
+      },
+    ];
+  });
+  const idx = indexAdd(index, user.id, orgId, max);
+  const docs = await commitOnce(this.repo, {
+    inserts: [
+      { kind: KINDS.org, id: orgId, data: org, owner: null },
+      { kind: KINDS.department, id: depId, data: general, owner: orgId },
+      { kind: KINDS.member, id: memberId(orgId, user.id), data: member, owner: orgId },
+      ...(idx.insert ? [idx.insert] : []),
+      ...policies,
+      ...(house ? [{ kind: KINDS.house, id: HOUSE_ID, data: { orgId, at, by: user.id }, owner: orgId }] : []),
+      house
+        ? auditInsert(this.repo, {
+          orgId, actor: { platformAdmin: user.id, name: PLATFORM_NAME }, action: 'org.house_created', target: { kind: KINDS.org, id: orgId },
+          summary: `Tripelyx created ${f.name}, its own company, with ${name} as its Owner`,
+        })
+        : auditInsert(this.repo, { orgId, actor: by, action: 'org.created', target: { kind: KINDS.org, id: orgId }, summary: `${name} created ${f.name}` }),
+    ],
+    cas: idx.cas ? [idx.cas] : [],
+  });
+  return { org: docs[`${KINDS.org}:${orgId}`], member: docs[`${KINDS.member}:${memberId(orgId, user.id)}`] };
+}
+
 const methods = {
   /**
    * Create a company with the signed-in user as its Owner (POST /business/start, after accounts.register or
@@ -328,70 +418,26 @@ const methods = {
    * biz_policy_version v1 (note DEFAULTS_NOTE, no changes), the "General"
    * biz_department, and the audit entry 'org.created'. Nothing is written when any part fails.
    * @param {import('./types').UserActor} actor
-   * @param {{ name: string, size: string, timezone?: string, ack?: string }} form ack '1' = the preview checkbox
+   * @param {{ name: string, size: string, timezone?: string, ack?: string }} form ack '1' = the sign-up consent box (SIGNUP_ACK)
    * @returns {Promise<{ org: import('./types').Org, member: import('./types').Member }>}
    * @throws {AppError} 404 no user; 422 'invalid_company' details { name: "Choose your own company's name." when
    *   it contains "tripelyx" (NFKC, case-insensitive), size, timezone, ack }; 422 'too_many_companies' at
-   *   config.business.maxOrgsPerUser ("You're already in 3 companies, the most one account can join in the preview.")
+   *   config.business.maxOrgsPerUser ("You're already in 3 companies, the most one account can join for now.")
    */
   async createCompany(actor, form) {
     const user = actor && actor.user;
     if (!user || !isUserId(user.id)) throw notFound();
     const f0 = form && typeof form === 'object' ? form : {};
-    const biz = this.config.business;
-    const max = biz.maxOrgsPerUser;
     const f = v.collect('invalid_company', {
       name: () => companyName(f0.name),
       size: () => v.oneOf(f0.size, COMPANY_SIZES),
       timezone: () => v.oneOf(f0.timezone, TIMEZONES, { blank: DEFAULT_TIMEZONE }),
       ack: () => {
-        if (!yes(f0.ack)) throw fieldError("Tick this box to confirm you won't enter real employee travel plans yet.");
+        if (!yes(f0.ack)) throw fieldError(signupAck(this.inventory ? this.inventory.status : null).error);
         return true;
       },
     });
-    return this.repo.withRetry(async () => {
-      const index = await userIndex(this.repo, user.id);
-      if (index && index.orgIds.length >= max) throw tooMany(max);
-      const at = this.repo.iso();
-      const orgId = id(ID_PREFIX.org);
-      const depId = id(ID_PREFIX.department);
-      const name = memberName(user);
-      const by = { userId: user.id, name, role: 'owner' };
-      const org = {
-        id: orgId, name: f.name, nameKey: nameKeyOf(f.name), status: biz.selfServe ? 'active' : 'pending', size: f.size,
-        currency: CURRENCY, timezone: f.timezone,
-        settings: { outOfPolicy: 'approval', approvalHours: biz.approvalHours, reasonMinChars: REASON_MIN_CHARS, budgetPeriod: 'quarter' },
-        ownerIds: [user.id], memberCount: 1, createdBy: user.id, at, updatedAt: at, statusBy: null, statusAt: null, statusNote: null, rev: 0,
-      };
-      const general = { id: depId, orgId, name: GENERAL_DEPARTMENT, archivedAt: null, at, updatedAt: at, rev: 0 };
-      const member = {
-        orgId, userId: user.id, email: String(user.email || '').toLowerCase(), name, role: 'owner', status: 'active', departmentId: depId,
-        managerId: null, approverId: null, tier: 'standard', at, by: null, removedAt: null, rev: 0,
-      };
-      const policies = TIERS.flatMap(tier => {
-        const rules = defaultPolicy(tier);
-        return [
-          { kind: KINDS.policy, id: `${orgId}.${tier}`, data: { orgId, tier, version: 1, rules, updatedAt: at, updatedBy: by, rev: 0 }, owner: orgId },
-          {
-            kind: KINDS.policyVersion, id: `${orgId}.${tier}.v1`, owner: orgId,
-            data: { orgId, tier, version: 1, rules: defaultPolicy(tier), at, by, note: DEFAULTS_NOTE, changes: [] },
-          },
-        ];
-      });
-      const idx = indexAdd(index, user.id, orgId, max);
-      const docs = await commitOnce(this.repo, {
-        inserts: [
-          { kind: KINDS.org, id: orgId, data: org, owner: null },
-          { kind: KINDS.department, id: depId, data: general, owner: orgId },
-          { kind: KINDS.member, id: memberId(orgId, user.id), data: member, owner: orgId },
-          ...(idx.insert ? [idx.insert] : []),
-          ...policies,
-          auditInsert(this.repo, { orgId, actor: by, action: 'org.created', target: { kind: KINDS.org, id: orgId }, summary: `${name} created ${f.name}` }),
-        ],
-        cas: idx.cas ? [idx.cas] : [],
-      });
-      return { org: docs[`${KINDS.org}:${orgId}`], member: docs[`${KINDS.member}:${memberId(orgId, user.id)}`] };
-    }, { tries: 5 });
+    return this.repo.withRetry(() => makeCompany.call(this, user, f), { tries: 5 });
   },
 
   /**
@@ -998,7 +1044,15 @@ const methods = {
       if (!Number.isInteger(formRev) || formRev > (org.rev ?? 0) || formRev < settingsRevOf(org)) throw conflict();
       const s = org.settings || {};
       const f = v.collect('invalid_settings', {
-        name: () => (given(f0, 'name') ? companyName(f0.name) : org.name),
+        name: () => {
+          if (!given(f0, 'name')) return org.name;
+          // Tripelyx's own company keeps the name it was made with (go-live design §3.8).
+          if (org.house === true) {
+            if (v.text(f0.name, 80) !== org.name) throw fieldError(HOUSE_NAME_FIXED);
+            return org.name;
+          }
+          return companyName(f0.name);
+        },
         timezone: () => (given(f0, 'timezone') ? v.oneOf(f0.timezone, TIMEZONES) : org.timezone),
         outOfPolicy: () => (given(f0, 'outOfPolicy') ? v.oneOf(f0.outOfPolicy, OUT_OF_POLICY_MODES) : s.outOfPolicy),
         approvalHours: () => (given(f0, 'approvalHours') ? approvalHours(f0.approvalHours) : s.approvalHours),
@@ -1169,12 +1223,18 @@ const methods = {
         memberCount: o.memberCount || 0, timezone: o.timezone, similarNames: k ? byKey.get(k).filter(x => x.id !== o.id).map(x => x.name) : [],
         statusNote: typeof o.statusNote === 'string' && o.statusNote ? o.statusNote : null, statusAt: o.statusAt || null,
         previousName: typeof o.previousName === 'string' && o.previousName ? o.previousName : null,
+        house: o.house === true,
         rev: o.rev ?? 0,
       });
     }
     // Stable: pending first, then active, then suspended; each newest first (listOrgs order).
     rows.sort((x, y) => (STATUS_ORDER[x.status] ?? 3) - (STATUS_ORDER[y.status] ?? 3));
-    return { orgs: rows, leads: await this.repo.listBusinessLeads({ limit: 200 }) };
+    const house = await houseOf(this.repo);
+    return {
+      orgs: rows,
+      leads: await this.repo.listBusinessLeads({ limit: 200 }),
+      house: house ? { id: house.id, name: house.name, status: house.status } : null,
+    };
   },
 
   /**
@@ -1219,6 +1279,31 @@ const methods = {
       })],
     });
     return docs[`${KINDS.org}:${org.id}`];
+  },
+
+  /**
+   * Make Tripelyx's own company (go-live design §3.8; "Create Tripelyx Inc" on /admin/business). Asks
+   * accounts.isPlatformAdmin again, then makes it through createCompany's own commit (makeCompany) with the
+   * house flag only this method passes: the name HOUSE_COMPANY_NAME (never typed; the one name public sign-up
+   * and every rename refuse), the signed-in platform admin as its Owner, status 'active', house: true, no size
+   * (Tripelyx has given none) and the default time zone. The biz_house record goes in the same commit and its
+   * id is fixed, so there is only ever one: a second press, or two at once, makes nothing and answers the
+   * one already there. Audit 'org.house_created' under the name "Tripelyx".
+   * @param {import('./types').UserActor} actor actor.user.isAdmin must be true, and accounts.isPlatformAdmin(actor.user) is asked again
+   * @returns {Promise<{ org: import('./types').Org, created: boolean }>} created false when it already existed
+   * @throws {AppError} 404 'not_found' for anyone who is not a platform admin; 422 'too_many_companies' when the
+   *   admin is already in config.business.maxOrgsPerUser companies
+   */
+  async platformCreateHouseCompany(actor) {
+    const user = await platformUser.call(this, actor);
+    const f = { name: companyName(HOUSE_COMPANY_NAME, { house: true }), size: null, timezone: DEFAULT_TIMEZONE };
+    return this.repo.withRetry(async () => {
+      // Read again on every try: a racing press that won is found here, and this one makes nothing.
+      const existing = await houseOf(this.repo);
+      if (existing) return { org: existing, created: false };
+      const { org } = await makeCompany.call(this, user, f, { house: true });
+      return { org, created: true };
+    }, { tries: 5 });
   },
 };
 
