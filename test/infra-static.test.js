@@ -1,5 +1,6 @@
 // Static checks on the live site's stack and deploy (infra/app.yaml, infra/www-stack-policy.json,
-// .github/workflows/deploy.yml) for Tripelyx Business going live on www (stage L0, WS-B).
+// .github/workflows/deploy.yml) for Tripelyx Business going live on www (stage L0, WS-B; the supplier keys of
+// stage L2, WS-D).
 // No YAML parser is installed, so these are careful text checks on the lines that matter, plus three runs:
 // the deploy job's switch step and its page check are run under bash with stand-ins for aws (and, once,
 // curl), and the app is booted with the www container's own environment from app.yaml.
@@ -262,28 +263,123 @@ test('the admin execution role pulls the image, reads only the database secret a
   assert.match(workflow, /IMAGE: \$\{\{ steps\.ecr\.outputs\.registry \}\}\/tripelyx:\$\{\{ github\.sha \}\}\n/);
 });
 
-test('no supplier secret ships with L0: the only secret in the stack is the database password RDS manages', () => {
+// ---------- Business supplier keys (stage L2, WS-D) ----------
+
+const SUPPLIER_SECRETS = Object.freeze([
+  { id: 'DuffelTokenSecret', policy: 'DuffelTokenSecretPolicy', env: 'DUFFEL_ACCESS_TOKEN', name: "!Sub 'tripelyx-${AppEnv}/business/duffel-token'" },
+  { id: 'LiteApiKeySecret', policy: 'LiteApiKeySecretPolicy', env: 'LITEAPI_API_KEY', name: "!Sub 'tripelyx-${AppEnv}/business/liteapi-key'" },
+]);
+
+test('the two supplier key secrets: fixed names, the placeholder "unset" that is never edited, kept once created', () => {
   const body = code(app);
-  assert.doesNotMatch(body, /AWS::SecretsManager::|AWS::SSM::|AWS::KMS::/, 'no secret resource');
-  assert.doesNotMatch(app, /duffel|liteapi|nuitee|supplier|_TOKEN\b|_KEY\b|SANDBOX|PII|BUSINESS_BOOKING|BUSINESS_SUPPLIER|BUSINESS_ALLOW_SUPPLIER_TEST|PREVIEW_/i);
-  const valueFroms = [...body.matchAll(/ValueFrom: (.+) \}$/gm)].map(m => m[1]);
-  assert.equal(valueFroms.length, 4, 'two on the web container, two on the admin container');
-  for (const v of valueFroms) assert.match(v, /^!Sub '\$\{Database\.MasterUserSecret\.SecretArn\}:(username|password)::'$/);
-  const secretReads = [...body.matchAll(/secretsmanager:[A-Za-z]+/g)].map(m => m[0]);
-  assert.deepEqual(secretReads, ['secretsmanager:GetSecretValue', 'secretsmanager:GetSecretValue'], 'the web and admin execution roles');
-  for (const role of ['ExecutionRole', 'AdminExecutionRole']) {
-    assert.match(resource(role).join('\n'), /Action: secretsmanager:GetSecretValue\n\s+Resource: !GetAtt Database\.MasterUserSecret\.SecretArn/, role);
+  assert.deepEqual([...body.matchAll(/Type: (AWS::SecretsManager::[A-Za-z]+)$/gm)].map(m => m[1]), [
+    'AWS::SecretsManager::Secret', 'AWS::SecretsManager::Secret', 'AWS::SecretsManager::ResourcePolicy', 'AWS::SecretsManager::ResourcePolicy',
+  ], 'two secrets and their two policies, nothing else');
+  assert.doesNotMatch(body, /AWS::SSM::|AWS::KMS::|GenerateSecretString|RotationSchedule|RotationRules/, 'no other secret store, no generated value, no rotation');
+  for (const { id, name } of SUPPLIER_SECRETS) {
+    assert.equal(typeOf(id), 'AWS::SecretsManager::Secret');
+    const r = resource(id);
+    assert.deepEqual(r.filter(l => /^ {4}\S/.test(l)).map(l => l.trim()), [
+      'Type: AWS::SecretsManager::Secret', 'DeletionPolicy: RetainExceptOnCreate', 'UpdateReplacePolicy: Retain', 'Properties:',
+    ], `${id}: a rolled-back first create removes it, and once it exists it is kept`);
+    const props = r.filter(l => /^ {6}\S/.test(l)).map(l => l.trim());
+    assert.deepEqual(props.map(l => l.split(':')[0]), ['Name', 'Description', 'SecretString'], `${id}: no KmsKeyId, Tags or replica`);
+    assert.equal(props[0], `Name: ${name}`);
+    // A deploy only writes SecretString when this line changes, so the value the owner pasted survives
+    // every deploy as long as the line stays exactly this.
+    assert.equal(props[2], 'SecretString: unset', `${id}: the placeholder, never edited`);
   }
-  assert.doesNotMatch(resource('TaskRole').join('\n'), /Policies|ManagedPolicyArns/, 'the site task role still has no policy');
-  assert.doesNotMatch(app, /\b(AKIA|ASIA)[0-9A-Z]{16}\b/);
+  assert.equal((body.match(/SecretString:/g) || []).length, 2);
+  assert.equal((body.match(/^\s+SecretString: unset$/gm) || []).length, 2);
+  assert.doesNotMatch(app, /\b(AKIA|ASIA)[0-9A-Z]{16}\b|duffel_(test|live)_|\bsand_[0-9a-f-]{8}|\bprod_[0-9a-z]{8}/i, 'no key or key-shaped value in the template');
+  assert.doesNotMatch(app, /PII|BUSINESS_BOOKING|PREVIEW_/, 'nothing from later stages');
 });
 
-test('the resources L0 adds are exactly the admin task definition and its role', () => {
+test('only the site\'s execution role may read a supplier key: each secret has a deny-everyone-else resource policy', () => {
+  for (const { id, policy } of SUPPLIER_SECRETS) {
+    assert.equal(typeOf(policy), 'AWS::SecretsManager::ResourcePolicy');
+    assert.deepEqual(resource(policy).slice(1).map(l => l.trimEnd()), [
+      '    Type: AWS::SecretsManager::ResourcePolicy',
+      '    Properties:',
+      `      SecretId: !Ref ${id}`,
+      '      BlockPublicPolicy: true',
+      '      ResourcePolicy:',
+      "        Version: '2012-10-17'",
+      '        Statement:',
+      '          - Sid: OnlyTheSiteReadsTheKey',
+      '            Effect: Deny',
+      "            Principal: '*'",
+      '            Action: secretsmanager:GetSecretValue',
+      "            Resource: '*'",
+      '            Condition:',
+      '              ArnNotEquals:',
+      '                aws:PrincipalArn: !GetAtt ExecutionRole.Arn',
+    ], `${policy}: a single deny on reading the value, for every principal but the www execution role`);
+  }
+  // No Allow in a resource policy: reading still needs the grant below, and no other account is ever named.
+  assert.doesNotMatch(code(app), /arn:aws:iam::\d{12}:/, 'no hard-coded account or identity');
+});
+
+test('the www execution role reads exactly the database secret and the two supplier keys', () => {
+  const role = resource('ExecutionRole').join('\n');
+  const policies = role.slice(role.indexOf('      Policies:'));
+  assert.match(role.slice(0, role.indexOf('      Policies:')), /Principal: \{ Service: ecs-tasks\.amazonaws\.com \}\n\s+Action: sts:AssumeRole\n\s+ManagedPolicyArns:/);
+  assert.equal((policies.match(/PolicyName:/g) || []).length, 1, 'one inline policy');
+  const statements = policies.split(/\n\s+- (?=Effect: |Sid: )/).slice(1).map(st => ({
+    sid: (/^Sid: (\S+)/.exec(st) || [])[1] || null,
+    effect: /Effect: (\w+)/.exec(st)[1],
+    actions: [...st.matchAll(/Action: (\S+)$/gm)].map(m => m[1]),
+    resource: /Resource: (.+)$/m.exec(st)[1],
+  }));
+  assert.deepEqual(statements, [
+    { sid: null, effect: 'Allow', actions: ['secretsmanager:GetSecretValue'], resource: '!GetAtt Database.MasterUserSecret.SecretArn' },
+    { sid: 'ReadSupplierKeys', effect: 'Allow', actions: ['secretsmanager:GetSecretValue'], resource: '[!Ref DuffelTokenSecret, !Ref LiteApiKeySecret]' },
+  ]);
+  assert.match(role, /ManagedPolicyArns:\n\s+- arn:aws:iam::aws:policy\/service-role\/AmazonECSTaskExecutionRolePolicy\n/);
+  const reads = [...code(app).matchAll(/secretsmanager:[A-Za-z]+/g)].map(m => m[0]);
+  assert.deepEqual(reads, Array(5).fill('secretsmanager:GetSecretValue'), 'two policies deny it, the web and admin execution roles allow it, nothing else');
+  assert.doesNotMatch(resource('AdminExecutionRole').join('\n'), /DuffelTokenSecret|LiteApiKeySecret|SecretsManager::Secret/, 'the admin role reads no supplier key');
+  assert.doesNotMatch(resource('TaskRole').join('\n'), /Policies|ManagedPolicyArns/, 'the site task role still has no policy');
+});
+
+test('the www container maps both keys and live search settings; the admin task definition maps no supplier key', () => {
+  const web = containers('TaskDefinition')[0].lines;
+  assert.deepEqual(pairs(web, 'Secrets'), [
+    ['DATABASE_USER', "!Sub '${Database.MasterUserSecret.SecretArn}:username::'"],
+    ['DATABASE_PASSWORD', "!Sub '${Database.MasterUserSecret.SecretArn}:password::'"],
+    ['DUFFEL_ACCESS_TOKEN', '!Ref DuffelTokenSecret'],
+    ['LITEAPI_API_KEY', '!Ref LiteApiKeySecret'],
+  ], 'the whole secret each, no JSON key');
+  const env = pairs(web, 'Environment');
+  assert.deepEqual(env.filter(([n]) => /^BUSINESS_(FLIGHT|HOTEL)_SUPPLIER$|^BUSINESS_SUPPLIER_LIVE$|^BUSINESS_ALLOW_SUPPLIER_TEST$/.test(n)), [
+    ['BUSINESS_FLIGHT_SUPPLIER', 'duffel'],
+    ['BUSINESS_HOTEL_SUPPLIER', 'liteapi'],
+    ['BUSINESS_SUPPLIER_LIVE', "'true'"],
+    ['BUSINESS_ALLOW_SUPPLIER_TEST', "'false'"],
+  ], 'literals, not parameters: no deploy setting can switch test data on');
+  assert.ok(!env.some(([n]) => /DUFFEL|LITEAPI|_TOKEN$|_KEY$/.test(n)), 'no key in the plain environment');
+  const admin = containers('AdminTaskDefinition')[0].lines.join('\n');
+  assert.doesNotMatch(admin, /DUFFEL|LITEAPI|SUPPLIER|DuffelTokenSecret|LiteApiKeySecret/, 'one-off tasks never hold a supplier key');
+  for (const { id } of SUPPLIER_SECRETS) {
+    const uses = code(app).split('\n').filter(l => l.includes(id) && !/^ {2}\w+:$/.test(l)).map(l => l.trim());
+    assert.deepEqual(uses.map(l => l.replace(/^- \{ Name: \w+, /, '{ ').replace(/^SecretId: /, 'SecretId: ')), [
+      `SecretId: !Ref ${id}`,
+      'Resource: [!Ref DuffelTokenSecret, !Ref LiteApiKeySecret]',
+      `{ ValueFrom: !Ref ${id} }`,
+    ], `${id} is used by its policy, the execution role grant and the www container only`);
+  }
+  assert.ok(!parameter('AppEnv').some(l => /supplier|duffel|liteapi/i.test(l)));
+  assert.doesNotMatch(section('Parameters'), /supplier|duffel|liteapi|_TOKEN|_KEY\b/i, 'no stack parameter carries a key (NoEcho parameters are advised against)');
+});
+
+test('the resources the stack adds are the admin task definition and its role (L0), then the two keys and their policies (L2)', () => {
   const resources = section('Resources').split('\n').map(l => /^ {2}([A-Za-z0-9]+):$/.exec(l)).filter(Boolean).map(m => m[1]);
   assert.deepEqual(resources, [
     'Vpc', 'InternetGateway', 'GatewayAttachment', 'PublicSubnetA', 'PublicSubnetB', 'PrivateSubnetA', 'PrivateSubnetB',
     'PublicRouteTable', 'PublicRoute', 'PublicSubnetARoutes', 'PublicSubnetBRoutes', 'LoadBalancerSecurityGroup', 'AppSecurityGroup',
-    'DatabaseSecurityGroup', 'DatabaseSubnetGroup', 'Database', 'Cluster', 'LogGroup', 'ExecutionRole', 'TaskRole', 'TaskDefinition',
+    'DatabaseSecurityGroup', 'DatabaseSubnetGroup', 'Database', 'Cluster', 'LogGroup',
+    'DuffelTokenSecret', 'LiteApiKeySecret', 'DuffelTokenSecretPolicy', 'LiteApiKeySecretPolicy',
+    'ExecutionRole', 'TaskRole', 'TaskDefinition',
     'AdminExecutionRole', 'AdminTaskDefinition', 'LoadBalancer', 'TargetGroup', 'HttpListener', 'HttpsListener', 'Service',
   ]);
   assert.ok(resource('Service').includes('      TaskDefinition: !Ref TaskDefinition'), 'the service still runs the site task definition');
@@ -293,16 +389,20 @@ test('the resources L0 adds are exactly the admin task definition and its role',
 
 // ---------- infra/www-stack-policy.json ----------
 
-test('the stack policy denies replacing or removing the database and allows every other update', () => {
+test('the stack policy denies replacing or removing the database and the two supplier keys, and allows every other update', () => {
   const policy = JSON.parse(policyText);
   assert.deepEqual(Object.keys(policy), ['Statement']);
   assert.deepEqual(policy.Statement, [
-    { Effect: 'Deny', Action: ['Update:Replace', 'Update:Delete'], Principal: '*', Resource: 'LogicalResourceId/Database' },
+    {
+      Effect: 'Deny', Action: ['Update:Replace', 'Update:Delete'], Principal: '*',
+      Resource: ['LogicalResourceId/Database', 'LogicalResourceId/DuffelTokenSecret', 'LogicalResourceId/LiteApiKeySecret'],
+    },
     { Effect: 'Allow', Action: 'Update:*', Principal: '*', Resource: '*' },
   ]);
   // The logical id it protects is the RDS instance, and in-place changes (Update:Modify) stay allowed, so
   // the ProtectDatabase change and later minor changes still deploy.
   assert.equal(typeOf('Database'), 'AWS::RDS::DBInstance');
+  for (const { id } of SUPPLIER_SECRETS) assert.equal(typeOf(id), 'AWS::SecretsManager::Secret', 'each logical id it names is a resource of the stack');
   for (const s of policy.Statement.filter(x => x.Effect === 'Deny')) {
     assert.ok(![].concat(s.Action).some(a => a === 'Update:*' || a === 'Update:Modify'));
   }
@@ -333,6 +433,26 @@ test('the README says how the policy is applied, how a deliberate migration over
   // ADMIN_EMAILS belongs in a secret.
   assert.match(readme, /`ADMIN_EMAILS`: a repository \*\*secret\*\*, never a variable\./);
   assert.match(readme, /A variable of that name must never hold real addresses\./);
+});
+
+test('the README says how to paste a supplier key without it ever showing, how to restart, and how to undo', () => {
+  const part = readme.slice(readme.indexOf('#### Pasting a supplier key (Business live search)'), readme.indexOf('#### One-off admin tasks'));
+  assert.ok(part.length > 200, 'the section is there, before the admin tasks');
+  const flat = part.replace(/\s+/g, ' ');
+  for (const name of ['tripelyx-staging/business/duffel-token', 'tripelyx-staging/business/liteapi-key']) assert.ok(part.includes(`\`${name}\``), name);
+  assert.match(flat, /The site reads exactly `unset` as not set/);
+  assert.match(flat, /"DUFFEL_ACCESS_TOKEN is not set\."/);
+  assert.match(flat, /a `duffel_test_` token or a `sand_` key is refused, never shown as test data/);
+  // The key is read without echo and never lands in the shell history or the output.
+  assert.match(part, /read -rs KEY && aws secretsmanager put-secret-value --region us-east-1 \\\n\s+--secret-id tripelyx-staging\/business\/duffel-token --secret-string "\$KEY" --query VersionId --output text; unset KEY/);
+  assert.match(part, /aws ecs update-service --region us-east-1 --cluster tripelyx-staging --service web --force-new-deployment/);
+  assert.match(flat, /owner's approval/);
+  assert.match(flat, /Nobody runs `get-secret-value` on these/);
+  assert.equal((part.match(/get-secret-value/g) || []).length, 1, 'named once, to say nobody runs it');
+  assert.match(flat, /\*\*Undo:\*\* paste `unset` back the same way/);
+  assert.match(flat, /\*\*Retrieve secret value\*\* in the console says access is denied\. That is expected\./);
+  assert.doesNotMatch(part, /\u2014|duffel_(live|test)_[A-Za-z0-9]|sand_[0-9a-f]{4}/, 'no em dash, no key-shaped example');
+  assert.match(readme, /on the\s+`Database` resource and on the two supplier key secrets \(`DuffelTokenSecret`, `LiteApiKeySecret`\)/);
 });
 
 test('the README says to delete a stack only when its very first creation failed, never the www stack after a failed update', () => {
@@ -729,6 +849,15 @@ function wwwEnvironment({ enableBusiness }) {
     else if (/^!GetAtt Database\./.test(raw)) continue;
     else env[name] = raw;
   }
+  // The supplier keys hold what the stack creates them with until the owner pastes a key: the placeholder.
+  for (const [name, raw] of pairs(containers('TaskDefinition')[0].lines, 'Secrets')) {
+    const m = /^!Ref (\w+)$/.exec(raw);
+    if (!m) continue;
+    const value = resource(m[1]).find(l => /^ {6}SecretString: /.test(l)).trim().slice('SecretString: '.length);
+    env[name] = value;
+  }
+  assert.equal(env.DUFFEL_ACCESS_TOKEN, 'unset');
+  assert.equal(env.LITEAPI_API_KEY, 'unset');
   // The database parts need the password secret; the pages are the same on the in-memory store.
   for (const k of Object.keys(env)) if (/^DATABASE_/.test(k) && k !== 'DATABASE_ENV') delete env[k];
   return { ...env, DATABASE_URL: 'memory' };
@@ -767,6 +896,9 @@ test('the www environment from app.yaml leaves /, /book and /ai-travel-agent exa
 test('with ENABLE_BUSINESS=true (the flip) the same three pages differ only by the Business header item and footer link', async t => {
   const { site, got } = await wwwPages(t, wwwEnvironment({ enableBusiness: 'true' }));
   assert.ok(site.ctx.business, 'Business runs');
+  // The supplier keys still hold "unset": Business has no supplier and shows no price at all.
+  assert.equal(site.ctx.business.inventory.status, 'none');
+  assert.equal(site.ctx.business.inventory.problem, 'DUFFEL_ACCESS_TOKEN is not set.');
   for (const [p, want] of Object.entries(WANT)) {
     const { text, counts } = stripBusiness(got[p].text);
     assert.deepEqual(counts, expectedBusinessCounts(got[p].text), p);

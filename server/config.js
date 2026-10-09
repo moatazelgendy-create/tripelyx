@@ -38,6 +38,7 @@ function oneOf(value, list, name) {
 // Tripelyx Business suppliers (real-suppliers design §1.3). Round 1 accepts only test keys.
 const SUPPLIER_TEST_PREFIX = Object.freeze({ duffel: 'duffel_test_', liteapi: 'sand_' });
 const SUPPLIER_KEY_RE = /^[\x21-\x7e]{1,512}$/;
+const SUPPLIER_KEY_PLACEHOLDER = 'unset';
 
 // A whole number from min to max, or the fallback when unset; null when it is anything else (never throws).
 function range(value, fallback, min, max) {
@@ -64,7 +65,10 @@ function businessSuppliers(env, appEnv) {
   const companyCallsPerHour = range(env.BUSINESS_SUPPLIER_COMPANY_CALLS_PER_HOUR, 120, 1, 100000);
   const variantSearches = range(env.BUSINESS_SUPPLIER_VARIANT_SEARCHES, 4, 0, 20);
   const allowTest = bool(env.BUSINESS_ALLOW_SUPPLIER_TEST, appEnv === 'development');
-  const token = text(env.DUFFEL_ACCESS_TOKEN), key = text(env.LITEAPI_API_KEY);
+  // The www stack creates both key secrets holding the placeholder "unset" (infra/app.yaml) until the owner pastes a
+  // key over it; exactly that word reads as not set.
+  const keyText = v => (text(v) === SUPPLIER_KEY_PLACEHOLDER ? '' : text(v));
+  const token = keyText(env.DUFFEL_ACCESS_TOKEN), key = keyText(env.LITEAPI_API_KEY);
   const isKey = (value, prefix) => SUPPLIER_KEY_RE.test(value) && value.startsWith(prefix) && value.length > prefix.length;
   const problems = [
     [flightName !== '' && flightName !== 'duffel', 'BUSINESS_FLIGHT_SUPPLIER must be duffel or empty.'],

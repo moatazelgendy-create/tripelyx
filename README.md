@@ -490,11 +490,12 @@ the same tag would be refused.
   `deploy.yml` does not pass it, so every deploy keeps the stack's current value. Set it to `false` only
   when deleting a stack on purpose: one update with `ProtectDatabase=false`, then the delete.
 - **The stack policy** `infra/www-stack-policy.json` denies `Update:Replace` and `Update:Delete` on the
-  `Database` resource and allows every other update. With it in place, a deploy whose change set would
-  replace or remove the database fails and rolls back, and the database stays as it is. The deploy role
+  `Database` resource and on the two supplier key secrets (`DuffelTokenSecret`, `LiteApiKeySecret`), and
+  allows every other update. With it in place, a deploy whose change set would replace or remove the
+  database or a key fails and rolls back, and they stay as they are. The deploy role
   cannot set it: it is applied once after the change set preview and before the merge that brings this
   code (so the dark deploy already runs under it), by whoever runs the go-live (with the owner's
-  approval), and again each time the file changes (later stages add their secrets to the deny list):
+  approval), and again each time the file changes (each stage that adds a secret adds it to the deny list):
 
   ```bash
   aws cloudformation set-stack-policy --region us-east-1 --stack-name tripelyx-staging \
@@ -518,6 +519,43 @@ the same tag would be refused.
   ```
 
   The stored policy applies again to the next update without being set again.
+
+#### Pasting a supplier key (Business live search)
+
+The stack creates two secrets in Secrets Manager, each holding the placeholder `unset` until a key is
+pasted over it: `tripelyx-staging/business/duffel-token` (a Duffel **live** access token) and
+`tripelyx-staging/business/liteapi-key` (the LiteAPI production key). The site reads exactly `unset` as
+not set: Business has no supplier, companies see "Supplier not connected yet" and `/admin/business` says
+"DUFFEL_ACCESS_TOKEN is not set." This site takes live keys only (`BUSINESS_SUPPLIER_LIVE=true` in
+`infra/app.yaml`): a `duffel_test_` token or a `sand_` key is refused, never shown as test data.
+
+- **Who can read a key:** only the site's execution role. Each secret has a resource policy that refuses
+  `GetSecretValue` to everyone else, your own console sign-in included, so **Retrieve secret value** in
+  the console says access is denied. That is expected. Writing a new value is still allowed.
+- **Paste a key** from AWS CloudShell in us-east-1 (the `>_` icon at the top of the AWS console). Run the
+  command, paste the key when it waits (nothing shows while you paste), then press Enter:
+
+  ```bash
+  read -rs KEY && aws secretsmanager put-secret-value --region us-east-1 \
+    --secret-id tripelyx-staging/business/duffel-token --secret-string "$KEY" --query VersionId --output text; unset KEY
+  ```
+
+  Then the same with `--secret-id tripelyx-staging/business/liteapi-key`. The command prints a version
+  id, never the key. A key never goes in a chat, an issue, a commit, a GitHub secret or a variable.
+- **Restart the site** so it reads the new value (a task reads its secrets only when it starts). Whoever
+  runs the go-live does this with the owner's approval:
+
+  ```bash
+  aws ecs update-service --region us-east-1 --cluster tripelyx-staging --service web --force-new-deployment
+  ```
+
+  Later deploys keep the pasted value: CloudFormation writes a secret only when its `SecretString` line in
+  `infra/app.yaml` changes, and a test keeps that line exactly `unset`.
+- **Check a key without reading it:** `aws secretsmanager describe-secret --region us-east-1 --secret-id
+  tripelyx-staging/business/duffel-token` shows when it last changed. Nobody runs `get-secret-value` on
+  these, from a script, a task or the AWS connector.
+- **Undo:** paste `unset` back the same way (type `unset` at the prompt) and restart the site. Business
+  is then exactly as it was before the key.
 
 #### One-off admin tasks
 

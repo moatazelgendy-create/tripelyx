@@ -70,6 +70,28 @@ test('config: the supplier block parses, with defaults, and keeps its keys out o
   assert.equal(loadConfig({ APP_ENV: 'development', BUSINESS_SUPPLIER_CACHE_SECONDS: 'abc' }).business.suppliers.problem, null);
 });
 
+test('config: the placeholder "unset" the www stack starts each key secret with reads as not set', () => {
+  // infra/app.yaml creates both secrets holding exactly "unset" until the owner pastes a key over it.
+  const duffel = loadConfig({ ...GOOD, DUFFEL_ACCESS_TOKEN: 'unset' }).business.suppliers;
+  assert.equal(duffel.problem, 'DUFFEL_ACCESS_TOKEN is not set.');
+  assert.equal(duffel.duffelToken, undefined);
+  const liteapi = loadConfig({ ...GOOD, LITEAPI_API_KEY: 'unset' }).business.suppliers;
+  assert.equal(liteapi.problem, 'LITEAPI_API_KEY is not set.');
+  assert.equal(liteapi.liteapiKey, undefined);
+  // The www stack itself: both placeholders, live search, test data off. Business has no supplier.
+  const www = loadConfig({
+    APP_ENV: 'staging', DATABASE_URL: 'memory', ENABLE_BUSINESS: 'true', BUSINESS_FLIGHT_SUPPLIER: 'duffel', BUSINESS_HOTEL_SUPPLIER: 'liteapi',
+    BUSINESS_SUPPLIER_LIVE: 'true', BUSINESS_ALLOW_SUPPLIER_TEST: 'false', DUFFEL_ACCESS_TOKEN: 'unset', LITEAPI_API_KEY: 'unset',
+  }).business.suppliers;
+  assert.equal(www.problem, 'DUFFEL_ACCESS_TOKEN is not set.');
+  assert.equal(inventoryOf({ ...GOOD, DUFFEL_ACCESS_TOKEN: 'unset', LITEAPI_API_KEY: 'unset' }).status, 'none');
+  // Surrounding blanks are trimmed as for any key; any other spelling is a value, never "not set".
+  assert.equal(loadConfig({ ...GOOD, DUFFEL_ACCESS_TOKEN: ' unset\n' }).business.suppliers.problem, 'DUFFEL_ACCESS_TOKEN is not set.');
+  for (const v of ['UNSET', 'Unset', 'unset1', 'not-unset']) {
+    assert.equal(loadConfig({ ...GOOD, DUFFEL_ACCESS_TOKEN: v }).business.suppliers.problem, 'DUFFEL_ACCESS_TOKEN is not a Duffel test token.', v);
+  }
+});
+
 test('config: BUSINESS_ALLOW_SUPPLIER_TEST defaults to true in development only', () => {
   const env = { ...GOOD };
   delete env.BUSINESS_ALLOW_SUPPLIER_TEST;
