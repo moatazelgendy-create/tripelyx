@@ -19,12 +19,38 @@
 // Views render the allow-listed DTOs only (types.FlightRow, HotelRow, Alternative, Evaluation): no provider,
 // rating, review count, net rate or `internal` field exists to print. Times come from the rows and requests
 // (pricedAt, from the injected clock) and read in the company's time zone, passed as `timeZone`.
+//
+// Price sources (real-suppliers design §2.3). The same parts take `{ source }` ('demo' by default, so demo
+// pages are byte for byte what they were): the container says data-price-source="<source>" and its label
+// names the source (format.pricedAtText). A supplier test data container ('sandbox') also gets the class
+// bz-price-test (a dashed outline) and a visible "TEST DATA" tag in its label, so no screenshot of it can
+// pass for a real fare. rowCard and altCard read the source from their own rows (source.sourceOf), so a
+// caller cannot mislabel them. Supplier rows also read differently where the supplier says less than the
+// demo data: stars 0 is "No star rating from the supplier" (and 4.5 is "4.5-star"), a weight of 0 kg is not
+// stated (never printed), stops name their airports ("1 stop in Doha"), a flight sold by one airline and
+// flown by another says "operated by", and a hotel's fee lines are paid at the hotel ("You pay $X when
+// booked and $Y at the hotel" on live prices; "Of this total, $Y is paid at the hotel." on test data).
 const crypto = require('node:crypto');
 const { html, raw } = require('../../lib/html');
 const { icon } = require('../icons');
 const f = require('./format');
 
 const { money, plural } = f;
+const { sourceOf, leastReal, TERMS } = require('../../business/source');
+
+/** The label kind of a row: a flight's fare or a hotel's room rate. */
+const rowKind = row => (row && row.kind === 'hotel' ? 'room' : 'fare');
+/** A source this part knows ('demo' for anything else, so a mistake only looks less real). */
+const known = source => (source === 'sandbox' || source === 'live' ? source : 'demo');
+/** The container's class: a sandbox one also gets bz-price-test. */
+const boxClass = (cls, source) => `${cls}${known(source) === 'sandbox' ? ' bz-price-test' : ''}`;
+/** What the company's own policy limits are checked against, by supplier source (the /policies page's words). */
+const LIMITS_CHECKED = Object.freeze({
+  sandbox: "Supplier test data: in this preview, these limits are checked against flight and hotel prices from our suppliers' test systems, not real fares.",
+  live: 'Supplier prices: these limits are checked against flight and hotel prices from our suppliers, which can change until booked.',
+});
+/** The visible "TEST DATA" tag of a sandbox label. */
+const testTag = source => (known(source) === 'sandbox' ? html`<span class="bz-test-tag">TEST DATA</span>` : '');
 
 /**
  * One amount, for a page that already sits inside a demo container: <span class="bz-money">$842</span>. Whole
@@ -40,8 +66,8 @@ function checkedAt(iso, timeZone) {
   return f.dateTimeIn(timeZone, iso);
 }
 
-/** "4-star". Hotel class only (the DTO carries no rating or reviews). */
-const stars = n => (Number.isInteger(n) && n > 0 ? `${n}-star` : '');
+/** "4-star", "4.5-star" (a supplier's half star). Hotel class only (the DTO carries no rating or reviews). */
+const stars = n => (Number.isInteger(n * 2) && n > 0 ? `${n}-star` : '');
 
 /** A heading of level 2 to 6 with the given attributes (markup from html``) and body. */
 function heading(level, attrs, body) {
@@ -56,47 +82,65 @@ const keyId = (prefix, key) => `${prefix}-${crypto.createHash('sha256').update(S
 // Demo labelling
 
 /**
- * The visible demo label: "Demo price · Priced at 3:42 PM, Fri 9 Oct (Cairo time)" (just "Demo price" when no
- * time is known).
+ * The visible price label: "Demo price · Priced at 3:42 PM, Fri 9 Oct (Cairo time)" (just "Demo price" when no
+ * time is known), or the supplier test data or live label (format.pricedAtText), with the "TEST DATA" tag
+ * for supplier test data.
  * @param {string|null} pricedAt
  * @param {string} timeZone the company's
- * @param {{ inline?: boolean }} [opts] inline: a <span> for use inside a sentence
+ * @param {{ inline?: boolean, source?: import('../../business/types').PriceSource, kind?: 'fare'|'room'|'price', totals?: boolean }} [opts]
+ *   inline: a <span> for use inside a sentence; totals: the container adds many requests up (budgets, reports,
+ *   home), so a supplier source says format.SOURCE_TOTALS ("Includes supplier test data"); limits: the container
+ *   holds the company's own policy limits, so a supplier source says what they are checked against
+ *   (LIMITS_CHECKED), never "not a real price"; demo is unchanged
  */
-function priceNote(pricedAt, timeZone, { inline = false } = {}) {
-  const text = f.pricedAtText(pricedAt, timeZone);
+function priceNote(pricedAt, timeZone, { inline = false, source = 'demo', kind = 'price', totals = false, limits = false } = {}) {
+  const text = limits && known(source) !== 'demo' ? LIMITS_CHECKED[known(source)]
+    : totals && known(source) !== 'demo' ? f.SOURCE_TOTALS[known(source)] : f.pricedAtText(pricedAt, timeZone, { source: known(source), kind });
+  if (known(source) !== 'sandbox') {
+    return inline
+      ? html`<span class="bz-price-note">${text}</span>`
+      : html`<p class="bz-price-note">${icon('info')}<span>${text}</span></p>`;
+  }
   return inline
-    ? html`<span class="bz-price-note">${text}</span>`
-    : html`<p class="bz-price-note">${icon('info')}<span>${text}</span></p>`;
+    ? html`<span class="bz-price-note">${testTag(source)} ${text}</span>`
+    : html`<p class="bz-price-note">${icon('info')}${testTag(source)}<span>${text}</span></p>`;
 }
 
 /**
- * One amount with its demo label, as its own demo container:
+ * One amount with its label, as its own price container:
  * <span data-price-source="demo"><span class="bz-money">$842</span> <span>Demo price · Priced at …</span></span>.
  * No amount (null or undefined, e.g. a budget's remaining with no budget set) prints nothing at all, so it can
  * never read as a "$0" price; anything else that is not whole cents throws a TypeError.
  * @param {number|null} cents
- * @param {{ pricedAt: string|null, timeZone: string }} opts
+ * @param {{ pricedAt: string|null, timeZone: string, source?: import('../../business/types').PriceSource, kind?: 'fare'|'room'|'price' }} opts
  */
-function demoPrice(cents, { pricedAt, timeZone }) {
+function demoPrice(cents, { pricedAt, timeZone, source = 'demo', kind = 'price' }) {
   if (cents === null || cents === undefined) return '';
-  return html`<span class="bz-demo-price" data-price-source="demo">${amount(cents)} ${priceNote(pricedAt, timeZone, { inline: true })}</span>`;
+  const s = known(source);
+  return html`<span class="${boxClass('bz-demo-price', s)}" data-price-source="${s}">${amount(cents)} ${priceNote(pricedAt, timeZone, { inline: true, source: s, kind })}</span>`;
 }
 
 const BOX_TAGS = Object.freeze(['div', 'section', 'article', 'aside']);
 
 /**
- * Wrap money-bearing markup in a demo container that ends with the demo label.
+ * Wrap money-bearing markup in a price container that ends with its label.
  * @param {*} body markup from html``
- * @param {{ pricedAt: string|null, timeZone: string, tag?: 'div'|'section'|'article'|'aside', cls?: string, label?: string }} opts
- *   label: an aria-label for a section or aside
+ * @param {{ pricedAt: string|null, timeZone: string, tag?: 'div'|'section'|'article'|'aside', cls?: string, label?: string,
+ *   source?: import('../../business/types').PriceSource, kind?: 'fare'|'room'|'price', totals?: boolean }} opts
+ *   label: an aria-label for a section or aside; totals: see priceNote
  */
-function demoBox(body, { pricedAt, timeZone, tag = 'div', cls = '', label = '' }) {
+function demoBox(body, { pricedAt, timeZone, tag = 'div', cls = '', label = '', source = 'demo', kind = 'price', totals = false, limits = false }) {
   const t = BOX_TAGS.includes(tag) ? tag : 'div';
-  return html`${raw(`<${t}`)} class="bz-demo-box${cls ? ` ${cls}` : ''}" data-price-source="demo"${label ? html` aria-label="${label}"` : ''}>${body}${priceNote(pricedAt, timeZone)}${raw(`</${t}>`)}`;
+  const s = known(source);
+  return html`${raw(`<${t}`)} class="${boxClass(`bz-demo-box${cls ? ` ${cls}` : ''}`, s)}" data-price-source="${s}"${label ? html` aria-label="${label}"` : ''}>${body}${priceNote(pricedAt, timeZone, { source: s, kind, totals, limits })}${raw(`</${t}>`)}`;
 }
 
 /** The workspace's demo ribbon (§B3): shown on every workspace page. */
 const DEMO_RIBBON = 'Preview: flights, hotels and prices are demo data. Nothing is booked or charged. No emails are sent.';
+/** The ribbon while flights and hotels come from the suppliers' test systems (real-suppliers design §2.3). */
+const SANDBOX_RIBBON = "Preview with supplier test data: flights and hotels come from our suppliers' test systems. Prices are not real fares. Nothing is booked or charged.";
+/** The ribbon with live supplier prices (round 1b). */
+const LIVE_RIBBON = "Prices are live from airlines and hotels and can change until booked. Booking isn't open in Tripelyx yet: nothing is booked or charged.";
 
 function demoBanner() {
   return html`<p class="bz-ribbon bz-ribbon-demo" role="note">${icon('info')}<span>${DEMO_RIBBON}</span></p>`;
@@ -122,21 +166,38 @@ function supplierPanel({ level = 2 } = {}) {
 const LINE_KINDS = Object.freeze(['base', 'tax', 'fee', 'discount']);
 
 /**
+ * A supplier hotel's fee lines are paid at the hotel and are in its total (real-suppliers design §3.4). Live
+ * prices: "You pay $X when booked and $Y at the hotel". Supplier test data is never booked, so it says only
+ * "Of this total, $Y is paid at the hotel." Nothing when it has none, or for a demo row.
+ * @param {import('../../business/types').Row} row
+ */
+function paidAtHotel(row) {
+  const source = row ? sourceOf(row) : 'demo';
+  if (!row || row.kind !== 'hotel' || source === 'demo' || !Array.isArray(row.lines)) return '';
+  const fees = row.lines.filter(l => l && l.kind === 'fee' && Number.isSafeInteger(l.cents)).reduce((n, l) => n + l.cents, 0);
+  if (fees <= 0 || !Number.isSafeInteger(row.totalCents)) return '';
+  if (source !== 'live') return html`<p class="bz-paid-split">Of this total, ${amount(fees)} is paid at the hotel.</p>`;
+  return html`<p class="bz-paid-split">You pay ${amount(row.totalCents - fees)} when booked and ${amount(fees)} at the hotel.</p>`;
+}
+
+/**
  * Every line of a price and the total (the sum of the lines, so the total shown is the total charged). A line
  * without whole cents throws a TypeError: a total that left it out would not be the total charged.
  * @param {import('../../business/types').RowLine[]} lines
- * @param {{ pricedAt?: string|null, timeZone?: string, inDemo?: boolean, totalLabel?: string }} [opts]
- *   inDemo: the caller's demo container already labels it (no container of its own)
+ * @param {{ pricedAt?: string|null, timeZone?: string, inDemo?: boolean, totalLabel?: string,
+ *   source?: import('../../business/types').PriceSource, kind?: 'fare'|'room'|'price', row?: object|null }} [opts]
+ *   inDemo: the caller's price container already labels it (no container of its own); row: the supplier
+ *   hotel row the lines belong to, for the paid-at-the-hotel split
  */
-function linesTable(lines, { pricedAt = null, timeZone = 'UTC', inDemo = false, totalLabel = 'Total' } = {}) {
+function linesTable(lines, { pricedAt = null, timeZone = 'UTC', inDemo = false, totalLabel = 'Total', source = 'demo', kind = 'price', row = null } = {}) {
   const list = Array.isArray(lines) ? lines : [];
   if (!list.every(l => l && Number.isSafeInteger(l.cents))) throw new TypeError('[business] linesTable: every price line needs whole cents');
   const total = list.reduce((s, l) => s + l.cents, 0);
   const table = html`<dl class="bz-lines">
     ${list.map(l => html`<div class="bz-line is-${LINE_KINDS.includes(l.kind) ? l.kind : 'base'}"><dt>${l.label}</dt><dd>${amount(l.cents)}</dd></div>`)}
     <div class="bz-line bz-line-total"><dt>${totalLabel}</dt><dd>${amount(total)}</dd></div>
-  </dl>`;
-  return inDemo ? table : demoBox(table, { pricedAt, timeZone, cls: 'bz-lines-box' });
+  </dl>${paidAtHotel(row)}`;
+  return inDemo ? table : demoBox(table, { pricedAt, timeZone, cls: 'bz-lines-box', source, kind });
 }
 
 /**
@@ -203,14 +264,22 @@ const PILLS = Object.freeze({
 });
 
 /**
+ * A request approved on supplier prices is not "approved to book": test data can never be booked, and booking
+ * isn't open for live prices yet (real-suppliers design §2.3). Demo keeps "Approved to book".
+ */
+const APPROVED_PILLS = Object.freeze({ sandbox: 'Approved (test data)', live: 'Approved' });
+
+/**
  * A status pill: a request's effective status ("Approved to book"), a company's ("Waiting for confirmation")
  * or a member's.
  * @param {string} status
- * @param {{ kind?: 'request'|'org'|'member' }} [opts]
+ * @param {{ kind?: 'request'|'org'|'member', source?: import('../../business/types').PriceSource }} [opts]
+ *   source: the request's price source ('demo' by default): an approved supplier request says so
  */
-function statusPill(status, { kind = 'request' } = {}) {
+function statusPill(status, { kind = 'request', source = 'demo' } = {}) {
   const table = PILLS[kind] || PILLS.request;
-  const [label, tone] = table[status] || [String(status || 'Unknown'), 'neutral'];
+  let [label, tone] = table[status] || [String(status || 'Unknown'), 'neutral'];
+  if (kind === 'request' && status === 'approved' && APPROVED_PILLS[known(source)]) label = APPROVED_PILLS[known(source)];
   return html`<span class="bz-pill bz-pill-${tone}">${label}</span>`;
 }
 
@@ -219,13 +288,13 @@ const CURRENCY_RE = /[$€£¥]|\bUSD\b/;
 /**
  * The reasons a row or trip is outside policy (Violation.text, written by the policy engine).
  * @param {import('../../business/types').Violation[]} violations
- * @param {{ collapse?: boolean, pricedAt?: string|null, timeZone?: string, inDemo?: boolean }} [opts]
+ * @param {{ collapse?: boolean, pricedAt?: string|null, timeZone?: string, inDemo?: boolean, source?: string }} [opts]
  *   collapse: the first reason, then "+N more" in a <details> (§E4). Texts can hold amounts ("Over your $712
  *   limit by $86"), so a list with an amount gets its own demo container, unless inDemo says the caller's
  *   container already labels it. That container says when the amounts were priced, so it needs pricedAt:
  *   without one a list with an amount throws a TypeError (a reason without amounts needs no time).
  */
-function violationList(violations, { collapse = false, pricedAt, timeZone = 'UTC', inDemo = false } = {}) {
+function violationList(violations, { collapse = false, pricedAt, timeZone = 'UTC', inDemo = false, source = 'demo' } = {}) {
   const list = Array.isArray(violations) ? violations : [];
   if (!list.length) return '';
   const item = v => html`<li class="bz-reason${v.severity === 'block' ? ' is-block' : ''}">${icon(v.severity === 'block' ? 'lock' : 'alert')}<span>${v.text}</span></li>`;
@@ -235,23 +304,52 @@ function violationList(violations, { collapse = false, pricedAt, timeZone = 'UTC
   const hasMoney = list.some(v => CURRENCY_RE.test(String(v.text || '')));
   if (inDemo || !hasMoney) return body;
   if (!pricedAt) throw new TypeError('[business] violationList: a reason with an amount needs pricedAt (or inDemo inside a priced demo container)');
-  return demoBox(body, { pricedAt, timeZone, cls: 'bz-reasons-box' });
+  return demoBox(body, { pricedAt, timeZone, cls: 'bz-reasons-box', source });
 }
+
+/** Why a policy limit sits beside a price label: what the limits are checked against here, by price source. */
+const LIMITS_NOTES = Object.freeze({
+  demo: 'Limits are in US dollars. In this preview, the fares and rates they are checked against are demo prices.',
+  sandbox: 'Limits are in US dollars. In this preview, the fares and rates they are checked against are supplier test data, not real fares.',
+  live: 'Limits are in US dollars. The fares and rates they are checked against are supplier prices, which can change until booked.',
+});
+const limitsNote = source => LIMITS_NOTES[source] || LIMITS_NOTES.demo;
+
+/**
+ * Is a limits-bar item's amount worked out from the search's prices (a median cap, the Price to Beat) rather
+ * than a limit the company set? Read from the reason policy/describe.limitsBar wrote: a median cap says
+ * "(median of …", and the Price to Beat is the company's limit only when "this search has too few … hotels to
+ * compare".
+ * @param {import('../../business/types').LimitItem} item
+ */
+function fromSearch(item) {
+  if (!item || item.cents === null || item.cents === undefined) return false;
+  const suffix = String(item.suffix || '');
+  if (item.key === 'hotel.priceToBeat') return !/too few (?:test )?hotels to compare/.test(suffix);
+  return /^flight\./.test(String(item.key)) && suffix.includes('(median of ');
+}
+
+/** The chip beside each amount of the limits bar, by source. */
+const LIMIT_CHIPS = Object.freeze({ demo: 'Demo price', sandbox: 'Test data', live: 'Supplier price' });
 
 /**
  * "Your limits for this search" (§E4, policy/describe.limitsBar): each amount in a chip that says
- * "Demo price", and the bar's own demo label.
+ * "Demo price" ("Test data" for supplier test data), and the bar's own price label. On supplier prices only an
+ * amount worked out from the search (fromSearch: a median cap, the Price to Beat) gets the chip; a
+ * limit the company set is its own amount, not a supplier price.
  * @param {import('../../business/types').LimitsBar} bar
- * @param {{ pricedAt: string|null, timeZone: string, level?: number }} opts
+ * @param {{ pricedAt: string|null, timeZone: string, level?: number, source?: import('../../business/types').PriceSource }} opts
  */
-function limitsBar(bar, { pricedAt, timeZone, level = 2 }) {
+function limitsBar(bar, { pricedAt, timeZone, level = 2, source = 'demo' }) {
   if (!bar || !Array.isArray(bar.items)) return '';
-  return html`<section class="bz-limits" data-price-source="demo" aria-labelledby="bz-limits-title">
+  const s = known(source);
+  const chip = s === 'demo' ? 'bz-chip-demo' : 'bz-chip-demo bz-chip-test';
+  return html`<section class="${boxClass('bz-limits', s)}" data-price-source="${s}" aria-labelledby="bz-limits-title">
     ${heading(level, html` class="bz-limits-title" id="bz-limits-title"`, html`${icon('shield')}<span>${bar.heading}</span>`)}
     <ul class="bz-limits-list">
-      ${bar.items.map(it => html`<li data-limit="${it.key}"><span>${it.text}</span>${it.cents === null || it.cents === undefined ? '' : html` <span class="bz-limit-amount">${amount(it.cents)}<span class="bz-chip-demo">Demo price</span></span>`}${it.suffix ? html` <span>${it.suffix}</span>` : ''}</li>`)}
+      ${bar.items.map(it => html`<li data-limit="${it.key}"><span>${it.text}</span>${it.cents === null || it.cents === undefined ? '' : html` <span class="bz-limit-amount">${amount(it.cents)}${s === 'demo' || fromSearch(it) ? html`<span class="${chip}">${LIMIT_CHIPS[s]}</span>` : ''}</span>`}${it.suffix ? html` <span>${it.suffix}</span>` : ''}</li>`)}
     </ul>
-    ${priceNote(pricedAt, timeZone)}
+    ${priceNote(pricedAt, timeZone, { source: s })}
   </section>`;
 }
 
@@ -260,36 +358,66 @@ function limitsBar(bar, { pricedAt, timeZone, level = 2 }) {
 
 const offset = (fromLocal, toLocal) => Math.round((Date.parse(`${String(toLocal).slice(0, 10)}T00:00:00Z`) - Date.parse(`${String(fromLocal).slice(0, 10)}T00:00:00Z`)) / 86400000);
 
+/**
+ * "BA2490 operated by Iberia": a supplier flight's segments flown by another airline than the one whose
+ * flight number they carry (the number's two-character prefix is the marketing airline).
+ */
+function operatedBy(row) {
+  if (sourceOf(row) === 'demo') return [];
+  return (row.segments || [])
+    .filter(sg => sg && sg.carrier && sg.carrier.code && typeof sg.flightNumber === 'string' && sg.flightNumber.slice(0, 2) !== sg.carrier.code)
+    .map(sg => `${sg.flightNumber} operated by ${sg.carrier.name || sg.carrier.code}`);
+}
+
 function flightHead(row, level, titleId) {
   const segs = row.segments || [];
   const first = segs[0], last = segs[segs.length - 1];
   if (!first || !last) return heading(level, html` class="bz-row-title" id="${titleId}"`, row.carrier ? row.carrier.name : 'Flight');
   const plus = offset(first.departLocal, last.arriveLocal);
-  const stops = row.stops ? `${plural(row.stops, 'stop')} via ${(row.via || []).map(v => v.city).join(', ')}` : 'Nonstop';
+  // A supplier's stops include stops inside a flight (row.via names each airport): "1 stop in Doha".
+  const places = (row.via || []).map(v => v.city || v.code).filter(Boolean).join(', ');
+  const stops = !row.stops ? 'Nonstop'
+    : sourceOf(row) === 'demo' ? `${plural(row.stops, 'stop')} via ${(row.via || []).map(v => v.city).join(', ')}`
+      : `${plural(row.stops, 'stop')}${places ? ` in ${places}` : ''}`;
+  const operated = operatedBy(row);
   return html`<div class="bz-row-head">
     <p class="bz-row-kicker">${icon('plane')}<span>${row.leg === 'back' ? 'Return' : 'Outbound'} · ${f.day(first.departLocal.slice(0, 10))}</span></p>
     ${heading(level, html` class="bz-row-title" id="${titleId}"`, html`${f.clock24(first.departLocal)} <span aria-hidden="true">→</span><span class="sr-only"> to </span> ${f.clock24(last.arriveLocal)}${plus > 0 ? html`<sup class="bz-plus" title="${plural(plus, 'day')} later">+${String(plus)}</sup>` : ''}`)}
     <p class="bz-row-sub">${first.from.city} (${first.from.code}) to ${last.to.city} (${last.to.code})</p>
-    <p class="bz-row-meta">${[stops, f.duration(row.elapsedMinutes), row.carrier ? row.carrier.name : '', (row.flightNumbers || []).join(', '), row.cabinLabel].filter(Boolean).join(' · ')}</p>
+    <p class="bz-row-meta">${[stops, f.duration(row.elapsedMinutes), row.carrier ? row.carrier.name : '', (row.flightNumbers || []).join(', '), row.cabinLabel].filter(Boolean).join(' · ')}</p>${operated.length ? html`
+    <p class="bz-row-meta">${operated.join(' · ')}</p>` : ''}
   </div>`;
 }
 
+/** No star rating, said as the supplier's (a demo hotel always has one). */
+const NO_STARS = 'No star rating from the supplier';
+
 function hotelHead(row, level, titleId) {
+  const cls = sourceOf(row) !== 'demo' && row.stars === 0 ? NO_STARS : stars(row.stars);
   return html`<div class="bz-row-head">
     <p class="bz-row-kicker">${icon('bed')}<span>Hotel · ${f.dayRange(row.checkIn, row.checkOut)} · ${plural(row.nights, 'night')}</span></p>
     ${heading(level, html` class="bz-row-title" id="${titleId}"`, row.name)}
-    <p class="bz-row-sub">${[stars(row.stars), [row.area, row.city].filter(Boolean).join(', ')].filter(Boolean).join(' · ')}</p>
+    <p class="bz-row-sub">${[cls, [row.area, row.city].filter(Boolean).join(', ')].filter(Boolean).join(' · ')}</p>
     ${row.amenities && row.amenities.length ? html`<p class="bz-row-meta">${row.amenities.slice(0, 4).join(' · ')}</p>` : ''}
   </div>`;
 }
 
 /** The unavailable option's text (§B6). */
 const UNAVAILABLE = 'Not available in demo data';
+/** The unavailable text by where the row came from. */
+const UNAVAILABLE_BY_SOURCE = Object.freeze({ demo: UNAVAILABLE, sandbox: "Not available in the supplier's test data", live: 'No longer available from the supplier' });
+/** An unavailable row's text: "Not available in demo data", or the supplier's. */
+const unavailableText = row => UNAVAILABLE_BY_SOURCE[sourceOf(row)] || UNAVAILABLE;
+
+/** Does a supplier row's fare state its checked bags? (Its terms say "not stated" when the airline doesn't.) */
+const checkedStated = fare => !(typeof fare.terms === 'string' && (fare.terms.includes(TERMS.bagsUnknown) || fare.terms.includes('checked bags not stated')));
 
 function optionText(row) {
   if (row.kind === 'flight') {
     const fare = row.fare || {};
-    const bags = fare.checkedBags ? `${plural(fare.checkedBags, 'checked bag')}${fare.checkedKg ? ` (${fare.checkedKg} kg each)` : ''}` : 'No checked bag';
+    // A supplier's 0 kg means "not stated" (never printed), and bags it doesn't state are left to its terms.
+    const stated = sourceOf(row) === 'demo' || checkedStated(fare);
+    const bags = !stated ? '' : fare.checkedBags ? `${plural(fare.checkedBags, 'checked bag')}${fare.checkedKg ? ` (${fare.checkedKg} kg each)` : ''}` : 'No checked bag';
     return { name: `${fare.name || row.optionId} fare`, facts: [bags, fare.cabinKg ? `${fare.cabinKg} kg cabin bag` : ''].filter(Boolean).join(' · '), terms: fare.terms || '' };
   }
   const room = row.room || {};
@@ -307,7 +435,7 @@ function optionText(row) {
  */
 function optionPrice(row, { priceToBeatCents, basis }) {
   if (!row.available || row.totalCents === null || row.totalCents === undefined) {
-    return html`<p class="bz-opt-price is-unavailable">${UNAVAILABLE}</p>`;
+    return html`<p class="bz-opt-price is-unavailable">${unavailableText(row)}</p>`;
   }
   if (row.kind !== 'hotel') return html`<p class="bz-opt-price">${amount(row.totalCents)} <span class="bz-opt-unit">total</span></p>`;
   const excl = basis === 'excl_taxes';
@@ -315,7 +443,7 @@ function optionPrice(row, { priceToBeatCents, basis }) {
   const under = Number.isSafeInteger(priceToBeatCents) ? priceToBeatCents - nightly : null;
   return html`<p class="bz-opt-price">${amount(row.totalCents)} <span class="bz-opt-unit">total</span></p>
     <p class="bz-opt-nightly">${amount(nightly)} a night ${excl ? 'before taxes' : 'with taxes'}</p>
-    ${under !== null && under > 0 ? html`<p class="bz-opt-beat">${icon('check')}<span>${amount(under)} a night under the Price to Beat</span></p>` : ''}`;
+    ${under !== null && under > 0 ? html`<p class="bz-opt-beat">${icon('check')}<span>${amount(under)} a night under the Price to Beat</span></p>` : ''}${paidAtHotel(row)}`;
 }
 
 /**
@@ -334,6 +462,7 @@ function rowCard(group, { timeZone, input = null, level = 3, priceToBeatCents = 
   const list = (Array.isArray(group) ? group : [group]).filter(r => r && r.row);
   if (!list.length) return '';
   const head = list[0].row;
+  const source = known(leastReal(list.map(r => sourceOf(r.row))));
   const titleId = keyId('bz-row', head.key);
   const options = list.map(({ row, evaluation }) => {
     const ev = evaluation || { status: null, violations: [] };
@@ -351,13 +480,13 @@ function rowCard(group, { timeZone, input = null, level = 3, priceToBeatCents = 
         <div class="bz-opt-side">${optionPrice(row, { priceToBeatCents, basis })}${missing ? '' : policyBadge(ev.status)}</div>
       </div>
       ${violationList(reasons, { collapse: true, inDemo: true })}
-      ${lines && row.available && row.lines && row.lines.length ? html`<details class="bz-more"><summary>Price details</summary>${linesTable(row.lines, { inDemo: true })}</details>` : ''}
+      ${lines && row.available && row.lines && row.lines.length ? html`<details class="bz-more"><summary>Price details</summary>${linesTable(row.lines, { inDemo: true, row })}</details>` : ''}
     </li>`;
   });
-  return html`<article class="bz-card bz-row bz-row-${head.kind === 'hotel' ? 'hotel' : 'flight'}" data-price-source="demo" aria-labelledby="${titleId}">
+  return html`<article class="${boxClass(`bz-card bz-row bz-row-${head.kind === 'hotel' ? 'hotel' : 'flight'}`, source)}" data-price-source="${source}" aria-labelledby="${titleId}">
     ${head.kind === 'hotel' ? hotelHead(head, level, titleId) : flightHead(head, level, titleId)}
     <ul class="bz-opts">${options}</ul>
-    ${priceNote(head.pricedAt, timeZone)}
+    ${priceNote(head.pricedAt, timeZone, { source, kind: rowKind(head) })}
   </article>`;
 }
 
@@ -368,6 +497,11 @@ const CHEAPEST_WITHIN_LABEL = 'Cheapest option inside your policy';
 // The small pin badge, shown only when the pinned card's heading is not already CHEAPEST_WITHIN_LABEL
 // (alternatives.buildAlternatives gives the pinned one that label, so its heading says it once).
 const PIN_BADGE = 'Cheapest inside policy';
+
+/** What "Saves $X vs your pick" adds, by source. */
+const SAVES_NOTE = Object.freeze({ demo: ' (demo price)', sandbox: ' (test data)', live: '' });
+/** The least real source of an alternative's (or any trip's) rows. */
+const tripSource = rows => known(f.rowsSource(rows ? ['out', 'back', 'hotel'].map(c => rows[c]) : []));
 
 /**
  * One cheaper alternative: label, saving, new total, badge, what you give up, the explainer's note, and
@@ -382,10 +516,11 @@ function altCard(alt, { timeZone, pricedAt = null, action = null, rev = null, pi
   const at = pricedAt || (alt.rows && alt.rows.out ? alt.rows.out.pricedAt : null);
   const ev = alt.evaluation || { status: null, violations: [] };
   const give = (alt.giveUps || []).filter(Boolean);
-  return html`<article class="bz-card bz-alt${pinned ? ' is-pinned' : ''}" data-price-source="demo">
+  const source = tripSource(alt.rows);
+  return html`<article class="${boxClass(`bz-card bz-alt${pinned ? ' is-pinned' : ''}`, source)}" data-price-source="${source}">
     ${pinned && alt.label !== CHEAPEST_WITHIN_LABEL ? html`<p class="bz-alt-pin">${icon('shield')}<span>${PIN_BADGE}</span></p>` : ''}
     ${heading(level, html` class="bz-alt-title"`, alt.label)}
-    <p class="bz-alt-save">Saves ${amount(alt.savesCents)} vs your pick (demo price)</p>
+    <p class="bz-alt-save">Saves ${amount(alt.savesCents)} vs your pick${SAVES_NOTE[source]}</p>
     <p class="bz-alt-total">New trip total: ${amount(alt.totalCents)}</p>
     <div class="bz-alt-policy">${policyBadge(ev.status)}${violationList(ev.violations, { collapse: true, inDemo: true })}</div>
     ${give.length ? html`<div class="bz-alt-give"><p class="bz-alt-give-title">What you give up</p><ul>${give.map(g => html`<li>${g}</li>`)}</ul></div>` : ''}
@@ -395,12 +530,18 @@ function altCard(alt, { timeZone, pricedAt = null, action = null, rev = null, pi
       ${rev === null || rev === undefined ? '' : html`<input type="hidden" name="rev" value="${String(rev)}">`}
       <button class="btn btn-navy bz-btn" type="submit">Use this option</button>
     </form>` : ''}
-    ${priceNote(at, timeZone)}
+    ${priceNote(at, timeZone, { source })}
   </article>`;
 }
 
 const ALT_HEADING = 'AI-powered cheaper alternatives';
 const ALT_SUB = 'Found by Tripelyx AI in this same search. Every price here is a demo price from it; nothing is estimated.';
+/** ALT_SUB by where the search's prices came from. */
+const ALT_SUBS = Object.freeze({
+  demo: ALT_SUB,
+  sandbox: "Found by Tripelyx AI in this same search. Every price here is supplier test data from it, not a real fare; nothing is estimated.",
+  live: 'Found by Tripelyx AI in this same search. Every price here is the supplier price from it; nothing is estimated.',
+});
 const ALT_TRUNCATED = 'We checked the closest options first; there may be other cheaper ones.';
 const ALT_NONE = 'No cheaper option inside your policy turned up in this search. You can still request approval with a reason.';
 
@@ -412,13 +553,15 @@ const ALT_NONE = 'No cheaper option inside your policy turned up in this search.
  *   alternativesTruncated and explanation.summary
  * @param {{ timeZone: string, action?: string|null, rev?: number|string|null, level?: number }} opts
  */
-function alternativesPanel({ alternatives = [], cheapestWithin = null, truncated = false, summary = '' } = {}, { timeZone, action = null, rev = null, level = 2 } = {}) {
+function alternativesPanel({ alternatives = [], cheapestWithin = null, truncated = false, summary = '' } = {}, { timeZone, action = null, rev = null, level = 2, source = null } = {}) {
   const pinId = cheapestWithin ? cheapestWithin.id : null;
   const list = Array.isArray(alternatives) ? alternatives : [];
   const ordered = [...list.filter(a => a.id === pinId), ...list.filter(a => a.id !== pinId)];
+  // The search's source: the caller's (the request's), else the alternatives' own rows.
+  const s = source ? known(source) : known(leastReal(list.map(a => tripSource(a.rows))) || 'demo');
   return html`<section class="bz-alts" aria-labelledby="bz-alts-title">
     ${heading(level, html` class="bz-alts-title" id="bz-alts-title"`, html`${icon('sparkle')}<span>${ALT_HEADING}</span>`)}
-    <p class="bz-alts-sub">${ALT_SUB}</p>
+    <p class="bz-alts-sub">${ALT_SUBS[s]}</p>
     ${ordered.length
     ? html`${summary ? html`<p class="bz-alts-summary">${summary}</p>` : ''}
       <div class="bz-alt-grid">${ordered.map(a => altCard(a, { timeZone, action, rev, pinned: a.id === pinId, level: Math.min(6, level + 1) }))}</div>`
@@ -524,12 +667,12 @@ function checklist(items) {
  * @param {*} text text or markup from html``
  * @param {{ pricedAt?: string|null, timeZone?: string, inDemo?: boolean }} [opts]
  */
-function verdict(status, text, { pricedAt = null, timeZone = 'UTC', inDemo = false } = {}) {
+function verdict(status, text, { pricedAt = null, timeZone = 'UTC', inDemo = false, source = 'demo' } = {}) {
   const tone = BADGES[status] ? status : 'out';
   const box = html`<div class="bz-verdict bz-verdict-${tone}">${policyBadge(status)}<p class="bz-verdict-text">${text}</p></div>`;
   if (inDemo || !CURRENCY_RE.test(String(text))) return box;
   if (!pricedAt) throw new TypeError('[business] verdict: a verdict with an amount needs pricedAt (or inDemo inside a priced demo container)');
-  return demoBox(box, { pricedAt, timeZone, cls: 'bz-verdict-box' });
+  return demoBox(box, { pricedAt, timeZone, cls: 'bz-verdict-box', source });
 }
 
 /**
@@ -596,4 +739,6 @@ module.exports = {
   pageHead, tabs, pager, kvList, checklist, verdict, outsideToggle, copyLink, charCount, budgetBar,
   DEMO_RIBBON, NO_SUPPLIER, BADGES, PILLS, CHEAPEST_WITHIN_LABEL, PIN_BADGE, ALT_HEADING, ALT_SUB, ALT_TRUNCATED, ALT_NONE,
   UNAVAILABLE,
+  // Price sources (real-suppliers design §2.3)
+  SANDBOX_RIBBON, LIVE_RIBBON, APPROVED_PILLS, ALT_SUBS, LIMIT_CHIPS, LIMITS_NOTES, LIMITS_CHECKED, limitsNote, fromSearch, NO_STARS, UNAVAILABLE_BY_SOURCE, unavailableText, paidAtHotel, tripSource,
 };

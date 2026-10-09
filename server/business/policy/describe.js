@@ -26,9 +26,21 @@
 // override sets the cap and cabin; its band's advance days still apply, as evaluate checks them). One
 // 'flight.advance' item when every band in the search asks the same; otherwise one item per band that asks
 // for any ('flight.advance.short': "Flights under 6 hours: plan 7 days ahead", 'flight.advance.long').
+//
+// Real suppliers, round 1 (real-suppliers design §2.3): the fares a median cap follows are named for where
+// the prices come from, and demo wording is unchanged. describe(rules, { source }) says "the test fares" for
+// supplier test data and "the fares" for live prices; limitsBar reads ctx.priceSource (absent: demo):
+// "(median of these test fares plus 20%)", "(median of the fares in this search plus 20%)". The hotel
+// Price to Beat names a supplier search's hotels: "the middle rate of the 40 lowest-priced test hotels in
+// this search" when the supplier returned 40 (it is asked for the 40 lowest-priced), else "the middle test
+// rate of this search". A supplier search whose hotel leg has no rows (hotels not connected) or failed
+// (leg.error 'unavailable') gets no Price to Beat item: the company's nightly limit and star limit still show.
+// The view (parts.limitsBar) reads these reasons to tell amounts from the search (a median cap: "(median of …";
+// the Price to Beat unless "too few … hotels to compare") from the company's own limits.
 const { format } = require('../../lib/money');
 const { CABIN_LABELS, TIER_LABELS } = require('../constants');
 const { flightCap, hotelCap, priceToBeat } = require('./evaluate');
+const { isSource } = require('../source');
 
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 function hoursText(minutes) {
@@ -43,9 +55,20 @@ const basisText = basis => (basis === 'excl_taxes' ? 'before taxes' : 'taxes inc
 
 const haulPhrase = (haul, minutes) => (haul === 'long' ? `Flights of ${hoursText(minutes)} or more` : `Flights under ${hoursText(minutes)}`);
 
-/** A cap in words, for the policy page. `demo`: the searches run on demo inventory, so their fares are demo fares. */
-function capPhrase(cap, { demo = true } = {}) {
-  const fares = demo ? 'the demo fares' : 'the fares';
+/** The fares of a search, for the policy page: by price source when known, else by the demo flag. */
+function faresWord({ demo = true, source = null } = {}) {
+  if (source === 'sandbox') return 'the test fares';
+  if (source === 'live') return 'the fares';
+  if (source === 'demo') return 'the demo fares';
+  return demo ? 'the demo fares' : 'the fares';
+}
+
+/**
+ * A cap in words, for the policy page. `demo`: the searches run on demo inventory, so their fares are demo
+ * fares; `source` (when given) names them for where the prices come from ('sandbox': "the test fares").
+ */
+function capPhrase(cap, { demo = true, source = null } = {}) {
+  const fares = faresWord({ demo, source });
   switch (cap.mode) {
     case 'fixed': return `with fares up to ${format(cap.amountCents)} each way`;
     case 'median_pct':
@@ -65,15 +88,16 @@ function stopsPhrase(maxStops) {
  * The member-facing summary of one tier's rules.
  * @param {import('../types').PolicyRules} rules
  * @param {{ tier: import('../types').Tier, version: number, orgName: string, carriers: Record<string, string>,
- *   demo?: boolean }} opts demo (default true): searches run on demo inventory, so a median cap names "the demo
- *   fares"; false (no supplier, or a live one) says "the fares in your search"
+ *   demo?: boolean, source?: import('../types').PriceSource|null }} opts demo (default true): searches run on demo
+ *   inventory, so a median cap names "the demo fares"; false (no supplier, or a live one) says "the fares in
+ *   your search". source, when given, wins: 'sandbox' says "the test fares", 'live' "the fares"
  * @returns {import('../types').PolicyDescription} title 'Your travel policy', sub '<Tier> policy, version <n>'
  */
-function describe(rules, { tier, version, orgName, carriers = {}, demo = true } = {}) {
+function describe(rules, { tier, version, orgName, carriers = {}, demo = true, source = null } = {}) {
   const f = rules.flights, h = rules.hotels;
   const lines = [];
   for (const [haul, band] of [['short', f.shortHaul], ['long', f.longHaul]]) {
-    const parts = [cabinPhrase(band.maxCabin), capPhrase(band.cap, { demo }), stopsPhrase(band.maxStops),
+    const parts = [cabinPhrase(band.maxCabin), capPhrase(band.cap, { demo, source }), stopsPhrase(band.maxStops),
       band.refundableOnly ? 'on a fare that refunds at least part of the price' : ''].filter(Boolean);
     lines.push(`${haulPhrase(haul, f.longHaulMinutes)}: ${parts.join(', ')}.`);
   }
@@ -84,7 +108,7 @@ function describe(rules, { tier, version, orgName, carriers = {}, demo = true } 
     lines.push(`Plan ${say(a, `flights under ${hoursText(f.longHaulMinutes)}`)}, and ${say(b, 'longer ones')}.`);
   }
   for (const o of f.routeOverrides) {
-    const parts = [o.maxCabin ? cabinPhrase(o.maxCabin) : '', capPhrase(o.cap, { demo })].filter(Boolean);
+    const parts = [o.maxCabin ? cabinPhrase(o.maxCabin) : '', capPhrase(o.cap, { demo, source })].filter(Boolean);
     lines.push(`${o.from} to ${o.to}${o.bothWays ? ' and back' : ''}: ${parts.join(', ')}.`);
   }
   if (h.defaultNightlyCents != null) lines.push(`Hotels: up to ${format(h.defaultNightlyCents)} a night, ${basisText(h.capBasis)}.`);
@@ -105,12 +129,38 @@ function describe(rules, { tier, version, orgName, carriers = {}, demo = true } 
   return { title: 'Your travel policy', sub: `${TIER_LABELS[tier] || tier} policy, version ${version}`, lines };
 }
 
+/** The search's fares in the bar, by price source. */
+const BAR_FARES = Object.freeze({
+  demo: Object.freeze({ median: 'these demo fares', few: 'demo fares' }),
+  sandbox: Object.freeze({ median: 'these test fares', few: 'test fares' }),
+  live: Object.freeze({ median: 'the fares in this search', few: 'fares' }),
+});
+
 /** Why a cap is what it is, for the bar: "(median of these demo fares plus 20%)". */
-function barReason(cap, source) {
-  if (source === 'fallback') return "(this search has too few demo fares to compare, so your set limit applies)";
-  if (cap.mode === 'median_pct') return `(median of these demo fares plus ${pctText(cap.pctTenths)}%)`;
-  if (cap.mode === 'median_plus') return `(median of these demo fares plus ${format(cap.amountCents)})`;
+function barReason(cap, source, priceSource = 'demo') {
+  const fares = BAR_FARES[priceSource] || BAR_FARES.demo;
+  if (source === 'fallback') return `(this search has too few ${fares.few} to compare, so your set limit applies)`;
+  if (cap.mode === 'median_pct') return `(median of ${fares.median} plus ${pctText(cap.pctTenths)}%)`;
+  if (cap.mode === 'median_plus') return `(median of ${fares.median} plus ${format(cap.amountCents)})`;
   return '';
+}
+
+/** The supplier is asked for the 40 lowest-priced hotels of a city (real-suppliers design §3.1). */
+const SUPPLIER_HOTELS = 40;
+
+/** Why the hotel Price to Beat is what it is, by price source (demo wording unchanged). */
+function priceToBeatWhy({ capCents, median, priceSource, hotels }) {
+  if (priceSource !== 'sandbox' && priceSource !== 'live') {
+    return capCents != null && median != null ? 'the lower of your limit and the middle rate of this search'
+      : capCents != null ? 'your limit, as this search has too few hotels to compare' : 'the middle rate of this search';
+  }
+  const test = priceSource === 'sandbox' ? 'test ' : '';
+  const middle = hotels >= SUPPLIER_HOTELS
+    ? `the middle rate of the ${SUPPLIER_HOTELS} lowest-priced ${test}hotels in this search`
+    : `the middle ${test}rate of this search`;
+  if (capCents != null && median != null) return `the lower of your limit and ${middle}`;
+  if (capCents != null) return `your limit, as this search has too few ${test}hotels to compare`;
+  return middle;
 }
 
 /** The cap facts of one leg: one entry per band (or route) its rows fall in, in short, long, route order. */
@@ -167,6 +217,7 @@ function advanceItems(rules, legs) {
  * @returns {import('../types').LimitsBar}
  */
 function limitsBar(rules, ctx, search) {
+  const priceSource = isSource(ctx.priceSource) ? ctx.priceSource : 'demo';
   const tierLabel = TIER_LABELS[ctx.policy.tier] || ctx.policy.tier;
   const heading = `Your limits for this search (${tierLabel} policy, v${ctx.policy.version})`;
   const items = [];
@@ -179,7 +230,7 @@ function limitsBar(rules, ctx, search) {
     const label = leg ? `${leg === 'out' ? 'Outbound' : 'Return'} ${lower(cap.label)}` : cap.label;
     if (cap.cents == null) return { key, text: `${label}: ${cabinPhrase(cap.cabin)}, no price limit`, cents: null, suffix: '' };
     const eachWay = !leg && !!legs.back;
-    return { key, text: `${label}: ${cabinPhrase(cap.cabin)}, up to`, cents: cap.cents, suffix: [eachWay ? 'each way' : '', barReason(cap.capRule, cap.source)].filter(Boolean).join(' ') };
+    return { key, text: `${label}: ${cabinPhrase(cap.cabin)}, up to`, cents: cap.cents, suffix: [eachWay ? 'each way' : '', barReason(cap.capRule, cap.source, priceSource)].filter(Boolean).join(' ') };
   };
   for (const k of ORDER) {
     const a = out.get(k), b = back.get(k);
@@ -197,11 +248,14 @@ function limitsBar(rules, ctx, search) {
     const bench = legs.hotel.benchmark ? legs.hotel.benchmark[basis] || null : null;
     if (cap.cents != null) items.push({ key: 'hotel.cap', text: `Hotels in ${hq.city}: up to`, cents: cap.cents, suffix: `a night, ${basisText(basis)}` });
     else items.push({ key: 'hotel.cap', text: `Hotels in ${hq.city}: no nightly limit`, cents: null, suffix: '' });
-    const ptb = priceToBeat(cap.cents, bench);
+    // A supplier hotel leg with no rows was not searched (hotels not connected) or failed (leg.error): there
+    // is nothing to beat, so no Price to Beat and no "too few hotels" reason. Demo always searches.
+    const searched = !legs.hotel.error && (priceSource === 'demo' || (Array.isArray(legs.hotel.rows) && legs.hotel.rows.length > 0));
+    const ptb = searched ? priceToBeat(cap.cents, bench) : null;
     if (ptb != null) {
       const median = bench && bench.medianCents != null ? bench.medianCents : null;
-      const why = cap.cents != null && median != null ? 'the lower of your limit and the middle rate of this search'
-        : cap.cents != null ? 'your limit, as this search has too few hotels to compare' : 'the middle rate of this search';
+      const hotels = new Set((Array.isArray(legs.hotel.rows) ? legs.hotel.rows : []).map(r => r && r.offerId)).size;
+      const why = priceToBeatWhy({ capCents: cap.cents, median, priceSource, hotels });
       items.push({ key: 'hotel.priceToBeat', text: 'Price to Beat:', cents: ptb, suffix: `a night (${why})` });
     }
     if (rules.hotels.maxStars != null) items.push({ key: 'hotel.stars', text: `Up to ${rules.hotels.maxStars}-star hotels`, cents: null, suffix: '' });

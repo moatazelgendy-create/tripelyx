@@ -1,7 +1,9 @@
 // /business/o/:orgId/activity (audit.view, plan §B4, §C7): H1 "Activity", newest first, 50 a page with an
 // opaque cursor ("Show older"), a group filter. Each row is the entry's plain-English summary, who did it and
 // when, in the company's time zone. Budget entries name amounts the company set and trip entries can name
-// trips priced on demo data, so the list sits in one demo container with a note saying so (§F6).
+// trips priced on demo data, so the list sits in one demo container with a note saying so (§F6). With real
+// suppliers (real-suppliers design §2.3) the container and its note follow the workspace's price source:
+// supplier test data gets the dashed outline, the TEST DATA tag and "Includes supplier test data".
 const { html } = require('../../lib/html');
 const { pageHead, tabs, pager, emptyState } = require('./parts');
 const f = require('./format');
@@ -15,6 +17,12 @@ const GROUP_LABELS = Object.freeze({
   org: 'Company', member: 'People', department: 'Departments', policy: 'Policy', budget: 'Budgets', request: 'Trips', reports: 'Reports',
 });
 const AMOUNTS_NOTE = 'Demo prices: amounts here are budgets your company set or trips priced on demo data. Nothing is charged.';
+/** The note by the workspace's price source ('demo' is AMOUNTS_NOTE, as before). */
+const AMOUNTS_NOTES = Object.freeze({
+  demo: AMOUNTS_NOTE,
+  sandbox: 'Includes supplier test data: amounts here are budgets your company set or trips priced on supplier test data. Nothing is charged.',
+  live: 'Supplier prices: amounts here are budgets your company set or trips priced on supplier prices. Nothing is booked or charged.',
+});
 
 /** Who did it, as the entry snapshotted it: a member's name, "Tripelyx" for the platform, or the system. */
 function actorText(a) {
@@ -58,17 +66,23 @@ function activityView(ctx, shell, { page, group, moreHref }) {
       <p class="bz-meta">${icon('clock')}<span><time datetime="${e.at}">${f.whenIn(tz, e.at, { now })}</time>${who && !named ? ` · ${who}` : ''} · ${GROUP_LABELS[e.group] || e.group}</span></p>
     </li>`;
   });
-  const list = rows.length
+  // Where the amounts listed come from: the workspace's source (demo as before, and with no supplier).
+  const source = f.ctxSource(ctx) || 'demo';
+  const list = !rows.length ? null : source === 'demo'
     ? html`<div class="bz-demo-box bz-activity" data-price-source="demo">
         <ul class="bz-activity-list">${rows}</ul>
         <p class="bz-price-note">${icon('info')}<span>${AMOUNTS_NOTE}</span></p>
       </div>`
-    : emptyState({ title: EMPTY, text: group ? 'Try another filter.' : 'Changes your team makes show up here.', iconName: 'clock' });
+    : html`<div class="bz-demo-box bz-activity${source === 'sandbox' ? ' bz-price-test' : ''}" data-price-source="${source}">
+        <ul class="bz-activity-list">${rows}</ul>
+        <p class="bz-price-note">${icon('info')}${source === 'sandbox' ? html`<span class="bz-test-tag">TEST DATA</span>` : ''}<span>${AMOUNTS_NOTES[source] || AMOUNTS_NOTE}</span></p>
+      </div>`;
+  const listOrEmpty = list || emptyState({ title: EMPTY, text: group ? 'Try another filter.' : 'Changes your team makes show up here.', iconName: 'clock' });
   const body = html`${pageHead({ title: TITLE, sub: `Times shown in ${f.zoneLabel(tz)}.` })}
     ${filter}
-    ${list}
+    ${listOrEmpty}
     ${pager(moreHref, 'Show older')}`;
   return shellView(ctx, shell, { title: TITLE, body });
 }
 
-module.exports = { activityView, actorText, summaryText, TITLE, EMPTY, GROUP_LABELS, AMOUNTS_NOTE };
+module.exports = { activityView, actorText, summaryText, TITLE, EMPTY, GROUP_LABELS, AMOUNTS_NOTE, AMOUNTS_NOTES };

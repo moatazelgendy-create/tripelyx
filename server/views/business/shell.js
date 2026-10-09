@@ -14,6 +14,9 @@
 // Ribbons, first inside <main>: the demo ribbon always (it names demo data only when demo inventory runs); the
 // pending-company ribbon while Tripelyx confirms the company (it offers a demo trip only with demo inventory);
 // and "Supplier not connected yet" on search pages (searchPage: true) when no supplier is connected.
+// With real suppliers (real-suppliers design §2.3) the first ribbon says where prices come from: supplier test
+// data ("Preview with supplier test data: …", marked bz-ribbon-test) or live prices; the pending ribbon then
+// offers "a trip with supplier test data".
 const { html, raw } = require('../../lib/html');
 const { sprite, icon } = require('../icons');
 const { logo } = require('../layout');
@@ -21,7 +24,7 @@ const { LABELS } = require('../../business/roles');
 const { BUSINESS_EMAIL } = require('../../business/constants');
 const tz = require('../../business/tz');
 const { safeZone } = require('./format');
-const { statusPill, notice: noticeBox, errorBox, NO_SUPPLIER, DEMO_RIBBON } = require('./parts');
+const { statusPill, notice: noticeBox, errorBox, NO_SUPPLIER, DEMO_RIBBON, SANDBOX_RIBBON, LIVE_RIBBON } = require('./parts');
 
 /** The icon beside each section of the workspace menu (http.NAV keys). */
 const NAV_ICONS = Object.freeze({
@@ -34,19 +37,29 @@ const PREVIEW_RIBBON = 'Preview: nothing is booked or charged. No emails are sen
 
 /**
  * The pending-company ribbon (§B3). It offers a demo trip only when demo inventory runs here: with no
- * supplier (production) or a live one there is no demo trip to try, as with the demo ribbon.
+ * supplier (production) or a live one there is no demo trip to try, as with the demo ribbon. With supplier
+ * test data it offers a trip with that.
  * @param {string} name the company's
- * @param {{ demo?: boolean }} [opts] demo: the inventory status is 'demo'
+ * @param {{ demo?: boolean, sandbox?: boolean }} [opts] demo: the inventory status is 'demo'; sandbox: 'sandbox'
  */
-const pendingRibbon = (name, { demo = false } = {}) => `Tripelyx is confirming ${name}. You can set up policies, departments and budgets${demo ? ' and try a demo trip' : ''} now. Teammates can join once it's confirmed.`;
+const pendingRibbon = (name, { demo = false, sandbox = false } = {}) => `Tripelyx is confirming ${name}. You can set up policies, departments and budgets${demo ? ' and try a demo trip' : sandbox ? ' and try a trip with supplier test data' : ''} now. Teammates can join once it's confirmed.`;
 
 const inventoryStatus = ctx => (ctx.business && ctx.business.inventory && ctx.business.inventory.status) || 'none';
 
+/** The first ribbon's text and class, by inventory status. */
+function firstRibbon(status) {
+  if (status === 'demo') return { text: DEMO_RIBBON, cls: 'bz-ribbon bz-ribbon-demo' };
+  if (status === 'sandbox') return { text: SANDBOX_RIBBON, cls: 'bz-ribbon bz-ribbon-demo bz-ribbon-test', tag: true };
+  if (status === 'live') return { text: LIVE_RIBBON, cls: 'bz-ribbon bz-ribbon-demo' };
+  return { text: PREVIEW_RIBBON, cls: 'bz-ribbon bz-ribbon-demo' };
+}
+
 function ribbons(ctx, shell, { searchPage }) {
   const status = inventoryStatus(ctx);
+  const first = firstRibbon(status);
   return html`<div class="bz-ribbons">
-    <p class="bz-ribbon bz-ribbon-demo" role="note">${icon('info')}<span>${status === 'demo' ? DEMO_RIBBON : PREVIEW_RIBBON}</span></p>
-    ${shell.org.status === 'pending' ? html`<p class="bz-ribbon bz-ribbon-pending" role="note">${icon('clock')}<span>${pendingRibbon(shell.org.name, { demo: status === 'demo' })}</span></p>` : ''}
+    <p class="${first.cls}" role="note">${icon('info')}${first.tag ? html`<span class="bz-test-tag">TEST DATA</span>` : ''}<span>${first.text}</span></p>
+    ${shell.org.status === 'pending' ? html`<p class="bz-ribbon bz-ribbon-pending" role="note">${icon('clock')}<span>${pendingRibbon(shell.org.name, { demo: status === 'demo', sandbox: status === 'sandbox' })}</span></p>` : ''}
     ${searchPage && status === 'none' ? html`<p class="bz-ribbon bz-ribbon-supplier" role="note">${icon('plug')}<span><b>${NO_SUPPLIER.title}</b> ${NO_SUPPLIER.text}</span></p>` : ''}
   </div>`;
 }

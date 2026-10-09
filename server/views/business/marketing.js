@@ -9,9 +9,10 @@
 // Switches, from what actually runs here:
 //   - ctx.business missing (the service failed to build): every button says "Talk to us" (#business-form) and
 //     nothing links to /business/start or /business/signin;
-//   - the Business inventory's status: 'demo' (demo flights and hotels), 'none' ("Supplier not connected
-//     yet") or 'live' (real airline and hotel connections; never today), for the preview note and "Where it
-//     stands today".
+//   - the Business inventory's status: 'demo' (demo flights and hotels), 'sandbox' (our suppliers' test
+//     systems: prices are test data, not real fares; real-suppliers design §2.3), 'none' ("Supplier not
+//     connected yet") or 'live' (real airline and hotel connections; never today), for the preview note and
+//     "Where it stands today".
 const { html } = require('../../lib/html');
 const { icon } = require('../icons');
 const { layout } = require('../layout');
@@ -66,6 +67,8 @@ const PREVIEW_NOW_NO_SUPPLIER = Object.freeze([
 ]);
 /** With real airline and hotel connections (inventory status 'live'): nothing on demo data any more. */
 const PREVIEW_NOW_LIVE = Object.freeze(PREVIEW_NOW.map(t => t.replace(' on demo data', '')));
+/** With the suppliers' test systems (inventory status 'sandbox'): the same, on their test data. */
+const PREVIEW_NOW_SANDBOX = Object.freeze(PREVIEW_NOW.map(t => t.replace(' on demo data', " on our suppliers' test data")));
 const COMING_NEXT = Object.freeze([
   'Real airline and hotel connections',
   'Booking and payment',
@@ -82,21 +85,24 @@ const COMING_NEXT_LIVE = Object.freeze(COMING_NEXT.filter(t => t !== 'Real airli
 
 const NOTES = Object.freeze({
   demo: 'Preview: flights, hotels and prices are demo data while we connect suppliers. Nothing is booked or charged yet.',
+  sandbox: "In this preview, flights and hotels come from our suppliers' test systems, so prices are test data, not real fares. Nothing is booked or charged yet.",
   none: 'Preview: trip search turns on once we connect airlines and hotels. Nothing is booked or charged yet.',
   live: 'Preview: nothing is booked or charged yet.',
   off: "Preview: company workspaces aren't open on this site right now. Nothing is booked or charged.",
 });
 
-/** What the page says about the inventory: 'demo', 'none', 'live', or 'off' when the workspace isn't running here. */
+/** What the page says about the inventory: 'demo', 'sandbox', 'none', 'live', or 'off' when the workspace isn't running here. */
 function inventoryState(ctx) {
   if (!ctx.business) return 'off';
   const status = ctx.business.inventory && ctx.business.inventory.status;
-  return status === 'demo' || status === 'live' ? status : 'none';
+  return status === 'demo' || status === 'sandbox' || status === 'live' ? status : 'none';
 }
 
 const SAVINGS = 'Each request keeps the cheapest option inside your policy that the traveler saw, so you can see what each choice cost or saved. Hotel searches show a Price to Beat: the lower of your nightly limit and the middle rate of that search.';
 /** Added to SAVINGS only while the inventory is demo data. */
 const SAVINGS_DEMO = 'In the preview these are demo prices.';
+/** Added to SAVINGS while the inventory is the suppliers' test data. */
+const SAVINGS_SANDBOX = 'In the preview these are supplier test data, not real fares.';
 const AI_BODY = 'When a pick goes over policy, Tripelyx AI looks through the same search for a cheaper way to make the trip: another fare on the same flight, a lower cabin, one stop instead of nonstop, a day or three earlier or later if your dates can move, or a hotel under your limit in the same city. Each option is a priced result from that search, with what it saves and what you give up. It never makes up a price.';
 const AI_SMALL = 'How it works today: Tripelyx AI runs on rules we write and test, and your trip data stays with Tripelyx.';
 
@@ -156,8 +162,8 @@ function altExamples() {
 function businessMarketingView(ctx) {
   const live = !!ctx.business;
   const status = inventoryState(ctx);
-  const now = { demo: PREVIEW_NOW, none: PREVIEW_NOW_NO_SUPPLIER, live: PREVIEW_NOW_LIVE, off: [] }[status];
-  const next = { demo: COMING_NEXT, none: COMING_NEXT_NO_SUPPLIER, live: COMING_NEXT_LIVE, off: [...PREVIEW_NOW, ...COMING_NEXT] }[status];
+  const now = { demo: PREVIEW_NOW, sandbox: PREVIEW_NOW_SANDBOX, none: PREVIEW_NOW_NO_SUPPLIER, live: PREVIEW_NOW_LIVE, off: [] }[status];
+  const next = { demo: COMING_NEXT, sandbox: COMING_NEXT, none: COMING_NEXT_NO_SUPPLIER, live: COMING_NEXT_LIVE, off: [...PREVIEW_NOW, ...COMING_NEXT] }[status];
   const body = html`
 <section class="page-hero bz-mk-hero" id="bz-hero" aria-labelledby="bz-hero-title"><div class="container"><div class="page-hero-inner">
   <p class="eyebrow eyebrow-light">Tripelyx Business · Preview</p>
@@ -214,7 +220,7 @@ function businessMarketingView(ctx) {
     <div>
       <p class="eyebrow">Savings</p>
       <h2 id="bz-savings-title" class="section-title">Every choice measured against your own limits.</h2>
-      <p class="section-lead">${SAVINGS}${status === 'demo' ? ` ${SAVINGS_DEMO}` : ''}</p>
+      <p class="section-lead">${SAVINGS}${status === 'demo' ? ` ${SAVINGS_DEMO}` : status === 'sandbox' ? ` ${SAVINGS_SANDBOX}` : ''}</p>
     </div>
     <div class="bz-mk-beat" aria-label="How the Price to Beat is set">
       <p class="bz-mk-beat-row"><span class="card-icon">${icon('shield')}</span><span><b>Your nightly limit</b><span>From your travel policy, for that city or country.</span></span></p>
@@ -278,5 +284,5 @@ function businessMarketingView(ctx) {
 
 module.exports = {
   businessMarketingView, SECTIONS, PATHS, PILLARS, PERSONAS, PREVIEW_NOW, PREVIEW_NOW_NO_SUPPLIER, PREVIEW_NOW_LIVE, COMING_NEXT,
-  COMING_NEXT_NO_SUPPLIER, COMING_NEXT_LIVE, NOTES, AI_BODY, AI_SMALL, SAVINGS, SAVINGS_DEMO,
+  COMING_NEXT_NO_SUPPLIER, COMING_NEXT_LIVE, NOTES, AI_BODY, AI_SMALL, SAVINGS, SAVINGS_DEMO, PREVIEW_NOW_SANDBOX, SAVINGS_SANDBOX,
 };

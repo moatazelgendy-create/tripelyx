@@ -42,7 +42,7 @@ function inboxTable(ctx, { base, rows, tab, timeZone, caption, empty = 'Nothing 
   let columns, cells;
   if (tab === 'decided') {
     columns = [{ label: 'Traveler' }, { label: 'Trip' }, { label: 'Total', num: true }, { label: 'Status' }, { label: 'Policy' }];
-    cells = r => [r.travelerName, tripCell(base, map, r), totalCell(r, timeZone), html`${p.statusPill(r.status)}${r.decidedAs === 'override' ? html`<span class="bz-cell-sub">Decided as an override</span>` : ''}`, reasonsText(r.violationsCount)];
+    cells = r => [r.travelerName, tripCell(base, map, r), totalCell(r, timeZone), html`${p.statusPill(r.status, { source: r.source })}${r.decidedAs === 'override' ? html`<span class="bz-cell-sub">Decided as an override</span>` : ''}`, reasonsText(r.violationsCount)];
   } else if (tab === 'expired') {
     columns = [{ label: 'Traveler' }, { label: 'Trip' }, { label: 'Total', num: true }, { label: 'Policy' }, { label: 'Expired' }];
     cells = r => [r.travelerName, tripCell(base, map, r), totalCell(r, timeZone), reasonsText(r.violationsCount), r.expiresAt ? f.dateTimeIn(timeZone, r.expiresAt) : ''];

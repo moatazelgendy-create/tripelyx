@@ -28,8 +28,16 @@
 // request expired), 410 (an alternative that is gone), 503 (no supplier). 404 and 403 answer with the app's
 // pages, as memberGate does. GETs never write: an expired request shows as expired, and the search reads
 // prices without storing anything.
+//
+// Real suppliers (real-suppliers design §2.4): a supplier that fails ('supplier_unavailable', 503) or a
+// company that used up its supplier calls ('supplier_busy', 429) is said on the page, never thrown to the
+// error page: a search or a new draft goes back to the trip form with the query kept and the message; a
+// swap, submit or decide re-renders the request page, untouched. When the price check at submit or decide
+// could not run, the page says "The price couldn't be checked just now, so nothing changed." (503) or the
+// supplier_busy text (429): a request is never approved without a check, nor sent back because of an outage.
 const express = require('express');
 const { AppError } = require('../../lib/errors');
+const { PRICE_CHECK_COPY } = require('../../business/source');
 const { gates } = require('../../business/http');
 const roles = require('../../business/roles');
 const { TIER_LABELS } = require('../../business/constants');
@@ -87,6 +95,8 @@ function rawQuery(src) {
 /** A refusal the page itself explains (a 4xx AppError other than 404, 403 and 429). */
 const shown = e => e instanceof AppError && e.status >= 400 && e.status < 500 && ![403, 404, 429].includes(e.status);
 const isStatus = (e, status) => e instanceof AppError && e.status === status;
+/** A real supplier that failed (503) or the company's supplier limit (429): said on the page, never thrown. */
+const supplierFail = e => e instanceof AppError && (e.code === 'supplier_unavailable' || e.code === 'supplier_busy');
 
 function send(res, status, page) {
   res.status(status).type('html').send(String(page));
@@ -183,6 +193,8 @@ function router(ctx, deps) {
       view = await svc().searchTrip(req.biz.actor, raw);
     } catch (e) {
       if (isStatus(e, 422)) return formPage(req, res, 422, { values: formValues(raw), errors: e.details || {}, error: e.message });
+      // A supplier that failed, or the company's supplier limit: the form, the query kept, the message.
+      if (supplierFail(e)) return formPage(req, res, e.status, { values: formValues(raw), error: e.message });
       if (isStatus(e, 503)) return formPage(req, res, 503, { values: formValues(raw) });
       throw e;
     }
@@ -214,6 +226,9 @@ function router(ctx, deps) {
       const request = await svc().createRequest(req.biz.actor, { query: raw, selection, purpose: typeof b.purpose === 'string' ? b.purpose : '' });
       return res.redirect(303, `${tripsBase(req)}/${request.id}`);
     } catch (e) {
+      // A supplier failure is said on the trip form (the query kept): nothing was written, and searching
+      // again for the results page would only ask the failing supplier once more.
+      if (supplierFail(e)) return formPage(req, res, e.status, { values: formValues(raw), error: e.message });
       if (!shown(e) && !isStatus(e, 503)) throw e;
       return resultsPage(req, res, raw, { status: e.status, pick: pick(), error: e.message, errors: e.details || {} });
     }
@@ -329,7 +344,7 @@ function router(ctx, deps) {
         if (code === 'returned' && !(await canOpen(req))) return res.redirect(303, `/business/o/${req.biz.org.id}/approvals?ok=returned`);
         return res.redirect(303, `${tripsBase(req)}/${req.params.rid}?ok=${code}`);
       } catch (e) {
-        if (!shown(e) && !isStatus(e, 503)) throw e;
+        if (!shown(e) && !isStatus(e, 503) && !supplierFail(e)) throw e;
         const form = {
           reason: typeof b.reason === 'string' ? b.reason.slice(0, 2000) : '', category: one(b.category),
           note: typeof b.note === 'string' ? b.note.slice(0, 1000) : '', ack: one(b.ackOverBudget) === '1',
@@ -337,7 +352,9 @@ function router(ctx, deps) {
           // The alternative a 410 swap refused: the page leaves it out instead of offering it again.
           altId: e.code === 'alternative_gone' ? one(b.altId) : '',
         };
-        return requestPage(req, res, { status: e.status, error: e.message, failed, form, refusal: e.code });
+        // The price check at submit or decide could not reach the supplier: the request is untouched.
+        const error = e.code === 'supplier_unavailable' && (failed === 'submit' || failed === 'decide') ? PRICE_CHECK_COPY.unchanged : e.message;
+        return requestPage(req, res, { status: e.status, error, failed, form, refusal: e.code });
       }
     });
   }

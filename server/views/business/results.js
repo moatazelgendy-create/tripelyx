@@ -10,6 +10,14 @@
 // radios. An option the demo data doesn't have stays beside its offer's other options, with a disabled radio
 // (parts.rowCard); an offer with no available option at all (a sold-out hotel) is listed last with
 // "Not available in demo data" and no radio.
+//
+// Real suppliers (real-suppliers design §2.3, §2.4): the page's source is the least real source of its rows
+// (else the search's inventory status), and every empty state and note says where the options came from: "in
+// the supplier's test system" for supplier test data. A supplier search says what it left out and why
+// (leg.skipped: fares in another currency, mixed cabins, fees paid in another currency, hotels with no
+// name), that it shows the 40 lowest-priced hotels when the supplier sent that many, that each way of a
+// return trip is its own one-way ticket, and, when the hotel supplier failed (leg.error), that the flights
+// can still be requested. Demo pages are unchanged.
 const { html } = require('../../lib/html');
 const { icon } = require('../icons');
 const f = require('./format');
@@ -17,6 +25,68 @@ const p = require('./parts');
 const { places, cityOf, routeText, datesText, searchQuery, nightsBetween } = require('./trips');
 const { PURPOSE_CHARS } = require('../../business/requests');
 const { CABIN_LABELS } = require('../../business/constants');
+const { PRICE_CHECK_COPY } = require('../../business/source');
+
+/** The hotels a supplier is asked for (LiteAPI limit 40, sorted by price; real-suppliers design §3.1). */
+const SUPPLIER_HOTELS = 40;
+/** Per-source copy of the results page ('demo' is today's). */
+const COPY = Object.freeze({
+  demo: Object.freeze({
+    noFlights: (a, b, day) => `No flights in the demo schedule for ${a} to ${b} on ${day}.`,
+    noSeats: 'None of these flights has a seat in the demo data. Try another date.',
+    noHotels: city => `No demo hotels in ${city} yet.`,
+    noRooms: 'None of these hotels has a room in the demo data for these dates. You can still request the flights.',
+    flightsTruncated: 'Showing the first options of this search.',
+    hotelsTruncated: 'Showing the first hotels of this search.',
+  }),
+  sandbox: Object.freeze({
+    noFlights: (a, b, day) => `No flights found from ${a} to ${b} on ${day} in the supplier's test system.`,
+    noSeats: "None of these flights has a seat in the supplier's test data. Try another date.",
+    noHotels: city => `No hotels found in ${city} in the supplier's test system.`,
+    noRooms: "None of these hotels has a room in the supplier's test data for these dates. You can still request the flights.",
+    flightsTruncated: 'Showing the lowest-priced fares of this search.',
+    hotelsTruncated: 'Showing the lowest-priced rooms of this search.',
+  }),
+  live: Object.freeze({
+    noFlights: (a, b, day) => `No flights found from ${a} to ${b} on ${day}.`,
+    // Every option unavailable means the supplier didn't confirm it again, not that it sold out: no scarcity claim.
+    noSeats: 'None of these flights can be picked from the supplier right now. Try another date.',
+    noHotels: city => `No hotels found in ${city}.`,
+    noRooms: 'None of these hotels can be picked from the supplier for these dates. You can still request the flights.',
+    flightsTruncated: 'Showing the lowest-priced fares of this search.',
+    hotelsTruncated: 'Showing the lowest-priced rooms of this search.',
+  }),
+});
+const HOTELS_NOT_CONNECTED = 'Hotels are not connected yet.';
+const SUPPLIER_HOTELS_NOTE = `Showing the ${SUPPLIER_HOTELS} lowest-priced hotels the supplier returned.`;
+const ONE_WAY_EACH = 'Each way is priced as its own one-way ticket.';
+
+/** "GBP", "GBP and EUR". */
+const codesText = codes => listText((Array.isArray(codes) ? codes : []).filter(c => typeof c === 'string' && /^[A-Z]{3}$/.test(c)));
+
+/**
+ * What a supplier search left out of one leg, from leg.skipped (types.SkipCounts), as sentences. `kind`
+ * 'flight' says fares, 'hotel' says rates; `empty`: the leg has no row left to show.
+ * @param {import('../../business/types').SkipCounts|undefined} skipped
+ * @param {{ kind: 'flight'|'hotel', empty: boolean }} opts
+ * @returns {string[]}
+ */
+function skippedNotes(skipped, { kind, empty }) {
+  const k = skipped && typeof skipped === 'object' ? skipped : {};
+  const n = key => (Number.isSafeInteger(k[key]) && k[key] > 0 ? k[key] : 0);
+  const word = kind === 'hotel' ? 'rate' : 'fare';
+  const out = [];
+  if (n('otherCurrency')) {
+    const codes = codesText(k.currencies);
+    out.push(empty
+      ? `This supplier priced every ${word} in ${codes || 'another currency'}. Tripelyx Business shows US dollar prices only for now, so none can be shown.`
+      : `${f.plural(n('otherCurrency'), word)} priced in another currency ${n('otherCurrency') === 1 ? 'is' : 'are'} not shown.`);
+  }
+  if (kind === 'flight' && n('mixedCabin')) out.push('Fares that mix cabins are not shown yet.');
+  if (kind === 'hotel' && n('feeOtherCurrency')) out.push('Some rates have fees paid at the hotel in another currency and are not shown yet.');
+  if (kind === 'hotel' && n('noHotelData')) out.push('Hotels with no name from the supplier are not shown.');
+  return out;
+}
 
 /** "Sahara Wings", "Sahara Wings and Gulfstar", "A, B and C". */
 function listText(names) {
@@ -121,39 +191,54 @@ function resultsView(ctx, { org, view, all = false, pick = null, error = null, e
   const blockMode = org.settings && org.settings.outOfPolicy === 'block';
   const legs = view.legs;
   const chosen = pick || { out: '', back: '', hotel: '', purpose: '' };
+  // Where this search's prices came from: its rows' least real source, else the inventory's status.
+  const legRows = ['out', 'back', 'hotel'].flatMap(k => (legs[k] && Array.isArray(legs[k].rows) ? legs[k].rows.map(r => r.row) : []));
+  const source = legRows.length ? f.rowsSource(legRows) : (f.isSource(view.status) ? view.status : 'demo');
+  const copy = COPY[source] || COPY.demo;
+  const supplier = source !== 'demo';
+  const inv = ctx.business && ctx.business.inventory ? ctx.business.inventory : null;
 
   const sections = [];
   const legSection = (id, title, sub, body) => html`<section class="bz-leg" aria-labelledby="${id}">
       <div class="bz-leg-head"><h2 id="${id}">${title}</h2>${sub ? html`<p class="bz-leg-sub">${sub}</p>` : ''}</div>
       ${body}
     </section>`;
-  const noFlights = (a, b, date) => p.emptyState({ title: `No flights in the demo schedule for ${a} to ${b} on ${f.day(date)}.`, text: 'Try another date.', iconName: 'plane', action: { href: `${base}/trips/new?${searchQuery(q)}`, label: 'Change the search' } });
+  const noFlights = (a, b, date) => p.emptyState({ title: copy.noFlights(a, b, f.day(date)), text: 'Try another date.', iconName: 'plane', action: { href: `${base}/trips/new?${searchQuery(q)}`, label: 'Change the search' } });
   const noPick = text => html`<p class="bz-leg-note">${icon('alert')}<span>${text}</span></p>`;
+  const infoNote = text => html`<p class="bz-leg-note">${icon('info')}<span>${text}</span></p>`;
+  // A supplier leg's notices: what it left out (leg.skipped), and the leg's own notes.
+  const legNotes = (leg, kind, extra = []) => {
+    if (!supplier || !leg) return '';
+    const list = [...skippedNotes(leg.skipped, { kind, empty: !leg.rows.length }), ...extra];
+    return list.length ? html`${list.map(infoNote)}` : '';
+  };
   const flightsNote = b => (b.blocked
     ? `None of these flights can be picked under ${org.name}'s policy. Try another date or cabin.`
-    : 'None of these flights has a seat in the demo data. Try another date.');
+    : copy.noSeats);
 
   // Outbound
   const outLeg = legs.out;
   let outSelectable = 0;
   if (!outLeg || !outLeg.rows.length) {
-    sections.push(legSection('bz-leg-out', 'Outbound', `${from} to ${to} · ${f.day(q.departDate)}`, noFlights(q.from, q.to, q.departDate)));
+    sections.push(legSection('bz-leg-out', 'Outbound', `${from} to ${to} · ${f.day(q.departDate)}`, html`${legNotes(outLeg, 'flight')}${noFlights(q.from, q.to, q.departDate)}`));
   } else {
     const b = legBody(outLeg, { name: 'out', checked: chosen.out, timeZone, open: all });
     outSelectable = b.selectable;
-    sections.push(legSection('bz-leg-out', 'Outbound', `${from} to ${to} · ${f.day(q.departDate)}`, html`${b.selectable ? '' : noPick(flightsNote(b))}${b.markup}${outLeg.truncated ? html`<p class="bz-leg-note">${icon('info')}<span>Showing the first options of this search.</span></p>` : ''}`));
+    sections.push(legSection('bz-leg-out', 'Outbound', `${from} to ${to} · ${f.day(q.departDate)}`, html`${b.selectable ? '' : noPick(flightsNote(b))}${legNotes(outLeg, 'flight')}${b.markup}${outLeg.truncated ? html`<p class="bz-leg-note">${icon('info')}<span>${copy.flightsTruncated}</span></p>` : ''}`));
   }
   // Return
   let backSelectable = 1;
   if (q.returnDate) {
     const backLeg = legs.back;
+    // A supplier prices each way as its own one-way ticket (one offer request per leg).
+    const oneWay = supplier ? [ONE_WAY_EACH] : [];
     if (!backLeg || !backLeg.rows.length) {
       backSelectable = 0;
-      sections.push(legSection('bz-leg-back', 'Return', `${to} to ${from} · ${f.day(q.returnDate)}`, noFlights(q.to, q.from, q.returnDate)));
+      sections.push(legSection('bz-leg-back', 'Return', `${to} to ${from} · ${f.day(q.returnDate)}`, html`${legNotes(backLeg, 'flight')}${noFlights(q.to, q.from, q.returnDate)}`));
     } else {
       const b = legBody(backLeg, { name: 'back', checked: chosen.back, timeZone, open: all });
       backSelectable = b.selectable;
-      sections.push(legSection('bz-leg-back', 'Return', `${to} to ${from} · ${f.day(q.returnDate)}`, html`${b.selectable ? '' : noPick(flightsNote(b))}${b.markup}${backLeg.truncated ? html`<p class="bz-leg-note">${icon('info')}<span>Showing the first options of this search.</span></p>` : ''}`));
+      sections.push(legSection('bz-leg-back', 'Return', `${to} to ${from} · ${f.day(q.returnDate)}`, html`${b.selectable ? '' : noPick(flightsNote(b))}${legNotes(backLeg, 'flight', oneWay)}${b.markup}${backLeg.truncated ? html`<p class="bz-leg-note">${icon('info')}<span>${copy.flightsTruncated}</span></p>` : ''}`));
     }
   }
   // Hotel
@@ -161,15 +246,22 @@ function resultsView(ctx, { org, view, all = false, pick = null, error = null, e
     const h = legs.hotel;
     const city = (h && h.city) || q.hotel.city || to;
     const sub = `${f.dayRange(q.hotel.checkIn, q.hotel.checkOut)} · ${f.plural(nightsBetween(q.hotel.checkIn, q.hotel.checkOut), 'night')}`;
-    if (!h || !h.rows.length) {
-      sections.push(legSection('bz-leg-hotel', `Hotel in ${city}`, sub, p.emptyState({ title: `No demo hotels in ${city} yet.`, text: 'You can still request the flights.', iconName: 'bed' })));
+    if (h && h.error === 'unavailable') {
+      // The hotel supplier failed: the flights still show (PRICE_CHECK_COPY.hotelsLeg).
+      sections.push(legSection('bz-leg-hotel', `Hotel in ${city}`, sub, html`<div class="alert alert-warning bz-alert" role="status">${icon('alert')}<span>${PRICE_CHECK_COPY.hotelsLeg}</span></div>`));
+    } else if (!h || !h.rows.length) {
+      const off = supplier && inv && inv.hotelsConnected === false;
+      sections.push(legSection('bz-leg-hotel', `Hotel in ${city}`, sub, html`${legNotes(h, 'hotel')}${p.emptyState({ title: off ? HOTELS_NOT_CONNECTED : copy.noHotels(city), text: 'You can still request the flights.', iconName: 'bed' })}`));
     } else {
       const basis = (h.rows.find(r => r.evaluation.cap && r.evaluation.cap.basis) || { evaluation: { cap: { basis: 'incl_taxes' } } }).evaluation.cap.basis;
       const b = legBody(h, { name: 'hotelKey', checked: chosen.hotel, timeZone, open: all, priceToBeatCents: h.priceToBeatCents, basis });
       // hotelChoice tells POST /trips that this form offered hotels, so leaving them all unpicked is a
       // missing choice (No hotel is a choice: the empty hotelKey).
       const none = html`<input type="hidden" name="hotelChoice" value="1"><label class="bz-choice bz-nohotel" for="t-nohotel"><input id="t-nohotel" type="radio" name="hotelKey" value=""${pick && pick.hotel === '' && pick.out ? html` checked` : ''}><span>No hotel for this trip</span></label>`;
-      sections.push(legSection('bz-leg-hotel', `Hotel in ${city}`, sub, html`${b.selectable ? '' : noPick(b.blocked ? `None of these hotels can be picked under ${org.name}'s policy. You can still request the flights.` : 'None of these hotels has a room in the demo data for these dates. You can still request the flights.')}${b.markup}${none}${h.truncated ? html`<p class="bz-leg-note">${icon('info')}<span>Showing the first hotels of this search.</span></p>` : ''}`));
+      // A supplier is asked for its 40 lowest-priced hotels: say so when it sent that many.
+      const hotels = new Set(h.rows.map(r => r.row.offerId)).size;
+      const forty = hotels >= SUPPLIER_HOTELS ? [SUPPLIER_HOTELS_NOTE] : [];
+      sections.push(legSection('bz-leg-hotel', `Hotel in ${city}`, sub, html`${b.selectable ? '' : noPick(b.blocked ? `None of these hotels can be picked under ${org.name}'s policy. You can still request the flights.` : copy.noRooms)}${legNotes(h, 'hotel', forty)}${b.markup}${none}${h.truncated ? html`<p class="bz-leg-note">${icon('info')}<span>${copy.hotelsTruncated}</span></p>` : ''}`));
     }
   }
 
@@ -203,9 +295,12 @@ function resultsView(ctx, { org, view, all = false, pick = null, error = null, e
     actions: html`<a class="btn btn-ghost bz-btn" href="${base}/trips/new?${searchQuery(q)}">${icon('sliders')}<span>Change search</span></a>`,
   })}
   ${p.errorBox(missing && missing.length ? missingText(missing) : error)}
-  ${p.limitsBar(view.limits, { pricedAt: view.pricedAt, timeZone, level: 2 })}
+  ${p.limitsBar(view.limits, { pricedAt: view.pricedAt, timeZone, level: 2, source })}
   ${notes}
   ${form}`;
 }
 
-module.exports = { resultsView, byOffer, legBody, hiddenQuery, missingText };
+module.exports = {
+  resultsView, byOffer, legBody, hiddenQuery, missingText,
+  skippedNotes, COPY, SUPPLIER_HOTELS_NOTE, ONE_WAY_EACH, HOTELS_NOT_CONNECTED,
+};

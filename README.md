@@ -226,6 +226,38 @@ exactly the same mapping from vendor-like raw data, so swapping one in is a conf
 2. Register it in `server/providers/adapters/index.js`, e.g. `hotels: { acme: env => new AcmeHotels(env) }`.
 3. Set `HOTEL_PROVIDER=acme` and the adapter's credentials in that environment's secret store.
 
+### Tripelyx Business: real suppliers (round 1)
+
+Business workspaces (`ENABLE_BUSINESS`) can search a real flight supplier (Duffel) and hotel supplier
+(LiteAPI) instead of demo data. Round 1 uses their **test systems only**; nothing is booked or charged.
+These suppliers serve Business only: `/book`, `/` and the rest of the site never use them.
+
+- **Settings** (all in `.env.example`): `BUSINESS_FLIGHT_SUPPLIER=duffel` with `DUFFEL_ACCESS_TOKEN` (a
+  `duffel_test_` token), `BUSINESS_HOTEL_SUPPLIER=liteapi` with `LITEAPI_API_KEY` (a `sand_` key; hotels need a
+  working flight supplier), `BUSINESS_ALLOW_SUPPLIER_TEST` (true by default only in development, so every
+  deployed stack switches test data on by hand), `BUSINESS_GUEST_NATIONALITY`, `BUSINESS_SUPPLIER_CACHE_SECONDS`,
+  `BUSINESS_SUPPLIER_COMPANY_CALLS_PER_HOUR` and `BUSINESS_SUPPLIER_VARIANT_SEARCHES`.
+- **Keys only from the environment:** GitHub secrets for CI, AWS Secrets Manager for the preview stack. No key
+  is ever in the repo, a log, an error page or `/api/config` (test fixtures use placeholders such as
+  `duffel_test_PLACEHOLDER`).
+- **A bad setting never stops the app.** A missing key, a key that is not a test key, an unknown supplier name or
+  a number out of range switches the suppliers off: Business shows "Supplier not connected yet" and
+  `/admin/business` tells platform admins which variable to fix, without its value. It never falls back to demo
+  data.
+- **Labels.** Every amount says where it came from. Demo data keeps "Demo price". Supplier test data says
+  "Supplier test data, not a real fare" (hotels: "not a real room rate") with a dashed outline and a TEST DATA
+  tag, the workspace ribbon says the prices are test data, an approved test trip says "Approved (test data).
+  Nothing was booked.", and budgets, reports and home say "Includes supplier test data" when any request they
+  count was priced that way. The CSV export's `price_source` column says it per request. A request keeps the
+  source it was priced from; requests made before this change read as demo.
+- **Honest failure.** A supplier that fails never serves demo or stale data: the page says flights or hotels
+  are not available right now (hotels failing still lets the traveler request the flights), and a price check
+  that cannot run at submit or decide changes nothing ("The price couldn't be checked just now, so nothing
+  changed."). The approver's page always opens; its price is checked again when they approve.
+- **In-memory limits.** The supplier call counters (per company per hour), the circuit breaker and the short
+  result cache live in memory per running task, like the other Business rate limits: a restart resets them,
+  and each task counts on its own.
+
 ### Connecting a real payment processor
 
 1. Implement the `PaymentProcessor` interface and register it in `server/payments/live/index.js`.

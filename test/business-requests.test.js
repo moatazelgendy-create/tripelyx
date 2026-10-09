@@ -1261,3 +1261,204 @@ test('CSV: when the 5,000-request scan is hit, the note row says so and promises
   assert.match(lines.at(-2), /^"Based on the 5,000 most recent requests\.",/);
   assert.doesNotMatch(out.body, /Narrow the filters/, 'filters run on the same 5,000 requests, so narrowing reaches nothing older');
 });
+
+// ---------------------------------------------------------------------------------------------------------
+// Supplier test data (real-suppliers design §2.2, §2.4, §5.1, §7.1 B items): the fakes' rows moved into the
+// sandbox namespace (test/business-sandbox.js), and a composer that records every check level and fails on
+// demand as a real supplier would (503 supplier_unavailable, 429 supplier_busy, 503 live_check_skipped).
+
+const sandbox = require('./business-sandbox');
+
+/** The world on supplier test data: the same rows and totals as the fakes, in flt_t./htl_t. */
+async function sandboxWorld(opts) {
+  const w = await world(opts);
+  w.inventory = sandbox.sandboxInventory(fakes.fakeInventory());
+  w.composer = fakes.fakeComposer({ inventory: w.inventory, now: w.clock.now });
+  w.svc.inventory = w.inventory;
+  w.svc.composer = w.composer;
+  w.spy = sandbox.instrument(w.composer);
+  return w;
+}
+const T = Object.freeze({
+  within: Object.freeze({ out: sandbox.toSandbox(OUT.cheap), back: sandbox.toSandbox(BACK), hotelKey: sandbox.toSandbox(HOTEL) }),
+  outside: Object.freeze({ out: sandbox.toSandbox(OUT.flex), back: sandbox.toSandbox(BACK), hotelKey: sandbox.toSandbox(HOTEL) }),
+});
+
+test('supplier test data: drafts store source sandbox and demo true; rows, lists, reports and the CSV say so; old requests read as demo', async () => {
+  const w = await sandboxWorld({ budgetCents: 1000000 });
+  const r = await draft(w, w.traveler, T.within);
+  assert.equal(r.source, 'sandbox');
+  assert.equal(r.demo, true, 'test data is not a real price');
+  assert.equal(r.totalCents, WITHIN_TOTAL, 'the same prices as the fakes');
+  for (const c of ['out', 'back', 'hotel']) assert.match(r.rows[c].offerId, /^(flt|htl)_t\./, c);
+  const listed = (await w.svc.listRequests(w.as(w.traveler), { scope: 'mine' })).rows;
+  assert.deepEqual(listed.map(x => [x.id, x.source]), [[r.id, 'sandbox']]);
+
+  // A swap keeps the source on the new draft.
+  const out = await draft(w, w.traveler, T.outside);
+  assert.equal(out.source, 'sandbox');
+  assert.ok(out.cheapestWithin, 'alternatives from the same test data');
+  const s = await w.svc.swap(w.as(w.traveler), out.id, { altId: out.cheapestWithin.id, rev: out.rev });
+  assert.deepEqual([s.source, s.demo], ['sandbox', true]);
+
+  // A request stored before real suppliers (no source) reads as demo everywhere, never as test data.
+  await w.svc.submit(w.as(w.traveler), r.id, { rev: r.rev });
+  const old = await draft(w, w.traveler, T.within, { purpose: 'An older trip' });
+  await w.repo.cas(KINDS.request, old.id, null, d => { delete d.source; d.rows.out = { ...d.rows.out, offerId: 'flt_fake_CAILHR_2026-11-12_4', key: OUT.cheap }; });
+  const rows = (await w.svc.listRequests(w.as(w.traveler), { scope: 'mine' })).rows;
+  assert.equal(rows.find(x => x.id === old.id).source, 'demo');
+  assert.equal(rows.find(x => x.id === r.id).source, 'sandbox');
+
+  // The CSV names each row's own source; the dashboard the least real of what it counts.
+  const csv = await w.svc.exportCsv(w.as(w.finance), {});
+  const body = csv.body.slice(1).split('\r\n');
+  assert.ok(body.some(l => l.startsWith('Supplier test data,')), 'a sandbox row');
+  assert.ok(body.some(l => l.startsWith('Demo price,')), 'the old demo row');
+  const dash = await w.svc.dashboard(w.as(w.owner), { view: 'reports' });
+  assert.equal(dash.priceSource, 'sandbox', 'any supplier test data among the counted requests: "Includes supplier test data"');
+  const exported = JSON.parse((await w.svc.exportCompany(w.as(w.owner))).json);
+  assert.deepEqual(exported.requests.map(x => [x.id, x.price_source]).sort(), [[r.id, 'Supplier test data'], [out.id, 'Supplier test data'], [old.id, 'Demo price']].sort());
+  assert.match(exported.note, /supplier test data or supplier prices, as each request's price_source says/);
+});
+
+test('supplier test data: page views peek, submit confirms, decide is final; deny never prices', async () => {
+  const w = await sandboxWorld({ budgetCents: 1000000 });
+  const q = await pending(w, w.traveler, T.outside);
+  assert.deepEqual(w.spy.checks('recheck'), ['confirm'], 'submit');
+  const v = await w.svc.getRequest(w.as(w.manager), q.id);
+  assert.ok(v.live, 'the fakes answer the peek');
+  assert.equal(v.liveError, null);
+  await w.svc.liveCheck(w.as(w.manager), q.id);
+  assert.deepEqual(w.spy.checks('recheck'), ['confirm', 'peek', 'peek']);
+  // The traveler's own page is not a decider's: no price check at all.
+  await w.svc.getRequest(w.as(w.traveler), q.id);
+  assert.equal(w.spy.checks('recheck').length, 3);
+  const res = await w.svc.decide(w.as(w.manager), q.id, { action: 'approve', note: '', rev: q.rev });
+  assert.equal(res.outcome, 'approved');
+  assert.deepEqual(w.spy.checks('recheck'), ['confirm', 'peek', 'peek', 'final']);
+  // Deny reads no price.
+  const q2 = await pending(w, w.traveler, T.outside);
+  const n = w.spy.checks('recheck').length;
+  await w.svc.decide(w.as(w.manager), q2.id, { action: 'deny', note: 'Not this quarter.', rev: q2.rev });
+  assert.equal(w.spy.checks('recheck').length, n);
+});
+
+test('supplier test data: with the company limit used up the approver still reads the request (liveError), and decide answers 429 with the request unchanged', async () => {
+  const w = await sandboxWorld({ budgetCents: 1000000 });
+  const q = await pending(w, w.traveler, T.outside);
+  w.spy.fail('recheck', 'supplier_busy');
+  const v = await w.svc.getRequest(w.as(w.manager), q.id);
+  assert.equal(v.request.id, q.id);
+  assert.equal(v.live, null);
+  assert.equal(v.liveError, 'supplier_busy');
+  assert.ok(v.can.decide, 'the approver can still decide');
+  await assert.rejects(w.svc.liveCheck(w.as(w.manager), q.id), e => e.code === 'supplier_busy' && e.status === 429);
+
+  const before = storeSnapshot(w.app);
+  await assert.rejects(w.svc.decide(w.as(w.manager), q.id, { action: 'approve', note: '', rev: q.rev }), e => e.code === 'supplier_busy' && e.status === 429);
+  assert.equal(storeSnapshot(w.app), before, 'nothing written: still pending, no budget commit, no audit');
+  assert.equal((await w.repo.get(KINDS.request, q.id)).status, 'pending');
+  assert.deepEqual((await budgetOf(w)).commits || {}, {});
+
+  // A supplier that is down: 503, unchanged; the page names the check that could not run.
+  w.spy.fail('recheck', 'supplier_unavailable');
+  assert.equal((await w.svc.getRequest(w.as(w.manager), q.id)).liveError, 'supplier_unavailable');
+  await assert.rejects(w.svc.decide(w.as(w.manager), q.id, { action: 'approve', note: '', rev: q.rev }), e => e.code === 'supplier_unavailable' && e.status === 503);
+  assert.equal(storeSnapshot(w.app), before);
+  // A peek that would need a search, and a row now in another currency: the page still opens.
+  w.spy.fail('recheck', 'live_check_skipped');
+  assert.equal((await w.svc.getRequest(w.as(w.manager), q.id)).liveError, 'live_check_skipped');
+  w.spy.fail('recheck', 'unsupported_currency');
+  assert.equal((await w.svc.getRequest(w.as(w.manager), q.id)).liveError, 'unsupported_currency');
+  // Deny still works while the supplier can't answer: it never prices.
+  const denied = await w.svc.decide(w.as(w.manager), q.id, { action: 'deny', note: 'Not this quarter.', rev: q.rev });
+  assert.equal(denied.request.status, 'denied');
+
+  // Any other error is not a live-check answer: it fails the page as before.
+  w.spy.heal();
+  const q2 = await pending(w, w.traveler, T.outside);
+  const recheck = w.composer.recheck;
+  w.composer.recheck = async () => { throw new TypeError('a bug'); };
+  await assert.rejects(w.svc.getRequest(w.as(w.manager), q2.id), TypeError);
+  w.composer.recheck = async () => { throw new AppErrorFor('provider_error', 502); };
+  await assert.rejects(w.svc.getRequest(w.as(w.manager), q2.id), e => e.code === 'provider_error');
+  w.composer.recheck = recheck;
+  // No supplier at all (503 no_supplier): no live check and no liveError, as before.
+  w.svc.composer = { ...w.composer, recheck: async () => { throw new AppErrorFor('no_supplier', 503); } };
+  const none = await w.svc.getRequest(w.as(w.manager), q2.id);
+  assert.deepEqual([none.live, none.liveError], [null, null]);
+  w.svc.composer = w.composer;
+});
+
+test('supplier test data: a supplier failure at submit leaves the draft as it was (503 and 429)', async () => {
+  const w = await sandboxWorld({ budgetCents: 1000000 });
+  const r = await draft(w, w.traveler, T.outside);
+  for (const c of ['supplier_unavailable', 'supplier_busy']) {
+    w.spy.fail('recheck', c);
+    const before = storeSnapshot(w.app);
+    await assert.rejects(w.svc.submit(w.as(w.traveler), r.id, { rev: r.rev, reason: REASON, category: 'client_meeting' }), e => e.code === c);
+    assert.equal(storeSnapshot(w.app), before, `${c}: nothing written`);
+  }
+  w.spy.heal();
+  const ok = await w.svc.submit(w.as(w.traveler), r.id, { rev: r.rev, reason: REASON, category: 'client_meeting' });
+  assert.equal(ok.outcome, 'submitted');
+});
+
+test('supplier test data: the search view passes each leg\'s skipped counts and the hotel leg\'s error; the policy texts get priceSource', async () => {
+  const w = await sandboxWorld();
+  const search = w.composer.search;
+  w.composer.search = async q => {
+    const res = await search(q);
+    res.legs.out.skipped = { otherCurrency: 3, currencies: ['GBP'], mixedCabin: 1 };
+    res.legs.hotel = { rows: [], benchmark: { incl_taxes: { medianCents: null, sampleSize: 0, excluded: [] }, excl_taxes: { medianCents: null, sampleSize: 0, excluded: [] } }, truncated: false, error: 'unavailable' };
+    return res;
+  };
+  const seen = [];
+  const evaluateTrip = w.policy.evaluateTrip;
+  const evaluateComponent = w.policy.evaluateComponent;
+  w.policy.evaluateComponent = (row, ctx) => { seen.push(ctx && ctx.priceSource); return evaluateComponent(row, ctx); };
+  w.policy.evaluateTrip = (rows, ctx, extra) => { seen.push(ctx && ctx.priceSource); return evaluateTrip(rows, ctx, extra); };
+  const v = await w.svc.searchTrip(w.as(w.traveler), Q);
+  assert.deepEqual(v.legs.out.skipped, { otherCurrency: 3, currencies: ['GBP'], mixedCabin: 1 });
+  assert.equal(v.legs.hotel.error, 'unavailable');
+  assert.deepEqual(v.legs.hotel.rows, []);
+  assert.ok(v.legs.out.rows.length, 'the flights still show');
+  assert.ok(!('skipped' in v.legs.back) && !('error' in v.legs.out), 'nothing added when the leg has none');
+  assert.ok(seen.length && seen.every(s => s === 'sandbox'), `priceSource: ${[...new Set(seen)]}`);
+  w.policy.evaluateComponent = evaluateComponent;
+  w.policy.evaluateTrip = evaluateTrip;
+
+  // Demo legs carry neither key (demo views are unchanged).
+  const d = await world();
+  const dv = await d.svc.searchTrip(d.as(d.traveler), Q);
+  for (const leg of ['out', 'back', 'hotel']) assert.ok(!('skipped' in dv.legs[leg]) && !('error' in dv.legs[leg]), leg);
+  const r = await draft(d, d.traveler);
+  assert.deepEqual([r.source, r.demo], ['demo', true]);
+  // A demo company's export keeps its note word for word; each request says its own price_source.
+  const data = JSON.parse((await d.svc.exportCompany(d.as(d.owner))).json);
+  assert.equal(data.note, 'Tripelyx Business preview. Amounts are whole US cents from demo prices: nothing was booked or charged. Questions: go@tripelyx.com.');
+  assert.deepEqual(data.requests.map(x => x.price_source), ['Demo price']);
+});
+
+/** An AppError with a code and status (the composer's own errors). */
+function AppErrorFor(code, status) {
+  const { AppError } = require('../server/lib/errors');
+  return new AppError(code, `${code}.`, status);
+}
+
+test('totals of supplier test data and demo requests together are labelled supplier test data (totalsSource, reportTiles)', () => {
+  const { totalsSource } = require('../server/views/business/format');
+  assert.equal(totalsSource([]), null);
+  assert.equal(totalsSource(['demo']), 'demo');
+  assert.equal(totalsSource([undefined, 'live']), 'demo', 'a request stored before real suppliers reads as demo');
+  assert.equal(totalsSource(['demo', 'sandbox']), 'sandbox', 'any supplier test data: "Includes supplier test data"');
+  assert.equal(totalsSource(['live', 'sandbox', 'demo']), 'sandbox');
+  assert.equal(totalsSource(['live', 'live']), 'live', 'supplier prices only when every one is live');
+  assert.equal(totalsSource(['live', 'demo']), 'demo', 'otherwise the least real');
+  const base = { status: 'approved', travelerId: 'usr_AAAAAAAAAAAAAAAA', travelerName: 'Sam', totalCents: 1000, originalTotalCents: 1000, query: { departDate: '2026-11-12' }, evaluation: { status: 'within', violations: [] }, history: [] };
+  const tiles = reports.reportTiles({
+    requests: [{ ...base, id: 'btr_a' }, { ...base, id: 'btr_b', source: 'sandbox', rows: { out: { offerId: 'flt_t.ZZ1_20261112T0835_economy' } } }],
+    budgets: [], nowIso: '2026-10-09T09:00:00.000Z', timezone: 'UTC', truncated: false, effectiveStatus: r => r.status,
+  });
+  assert.equal(tiles.priceSource, 'sandbox');
+});

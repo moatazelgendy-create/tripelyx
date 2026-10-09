@@ -6,8 +6,15 @@
 // (RowSegment.departLocal) and read on a 24-hour clock ("08:35"), as the alternatives' give-ups do. Travel
 // dates are 'YYYY-MM-DD' and read "Thu 12 Nov". Twelve-hour times are built by hand, so they never pick up
 // the narrow no-break space newer ICU data puts before "PM".
+//
+// Price sources (real-suppliers design §2.3): every amount says where it came from. pricedAtText names the
+// source: demo "Demo price · Priced at …" (unchanged), supplier test data "Supplier test data, not a real
+// fare · Checked at …" (a hotel: "not a real room rate"; a whole trip or a total: "not a real price"), live
+// prices "US dollars, from the airline · Priced at … · Can change until booked". SOURCE_TOTALS are the labels
+// of tiles that add many requests up (budgets, reports, home).
 const tz = require('../../business/tz');
 const { format } = require('../../lib/money');
+const { isSource, sourceOf, leastReal, requestSource } = require('../../business/source');
 
 const WEEKDAYS = Object.freeze(['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']);
 const MONTHS = Object.freeze(['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']);
@@ -134,9 +141,63 @@ function whenIn(timeZone, iso, { now, zone = false }) {
   return `${timeIn(z, iso)}${rel}${zone ? ` (${zoneLabel(z)})` : ''}`;
 }
 
-/** The demo label every amount carries (§F6): "Demo price · Priced at 3:42 PM, Fri 9 Oct (Cairo time)". */
-function pricedAtText(pricedAt, timeZone) {
+/** What a supplier label calls the amount: a flight's fare, a hotel's room rate, or any other price. */
+const TEST_NOUNS = Object.freeze({ fare: 'fare', room: 'room rate', price: 'price' });
+const LIVE_FROM = Object.freeze({ fare: 'the airline', room: 'the hotel supplier', price: 'airlines and hotels' });
+
+/**
+ * The label every amount carries (§F6), by where it came from: "Demo price · Priced at 3:42 PM, Fri 9 Oct
+ * (Cairo time)"; supplier test data "Supplier test data, not a real fare · Checked at 3:42 PM, Fri 9 Oct (Cairo
+ * time)"; live "US dollars, from the airline · Priced at 3:42 PM, Fri 9 Oct (Cairo time) · Can change until
+ * booked". Without a time, just the first part.
+ * @param {string|null} pricedAt
+ * @param {string} timeZone
+ * @param {{ source?: import('../../business/types').PriceSource, kind?: 'fare'|'room'|'price' }} [opts]
+ */
+function pricedAtText(pricedAt, timeZone, { source = 'demo', kind = 'price' } = {}) {
+  if (source === 'sandbox') {
+    const label = `Supplier test data, not a real ${TEST_NOUNS[kind] || TEST_NOUNS.price}`;
+    return pricedAt ? `${label} · Checked at ${dateTimeIn(timeZone, pricedAt)}` : label;
+  }
+  if (source === 'live') {
+    const label = `US dollars, from ${LIVE_FROM[kind] || LIVE_FROM.price}`;
+    return pricedAt ? `${label} · Priced at ${dateTimeIn(timeZone, pricedAt)} · Can change until booked` : `${label} · Can change until booked`;
+  }
   return pricedAt ? `Demo price · Priced at ${dateTimeIn(timeZone, pricedAt)}` : 'Demo price';
+}
+
+/** The label of a tile that adds many requests up (budgets, reports, home), by their least real source. */
+const SOURCE_TOTALS = Object.freeze({ demo: 'Demo prices', sandbox: 'Includes supplier test data', live: 'Supplier prices' });
+
+/**
+ * Where an inventory's prices come from (types.BusinessInventory.source; the frozen fakes carry none, so the
+ * status says it), or null with no supplier.
+ * @param {object|null|undefined} inventory
+ * @returns {import('../../business/types').PriceSource|null}
+ */
+function inventorySource(inventory) {
+  if (!inventory || inventory.status === 'none') return null;
+  if (isSource(inventory.source)) return inventory.source;
+  return isSource(inventory.status) ? inventory.status : null;
+}
+
+/** The workspace's price source: ctx.business.inventory's (null with no supplier). */
+const ctxSource = ctx => inventorySource(ctx && ctx.business ? ctx.business.inventory : null);
+
+/** The least real source of some rows (a trip's out, back and hotel), 'demo' when there are none. */
+const rowsSource = rows => leastReal((rows || []).filter(Boolean).map(r => sourceOf(r))) || 'demo';
+
+/**
+ * The source a total of many requests is labelled with (real-suppliers design §2.3), the rule of the service's
+ * ReportTiles/DashboardView priceSource: any supplier test data among them makes it 'sandbox' ("Includes
+ * supplier test data"); otherwise the least real of them. A value that is not a source counts as demo (a
+ * request stored before real suppliers); null for none.
+ * @param {Iterable<unknown>} sources
+ * @returns {import('../../business/types').PriceSource|null}
+ */
+function totalsSource(sources) {
+  const list = [...sources];
+  return list.includes('sandbox') ? 'sandbox' : leastReal(list);
 }
 
 /**
@@ -159,4 +220,5 @@ function timeLeft(now, until) {
 module.exports = {
   safeZone, zoneLabel, money, plural, percent, duration, day, dayRange, clock24, timeIn, dayIn, dateTimeIn, whenIn,
   pricedAtText, timeLeft, WEEKDAYS, MONTHS,
+  SOURCE_TOTALS, inventorySource, ctxSource, rowsSource, totalsSource, sourceOf, leastReal, requestSource, isSource,
 };

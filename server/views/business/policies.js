@@ -7,10 +7,12 @@
 //   /business/o/:orgId/policies/:tier/history   saved versions with their field changes, 10 per page
 // Form field names are types.PolicyForm's; 422 details come back keyed by them and show under each field and
 // in a list at the top. Policy limits are company rules, not prices, but in this preview they are checked
-// against demo prices, so every block that states an amount is a demo container saying so (§F6).
+// against demo prices, so every block that states an amount is a demo container saying so (§F6). With a real
+// supplier (real-suppliers design §2.3) the same blocks say what the limits are checked against instead:
+// supplier test data (a dashed "TEST DATA" box) or supplier prices.
 const { html, raw } = require('../../lib/html');
 const { icon } = require('../icons');
-const { pageHead, pager, charCount, actionBar } = require('./parts');
+const { pageHead, pager, charCount, actionBar, LIMITS_CHECKED } = require('./parts');
 const f = require('./format');
 const { shellView } = require('./shell');
 const { textField, textArea, selectField, checkField } = require('./auth');
@@ -34,14 +36,30 @@ const CAP_LABELS = Object.freeze({
 const CAP_HINT = 'Search median: the middle fare of the flights found for the trip.';
 const COUNTRIES_DONE = 'Every country in the demo data already has its own limits.';
 const HOTEL_CLASS_HINT = 'Hotel class as shown in the demo hotel data.';
+/** What policy limits are checked against, by where search prices come from ('demo': LIMITS_NOTE). */
+const LIMITS_NOTES = Object.freeze({
+  demo: LIMITS_NOTE,
+  sandbox: LIMITS_CHECKED.sandbox,
+  live: LIMITS_CHECKED.live,
+});
+const COUNTRIES_DONE_SUPPLIER = 'Every country in the list already has its own limits.';
+const HOTEL_CLASS_HINTS = Object.freeze({
+  demo: HOTEL_CLASS_HINT,
+  sandbox: 'Hotel class as the supplier gives it. A hotel with no star rating from the supplier is outside the policy when a highest class is set.',
+  live: 'Hotel class as the supplier gives it. A hotel with no star rating from the supplier is outside the policy when a highest class is set.',
+});
+/** Where this workspace's search prices come from ('demo' with no supplier, as before). */
+const sourceOf = ctx => f.ctxSource(ctx) || 'demo';
 const STOPS = Object.freeze([['', 'Any number of stops'], ['0', 'Nonstop only'], ['1', 'Up to 1 stop']]);
 const BASIS = Object.freeze([['incl_taxes', 'Taxes included'], ['excl_taxes', 'Before taxes']]);
 const STARS = Object.freeze([['', 'Any hotel class'], ...[1, 2, 3, 4, 5].map(n => [String(n), `Up to ${n}-star`])]);
 const BANDS = Object.freeze([['short', 'Shorter flights'], ['long', 'Long-haul flights']]);
 
-/** The demo container around text that states policy amounts. */
-function limitsBox(body, cls = '') {
-  return html`<div class="bz-demo-box${cls ? ` ${cls}` : ''}" data-price-source="demo">${body}<p class="bz-price-note">${icon('info')}<span>${LIMITS_NOTE}</span></p></div>`;
+/** The price container around text that states policy amounts, labelled with what the limits are checked against. */
+function limitsBox(body, cls = '', source = 'demo') {
+  const s = Object.hasOwn(LIMITS_NOTES, source) ? source : 'demo';
+  if (s !== 'sandbox') return html`<div class="bz-demo-box${cls ? ` ${cls}` : ''}" data-price-source="${s}">${body}<p class="bz-price-note">${icon('info')}<span>${LIMITS_NOTES[s]}</span></p></div>`;
+  return html`<div class="bz-demo-box${cls ? ` ${cls}` : ''} bz-price-test" data-price-source="sandbox">${body}<p class="bz-price-note">${icon('info')}<span class="bz-test-tag">TEST DATA</span><span>${LIMITS_NOTES.sandbox}</span></p></div>`;
 }
 
 /** "Changed by Dana Lee on Fri 9 Oct" (or who set the starting rules). */
@@ -64,12 +82,13 @@ const linesList = lines => html`<ul class="bz-lines-text">${(lines || []).map(l 
  */
 function policiesView(ctx, shell, { policies, org, canTravel, notice = null, error = null }) {
   const base = `/business/o/${org.id}`;
+  const source = sourceOf(ctx);
   const tz = f.safeZone(org.timezone);
   const mode = org.settings && org.settings.outOfPolicy === 'block' ? 'block' : 'approval';
   const cards = policies.map(p => html`<article class="bz-card bz-stack" aria-labelledby="bz-tier-${p.tier}">
     <div class="bz-card-head"><h2 id="bz-tier-${p.tier}">${p.tierLabel} policy</h2><span class="bz-pill">Version ${String(p.version)}</span></div>
     <p class="bz-meta">${changedLine(p, tz)}</p>
-    ${limitsBox(linesList(p.description.lines))}
+    ${limitsBox(linesList(p.description.lines), '', source)}
     <div class="bz-inline">
       <a class="btn btn-navy bz-btn" href="${base}/policies/${p.tier}">${p.canEdit ? 'Edit' : 'View'}<span class="sr-only"> the ${p.tierLabel} policy</span></a>
       <a class="btn btn-ghost bz-btn" href="${base}/policies/${p.tier}/history">History<span class="sr-only"> of the ${p.tierLabel} policy</span></a>
@@ -192,12 +211,12 @@ function routeFieldset(n, form, errors, refs, isNew) {
  * choices (a second row for a country is refused). An existing country sits in a closed <details> with a
  * one-line summary (open when one of its fields has a problem), so the editor stays short on a phone.
  */
-function countryFieldset(n, form, errors, refs, isNew, used = new Set()) {
+function countryFieldset(n, form, errors, refs, isNew, used = new Set(), source = 'demo') {
   const p = `country.${n}`;
   const idp = `bz-pol-country-${n}`;
   const name = val(form, `${p}.name`);
   const choices = isNew ? refs.countries.filter(c => !used.has(c)) : refs.countries;
-  if (isNew && refs.countries.length && !choices.length && !name) return html`<p class="bz-meta">${COUNTRIES_DONE}</p>`;
+  if (isNew && refs.countries.length && !choices.length && !name) return html`<p class="bz-meta">${source === 'demo' ? COUNTRIES_DONE : COUNTRIES_DONE_SUPPLIER}</p>`;
   const nameField = refs.countries.length
     ? selectField({
       id: `${idp}-name`, name: `${p}.name`, label: 'Country',
@@ -240,6 +259,7 @@ function policyEditView(ctx, shell, { view, form = null, errors = {}, note = '',
   const base = `/business/o/${org.id}`;
   const tz = f.safeZone(org.timezone);
   const title = `${view.tierLabel} policy`;
+  const source = sourceOf(ctx);
   const head = pageHead({
     title,
     sub: changedLine(view, tz),
@@ -247,7 +267,7 @@ function policyEditView(ctx, shell, { view, form = null, errors = {}, note = '',
   });
   if (!view.canEdit) {
     const body = html`${head}
-      ${limitsBox(linesList(view.description.lines))}
+      ${limitsBox(linesList(view.description.lines), '', source)}
       <p class="bz-meta">Owners and Travel Admins can change policies.</p>`;
     return shellView(ctx, shell, { title, body, notice, error });
   }
@@ -290,14 +310,14 @@ function policyEditView(ctx, shell, { view, form = null, errors = {}, note = '',
           <div class="bz-grid-fields">
             ${selectField({ id: 'bz-pol-hotel-capBasis', name: 'hotel.capBasis', label: 'Nightly limits are', options: BASIS, value: val(values, 'hotel.capBasis'), error: errors['hotel.capBasis'] })}
             ${textField({ id: 'bz-pol-hotel-default', name: 'hotel.default', label: 'Nightly limit everywhere else (US dollars)', value: val(values, 'hotel.default'), error: errors['hotel.default'], inputmode: 'decimal', maxlength: 12, hint: 'Leave blank for no limit.' })}
-            ${selectField({ id: 'bz-pol-hotel-maxStars', name: 'hotel.maxStars', label: 'Highest hotel class', options: STARS, value: val(values, 'hotel.maxStars'), error: errors['hotel.maxStars'], hint: HOTEL_CLASS_HINT })}
+            ${selectField({ id: 'bz-pol-hotel-maxStars', name: 'hotel.maxStars', label: 'Highest hotel class', options: STARS, value: val(values, 'hotel.maxStars'), error: errors['hotel.maxStars'], hint: HOTEL_CLASS_HINTS[source] || HOTEL_CLASS_HINT })}
             ${textField({ id: 'bz-pol-hotel-minAdvanceDays', name: 'hotel.minAdvanceDays', label: 'Book at least this many days ahead', value: val(values, 'hotel.minAdvanceDays'), error: errors['hotel.minAdvanceDays'], inputmode: 'numeric', maxlength: 3 })}
           </div>
           ${checkField({ id: 'bz-pol-hotel-refundableOnly', name: 'hotel.refundableOnly', label: 'Only rates that can be cancelled for free, or partly, before the stay', checked: val(values, 'hotel.refundableOnly') === '1', error: errors['hotel.refundableOnly'] })}
         </fieldset>
         <p class="bz-meta">Limits by country, with city exceptions. A city's limit wins over its country's, and a country's over the limit everywhere else.</p>
         ${countries.map(n => countryFieldset(n, values, errors, refs, false))}
-        ${countryNew === null ? '' : countryFieldset(countryNew, values, errors, refs, true, usedCountries)}
+        ${countryNew === null ? '' : countryFieldset(countryNew, values, errors, refs, true, usedCountries, source)}
       </section>
       <section class="bz-section" aria-labelledby="bz-pol-trip"><h2 id="bz-pol-trip">Trip limit</h2>
         <div class="bz-grid-fields">
@@ -385,6 +405,7 @@ function policyHistoryView(ctx, shell, { history, tierLabel, refs = null }) {
   const { org } = shell;
   const base = `/business/o/${org.id}`;
   const tz = f.safeZone(org.timezone);
+  const source = sourceOf(ctx);
   const cards = history.versions.map(v => {
     // Version 1 is Tripelyx's starting rules, saved when the company was set up: one line says so.
     if (v.version === 1) {
@@ -398,7 +419,7 @@ function policyHistoryView(ctx, shell, { history, tierLabel, refs = null }) {
       <div class="bz-card-head"><h2>Version ${String(v.version)}</h2><span class="bz-meta">${f.dateTimeIn(tz, v.at)}${v.by && v.by.name ? ` by ${v.by.name}` : ''}</span></div>
       ${v.note ? html`<p><b>What changed:</b> ${v.note}</p>` : ''}
       ${changes.length
-    ? limitsBox(html`<ul class="bz-changes">${changes.map(c => html`<li><b>${c.label}:</b> ${c.before} <span aria-hidden="true">→</span><span class="sr-only"> changed to</span> ${c.after}</li>`)}</ul>`)
+    ? limitsBox(html`<ul class="bz-changes">${changes.map(c => html`<li><b>${c.label}:</b> ${c.before} <span aria-hidden="true">→</span><span class="sr-only"> changed to</span> ${c.after}</li>`)}</ul>`, '', source)
     : html`<p class="bz-meta">No field changes recorded.</p>`}
     </li>`;
   });
@@ -414,5 +435,5 @@ function policyHistoryView(ctx, shell, { history, tierLabel, refs = null }) {
 
 module.exports = {
   policiesView, policyEditView, policyHistoryView, describeChange, fieldLabel, limitsBox,
-  DEFAULTS_BANNER, LIMITS_NOTE, OUT_OF_POLICY, CAP_LABELS, TIERS,
+  DEFAULTS_BANNER, LIMITS_NOTE, OUT_OF_POLICY, CAP_LABELS, TIERS, LIMITS_NOTES, HOTEL_CLASS_HINTS,
 };

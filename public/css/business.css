@@ -118,6 +118,16 @@
 span.bz-price-note { display: inline; margin: 0; }
 .bz-demo-price { display: inline; }
 .bz-chip-demo { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 999px; background: #fff4d6; color: #6b4a00; border: 1px solid #f4e2b0; font-size: 11.5px; font-weight: 700; letter-spacing: .02em; white-space: nowrap; }
+/* Supplier test data (real-suppliers design §2.3): a dashed outline and a TEST DATA tag on every container, so
+   no screenshot of a test fare can pass for a real one. Outlines take no layout space. */
+.bz-price-test { outline: 2px dashed #b7791f; outline-offset: 2px; }
+.bz-demo-price.bz-price-test { outline-width: 1px; outline-offset: 1px; }
+.bz-test-tag { display: inline-flex; align-items: center; flex: none; padding: 0 6px; border-radius: 4px; background: #6b4a00; color: #fff; font-size: 10.5px; font-weight: 800; letter-spacing: .06em; line-height: 1.7; white-space: nowrap; }
+.bz-chip-test { background: #fff; border-style: dashed; border-color: #b7791f; }
+.bz-ribbon-test { border-style: dashed; border-color: #b7791f; }
+.bz-paid-split { margin: 6px 0 0; font-size: 13px; line-height: 1.45; color: var(--muted); }
+/* A supplier problem names long variables (BUSINESS_HOTEL_SUPPLIER=liteapi_sandbox): they wrap at any point on a phone. */
+.bz-plat-problem { min-width: 0; overflow-wrap: anywhere; }
 
 /* ---------- Badges and pills (text plus icon, never colour alone) ---------- */
 .bz-badge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 13px; font-weight: 700; white-space: nowrap; border: 1px solid transparent; }

@@ -29,6 +29,11 @@
 // once, Referrer-Policy no-referrer) and the two downloads answer 200 with an attachment. A 422 or 409
 // re-renders the page with what was typed and the message; a 403 from the service (a role this member may
 // not grant) re-renders People with the reason. GETs never write.
+// Price sources (real-suppliers design §2.3): with a supplier's test system the welcome checklist offers "Try a
+// trip with supplier test data", and the budgets table is labelled with the source of the requests it adds up
+// (format.totalsSource: "Includes supplier test data" whenever one of them is supplier test data), read in
+// the widest list the member may see (every request, or a Manager's team), falling back to the workspace's.
+// The activity list says where its amounts come from by the workspace's source.
 const express = require('express');
 const { AppError } = require('../../lib/errors');
 const v = require('../../business/validate');
@@ -38,6 +43,8 @@ const { send, clientError, routesOf, mountTable } = require('./table');
 const { can, LABELS } = require('../../business/roles');
 const { TIERS, MEMBER_CAP, PAGE_SIZE, SCAN_CAP, AUDIT_GROUPS } = require('../../business/constants');
 const { periodChoices, currentPeriodKey, PERIOD_KEY_RE } = require('../../business/budgets');
+const { isSource } = require('../../business/source');
+const { totalsSource } = require('../../views/business/format');
 const { welcomeView } = require('../../views/business/welcome');
 const { workspaceForbiddenView } = require('../../views/business/auth');
 const { peopleView } = require('../../views/business/people');
@@ -187,6 +194,14 @@ function router(ctx, deps) {
   const baseOf = req => `/business/o/${req.biz.org.id}`;
   const roleOf = req => req.biz.member.role;
 
+  /** Where this workspace's search prices come from: the inventory's source, null with no supplier. */
+  function inventorySource() {
+    const inv = svc.inventory;
+    if (!inv || inv.status === 'none') return null;
+    if (isSource(inv.source)) return inv.source;
+    return isSource(inv.status) ? inv.status : 'demo';
+  }
+
   /** Render a workspace page: the shell (switcher, nav) plus the view. */
   async function page(req, res, status, view, args) {
     const shell = await g.shellContext(req);
@@ -237,26 +252,57 @@ function router(ctx, deps) {
     key = key || current;
     const rows = await svc.listBudgets(actor, key);
     const choices = periodTabs(org, ctx.now(), key);
-    const uncounted = can(roleOf(req), 'request.view.all') ? await uncountedByDepartment(actor, key, rows) : null;
+    const scan = can(roleOf(req), 'request.view.all') ? await uncountedByDepartment(actor, key, rows) : null;
+    // The table adds up the period's requests: label it by their sources when they were read (every request,
+    // or the ones a Manager can read), else the workspace's (demo pages stay as they were). A supplier switched
+    // off ('none') leaves its requests' label in place.
+    const sources = scan ? scan.sources : rows.length ? await readableSources(actor, roleOf(req), key) : [];
+    const priceSource = totalsSource(sources) || inventorySource() || 'demo';
     return page(req, res, status, budgetsView, {
       rows, periodKey: key, choices, canEdit: can(roleOf(req), 'budget.edit'), periodKind: org.settings && org.settings.budgetPeriod === 'month' ? 'month' : 'quarter',
-      ownOnly: !can(roleOf(req), 'budget.view.all'), uncounted, values, errors, notice, error,
+      ownOnly: !can(roleOf(req), 'budget.view.all'), uncounted: scan ? scan.uncounted : null, values, errors, notice, error, priceSource,
     });
+  }
+
+  /** The statuses a budget table adds up (committed, past and awaiting approval). */
+  const COUNTED = Object.freeze(['approved', 'past', 'pending']);
+
+  /**
+   * The price sources (RequestRow.source) of the period's counted requests a member who can't read every
+   * request can read (a Manager: their team's, which includes their department's travelers they manage).
+   * @returns {Promise<string[]>}
+   */
+  async function readableSources(actor, role, periodKey) {
+    const scope = can(role, 'request.view.team') ? 'team' : 'mine';
+    const sources = [];
+    let cursor = null;
+    for (let i = 0; i < Math.ceil(SCAN_CAP / PAGE_SIZE); i += 1) {
+      const p = await svc.listRequests(actor, { scope, period: periodKey, cursor });
+      for (const x of p.rows) if (COUNTED.includes(x.status)) sources.push(x.source);
+      cursor = p.cursor;
+      if (!cursor) break;
+    }
+    return sources;
   }
 
   /**
    * Per department with a budget: the approved trips of the period its budget does not count (approved before
    * the budget was set, so no hold was taken, plan §C6), in cents: Σ approved and past totals − committed.
-   * null when the requests could not all be read (then the page says nothing rather than a wrong figure).
+   * uncounted is null when the requests could not all be read (then the page says nothing rather than a wrong
+   * figure). sources: the price sources (RequestRow.source) of the period's approved, past and pending
+   * requests read, the ones the table adds up.
+   * @returns {Promise<{ uncounted: Record<string, number>|null, sources: string[] }>}
    */
   async function uncountedByDepartment(actor, periodKey, rows) {
     const withBudget = rows.filter(r => r.budgetId);
-    if (!withBudget.length) return {};
     const approved = {};
+    const sources = [];
     let cursor = null;
+    if (!rows.length) return { uncounted: {}, sources };
     for (let i = 0; i < Math.ceil(SCAN_CAP / PAGE_SIZE); i += 1) {
       const p = await svc.listRequests(actor, { scope: 'all', period: periodKey, cursor });
       for (const x of p.rows) {
+        if (COUNTED.includes(x.status)) sources.push(x.source);
         if ((x.status === 'approved' || x.status === 'past') && x.departmentId && Number.isSafeInteger(x.totalCents)) {
           approved[x.departmentId] = (approved[x.departmentId] || 0) + x.totalCents;
         }
@@ -264,13 +310,14 @@ function router(ctx, deps) {
       cursor = p.cursor;
       if (!cursor) break;
     }
-    if (cursor) return null;
+    if (!withBudget.length) return { uncounted: {}, sources };
+    if (cursor) return { uncounted: null, sources };
     const out = {};
     for (const r of withBudget) {
       const gap = (approved[r.department.id] || 0) - r.committedCents;
       if (gap > 0) out[r.department.id] = gap;
     }
-    return out;
+    return { uncounted: out, sources };
   }
 
   // ---- people ----
@@ -391,8 +438,10 @@ function router(ctx, deps) {
   const handlers = {
     async welcomePage(req, res) {
       const dash = await svc.dashboard(actorOf(req), { view: 'home' });
-      const demo = !!(svc.inventory && svc.inventory.status === 'demo');
-      return page(req, res, 200, welcomeView, { checklist: dash.checklist, demo });
+      // A trip can be tried wherever searches run (demo data or a supplier); the step names the source.
+      const source = inventorySource();
+      const demo = source !== null;
+      return page(req, res, 200, welcomeView, { checklist: dash.checklist, demo, source: source || 'demo' });
     },
 
     async policiesPage(req, res) {
