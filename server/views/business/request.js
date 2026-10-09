@@ -70,7 +70,7 @@ function okText(code, r, view) {
   const approverName = view.approver ? view.approver.name : 'your approver';
   switch (code) {
     case 'swapped': return 'Switched to the cheaper option. Here is your updated trip.';
-    case 'auto_approved': return 'Trip confirmed. Nothing else is needed from you.';
+    case 'auto_approved': return "Inside your policy, so it's approved. Nothing else is needed from you.";
     case 'submitted': return `Sent for approval. We don't send emails yet, so ${approverName} will see it under Approvals.`;
     case 'repriced': return 'This trip changed before it was sent. Review it and send it again.';
     case 'cancelled': return view.self || !r.travelerName ? 'Trip cancelled.' : `Trip cancelled. ${first} sees it on this trip.`;
