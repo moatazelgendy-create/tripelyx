@@ -256,7 +256,7 @@ test('the journey on demo inventory: inside policy is approved by policy; Busine
   assert.equal(res.location, `${B}/trips/${rid1}?ok=auto_approved`);
   res = await c.sam.get(res.location);
   main = checkPage('approved by policy', res);
-  assert.match(textOf(main), /Trip confirmed\. Nothing else is needed from you\./);
+  assert.match(textOf(main), /Inside your policy, so it's approved\. Nothing else is needed from you\./);
   assert.match(textOf(main), /Approved to book\. Booking opens once Tripelyx connects airlines and hotels\. Nothing has been booked or charged\./);
   assert.match(textOf(main), /Approved by policy\./);
   const first = (await w.svc.getRequest(w.as(w.sam), rid1)).request;

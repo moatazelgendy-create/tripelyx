@@ -7,7 +7,8 @@
 //   /business/o/:orgId/policies/:tier/history   saved versions with their field changes, 10 per page
 // Form field names are types.PolicyForm's; 422 details come back keyed by them and show under each field and
 // in a list at the top. Policy limits are company rules, not prices, but in this preview they are checked
-// against demo prices, so every block that states an amount is a demo container saying so (§F6).
+// against demo prices, so every block that states an amount is a demo container saying so (§F6). With no
+// demo inventory (production) the same blocks are plain: there are no demo prices to check against.
 const { html, raw } = require('../../lib/html');
 const { icon } = require('../icons');
 const { pageHead, pager, charCount, actionBar } = require('./parts');
@@ -39,8 +40,12 @@ const BASIS = Object.freeze([['incl_taxes', 'Taxes included'], ['excl_taxes', 'B
 const STARS = Object.freeze([['', 'Any hotel class'], ...[1, 2, 3, 4, 5].map(n => [String(n), `Up to ${n}-star`])]);
 const BANDS = Object.freeze([['short', 'Shorter flights'], ['long', 'Long-haul flights']]);
 
-/** The demo container around text that states policy amounts. */
-function limitsBox(body, cls = '') {
+/** Demo inventory: limits are checked against demo prices, and the page says so. */
+const demoOf = ctx => Boolean(ctx.business && ctx.business.inventory && ctx.business.inventory.status === 'demo');
+
+/** The demo container around text that states policy amounts (with no demo inventory, plain: the company's own figures). */
+function limitsBox(body, cls = '', demo = true) {
+  if (!demo) return html`<div${cls ? html` class="${cls}"` : ''}>${body}</div>`;
   return html`<div class="bz-demo-box${cls ? ` ${cls}` : ''}" data-price-source="demo">${body}<p class="bz-price-note">${icon('info')}<span>${LIMITS_NOTE}</span></p></div>`;
 }
 
@@ -65,11 +70,12 @@ const linesList = lines => html`<ul class="bz-lines-text">${(lines || []).map(l 
 function policiesView(ctx, shell, { policies, org, canTravel, notice = null, error = null }) {
   const base = `/business/o/${org.id}`;
   const tz = f.safeZone(org.timezone);
+  const demo = demoOf(ctx);
   const mode = org.settings && org.settings.outOfPolicy === 'block' ? 'block' : 'approval';
   const cards = policies.map(p => html`<article class="bz-card bz-stack" aria-labelledby="bz-tier-${p.tier}">
     <div class="bz-card-head"><h2 id="bz-tier-${p.tier}">${p.tierLabel} policy</h2><span class="bz-pill">Version ${String(p.version)}</span></div>
     <p class="bz-meta">${changedLine(p, tz)}</p>
-    ${limitsBox(linesList(p.description.lines))}
+    ${limitsBox(linesList(p.description.lines), '', demo)}
     <div class="bz-inline">
       <a class="btn btn-navy bz-btn" href="${base}/policies/${p.tier}">${p.canEdit ? 'Edit' : 'View'}<span class="sr-only"> the ${p.tierLabel} policy</span></a>
       <a class="btn btn-ghost bz-btn" href="${base}/policies/${p.tier}/history">History<span class="sr-only"> of the ${p.tierLabel} policy</span></a>
@@ -239,6 +245,7 @@ function policyEditView(ctx, shell, { view, form = null, errors = {}, note = '',
   const { org } = shell;
   const base = `/business/o/${org.id}`;
   const tz = f.safeZone(org.timezone);
+  const demo = demoOf(ctx);
   const title = `${view.tierLabel} policy`;
   const head = pageHead({
     title,
@@ -247,7 +254,7 @@ function policyEditView(ctx, shell, { view, form = null, errors = {}, note = '',
   });
   if (!view.canEdit) {
     const body = html`${head}
-      ${limitsBox(linesList(view.description.lines))}
+      ${limitsBox(linesList(view.description.lines), '', demo)}
       <p class="bz-meta">Owners and Travel Admins can change policies.</p>`;
     return shellView(ctx, shell, { title, body, notice, error });
   }
@@ -385,6 +392,7 @@ function policyHistoryView(ctx, shell, { history, tierLabel, refs = null }) {
   const { org } = shell;
   const base = `/business/o/${org.id}`;
   const tz = f.safeZone(org.timezone);
+  const demo = demoOf(ctx);
   const cards = history.versions.map(v => {
     // Version 1 is Tripelyx's starting rules, saved when the company was set up: one line says so.
     if (v.version === 1) {
@@ -398,7 +406,7 @@ function policyHistoryView(ctx, shell, { history, tierLabel, refs = null }) {
       <div class="bz-card-head"><h2>Version ${String(v.version)}</h2><span class="bz-meta">${f.dateTimeIn(tz, v.at)}${v.by && v.by.name ? ` by ${v.by.name}` : ''}</span></div>
       ${v.note ? html`<p><b>What changed:</b> ${v.note}</p>` : ''}
       ${changes.length
-    ? limitsBox(html`<ul class="bz-changes">${changes.map(c => html`<li><b>${c.label}:</b> ${c.before} <span aria-hidden="true">→</span><span class="sr-only"> changed to</span> ${c.after}</li>`)}</ul>`)
+    ? limitsBox(html`<ul class="bz-changes">${changes.map(c => html`<li><b>${c.label}:</b> ${c.before} <span aria-hidden="true">→</span><span class="sr-only"> changed to</span> ${c.after}</li>`)}</ul>`, '', demo)
     : html`<p class="bz-meta">No field changes recorded.</p>`}
     </li>`;
   });
