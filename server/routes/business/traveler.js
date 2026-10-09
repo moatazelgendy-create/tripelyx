@@ -44,6 +44,7 @@ const { TIER_LABELS } = require('../../business/constants');
 const { periodChoices, currentPeriodKey } = require('../../business/budgets');
 const { LIST_FILTER_FIELDS } = require('../../views/business/trips');
 const { shellView } = require('../../views/business/shell');
+const { workspaceForbiddenView } = require('../../views/business/auth');
 const { homeView } = require('../../views/business/home');
 const { policyMineView } = require('../../views/business/policyMine');
 const { tripNewView, formValues } = require('../../views/business/tripNew');
@@ -109,7 +110,9 @@ function send(res, status, page) {
  */
 function router(ctx, deps) {
   const r = express.Router();
-  const g = gates(ctx);
+  // A paused company, or a role refusal the shell can't draw, gets the Business page that says why (as the
+  // admin pages do), not the app's generic error page.
+  const g = gates(ctx, { forbiddenView: workspaceForbiddenView });
   const svc = () => ctx.business;
   const NO_INVENTORY = Object.freeze({ status: 'none', airports: () => [], cityFor: () => null });
   const inventory = () => (ctx.business && ctx.business.inventory) || NO_INVENTORY;

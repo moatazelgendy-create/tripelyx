@@ -17,7 +17,8 @@
 // With real suppliers (real-suppliers design §2.3) the first ribbon says where prices come from: supplier test
 // data ("Preview with supplier test data: …", marked bz-ribbon-test) or live prices; the pending ribbon then
 // offers "a trip with supplier test data". With no demo inventory (live prices or none) the first ribbon is
-// bz-ribbon-note, styled as the demo one, so no page there carries the word demo even in a class name.
+// bz-ribbon-note, styled as the demo one, so no page there carries the word demo even in a class name; with no
+// supplier it says booking isn't open yet (NO_BOOKING_RIBBON).
 const { html, raw } = require('../../lib/html');
 const { sprite, icon } = require('../icons');
 const { logo } = require('../layout');
@@ -33,8 +34,11 @@ const NAV_ICONS = Object.freeze({
   people: 'users', reports: 'chart', activity: 'clock', settings: 'sliders',
 });
 
-/** The ribbon with no demo inventory: no demo flights or hotels exist to talk about. */
-const PREVIEW_RIBBON = 'Preview: nothing is booked or charged. No emails are sent.';
+/**
+ * The ribbon with no supplier connected (www at go-live L0): no demo flights or hotels exist to talk about, and
+ * it says what isn't open instead of calling the product a preview (go-live design §3.4).
+ */
+const NO_BOOKING_RIBBON = "Booking isn't open yet, so nothing is booked or charged. No emails are sent.";
 
 /**
  * The pending-company ribbon (§B3). It offers a demo trip only when demo inventory runs here: with no
@@ -52,7 +56,7 @@ function firstRibbon(status) {
   if (status === 'demo') return { text: DEMO_RIBBON, cls: 'bz-ribbon bz-ribbon-demo' };
   if (status === 'sandbox') return { text: SANDBOX_RIBBON, cls: 'bz-ribbon bz-ribbon-demo bz-ribbon-test', tag: true };
   if (status === 'live') return { text: LIVE_RIBBON, cls: 'bz-ribbon bz-ribbon-note' };
-  return { text: PREVIEW_RIBBON, cls: 'bz-ribbon bz-ribbon-note' };
+  return { text: NO_BOOKING_RIBBON, cls: 'bz-ribbon bz-ribbon-note' };
 }
 
 function ribbons(ctx, shell, { searchPage }) {
@@ -188,4 +192,4 @@ function shellErrorView(ctx, shell, { title, message }) {
   return shellView(ctx, shell, { title, body });
 }
 
-module.exports = { shellView, shellErrorView, pendingRibbon, PREVIEW_RIBBON, NAV_ICONS };
+module.exports = { shellView, shellErrorView, pendingRibbon, NO_BOOKING_RIBBON, NAV_ICONS };

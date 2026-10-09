@@ -126,7 +126,7 @@ function tripsView(ctx, { org, scope, scopes, list, filters = {}, options = null
   const filtered = scope === 'all' && Object.values(filters).some(Boolean);
   const rows = list.rows || [];
   // With no supplier there is no search to plan a trip with: no "Plan a trip" button (as on the home page).
-  const searchable = Boolean(ctx.business && ctx.business.inventory && ctx.business.inventory.status !== 'none');
+  const searchable = f.searchable(ctx);
   // Supplier prices in the workspace or in the list: the approved filter says "Approved" (none can be booked yet).
   const workspace = f.ctxSource(ctx);
   const supplier = (!!workspace && workspace !== 'demo') || rows.some(r => f.isSource(r.source) && r.source !== 'demo');
@@ -134,7 +134,7 @@ function tripsView(ctx, { org, scope, scopes, list, filters = {}, options = null
   let body;
   if (!rows.length && scope === 'mine') {
     body = p.emptyState({
-      title: 'No work trips yet.', text: "Plan one and you'll see your policy as you search.", iconName: 'plane',
+      title: p.NO_TRIPS.title, text: searchable ? p.NO_TRIPS.text : p.NO_TRIPS.textNoSupplier, iconName: 'plane',
       action: searchable ? { href: `${base}/trips/new`, label: 'Plan a trip' } : null,
     });
   } else if (!rows.length) {

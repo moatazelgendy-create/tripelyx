@@ -158,7 +158,7 @@ function accountProblems(b) {
   return out;
 }
 
-const tooManyText = max => `You're already in ${max} ${max === 1 ? 'company' : 'companies'}, the most one account can join in the preview.`;
+const tooManyText = max => `You're already in ${max} ${max === 1 ? 'company' : 'companies'}, the most one account can join for now.`;
 const one = v => (typeof v === 'string' ? v : '');
 
 // ---------------------------------------------------------------------------------------------------------

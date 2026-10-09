@@ -197,7 +197,7 @@ test('createCompany refuses "tripelyx" in any spelling, checks every field, and 
   await svc.createCompany({ user: u.user }, { ...FORM, name: 'One' });
   await svc.createCompany({ user: u.user }, { ...FORM, name: 'Two' });
   await assert.rejects(svc.createCompany({ user: u.user }, { ...FORM, name: 'Three' }),
-    x => x.status === 422 && x.code === 'too_many_companies' && x.message === "You're already in 2 companies, the most one account can join in the preview.");
+    x => x.status === 422 && x.code === 'too_many_companies' && x.message === "You're already in 2 companies, the most one account can join for now.");
 
   // Five at once for a new account: exactly two land; the rest see the cap after their retry.
   const v = await seedUser(app);

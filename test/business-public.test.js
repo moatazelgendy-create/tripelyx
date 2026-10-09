@@ -262,7 +262,7 @@ test('sign-up: a signed-in person adds a company under their own account; at the
   assert.match(res.location, /^\/business\/o\/org_[A-Za-z0-9_-]+\/welcome$/);
   assert.equal(res.headers.getSetCookie().some(x => x.startsWith('txs=')), false, 'the same session');
   const capped = await c.get('/business/start');
-  assert.match(textOf(capped.text), /You're already in 1 company, the most one account can join in the preview\./);
+  assert.match(textOf(capped.text), /You're already in 1 company, the most one account can join for now\./);
   const again = await c.post('/business/start', { companyName: 'Beta Inc', size: '1-10 people', ack: '1' });
   assert.equal(again.status, 422);
   assert.equal(recordsOf(app, KINDS.org).length, 1);

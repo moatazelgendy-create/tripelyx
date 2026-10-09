@@ -90,7 +90,7 @@ function inviteView(ctx, { landing, token, user = null, error = null, emailTaken
   }
   // The pending-company and other-account states already say why the link can't be used: no second box.
   const explained = state === 'pending_company' || state === 'other_email';
-  const body = html`${cardHead(`Join ${org.name}`, inviteLead(inv, state === 'join' || state === 'accept', { address: state !== 'other_email' }))}
+  const body = html`${cardHead(`Join ${org.name}`, inviteLead(inv, state === 'join' || state === 'accept', { address: state !== 'other_email' }), ctx)}
     ${explained ? '' : errorBox(error)}
     ${main}
     <div class="bz-pub-links">
@@ -108,7 +108,7 @@ function inviteView(ctx, { landing, token, user = null, error = null, emailTaken
  * @param {{ title?: string, message: string, user?: object|null }} v signed in: a link to their companies instead of Sign in
  */
 function inviteProblemView(ctx, { title = PROBLEM_TITLE, message, user = null }) {
-  const body = html`${cardHead(title, '')}
+  const body = html`${cardHead(title, '', ctx)}
     <div class="alert alert-info bz-alert" role="status">${icon('info')}<span>${message}</span></div>
     <div class="bz-pub-links">
       ${user ? html`<p><a href="/business/app">Your companies</a></p>` : html`<p>Already in a company? <a href="/business/signin">Sign in</a></p>`}

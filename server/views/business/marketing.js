@@ -86,10 +86,19 @@ const COMING_NEXT_LIVE = Object.freeze(COMING_NEXT.filter(t => t !== 'Real airli
 const NOTES = Object.freeze({
   demo: 'Preview: flights, hotels and prices are demo data while we connect suppliers. Nothing is booked or charged yet.',
   sandbox: "In this preview, flights and hotels come from our suppliers' test systems, so prices are test data, not real fares. Nothing is booked or charged yet.",
-  none: 'Preview: trip search turns on once we connect airlines and hotels. Nothing is booked or charged yet.',
-  live: 'Preview: nothing is booked or charged yet.',
+  none: 'Trip search turns on once we connect airlines and hotels. Nothing is booked or charged yet.',
+  live: "Booking isn't open yet, so nothing is booked or charged.",
   off: "Preview: company workspaces aren't open on this site right now. Nothing is booked or charged.",
 });
+
+/**
+ * The words that call Tripelyx Business a preview, used only while flights and hotels are demo data or supplier
+ * test data (or no workspace runs here). With no supplier yet, or live prices, the page says what isn't open
+ * instead (go-live design §3.4): www keeps its companies in its real database, so it is not a trial.
+ */
+const PREVIEW_WORDS = Object.freeze({ eyebrow: 'Tripelyx Business · Preview', support: 'Questions about the preview?', nowTitle: 'In the preview now', nowChip: 'In the preview' });
+const OPEN_WORDS = Object.freeze({ eyebrow: 'Tripelyx Business', support: 'Questions?', nowTitle: 'Available now', nowChip: 'Available' });
+const wordsFor = status => (status === 'none' || status === 'live' ? OPEN_WORDS : PREVIEW_WORDS);
 
 /** What the page says about the inventory: 'demo', 'sandbox', 'none', 'live', or 'off' when the workspace isn't running here. */
 function inventoryState(ctx) {
@@ -164,9 +173,10 @@ function businessMarketingView(ctx) {
   const status = inventoryState(ctx);
   const now = { demo: PREVIEW_NOW, sandbox: PREVIEW_NOW_SANDBOX, none: PREVIEW_NOW_NO_SUPPLIER, live: PREVIEW_NOW_LIVE, off: [] }[status];
   const next = { demo: COMING_NEXT, sandbox: COMING_NEXT, none: COMING_NEXT_NO_SUPPLIER, live: COMING_NEXT_LIVE, off: [...PREVIEW_NOW, ...COMING_NEXT] }[status];
+  const words = wordsFor(status);
   const body = html`
 <section class="page-hero bz-mk-hero" id="bz-hero" aria-labelledby="bz-hero-title"><div class="container"><div class="page-hero-inner">
-  <p class="eyebrow eyebrow-light">Tripelyx Business · Preview</p>
+  <p class="eyebrow eyebrow-light">${words.eyebrow}</p>
   <h1 id="bz-hero-title">Company travel, with your rules built in.</h1>
   <p class="lead">Your team plans flights and hotels for work inside your travel policy. Trips that fit are approved straight away. Anything outside goes to the right person with a cheaper option next to it, and finance sees every trip against its budget.</p>
   <div class="hero-actions">${actions(live)}</div>
@@ -233,7 +243,7 @@ function businessMarketingView(ctx) {
   <div class="container bz-mk-support">
     <span class="card-icon">${icon('mail')}</span>
     <div>
-      <h2 id="bz-support-title" class="section-title">Questions about the preview?</h2>
+      <h2 id="bz-support-title" class="section-title">${words.support}</h2>
       <p class="section-lead">Write to <a href="mailto:${BUSINESS_EMAIL}">${BUSINESS_EMAIL}</a> and a person at Tripelyx will answer.</p>
     </div>
   </div>
@@ -244,9 +254,9 @@ function businessMarketingView(ctx) {
     <h2 id="bz-today-title" class="section-title">Where it stands today</h2>
     <div class="grid-2 bz-mk-today">
       <div class="card">
-        <h3>In the preview now</h3>
+        <h3>${words.nowTitle}</h3>
         ${now.length
-    ? html`<ul class="bz-mk-list">${now.map(t => html`<li><span>${t}</span><span class="chip chip-good">In the preview</span></li>`)}</ul>`
+    ? html`<ul class="bz-mk-list">${now.map(t => html`<li><span>${t}</span><span class="chip chip-good">${words.nowChip}</span></li>`)}</ul>`
     : html`<p>Company workspaces aren't open on this site right now. Tell us about your company and we can talk about what fits.</p>`}
       </div>
       <div class="card">
@@ -285,4 +295,5 @@ function businessMarketingView(ctx) {
 module.exports = {
   businessMarketingView, SECTIONS, PATHS, PILLARS, PERSONAS, PREVIEW_NOW, PREVIEW_NOW_NO_SUPPLIER, PREVIEW_NOW_LIVE, COMING_NEXT,
   COMING_NEXT_NO_SUPPLIER, COMING_NEXT_LIVE, NOTES, AI_BODY, AI_SMALL, SAVINGS, SAVINGS_DEMO, PREVIEW_NOW_SANDBOX, SAVINGS_SANDBOX,
+  PREVIEW_WORDS, OPEN_WORDS, wordsFor,
 };

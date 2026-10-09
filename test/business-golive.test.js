@@ -30,7 +30,9 @@ const tokens = require('../server/business/tokens');
 const { KINDS, HOUSE_COMPANY_NAME, HOUSE_NAME_FIXED, SIGNUP_ACK } = require('../server/business/constants');
 const { carriers: DEMO_CARRIERS } = require('../server/providers/mock/demo-data/flights');
 const { BUSINESS_HOTELS } = require('../server/business/demo/hotels-data');
-const { NO_SUPPLIER } = require('../server/views/business/parts');
+const { NO_SUPPLIER, NO_TRIPS } = require('../server/views/business/parts');
+const { HOUSE_MADE } = require('../server/views/business/platform');
+const { SPENT_NO_SUPPLIER } = require('../server/views/business/budgets');
 
 /** www's settings (infra/app.yaml): the live baseline env set, with Business on. */
 const WWW = Object.freeze({ ...ENVS.live, ENABLE_BUSINESS: 'true' });
@@ -45,7 +47,7 @@ const TEST_DATA = /test data|\bsandbox\b|supplier test|test system|test mode|bz-
 
 /**
  * Nothing on a Business page (or download) speaks of demo or test data: no "demo" anywhere in the document,
- * no price source container or label, no fictional airline or hotel, no environment banner.
+ * no price source container or label, no "preview", no fictional airline or hotel, no environment banner.
  */
 function assertLive(label, text, { banner = false } = {}) {
   const s = String(text);
@@ -55,6 +57,13 @@ function assertLive(label, text, { banner = false } = {}) {
   assert.doesNotMatch(s, /data-price-source/, `${label}: a price source container`);
   const test = TEST_DATA.exec(s);
   assert.ok(!test, `${label}: test data words: "${test && s.slice(Math.max(0, test.index - 100), test.index + 60)}"`);
+  // www keeps its companies in its real database: no page calls Business a preview (go-live review). "Preview"
+  // is the demo and supplier-test-data wording only.
+  const preview = /\bpreview\b/i.exec(s);
+  assert.ok(!preview, `${label}: "preview": "${preview && s.slice(Math.max(0, preview.index - 100), preview.index + 60)}"`);
+  // With no supplier nobody can plan a trip, and there is no other kind of booking for "real" to set apart.
+  assert.doesNotMatch(s, /Plan one and you/, `${label}: asks for a trip nobody can plan yet`);
+  assert.doesNotMatch(s, /real bookings?/i, `${label}: "real bookings"`);
   const fictional = FICTIONAL.exec(s);
   assert.ok(!fictional, `${label}: a fictional airline or hotel: ${fictional && fictional[0]}`);
   if (!banner) assert.doesNotMatch(s, BANNER, `${label}: the site's environment banner`);
@@ -310,6 +319,9 @@ for (const [storeName, url] of STORES) {
           check('platform admin')(`/admin/business?ok=${ok}`, res);
           assert.ok(textOf(mainOf(res.text)).includes(ok === 'house' ? `Done. ${HOUSE_COMPANY_NAME} is active, and you're its Owner.` : `${HOUSE_COMPANY_NAME} already exists, so nothing new was made.`), ok);
           assert.match(res.text, new RegExp(`<dt>Company id</dt><dd><code>${houseId}</code></dd>`), `${ok}: the company id`);
+          // Plain about why the id is there, with no pointer to settings the owner can't find.
+          assert.equal(HOUSE_MADE, "This company's name is fixed. Keep the company id: Tripelyx settings that apply to one company ask for it.");
+          assert.ok(textOf(mainOf(res.text)).includes(HOUSE_MADE), `${ok}: why the id is shown`);
           assert.doesNotMatch(res.text, /action="\/admin\/business\/house"/, `${ok}: no button once it exists`);
         }
         // Its settings show the name, fixed.
@@ -349,6 +361,21 @@ for (const [storeName, url] of STORES) {
         for (const C of [w.A, w.B]) {
           for (const [label, res] of await refusals(C, w)) check(`${C.word} refusal: ${label}`)(label, res);
         }
+        // The empty trip lists and the budget notes say when search and booking turn on, every role.
+        assert.equal(NO_TRIPS.textNoSupplier, 'Trip search turns on when Tripelyx connects airlines and hotels.');
+        assert.equal(SPENT_NO_SUPPLIER, 'Spent: shows once booking is open.');
+        for (const [role, p] of Object.entries(w.A.people)) {
+          for (const u of [w.A.B, `${w.A.B}/trips`]) {
+            const main = textOf(mainOf((await p.http.get(u)).text));
+            if (/My trips|Your trips/.test(main)) assert.ok(main.includes(`${NO_TRIPS.title} ${NO_TRIPS.textNoSupplier}`), `${role} ${u}: when search turns on`);
+          }
+        }
+        const homeOwner = textOf(mainOf((await w.A.people.owner.http.get(w.A.B)).text));
+        assert.ok(homeOwner.includes(`${NO_TRIPS.title} ${NO_TRIPS.textNoSupplier}`), 'the Owner\'s home: when search turns on');
+        assert.ok(homeOwner.includes('Committed is what approved trips hold. Spent shows once booking is open.'), 'the home budget note');
+        const tripsEmployee = textOf(mainOf((await w.A.people.employee.http.get(`${w.A.B}/trips`)).text));
+        assert.ok(tripsEmployee.includes(`${NO_TRIPS.title} ${NO_TRIPS.textNoSupplier}`), 'the employee\'s Trips page');
+        assert.ok(textOf(mainOf((await w.A.people.finance.http.get(`${w.A.B}/budgets`)).text)).includes(SPENT_NO_SUPPLIER), 'the Budgets page');
         t.diagnostic(`${n} answers checked`);
         assert.ok(n > 250, `${n} answers checked`);
 
@@ -363,6 +390,27 @@ for (const [storeName, url] of STORES) {
             const csv = await http.post(`${b}/reports/export`, { period });
             assert.equal(csv.status, 200, `${label} CSV ${period}`);
             assertLive(`${label} CSV ${period}`, csv.text);
+          }
+        }
+
+        // A paused company: its people land on its home after sign-in (publicRoutes.appPage), and there and on
+        // every other workspace page, in every role, they get the Business page that says it is paused, with
+        // the way back to their companies, never the app's generic "We couldn't do that" error page.
+        const globex = await w.svc.repo.get(KINDS.org, w.B.id);
+        const pause = await w.ops.http.post(`/admin/business/${w.B.id}/status`, { status: 'suspended', note: 'Checking the account', rev: String(globex.rev) });
+        assert.equal(pause.status, 303, 'paused');
+        assert.equal((await w.svc.repo.get(KINDS.org, w.B.id)).status, 'suspended');
+        const b = w.B.B;
+        const pausedPages = [b, `${b}/trips`, `${b}/trips/new`, `${b}/policy`, `${b}/approvals`, `${b}/people`, `${b}/budgets`, `${b}/reports`, `${b}/activity`, `${b}/settings`];
+        for (const [role, h] of [...Object.entries(w.B.people).map(([r, p]) => [r, p.http]), ['Pat Both', w.both.http]]) {
+          for (const u of pausedPages) {
+            const res = await h.get(u);
+            assert.equal(res.status, 403, `paused ${role} ${u}`);
+            assert.match(res.text, /<title>This workspace is paused · Business/, `paused ${role} ${u}: the title`);
+            assert.match(mainOf(res.text), /<h1>This workspace is paused<\/h1>/, `paused ${role} ${u}: the heading`);
+            assert.match(mainOf(res.text), /<a class="btn btn-navy bz-btn" href="\/business\/app">Your companies<\/a>/, `paused ${role} ${u}: the way back`);
+            assert.doesNotMatch(textOf(res.text), /We couldn.t do that|Request problem|Back to home/, `paused ${role} ${u}: not the generic error page`);
+            check(`paused ${role}`)(u, res);
           }
         }
       } finally {

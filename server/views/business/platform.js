@@ -37,7 +37,8 @@ const SUPPLIER_STATES = Object.freeze({
 const HOTELS_OFF = 'Hotels are not connected, so companies can request flights only.';
 const HOUSE_TITLE = "Tripelyx's own company";
 const HOUSE_INTRO = `The company Tripelyx itself travels with, named ${HOUSE_COMPANY_NAME}. Sign-up refuses any name that says Tripelyx, so it's made here, once. You'll be its Owner, and it's active straight away.`;
-const HOUSE_MADE = `${HOUSE_NAME_FIXED} Settings that name one company use its company id.`;
+/** Under the house company's name and id: why the id is shown (a setting for one company asks for it). */
+const HOUSE_MADE = `${HOUSE_NAME_FIXED} Keep the company id: Tripelyx settings that apply to one company ask for it.`;
 const SUPPLIER_OFF = 'Companies see "Supplier not connected yet" until this is fixed.';
 
 /**

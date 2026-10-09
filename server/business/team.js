@@ -121,14 +121,14 @@ const invalid = (code, details) => new AppError(code, 'Check the highlighted fie
 const inviteGone = () => new AppError('invite_gone', "This invite link can't be used anymore. Ask your company's travel admin for a new one.", 410);
 const lastOwner = () => new AppError('last_owner', 'A company needs at least one Owner. Make someone else an Owner first.', 422);
 const removeSelf = () => new AppError('remove_self', "You can't remove yourself. Ask another Owner or Travel Admin.", 422);
-const companyFull = () => new AppError('company_full', `A company can have up to ${MEMBER_CAP.toLocaleString('en-US')} people in the preview.`, 409);
+const companyFull = () => new AppError('company_full', `A company can have up to ${MEMBER_CAP.toLocaleString('en-US')} people for now.`, 409);
 const alreadyMember = () => new AppError('already_member', 'This person is already on your team.', 409);
 const youAreMember = () => new AppError('already_member', "You're already in this company.", 409);
 const notPending = () => new AppError('invite_not_pending', 'This invite was already used, cancelled or has expired.', 409);
 const departmentExists = () => new AppError('department_exists', 'There is already a department with this name.', 409);
 const companyPending = name => new AppError('company_pending', `${name} is waiting for Tripelyx to confirm it. Try this link again once it's confirmed.`, 409);
 const tooMany = max => new AppError('too_many_companies',
-  `You're already in ${max} ${max === 1 ? 'company' : 'companies'}, the most one account can join in the preview.`, 422);
+  `You're already in ${max} ${max === 1 ? 'company' : 'companies'}, the most one account can join for now.`, 422);
 const emailMismatch = (inviteEmail, userEmail) => new AppError('invite_email_mismatch',
   `This invite is for ${maskEmail(inviteEmail)}. You're signed in as ${userEmail}. Sign out to use it, or ask your admin to invite ${userEmail}.`, 403);
 
@@ -418,11 +418,11 @@ const methods = {
    * biz_policy_version v1 (note DEFAULTS_NOTE, no changes), the "General"
    * biz_department, and the audit entry 'org.created'. Nothing is written when any part fails.
    * @param {import('./types').UserActor} actor
-   * @param {{ name: string, size: string, timezone?: string, ack?: string }} form ack '1' = the preview checkbox
+   * @param {{ name: string, size: string, timezone?: string, ack?: string }} form ack '1' = the sign-up consent box (SIGNUP_ACK)
    * @returns {Promise<{ org: import('./types').Org, member: import('./types').Member }>}
    * @throws {AppError} 404 no user; 422 'invalid_company' details { name: "Choose your own company's name." when
    *   it contains "tripelyx" (NFKC, case-insensitive), size, timezone, ack }; 422 'too_many_companies' at
-   *   config.business.maxOrgsPerUser ("You're already in 3 companies, the most one account can join in the preview.")
+   *   config.business.maxOrgsPerUser ("You're already in 3 companies, the most one account can join for now.")
    */
   async createCompany(actor, form) {
     const user = actor && actor.user;
