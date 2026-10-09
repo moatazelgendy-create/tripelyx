@@ -3,6 +3,7 @@
 // projection at the bottom — the frontend only ever learns which verticals are on and whether
 // payments are in test mode, never a key, URL with credentials, or provider name it doesn't need.
 const { VERTICALS } = require('./verticals');
+const { passwordDigest } = require('./lib/previewGate');
 
 const APP_ENVS = ['development', 'staging', 'production'];
 
@@ -143,10 +144,25 @@ function loadConfig(env = process.env) {
     explainer: oneOf(env.BUSINESS_EXPLAINER || 'rules', ['rules'], 'BUSINESS_EXPLAINER'),
   };
 
+  // The private preview (infra/preview.yaml, deployed by .github/workflows/preview.yml). PREVIEW_PASSWORD puts
+  // a password on every page but /healthz (server/lib/previewGate.js); only its SHA-256 digest is kept here and
+  // its text is never quoted in an error. PREVIEW_SEED=business fills an in-memory store with the Business
+  // demo companies at boot (server/lib/previewSeed.js). Production refuses both. Unset, nothing changes.
+  const previewPassword = env.PREVIEW_PASSWORD || '';
+  if (previewPassword && isProduction) throw new Error('PREVIEW_PASSWORD is not allowed when APP_ENV=production');
+  if (previewPassword && previewPassword.length < 12) throw new Error('PREVIEW_PASSWORD must be at least 12 characters');
+  const previewSeed = env.PREVIEW_SEED ? oneOf(env.PREVIEW_SEED, ['business'], 'PREVIEW_SEED') : null;
+  if (previewSeed && isProduction) throw new Error('PREVIEW_SEED is not allowed when APP_ENV=production');
+  const preview = {
+    gate: previewPassword ? { passwordDigest: passwordDigest(previewPassword) } : null,
+    seed: previewSeed,
+  };
+
   return {
     appEnv,
     trips,
     business,
+    preview,
     isProduction,
     port: Number(env.PORT || 4100),
     publicBaseUrl: env.PUBLIC_BASE_URL || null,

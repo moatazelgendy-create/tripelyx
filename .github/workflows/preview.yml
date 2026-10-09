@@ -1,0 +1,254 @@
+# Deploys the private preview (Tripelyx Business on, demo inventory, in-memory data) to its own Amazon
+# Lightsail container service on every push to the development branch. To run it again without a push, open
+# the latest "Private preview" run and choose "Re-run all jobs" (same commit and branch; GitHub allows it for
+# 30 days), or, once it has run at least once, `gh workflow run preview.yml --ref <the branch>`. GitHub shows
+# the "Run workflow" button only for workflows on the default branch (main), so this file has none until then.
+# It never runs on main, never uses the tripelyx.com deploy role, and never touches the tripelyx-staging or
+# tripelyx-production stacks: it only pushes to the tripelyx-preview registry and deploys the
+# tripelyx-preview Lightsail service, both made by infra/preview.yaml (see "Private preview" in README.md).
+# Each deployment starts with fresh test data. The password is generated in AWS Secrets Manager and read
+# here at deploy time; it is masked and never printed. An AWS account ID and a role name are identifiers,
+# not secrets: the preview role only trusts this repository's development branch.
+# Optional repository variables: PREVIEW_ROLE_ARN and PREVIEW_AWS_REGION (another account or region; the
+# role must still be named tripelyx-github-preview). Optional secrets: DUFFEL_TEST_TOKEN and
+# LITEAPI_SANDBOX_KEY (supplier test keys, passed to the preview only when they are set).
+name: Private preview
+
+on:
+  push:
+    branches: [claude/travel-by-budget-uv85qf]
+  workflow_dispatch:
+
+# Only the preview job may ask GitHub for an OIDC token (to sign in to AWS); the test job, which installs and
+# runs every dependency, cannot.
+permissions:
+  contents: read
+
+concurrency:
+  group: private-preview
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.PREVIEW_AWS_REGION || 'us-east-1' }}
+  AWS_ROLE_ARN: ${{ vars.PREVIEW_ROLE_ARN || 'arn:aws:iam::957123506077:role/tripelyx-github-preview' }}
+  SERVICE: tripelyx-preview
+  REPOSITORY: tripelyx-preview
+  PASSWORD_SECRET: tripelyx-preview/password
+
+jobs:
+  test:
+    if: github.ref == 'refs/heads/claude/travel-by-budget-uv85qf'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  preview:
+    needs: test
+    if: github.ref == 'refs/heads/claude/travel-by-budget-uv85qf'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check that this is the preview role
+        run: |
+          case "$AWS_ROLE_ARN" in
+            arn:aws:iam::*:role/tripelyx-github-preview) ;;
+            *) echo "::error::The preview only signs in as tripelyx-github-preview, never another role."; exit 1 ;;
+          esac
+
+      # Before the tripelyx-preview stack exists the role does not exist either: that is not an error.
+      - name: Sign in to AWS as the preview role
+        id: aws
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: tripelyx-preview
+          retry-max-attempts: 3
+
+      - name: Preview not set up yet
+        if: steps.aws.outcome != 'success'
+        run: |
+          MSG="The private preview is not set up yet (or this run could not sign in as tripelyx-github-preview). Create the tripelyx-preview stack once (README.md, Private preview), then open this run and choose Re-run all jobs (or push to the branch). Nothing was deployed."
+          echo "::notice title=Private preview::${MSG}"
+          echo "### Private preview: not set up yet" >> "$GITHUB_STEP_SUMMARY"
+          echo "${MSG}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Find the preview service
+        id: service
+        if: steps.aws.outcome == 'success'
+        run: |
+          if OUT=$(aws lightsail get-container-services --service-name "$SERVICE" \
+                --query 'containerServices[0].state' --output text 2>&1); then
+            echo "Preview service state: ${OUT}"
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          elif grep -q 'NotFoundException' <<< "$OUT"; then
+            MSG="The Lightsail service ${SERVICE} does not exist yet. Create the tripelyx-preview stack once (README.md, Private preview), then open this run and choose Re-run all jobs (or push to the branch). Nothing was deployed."
+            echo "::notice title=Private preview::${MSG}"
+            echo "### Private preview: not set up yet" >> "$GITHUB_STEP_SUMMARY"
+            echo "${MSG}" >> "$GITHUB_STEP_SUMMARY"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "$OUT" >&2
+            exit 1
+          fi
+
+      - name: Sign in to the preview registry
+        id: ecr
+        if: steps.service.outputs.ready == 'true'
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push the preview image
+        id: image
+        if: steps.service.outputs.ready == 'true'
+        env:
+          IMAGE: ${{ steps.ecr.outputs.registry }}/${{ env.REPOSITORY }}:${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if aws ecr describe-images --repository-name "$REPOSITORY" --image-ids imageTag="$GITHUB_SHA" >/dev/null 2>&1; then
+            echo "The image for this commit is already in the preview registry."
+          else
+            # The image tripelyx.com runs (./Dockerfile, unchanged) with one more layer: the scripts folder,
+            # so the demo seed (PREVIEW_SEED=business) can load scripts/business-demo.js. Copied files are
+            # owned by root, so the app user can read them but not change them.
+            { cat Dockerfile; echo; echo 'COPY scripts ./scripts'; } \
+              | docker build --platform linux/amd64 -f - -t "$IMAGE" .
+            docker push "$IMAGE"
+          fi
+          echo "uri=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy the preview
+        if: steps.service.outputs.ready == 'true'
+        env:
+          IMAGE: ${{ steps.image.outputs.uri }}
+          ADMIN_EMAILS: ${{ vars.ADMIN_EMAILS }}
+          DUFFEL_TEST_TOKEN: ${{ secrets.DUFFEL_TEST_TOKEN }}
+          LITEAPI_SANDBOX_KEY: ${{ secrets.LITEAPI_SANDBOX_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          WORK="$(mktemp -d)"
+          trap 'rm -rf "$WORK"' EXIT
+
+          log_tail() {
+            echo "Last lines from the preview container:"
+            aws lightsail get-container-log --service-name "$SERVICE" --container-name web \
+              --start-time "$STARTED" --query 'logEvents[-40:].[message]' --output text || true
+          }
+
+          # Wait while the service is still being created or changed (it takes one deployment at a time).
+          for _ in $(seq 1 60); do
+            STATE=$(aws lightsail get-container-services --service-name "$SERVICE" \
+              --query 'containerServices[0].state' --output text)
+            case "$STATE" in
+              READY|RUNNING) break ;;
+              DISABLED|DELETING) echo "::error::The preview service is ${STATE}."; exit 1 ;;
+              *) echo "Preview service is ${STATE}; waiting."; sleep 10 ;;
+            esac
+          done
+
+          # The password: read from Secrets Manager, masked in every log line from here on, never echoed.
+          PREVIEW_PASSWORD=$(aws secretsmanager get-secret-value --secret-id "$PASSWORD_SECRET" \
+            --query SecretString --output text)
+          if [ -z "$PREVIEW_PASSWORD" ] || [ "$PREVIEW_PASSWORD" = "None" ]; then
+            echo "::error::The preview password secret is empty."; exit 1
+          fi
+          echo "::add-mask::${PREVIEW_PASSWORD}"
+          export PREVIEW_PASSWORD
+
+          # The container's settings, written by jq from the environment (no value on a command line).
+          # APP_ENV=staging with DATABASE_URL=memory is the throwaway demo config.js allows; production refuses
+          # it, and refuses PREVIEW_PASSWORD and PREVIEW_SEED. ALLOW_DEMO_INVENTORY=true is Business's demo
+          # inventory switch. Supplier test keys are added only when those secrets are set.
+          jq -n '{
+            web: {
+              image: env.IMAGE,
+              ports: { "4100": "HTTP" },
+              environment: ({
+                APP_ENV: "staging",
+                PORT: "4100",
+                TRUST_PROXY: "true",
+                HTTPS_ONLY: "true",
+                DATABASE_URL: "memory",
+                PAYMENT_MODE: "test",
+                ALLOW_DEMO_INVENTORY: "true",
+                ENABLE_TRIPS: "true",
+                ENABLE_BUSINESS: "true",
+                ADMIN_EMAILS: (env.ADMIN_EMAILS // ""),
+                PREVIEW_PASSWORD: env.PREVIEW_PASSWORD,
+                PREVIEW_SEED: "business"
+              }
+              + (if (env.DUFFEL_TEST_TOKEN // "") != "" then { DUFFEL_TEST_TOKEN: env.DUFFEL_TEST_TOKEN } else {} end)
+              + (if (env.LITEAPI_SANDBOX_KEY // "") != "" then { LITEAPI_SANDBOX_KEY: env.LITEAPI_SANDBOX_KEY } else {} end))
+            }
+          }' > "$WORK/containers.json"
+          jq -n '{
+            containerName: "web",
+            containerPort: 4100,
+            healthCheck: { path: "/healthz", successCodes: "200", intervalSeconds: 10, timeoutSeconds: 5,
+                           healthyThreshold: 2, unhealthyThreshold: 3 }
+          }' > "$WORK/endpoint.json"
+          unset PREVIEW_PASSWORD
+
+          STARTED=$(date +%s)
+          # --query keeps the response (which repeats the settings) out of the log.
+          VERSION=$(aws lightsail create-container-service-deployment --service-name "$SERVICE" \
+            --containers "file://$WORK/containers.json" --public-endpoint "file://$WORK/endpoint.json" \
+            --query 'containerService.nextDeployment.version' --output text)
+          rm -f "$WORK/containers.json"
+          case "$VERSION" in
+            ''|*[!0-9]*) echo "::error::Lightsail did not return a deployment version."; exit 1 ;;
+          esac
+          echo "Deployment ${VERSION} started."
+
+          # Wait up to 20 minutes for this deployment to be ACTIVE.
+          DEADLINE=$((SECONDS + 1200))
+          while :; do
+            DSTATE=$(aws lightsail get-container-service-deployments --service-name "$SERVICE" \
+              --query "deployments[?version==\`${VERSION}\`].state | [0]" --output text)
+            case "$DSTATE" in
+              ACTIVE) break ;;
+              FAILED) echo "::error::Preview deployment ${VERSION} failed."; log_tail; exit 1 ;;
+            esac
+            if [ "$SECONDS" -ge "$DEADLINE" ]; then
+              echo "::error::Preview deployment ${VERSION} is still ${DSTATE} after 20 minutes."; log_tail; exit 1
+            fi
+            echo "Deployment ${VERSION} is ${DSTATE}; waiting."
+            sleep 15
+          done
+
+          URL=$(aws lightsail get-container-services --service-name "$SERVICE" \
+            --query 'containerServices[0].url' --output text)
+          URL="${URL%/}"
+
+          # The health check answers without a password; every page must ask for one.
+          for _ in 1 2 3 4 5 6; do
+            HEALTH=$(curl -s -o /dev/null -w '%{http_code}' "${URL}/healthz" || true)
+            HOME_STATUS=$(curl -s -o /dev/null -w '%{http_code}' "${URL}/" || true)
+            [ "$HEALTH" = "200" ] && break
+            sleep 10
+          done
+          if [ "$HEALTH" != "200" ] || [ "$HOME_STATUS" != "401" ]; then
+            echo "::error::Expected /healthz 200 and / 401 (password required); got ${HEALTH} and ${HOME_STATUS}."
+            log_tail
+            exit 1
+          fi
+
+          echo "Private preview deployment ${VERSION} is live at ${URL}"
+          {
+            echo "### Private preview is live at ${URL}"
+            echo ""
+            echo "Deployment ${VERSION}, commit ${GITHUB_SHA}. Test data starts fresh with each deployment."
+            echo "Sign in with any user name and the preview password, which is kept in AWS Secrets Manager"
+            echo "as \`${PASSWORD_SECRET}\` (README.md, Private preview, says how to read it)."
+          } >> "$GITHUB_STEP_SUMMARY"

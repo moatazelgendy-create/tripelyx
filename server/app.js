@@ -32,6 +32,7 @@ const businessAlternatives = require('./business/alternatives');
 const businessDiff = require('./business/diff');
 const businessRoutes = require('./routes/business');
 const businessPlatform = require('./routes/businessPlatform');
+const { createPreviewGate } = require('./lib/previewGate');
 const { AppError } = require('./lib/errors');
 const { id } = require('./lib/ids');
 const { notFoundView, errorView } = require('./views/errors');
@@ -152,6 +153,11 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(self)');
     next();
   });
+  // The private preview (config.preview.gate, only with PREVIEW_PASSWORD set; production refuses it): every
+  // request but the health check needs the preview password, before any page, file or API answers.
+  if (config.preview && config.preview.gate) {
+    app.use(createPreviewGate({ ...config.preview.gate, appEnv: config.appEnv, now: () => clock().getTime() }));
+  }
   app.use(compression());
 
   const pub = path.join(__dirname, '..', 'public');
