@@ -190,7 +190,7 @@ const canGrant = (m, role) => !!m && m.status === 'active' && can(m.role, 'membe
  * status or the note they wrote (statusBy and statusNote are null), and not the internal settingsRev.
  */
 function orgView(org) {
-  const { settingsRev: _settingsRev, ...rest } = org; // eslint-disable-line no-unused-vars
+  const { settingsRev: _settingsRev, previousName: _previousName, ...rest } = org; // eslint-disable-line no-unused-vars
   return { ...rest, statusBy: null, statusNote: null };
 }
 
@@ -556,7 +556,7 @@ const methods = {
       if (existing && !rejoinable(existing, inv)) throw inviteGone();
     }
     return {
-      org: { id: org.id, name: org.name, status: org.status },
+      org: { id: org.id, name: org.name, status: org.status, timezone: org.timezone },
       invite: {
         publicId: inv.publicId, email: inv.email, emailMasked: maskEmail(inv.email), role: inv.role, roleLabel: LABELS[inv.role],
         departmentName: dep ? dep.name : null, invitedByName: inviter.name || '', expiresAt: inv.expiresAt,
@@ -999,6 +999,8 @@ const methods = {
           kind: KINDS.org, id: org.id, rev: org.rev ?? 0, server: true,
           fn: d => {
             if (settingsRevOf(d) > formRev) throw conflict();
+            // The name Tripelyx confirmed, so the platform list can say "Renamed from …" while it confirms the new one.
+            if (reconfirm) d.previousName = d.name;
             d.name = f.name;
             d.nameKey = nameKeyOf(f.name);
             d.timezone = f.timezone;
@@ -1133,6 +1135,8 @@ const methods = {
       rows.push({
         id: o.id, name: o.name, status: o.status, size: o.size, at: o.at, creatorEmail: creator ? creator.email : '',
         memberCount: o.memberCount || 0, timezone: o.timezone, similarNames: k ? byKey.get(k).filter(x => x.id !== o.id).map(x => x.name) : [],
+        statusNote: typeof o.statusNote === 'string' && o.statusNote ? o.statusNote : null, statusAt: o.statusAt || null,
+        previousName: typeof o.previousName === 'string' && o.previousName ? o.previousName : null,
         rev: o.rev ?? 0,
       });
     }

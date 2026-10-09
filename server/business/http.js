@@ -5,10 +5,15 @@
 //   method → 303 /business/signin (a POST cannot be replayed after signing in).
 // - memberGate(ctx, perm, { own }): the company and the member record are re-read on every request
 //   (actor.loadActor; the only source of the role, and platform admins get nothing from isAdmin). Not a
-//   member, a removed member, an unknown company, another company's record or a request the permission
-//   does not reach → the app's 404 page. A member whose role lacks the permission → 403 page; a suspended
-//   company → 403 page. Always Cache-Control: no-store and X-Robots-Tag: noindex. Sets req.biz. The service
-//   re-checks all of this inside every method anyway.
+//   member, a removed member or an unknown company → the app's 404 page (nothing says the workspace exists).
+//   Another company's record or a request the permission does not reach → 404. A member whose role lacks the
+//   permission → 403 page; a suspended company → 403 page. Always Cache-Control: no-store and X-Robots-Tag:
+//   noindex. Sets req.biz. The service re-checks all of this inside every method anyway.
+// - Inside the workspace (lead decision L2-1): once the gate knows the company and the member, its 404 and
+//   the role's 403 are drawn in the workspace shell ("This page isn't available" / the role message, a link
+//   back to the company home, no consumer footer or ribbon), and so is a Business limiter's 429 on a
+//   /business/o/:orgId page (bizErrorPages, the Business router's error handler). Signed out, unknown
+//   company, a suspended company: the plain pages as before. Status codes never change.
 // - shellContext(ctx, req): what the workspace shell needs (company, member, company switcher, approvals
 //   count, navigation filtered by can()).
 const { AppError } = require('../lib/errors');
@@ -17,6 +22,7 @@ const { PERMISSIONS, LABELS, can, canAny, allowedAny, scopeOf } = require('./rol
 const { KINDS } = require('./constants');
 const { safeLocal } = require('./validate');
 const { loadActor, roleMessage, SUSPENDED } = require('./actor');
+const { shellErrorView } = require('../views/business/shell');
 
 /** Private workspace headers: never cached, never indexed. */
 function privateHeaders(res) {
@@ -49,26 +55,97 @@ function defaultForbiddenView(ctx, { message }) {
   return errorView(ctx, { status: 403, message });
 }
 
+/** The workspace refusals drawn in the shell (lead decision L2-1). */
+const NOT_AVAILABLE = Object.freeze({ title: "This page isn't available", message: 'The link may be wrong or out of date.' });
+const ROLE_TITLE = "Your role can't open this page";
+const LIMITED_TITLE = 'Too many requests';
+
+/** req.biz as memberGate sets it: the company, the member and the actor all known. */
+const knownBiz = biz => (biz && biz.org && biz.member && biz.actor ? biz : null);
+
 /**
- * Answer 404 with the app's own "Page not found" page (no hint that the workspace exists).
- * @param {object} ctx
- * @param {import('express').Response} res
+ * Draw a refusal in the workspace shell. Never rejects: if the shell cannot be drawn (the company list or
+ * the count failing), `fallback` answers instead.
+ * @returns {Promise<void>}
  */
-function sendNotFound(ctx, res) {
+async function sendInShell(ctx, res, biz, { status, title, message }, fallback) {
   privateHeaders(res);
-  res.status(404).type('html').send(String(notFoundView(ctx)));
+  let page;
+  try {
+    const shell = await shellContext(ctx, { biz, originalUrl: (res.req && res.req.originalUrl) || '' });
+    page = String(shellErrorView(ctx, shell, { title, message }));
+  } catch {
+    return fallback();
+  }
+  if (res.headersSent) return undefined;
+  res.status(status).type('html').send(page);
+  return undefined;
 }
 
 /**
- * Answer 403 with the forbidden page.
+ * Answer 404. Before the gate knows the company and the member (a stranger, a removed member, an unknown
+ * company): the app's own "Page not found" page, so nothing hints that the workspace exists. Inside the
+ * workspace (biz, or res.req.biz from memberGate): "This page isn't available" in the shell.
+ * @param {object} ctx
+ * @param {import('express').Response} res
+ * @param {{ biz?: object|null }} [opts] what the gate knows (default res.req.biz)
+ * @returns {void|Promise<void>}
+ */
+function sendNotFound(ctx, res, { biz = null } = {}) {
+  privateHeaders(res);
+  const plain = () => { res.status(404).type('html').send(String(notFoundView(ctx))); };
+  const known = knownBiz(biz || (res.req && res.req.biz));
+  if (!known || !ctx.business) return plain();
+  return sendInShell(ctx, res, known, { status: 404, ...NOT_AVAILABLE }, plain);
+}
+
+/**
+ * Answer 403. A role without the permission, inside the workspace (biz, or res.req.biz): the role message in
+ * the shell. Otherwise (a suspended company, or the gate knows no member) the forbidden page `view`.
  * @param {object} ctx
  * @param {import('express').Response} res
  * @param {{ message: string, role?: string|null, reason: 'role'|'suspended' }} info
  * @param {Function} [view] (ctx, { message, role, label, reason }) => html
+ * @param {{ biz?: object|null }} [opts]
+ * @returns {void|Promise<void>}
  */
-function sendForbidden(ctx, res, info, view = defaultForbiddenView) {
+function sendForbidden(ctx, res, info, view = defaultForbiddenView, { biz = null } = {}) {
   privateHeaders(res);
-  res.status(403).type('html').send(String(view(ctx, { ...info, label: info.role ? LABELS[info.role] : null })));
+  const plain = () => { res.status(403).type('html').send(String(view(ctx, { ...info, label: info.role ? LABELS[info.role] : null }))); };
+  const known = info.reason === 'role' ? knownBiz(biz || (res.req && res.req.biz)) : null;
+  if (!known || !ctx.business) return plain();
+  return sendInShell(ctx, res, known, { status: 403, title: ROLE_TITLE, message: info.message }, plain);
+}
+
+/**
+ * The Business router's error handler (routes/business/index.js mounts it after every Business route; as
+ * an error handler it never sees a request that went well, so GET /business is never caught). A Business
+ * limiter's 429 on a /business/o/:orgId page, for a signed-in member of that company, is drawn in the
+ * workspace shell; so is a 404, or a role's 403, that a route passed on. Everything else (signed out, not a
+ * member, a suspended company, sameOrigin's 403, a 500) goes on to the app's error handler as before.
+ * @param {object} ctx
+ * @returns {import('express').ErrorRequestHandler}
+ */
+function bizErrorPages(ctx) {
+  return async function bizErrorPage(err, req, res, next) {
+    try {
+      const shown = err instanceof AppError && (err.status === 429 || err.status === 404 || (err.status === 403 && typeof err.role === 'string'));
+      const m = /^\/business\/o\/([A-Za-z0-9_-]{1,64})(?:[/?#]|$)/.exec(String(req.originalUrl || ''));
+      if (!shown || !m || !req.user || !ctx.business || !ctx.business.repo || res.headersSent) return next(err);
+      let a;
+      try {
+        a = await loadActor(ctx.business.repo, { org: { id: m[1] }, user: req.user });
+      } catch (e) {
+        if (e instanceof AppError) return next(err);
+        throw e;
+      }
+      const biz = { org: a.org, member: a.member, actor: { org: a.org, member: a.member, user: req.user } };
+      const page = err.status === 429 ? { status: 429, title: LIMITED_TITLE, message: err.message }
+        : err.status === 404 ? { status: 404, ...NOT_AVAILABLE }
+          : { status: 403, title: ROLE_TITLE, message: roleMessage(a.member.role, a.org.name) };
+      return sendInShell(ctx, res, biz, page, () => next(err));
+    } catch (e) { return next(e); }
+  };
 }
 
 /**
@@ -102,22 +179,22 @@ function memberGate(ctx, perm, { own = false, forbiddenView = defaultForbiddenVi
         return sendNotFound(ctx, res);
       }
       const { org, member } = a;
-      if (!canAny(member.role, perms)) {
-        return sendForbidden(ctx, res, { message: roleMessage(member.role, org.name), role: member.role, reason: 'role' }, forbiddenView);
-      }
       const biz = { org, member, actor: { org, member, user: req.user } };
+      if (!canAny(member.role, perms)) {
+        return sendForbidden(ctx, res, { message: roleMessage(member.role, org.name), role: member.role, reason: 'role' }, forbiddenView, { biz });
+      }
       if (own === 'request') {
         const rid = req.params.rid;
         if (typeof rid !== 'string') throw new Error('[business] memberGate own:request needs a :rid route parameter');
         const record = await svc.repo.getIn(KINDS.request, rid, org.id);
-        if (!record) return sendNotFound(ctx, res);
+        if (!record) return sendNotFound(ctx, res, { biz });
         let ok = allowedAny(member, perms, record);
         const poolScoped = perms.some(p => can(member.role, p) && (scopeOf(p) === 'team' || scopeOf(p) === 'decider'));
         if (!ok && poolScoped) {
           const link = await svc.repo.getIn(KINDS.reqLink, `${rid}.pool.${member.userId}`, org.id);
           ok = !!link && link.userId === member.userId && allowedAny(member, perms, record, { pooled: true });
         }
-        if (!ok) return sendNotFound(ctx, res);
+        if (!ok) return sendNotFound(ctx, res, { biz });
         biz.request = record;
       }
       req.biz = biz;
@@ -208,5 +285,5 @@ function gates(ctx, { forbiddenView = defaultForbiddenView } = {}) {
 
 module.exports = {
   requireUserPage, requireUser: requireUserPage, memberGate, noStore, gates, sendNotFound, sendForbidden, shellContext,
-  navFor, defaultForbiddenView, privateHeaders, NAV,
+  navFor, defaultForbiddenView, privateHeaders, bizErrorPages, NAV, NOT_AVAILABLE,
 };

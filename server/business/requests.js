@@ -115,6 +115,8 @@ const noSupplier = () => new AppError('no_supplier', "Supplier not connected yet
  * characters in its own words (these bounds only keep a huge field out of memory); a decider's note is kept
  * to its first 500 characters. */
 const REASON_INPUT_MAX = 2000;
+/** The longest reason the lifecycle accepts (lifecycle.REASON_MAX_CHARS), for the one kept on a re-priced draft. */
+const REASON_KEEP_MAX = 500;
 const NOTE_INPUT_MAX = 500;
 const MESSAGE_INPUT_MAX = 1001;
 
@@ -122,6 +124,21 @@ const MESSAGE_INPUT_MAX = 1001;
 const formRev = rev => (typeof rev === 'number' ? (Number.isInteger(rev) && rev >= 0 ? rev : NaN) : /^\d{1,9}$/.test(String(rev ?? '')) ? Number(rev) : NaN);
 const revOf = d => d.rev ?? 0;
 const plain = v => (typeof v === 'string' ? v : '');
+
+/**
+ * The reason typed on a submit that came back 'repriced' (the trip changed before it was sent): kept on the
+ * draft as request.reason, so the Request Approval form starts with it when the traveler sends it again. It
+ * is cut to what the lifecycle accepts and never kept when it holds a card number; an empty field keeps the
+ * reason already stored (one from a trip that came back from approval).
+ * @param {{ text: string, category: string|null }} typed
+ * @param {{ text: string, category: string|null }|null} [stored]
+ * @returns {{ text: string, category: string|null }|null}
+ */
+function keptReason(typed, stored) {
+  const t = text(typed && typed.text, REASON_KEEP_MAX, { multiline: true });
+  if (!t || cards.hasCardNumber(t)) return stored && typeof stored.text === 'string' ? structuredClone(stored) : null;
+  return { text: t, category: typed.category || null };
+}
 
 /** The roles the admins' pool is drawn from (approver resolution, plan §D). */
 const POOL_ROLES = Object.freeze(['owner', 'travel_admin']);
@@ -809,7 +826,8 @@ const methods = {
    * submit; one commit: request CAS with the re-priced, re-evaluated draft, audit 'request.repriced'). So does
    * a fresh evaluation worse than the stored one (within became out or blocked, or out became blocked): the
    * re-evaluated draft, with its alternatives, is written instead (outcome 'repriced', no history line, audit
-   * 'request.repriced' naming the policy check).
+   * 'request.repriced' naming the policy check). Either way the reason typed with this submit is kept on the
+   * draft (request.reason; never one holding a card number), so the re-sent form starts with it.
    * Within policy and inside the budget → approved by policy with the budget hold (outcome
    * 'auto_approved'; audit 'request.auto_approved'). Otherwise, outOfPolicy 'approval' → pending with the
    * resolved approver or pool, links and expiresAt (outcome 'submitted'; audit 'request.submitted').
@@ -855,7 +873,14 @@ const methods = {
         const opts = { ...base, recheck: rc };
         this.policy.transition(r, event, opts);
         const docs = await this.repo.commit({
-          cas: [{ kind: KINDS.request, id: r.id, rev: revOf(r), fn: applyTransition(this, event, opts, 'repriced') }],
+          cas: [{
+            kind: KINDS.request, id: r.id, rev: revOf(r),
+            fn: d => {
+              const kept = keptReason(reason, d.reason);
+              applyTransition(this, event, opts, 'repriced')(d);
+              d.reason = kept;
+            },
+          }],
           inserts: [auditInsert(this.repo, {
             orgId: a.org.id, actor: me, action: 'request.repriced', target,
             summary: `${changedWhat(rc, r, 'An option on', 'The price of', 'The terms of')} ${tripOf(r)} changed before it was sent, so the trip was updated`,
@@ -883,7 +908,8 @@ const methods = {
             kind: KINDS.request, id: r.id, rev: revOf(r),
             fn: d => {
               guards(d);
-              Object.assign(d, structuredClone(draft), { updatedAt: nowIso });
+              const kept = keptReason(reason, d.reason);
+              Object.assign(d, structuredClone(draft), { reason: kept, updatedAt: nowIso });
             },
           }],
           inserts: [auditInsert(this.repo, {

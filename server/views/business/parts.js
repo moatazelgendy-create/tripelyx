@@ -102,7 +102,8 @@ function demoBanner() {
   return html`<p class="bz-ribbon bz-ribbon-demo" role="note">${icon('info')}<span>${DEMO_RIBBON}</span></p>`;
 }
 
-/** "Supplier not connected yet" (§B6), as the ribbon on search pages and the panel on the trip form. */
+/** "Supplier not connected yet" (§B6): the shell's ribbon on search pages (results), or the panel on the trip
+ * form, which then leaves the ribbon out (searchPage false) so the page says it once. */
 const NO_SUPPLIER = Object.freeze({
   title: 'Supplier not connected yet.',
   text: "Tripelyx hasn't connected airlines and hotels for company travel. Your policies, people and budgets work today, and search turns on when suppliers are connected.",

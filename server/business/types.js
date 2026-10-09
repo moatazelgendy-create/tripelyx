@@ -131,6 +131,8 @@
  * @property {number} [settingsRev] the org rev written by the last settings change (saveSettings); absent means 0.
  *   A settings form is stale (409) only when its rev is below this or above rev, so joins, removals and status
  *   changes in between leave an open settings form current.
+ * @property {string} [previousName] the name Tripelyx confirmed, written when a rename sends a confirmed company back
+ *   to 'pending' (saveSettings). Only platformListOrgs reads it (PlatformOrgRow.previousName); members' views leave it out.
  * @property {number} rev
  */
 
@@ -1003,7 +1005,8 @@
  *   'pending_company' the company is not confirmed yet → 409 page
  * Throws AppError 410 'invite_gone' for an unknown, expired, revoked, replaced or used token.
  * @typedef {object} InviteLanding
- * @property {{ id: string, name: string, status: OrgStatus }} org
+ * @property {{ id: string, name: string, status: OrgStatus, timezone: string }} org timezone: the company's, so the
+ *   landing says the expiry in company time, as the invite link page and People do
  * @property {{ publicId: string, email: string, emailMasked: string, role: Role, roleLabel: string,
  *   departmentName: string|null, invitedByName: string, expiresAt: string }} invite
  * @property {'join'|'accept'|'other_email'|'member'|'pending_company'} state
@@ -1041,6 +1044,9 @@
  * @property {number} memberCount
  * @property {string} timezone
  * @property {string[]} similarNames names of other companies with the same nameKey
+ * @property {string|null} statusNote the note of the last status change (the pause note; staff only)
+ * @property {string|null} statusAt when the status last changed
+ * @property {string|null} previousName the name Tripelyx confirmed before a rename sent the company back to 'pending'
  * @property {number} rev
  */
 

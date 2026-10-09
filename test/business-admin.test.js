@@ -149,7 +149,7 @@ test('welcome: the Owner sees the setup checklist; another role gets 403 naming 
   noInline('welcome', res.text);
   const tom = await w.c(w.tom).get(`${w.o}/welcome`);
   assert.equal(tom.status, 403);
-  assert.match(textOf(tom.text), /Your role \(Travel Admin\) can't open this page\. Ask a travel admin at Acme Inc if you need it\./);
+  assert.match(textOf(tom.text), /Your role \(Travel Admin\) can't open this page\. Ask an owner of Acme Inc if you need it\./);
   const stranger = await seedUser(w.app, { name: 'Stan Stranger' });
   assert.equal((await client(w.app.base, stranger.cookie).get(`${w.o}/welcome`)).status, 404);
   assert.equal((await client(w.app.base, w.ops.cookie).get(`${w.o}/welcome`)).status, 404);
@@ -630,9 +630,21 @@ test('platform: only platform admins see /admin/business; confirming is audited 
   // Reactivate.
   const back = await ops.get('/admin/business');
   assert.match(textOf(back.text), /Paused \(1\)/);
+  // The paused card says why and since when, to staff only (lead decision L2-4).
+  const pausedCard = (back.text.match(new RegExp(`<li class="bz-card bz-stack" id="org-${w.org.id}">[\\s\\S]*?</li>`)) || [''])[0];
+  assert.match(textOf(pausedCard), /Paused on 9:00 AM, Fri 9 Oct \(UTC\): Checking the company details/);
   const now = await w.svc.repo.get(KINDS.org, w.org.id);
   assert.equal((await ops.post(`/admin/business/${w.org.id}/status`, { status: 'active', rev: String(now.rev) })).status, 303);
   assert.equal((await w.c(w.owner).get(`${w.o}/settings`)).status, 200);
+  // A confirmed company that takes a new name waits again, and its card says what it was confirmed as.
+  const org = await w.svc.getOrg({ org: { id: w.org.id }, user: w.owner.user });
+  await w.svc.saveSettings({ org: { id: w.org.id }, user: w.owner.user }, { name: 'Acme Travel Group', rev: org.rev });
+  const renamed = await ops.get('/admin/business');
+  const renamedCard = (renamed.text.match(new RegExp(`<li class="bz-card bz-stack" id="org-${w.org.id}">[\\s\\S]*?</li>`)) || [''])[0];
+  assert.match(textOf(renamedCard), /Acme Travel Group/);
+  assert.match(textOf(renamedCard), /Renamed from Acme Inc, which Tripelyx had confirmed\./);
+  assert.doesNotMatch(textOf(renamedCard), /Paused on/, 'the pause note belongs to paused cards');
+  assert.doesNotMatch(textOf((await w.c(w.owner).get(`${w.o}/settings`)).text), /Renamed from/, 'staff only');
   // The platform admin inside a company: 404, page or form.
   for (const p of ['/welcome', '/people', '/settings', '/reports', '/activity', '/budgets', '/policies']) assert.equal((await ops.get(w.o + p)).status, 404, p);
   assert.equal((await ops.post(`${w.o}/settings`, { rev: '0', approvalHours: '30' })).status, 404);
@@ -880,12 +892,19 @@ test('a role that cannot open an admin page gets a Business page that says why, 
   const res = await w.c(w.sam).get(`${w.o}/people`);
   assert.equal(res.status, 403);
   assert.match(res.headers.get('cache-control'), /no-store/);
+  // Inside the workspace shell (lead decision L2-1): the role message and the way back to the company home.
+  assert.match(res.text, /<body class="bz-app">/);
   const main = mainOf(res.text);
-  assert.match(main, /<h1>Your role can&#39;t open this page<\/h1>/);
+  assert.match(main, /<h1 id="bz-refusal-title">Your role can&#39;t open this page<\/h1>/);
   assert.match(textOf(main), /Your role \(Employee\) can't open this page\. Ask a travel admin at Acme Inc if you need it\./);
-  assert.match(main, /<a class="btn btn-navy bz-btn" href="\/business\/app">Your companies<\/a>/);
-  assert.doesNotMatch(textOf(main), /We couldn.t do that|Back to home/, 'not the app\'s generic error page');
+  assert.match(main, new RegExp(`<a class="btn btn-navy bz-btn" href="${escRe(w.o)}">`));
+  assert.match(textOf(main), /Back to Acme Inc home/);
+  assert.doesNotMatch(textOf(res.text), /We couldn.t do that|Back to home/, 'not the app\'s generic error page');
   noInline('403', res.text);
+  // A forged POST from a role without the permission: the same page, nothing written.
+  const forged = await w.c(w.sam).post(`${w.o}/departments`, { name: 'Ops' });
+  assert.equal(forged.status, 403);
+  assert.match(forged.text, /<body class="bz-app">/);
   const org = await w.svc.platformSetStatus(w.admin, w.org.id, { status: 'suspended', rev: (await w.svc.repo.get(KINDS.org, w.org.id)).rev, note: 'Checking' });
   assert.equal(org.status, 'suspended');
   const paused = await w.c(w.owner).get(`${w.o}/people`);

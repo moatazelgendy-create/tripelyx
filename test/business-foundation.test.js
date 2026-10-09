@@ -645,6 +645,10 @@ test('actor: the company and member are re-read; forged, stale, removed and fore
   assert.equal(f.status, 403);
   assert.equal(f.message, "Your role (Employee) can't open this page. Ask a travel admin at Acme Inc if you need it.");
   assert.equal(f.role, 'employee');
+  // A Travel Admin is sent to an owner, never to "a travel admin" (lead decision L2-2).
+  assert.equal(actorLib.roleMessage('travel_admin', 'Acme Inc'), "Your role (Travel Admin) can't open this page. Ask an owner of Acme Inc if you need it.");
+  assert.equal(actorLib.roleMessage('manager', 'Acme Inc'), "Your role (Manager) can't open this page. Ask a travel admin at Acme Inc if you need it.");
+  assert.equal(actorLib.roleMessage('finance'), "Your role (Finance) can't open this page. Ask a travel admin at your company if you need it.");
   const n = (() => { try { actorLib.need(emp, 'request.view.own', { travelerId: 'usr_OOOOOOOOOOOOOOOO' }); } catch (e) { return e; } })();
   assert.equal(n.status, 404, 'a record outside the scope is a 404, not a 403');
   assert.doesNotThrow(() => actorLib.need(emp, 'request.view.own', { travelerId: sam.user.id }));
@@ -727,15 +731,33 @@ test('memberGate: 404 for non-members and foreign ids, 403 with the role, suspen
   assert.equal(r.headers.get('x-robots-tag'), 'noindex, nofollow');
   assert.deepEqual(await r.json(), { org: org.id, role: 'owner', request: null });
 
-  for (const [path, who] of [[o, 'stranger'], [o, 'admin'], [o, 'other'], ['/business/o/org_AAAAAAAAAAAAAAAA', 'owner'], [`/business/o/${other.id}`, 'owner'],
-    [`${o}/trips/${foreignRid}`, 'owner'], [`${o}/trips/btr_nope`, 'owner'], [`${o}/trips/${rid}`, 'ben'], [`/business/o/${other.id}/trips/${rid}`, 'other']]) {
+  // Before the gate knows the company and the member: the app's own 404, the same for a real and a made-up id.
+  for (const [path, who] of [[o, 'stranger'], [o, 'admin'], [o, 'other'], ['/business/o/org_AAAAAAAAAAAAAAAA', 'owner'], [`/business/o/${other.id}`, 'owner']]) {
     r = await req(path, who);
     assert.equal(r.status, 404, `${who} ${path}`);
     const body = await r.text();
     assert.match(body, /Page not found/);
+    assert.doesNotMatch(body, /bz-app/);
     assert.equal(r.headers.get('cache-control'), 'no-store');
     noInline(path, body);
   }
+  // A member's 404 (a request of another company, one that does not exist, one their role does not reach):
+  // "This page isn't available" in the workspace shell (lead decision L2-1), identical whatever the reason.
+  const memberBodies = [];
+  for (const [path, who] of [[`${o}/trips/${foreignRid}`, 'owner'], [`${o}/trips/btr_nope`, 'owner'], [`${o}/trips/${rid}`, 'ben'], [`/business/o/${other.id}/trips/${rid}`, 'other']]) {
+    r = await req(path, who);
+    assert.equal(r.status, 404, `${who} ${path}`);
+    const body = await r.text();
+    assert.match(body, /<body class="bz-app">/, path);
+    assert.match(body, /This page isn&#39;t available/);
+    assert.match(body, new RegExp(`<a class="btn btn-navy bz-btn" href="${path.split('/trips/')[0]}">`));
+    if (who === 'other') assert.doesNotMatch(body, /Acme Inc/, 'Other Co sees its own workspace only');
+    assert.doesNotMatch(body, /Page not found/);
+    assert.equal(r.headers.get('cache-control'), 'no-store');
+    noInline(path, body);
+    memberBodies.push([who, body]);
+  }
+  assert.equal(memberBodies[0][1], memberBodies[1][1], "another company's request reads exactly like a missing one");
 
   // own:request: the traveler, their manager, anyone with request.view.all; a pool link for a decider.
   for (const who of ['sam', 'dana', 'fin', 'ta', 'owner']) assert.equal((await req(`${o}/trips/${rid}`, who)).status, 200, who);
@@ -749,7 +771,9 @@ test('memberGate: 404 for non-members and foreign ids, 403 with the role, suspen
 
   r = await req(`${o}/activity`, 'sam');
   assert.equal(r.status, 403);
-  assert.match(await r.text(), /Your role \(Employee\) can(’|'|&#39;|&#x27;)t open this page\. Ask a travel admin at Acme Inc if you need it\./);
+  const roleBody = await r.text();
+  assert.match(roleBody, /Your role \(Employee\) can(’|'|&#39;|&#x27;)t open this page\. Ask a travel admin at Acme Inc if you need it\./);
+  assert.match(roleBody, /<body class="bz-app">/, 'in the workspace shell');
   assert.equal((await req(`${o}/policies/standard`, 'fin', { method: 'POST' })).status, 403, 'Finance reads policies but cannot edit them');
   assert.equal((await req(`${o}/budgets`, 'dana')).status, 200, 'any one of the listed permissions is enough');
   assert.equal((await req(`${o}/budgets`, 'sam')).status, 403);

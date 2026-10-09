@@ -377,6 +377,7 @@ test('sign-in limits: the email limiter reads the parsed form and counts only fa
   assert.equal(blocked.status, 429, 'the right password too, once the address is over its limit, in any spelling');
   assert.match(textOf(blocked.text), /Too many requests in a short time\./);
   privatePage(blocked, 'the sign-in 429');
+  assert.doesNotMatch(blocked.text, /<body class="bz-app">/, 'signed out, the 429 stays the plain page (lead decision L2-1)');
   assert.equal(blocked.headers.get('referrer-policy'), 'no-referrer');
   assert.equal((await c.post('/business/signin', { email: 'sam@acme.example', password: 'wrong-password' })).status, 401, 'another address is not limited');
 
@@ -431,8 +432,9 @@ test('invite, signed out: one join state offers "Create your account" and "Alrea
   assert.match(page.text, new RegExp(`href="/business/signin\\?next=${encodeURIComponent(here).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`));
   // "Not yours?" belongs to the account-exists answer and the other-account state, not to a fresh landing.
   assert.doesNotMatch(text, /If an account with this email isn't yours/);
-  // How long is left (the same in every zone), then the moment in UTC: the landing has no company time zone.
-  assert.match(text, /This link works once and expires in [67] days, at 9:00 AM, Fri 16 Oct \(UTC\)\./);
+  // How long is left, then the moment in the company's time zone (lead decision L2-4), as the invite link page says it.
+  assert.match(text, /This link works once and expires in [67] days, at 12:00 PM, Fri 16 Oct \(Cairo time\)\./);
+  assert.doesNotMatch(text, /\(UTC\)/);
   assert.doesNotMatch(page.text, /name="email"/, 'the email is fixed by the invite');
   // A bad password: 422, nothing created, the name kept.
   const short = await c.post(`${here}/join`, { name: 'Sam Doe', password: 'short' });

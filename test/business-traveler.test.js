@@ -474,6 +474,8 @@ test('production config: the trip form says "Supplier not connected yet", search
   main = checkPage('/policy (production)', res, { demo: false });
   assert.match(textOf(main), /Limits are in US dollars\./);
   assert.doesNotMatch(textOf(main), /fares and rates they are checked against/, 'no demo fares to check against');
+  assert.doesNotMatch(textOf(main), /demo/i, 'the policy lines name no demo fares when no supplier is connected');
+  assert.match(textOf(main), /the median of the fares in your search/);
 
   res = await c.get(B, h);
   assert.equal(res.status, 200);
@@ -484,6 +486,57 @@ test('production config: the trip form says "Supplier not connected yet", search
   main = checkPage('/trips (production)', res, { priced: false });
   assert.match(textOf(main), /No work trips yet\./);
   assert.doesNotMatch(main, /href="[^"]*\/trips\/new"/);
+});
+
+test('a trip that changed before it was sent keeps the reason typed, so the re-sent Request Approval form starts with it', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const { B, c, svc } = w;
+  const hotels = svc.inventory.hotels;
+  const real = hotels.quote;
+  t.after(() => { hotels.quote = real; });
+  const typed = (main, rid) => {
+    const area = main.match(/<textarea id="s-reason"[^>]*>([\s\S]*?)<\/textarea>/);
+    assert.ok(area, `${rid}: the Request Approval form`);
+    return textOf(area[1]);
+  };
+
+  // Terms only (outcome 'repriced', why 'terms_changed'): the room turns non-refundable at the same price.
+  const rid1 = await createDraft(w, await businessForm(w));
+  hotels.quote = async function quote(args) {
+    const q = await real.call(this, args);
+    return { ...q, cancellation: { ...q.cancellation, type: 'non_refundable', freeUntilHours: 0, summary: 'Non-refundable.' } };
+  };
+  let page = await c.sam.get(`${B}/trips/${rid1}`);
+  let res = await c.sam.post(`${B}/trips/${rid1}/submit`, { rev: revOf(page.text, 'submit'), reason: REASON, category: 'client_meeting' });
+  assert.equal(res.location, `${B}/trips/${rid1}?ok=repriced`);
+  let stored = (await svc.getRequest(w.as(w.sam), rid1)).request;
+  assert.equal(stored.status, 'draft');
+  assert.equal(stored.returned.why, 'terms_changed');
+  assert.deepEqual(stored.reason, { text: REASON, category: 'client_meeting' });
+  let main = mainOf((await c.sam.get(res.location)).text);
+  assert.equal(typed(main, rid1), REASON);
+  assert.match(main, /<option value="client_meeting" selected>/);
+  // Sent again as it stands: pending with that reason.
+  res = await c.sam.post(`${B}/trips/${rid1}/submit`, { rev: revOf(main, 'submit'), reason: typed(main, rid1), category: 'client_meeting' });
+  assert.equal(res.location, `${B}/trips/${rid1}?ok=submitted`);
+  hotels.quote = real;
+
+  // A price change (why 'price_changed'): the same.
+  hotels.quote = async function quote(args) {
+    const q = await real.call(this, args);
+    return { ...q, lines: q.lines.map((l, i) => (i === 0 ? { ...l, amount: l.amount + 4000 } : l)) };
+  };
+  const rid2 = await createDraft(w, await businessForm(w, 'Second board meeting'));
+  hotels.quote = real;
+  page = await c.sam.get(`${B}/trips/${rid2}`);
+  res = await c.sam.post(`${B}/trips/${rid2}/submit`, { rev: revOf(page.text, 'submit'), reason: REASON, category: 'schedule' });
+  assert.equal(res.location, `${B}/trips/${rid2}?ok=repriced`);
+  stored = (await svc.getRequest(w.as(w.sam), rid2)).request;
+  assert.equal(stored.returned.why, 'price_changed');
+  main = mainOf((await c.sam.get(res.location)).text);
+  assert.equal(typed(main, rid2), REASON);
+  assert.match(main, /<option value="schedule" selected>/);
 });
 
 test('submit outcomes: a past departure is 422 too_late; a terms-only change says the trip changed and names no price change; a price change shows was and now', async t => {
@@ -738,11 +791,36 @@ test('isolation and the gates: another company\'s requests are 404, signed out i
   assert.match(textOf(main), /You cancelled this trip at [^.]+\. Nothing was booked or charged\./);
   assert.doesNotMatch(main, /action="[^"]*\/(?:submit|cancel)"/, 'nothing left to do');
 
-  // The compute limit: five searches a minute here, then 429 with the page chrome.
+  // Another employee's 404 is drawn in the workspace shell (lead decision L2-1), the same for a trip that
+  // does not exist, with the way back to the company home and no consumer chrome.
+  const eveGone = await client(app.base, eve.cookie).get(`${B}/trips/${rid}`);
+  const eveNone = await client(app.base, eve.cookie).get(`${B}/trips/btr_AAAAAAAAAAAAAAAA`);
+  assert.equal(eveNone.status, 404);
+  assert.equal(eveGone.text, eveNone.text, 'a trip Eve cannot see reads exactly like one that does not exist');
+  assert.match(eveGone.text, /<body class="bz-app">/);
+  assert.match(mainOf(eveGone.text), /<h1 id="bz-refusal-title">This page isn&#39;t available<\/h1>/);
+  assert.match(mainOf(eveGone.text), new RegExp(`<a class="btn btn-navy bz-btn" href="${B}">`));
+  assert.doesNotMatch(eveGone.text, /Page not found|Back to home|Trips under/, 'not the consumer 404');
+  assert.equal(eveGone.headers.get('cache-control'), 'no-store');
+  noInline('member 404', eveGone.text);
+  // An Employee on Approvals: the role's 403 in the shell.
+  const denied = await c.sam.get(`${B}/approvals`);
+  assert.equal(denied.status, 403);
+  assert.match(denied.text, /<body class="bz-app">/);
+  assert.match(textOf(mainOf(denied.text)), /Your role can't open this page Your role \(Employee\) can't open this page\. Ask a travel admin at Acme Inc if you need it\. Back to Acme Inc home/);
+
+  // The compute limit: five searches a minute here, then 429, drawn in the workspace shell for a member.
   let last;
   for (let i = 0; i < 6; i += 1) last = await c.dana.get(`${B}/trips/search?${qs(Q)}`);
   assert.equal(last.status, 429);
   assert.match(last.text, /Too many requests in a short time/);
+  assert.match(last.text, /<body class="bz-app">/);
+  assert.match(mainOf(last.text), /<h1 id="bz-refusal-title">Too many requests<\/h1>/);
+  assert.match(mainOf(last.text), new RegExp(`href="${B}"`));
+  assert.doesNotMatch(last.text, /We couldn.t do that|Back to home/);
+  assert.equal(last.headers.get('cache-control'), 'no-store');
+  assert.ok(last.headers.get('ratelimit') || last.headers.get('ratelimit-policy'), 'the limiter headers stay');
+  noInline('429', last.text);
 });
 
 // ---------------------------------------------------------------------------------------------------------

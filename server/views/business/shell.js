@@ -3,6 +3,7 @@
 // company workspace gets a top bar, a section menu and a footer of its own.
 //
 //   shellView(ctx, shell, { title, body, notice, error, searchPage, scripts, bodyClass })
+//   shellErrorView(ctx, shell, { title, message })   the workspace 404, role 403 and 429 (business/http.js)
 //
 // `shell` is http.shellContext(ctx, req) (types.ShellModel: org, member, companies, approvalsCount, nav), so the
 // shell shows only what the member's role reaches (nav is filtered by roles.can). Routes set the status and
@@ -155,4 +156,22 @@ ${scripts.map(s => html`<script src="${s}?v=${v}" defer></script>`)}
 </html>`;
 }
 
-module.exports = { shellView, pendingRibbon, PREVIEW_RIBBON, NAV_ICONS };
+/**
+ * A refusal inside the workspace (lead decision L2-1): the 404, the role's 403 and the 429 for a member whose
+ * company and member record the gate knows, drawn in the shell (switcher, menu, ribbons, the Business footer)
+ * with a way back to the company home, instead of the consumer error page. The route sets the status.
+ * @param {object} ctx
+ * @param {import('../../business/types').ShellModel} shell
+ * @param {{ title: string, message: string }} page
+ */
+function shellErrorView(ctx, shell, { title, message }) {
+  const base = `/business/o/${shell.org.id}`;
+  const body = html`<section class="bz-card bz-stack" aria-labelledby="bz-refusal-title">
+    <h1 id="bz-refusal-title">${title}</h1>
+    <p>${message}</p>
+    <p class="bz-inline"><a class="btn btn-navy bz-btn" href="${base}">${icon('arrow-left')}<span>Back to ${shell.org.name} home</span></a></p>
+  </section>`;
+  return shellView(ctx, shell, { title, body });
+}
+
+module.exports = { shellView, shellErrorView, pendingRibbon, PREVIEW_RIBBON, NAV_ICONS };

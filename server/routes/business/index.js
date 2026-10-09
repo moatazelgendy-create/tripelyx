@@ -15,6 +15,7 @@ const publicRoutes = require('./public');
 const travelerRoutes = require('./traveler');
 const adminRoutes = require('./admin');
 const { createBusinessLimits } = require('../../business/limits');
+const { bizErrorPages } = require('../../business/http');
 const { PERMISSIONS } = require('../../business/roles');
 const { sameOrigin } = require('../trips');
 
@@ -85,7 +86,8 @@ function assertRoutes(routes, { mount = MOUNT } = {}) {
 const ROUTES = assertRoutes([...publicRoutes.ROUTES, ...travelerRoutes.ROUTES, ...adminRoutes.ROUTES]);
 
 /**
- * The Business router: public, traveler and admin routes, in that order.
+ * The Business router: public, traveler and admin routes, in that order, then the workspace error pages
+ * (http.bizErrorPages).
  * @param {object} ctx the app context (ctx.business is the BusinessService)
  * @param {import('../../business/types').RouterDeps} deps from createRouterDeps(ctx)
  * @returns {import('express').Router}
@@ -95,6 +97,10 @@ function router(ctx, deps) {
   r.use(publicRoutes.router(ctx, deps));
   r.use(travelerRoutes.router(ctx, deps));
   r.use(adminRoutes.router(ctx, deps));
+  // An error handler only (four arguments): it sees only errors from the routes above, never a request that
+  // went well, so it cannot catch GET /business. A limiter's 429 (and a 404 or role 403 passed on) on a
+  // workspace page is drawn in the workspace shell; anything else goes on to the app's error handler.
+  r.use(bizErrorPages(ctx));
   return r;
 }
 

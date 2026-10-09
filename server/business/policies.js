@@ -97,7 +97,9 @@ const methods = {
       tierLabel: TIER_LABELS[t],
       version: p.version,
       rules: p.rules,
-      description: this.policy.describe(p.rules, { tier: t, version: p.version, orgName: a.org.name, carriers: carrierNames(this.inventory) }),
+      description: this.policy.describe(p.rules, {
+        tier: t, version: p.version, orgName: a.org.name, carriers: carrierNames(this.inventory), demo: !!this.inventory && this.inventory.status === 'demo',
+      }),
       updatedAt: p.updatedAt,
       updatedBy: p.updatedBy,
       rev: p.rev ?? 0,

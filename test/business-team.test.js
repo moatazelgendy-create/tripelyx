@@ -281,7 +281,7 @@ test('invites: the token is shown once and stored only as a hash; the landing pi
   t.after(() => { delete app.accounts.emailInUse; });
   assert.equal(svc.accounts, app.accounts);
   const landing = await svc.inviteByToken({ user: null }, made.token);
-  assert.deepEqual(landing.org, { id: acme.id, name: 'Acme Inc', status: 'active' });
+  assert.deepEqual(landing.org, { id: acme.id, name: 'Acme Inc', status: 'active', timezone: 'Africa/Cairo' }, 'the company time zone, for the expiry');
   assert.deepEqual(landing.invite, {
     publicId: made.invite.publicId, email: 'ana@example.com', emailMasked: 'a***@example.com', role: 'employee', roleLabel: 'Employee',
     departmentName: 'Engineering', invitedByName: 'Olivia Owner', expiresAt: made.invite.expiresAt,
@@ -911,7 +911,7 @@ test('platform: only platform admins list and change companies; pending first, c
   const row = view.orgs.find(o => o.id === twin.id);
   assert.deepEqual(row, {
     id: twin.id, name: 'ACME, Inc.', status: 'pending', size: '11-50 people', at: FIXED_NOW, creatorEmail: 'copy@example.com', memberCount: 1,
-    timezone: 'Africa/Cairo', similarNames: ['Acme Inc'], rev: 0,
+    timezone: 'Africa/Cairo', similarNames: ['Acme Inc'], statusNote: null, statusAt: null, previousName: null, rev: 0,
   });
   assert.deepEqual(view.orgs.find(o => o.id === third.id).similarNames, []);
   assert.deepEqual(view.leads.map(l => l.name), ['Lead A']);
@@ -930,6 +930,9 @@ test('platform: only platform admins list and change companies; pending first, c
   assert.deepEqual([noNote.code, noNote.details], ['invalid_status', { note: 'Write a short note on why this company is paused.' }]);
   o = await svc.platformSetStatus(admin, twin.id, { status: 'suspended', note: 'Looks like a copy of another company', rev: o.rev });
   assert.deepEqual([o.status, o.statusNote], ['suspended', 'Looks like a copy of another company']);
+  // The platform list shows staff why it is paused, and since when (lead decision L2-4).
+  const paused = (await svc.platformListOrgs(admin)).orgs.find(x => x.id === twin.id);
+  assert.deepEqual([paused.statusNote, paused.statusAt, paused.previousName], ['Looks like a copy of another company', FIXED_NOW, null]);
   assert.equal((await audits(twin.id))[0].action, 'org.suspended');
   await rejectsWith(svc.getOrg(twin.owner), 403, 'org_suspended');
   await rejectsWith(svc.invite(twin.owner, { email: 'x@example.com', role: 'employee' }), 403, 'org_suspended');
@@ -1459,7 +1462,13 @@ test('settings: a confirmed company that takes a new name goes back to Tripelyx 
   assert.equal((await svc.listMembers(co.owner)).memberCount, 1);
   const row = (await svc.platformListOrgs(admin)).orgs.find(r => r.id === co.id);
   assert.equal(row.status, 'pending');
-  await svc.platformSetStatus(admin, co.id, { status: 'active', rev: row.rev });
+  assert.equal(row.previousName, 'EVE test co.', 'the name Tripelyx confirmed, for "Renamed from"');
+  assert.ok(!Object.hasOwn(await svc.getOrg(co.owner), 'previousName'), "members' views leave it out");
+  assert.ok(!Object.hasOwn(o, 'previousName'));
+  // A second rename while it waits keeps the confirmed name.
+  o = await svc.saveSettings(co.owner, { name: 'Globex Corporation Two', rev: o.rev });
+  assert.equal((await svc.platformListOrgs(admin)).orgs.find(r => r.id === co.id).previousName, 'EVE test co.');
+  await svc.platformSetStatus(admin, co.id, { status: 'active', rev: o.rev });
   assert.equal((await audits(co.id))[0].action, 'org.confirmed');
   await svc.acceptInvite({ user: victim.user }, token);
 

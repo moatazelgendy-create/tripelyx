@@ -18,13 +18,16 @@ const memberId = (orgId, userId) => `${orgId}.${userId}`;
 const SUSPENDED = `Tripelyx has paused this company workspace. Write to ${BUSINESS_EMAIL}.`;
 
 /**
- * The 403 message for a role without the permission.
+ * The 403 message for a role without the permission. It names who can help: a travel admin, or, for a
+ * Travel Admin, an owner (only owners hold what a travel admin lacks).
  * @param {string} role
  * @param {string} [orgName]
  * @returns {string}
  */
 function roleMessage(role, orgName) {
-  return `Your role (${LABELS[role] || 'Unknown'}) can't open this page. Ask a travel admin at ${orgName || 'your company'} if you need it.`;
+  const company = orgName || 'your company';
+  const ask = role === 'travel_admin' ? `Ask an owner of ${company}` : `Ask a travel admin at ${company}`;
+  return `Your role (${LABELS[role] || 'Unknown'}) can't open this page. ${ask} if you need it.`;
 }
 
 /** 404: not a member, another company's id, or a record the member may not see. */

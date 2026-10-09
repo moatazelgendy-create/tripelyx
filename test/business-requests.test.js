@@ -321,6 +321,42 @@ test('a changed price on submit updates the draft instead (outcome repriced, aud
   assert.equal(res2.request.totalCents, 32200 + 30800, 'the sum of what still prices');
 });
 
+test('a submit that comes back repriced keeps the reason typed (never a card number; an empty field keeps the stored one)', async () => {
+  const w = await world({ budgetCents: 1000000 });
+  const t = w.as(w.traveler);
+  // The price moved: the draft keeps the reason and category, cut to what the lifecycle accepts.
+  const r = await draft(w, w.traveler, OUTSIDE);
+  w.inventory.setPrice(OUT.flex, 70000);
+  const res = await w.svc.submit(t, r.id, { rev: r.rev, reason: `  ${REASON}  `, category: 'client_meeting' });
+  assert.equal(res.outcome, 'repriced');
+  assert.deepEqual(res.request.reason, { text: REASON, category: 'client_meeting' });
+  // Sent again with an empty field after another move: the stored reason stays; a card number never replaces it.
+  w.inventory.setPrice(OUT.flex, 71000);
+  const res2 = await w.svc.submit(t, r.id, { rev: res.request.rev, reason: '' });
+  assert.equal(res2.outcome, 'repriced');
+  assert.deepEqual(res2.request.reason, { text: REASON, category: 'client_meeting' });
+  w.inventory.setPrice(OUT.flex, 72000);
+  const res3 = await w.svc.submit(t, r.id, { rev: res2.request.rev, reason: 'Pay with 4111 1111 1111 1111 please', category: 'other' });
+  assert.equal(res3.outcome, 'repriced');
+  assert.deepEqual(res3.request.reason, { text: REASON, category: 'client_meeting' }, 'a card number is never stored');
+  const long = 'x'.repeat(700);
+  w.inventory.setPrice(OUT.flex, 73000);
+  const res4 = await w.svc.submit(t, r.id, { rev: res3.request.rev, reason: long, category: 'nonsense' });
+  assert.deepEqual(res4.request.reason, { text: 'x'.repeat(500), category: null });
+  // The verdict got worse at the same price (the policy tightened): the reason is kept too.
+  w.inventory.clearOverrides();
+  const r2 = await draft(w, w.traveler);
+  w.policy.configure({ flightCapCents: 10000 });
+  const res5 = await w.svc.submit(t, r2.id, { rev: r2.rev, reason: REASON, category: 'schedule' });
+  assert.equal(res5.outcome, 'repriced');
+  assert.equal(res5.request.evaluation.status, 'out');
+  assert.deepEqual(res5.request.reason, { text: REASON, category: 'schedule' });
+  // Sent again with it: pending with that reason.
+  const sent = await w.svc.submit(t, r2.id, { rev: res5.request.rev, reason: res5.request.reason.text, category: res5.request.reason.category });
+  assert.equal(sent.outcome, 'submitted');
+  assert.deepEqual(sent.request.reason, { text: REASON, category: 'schedule' });
+});
+
 // ---------------------------------------------------------------------------------------------------------
 // Decide, ask, cancel
 

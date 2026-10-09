@@ -46,10 +46,10 @@ function inviteView(ctx, { landing, token, user = null, error = null, emailTaken
   const { org, invite: inv, state } = landing;
   const here = `/business/invite/${token}`;
   const signinHref = `${SIGNIN}?next=${encodeURIComponent(here)}`;
-  // The landing has no company time zone (types.InviteLanding), so the moment is said in UTC, after how long
-  // is left, which reads the same in every zone.
+  // How long is left, then the moment in the company's time zone (types.InviteLanding org.timezone), as the
+  // invite link page and People say it, so the same link never shows two times.
   const left = ctx.now ? f.timeLeft(ctx.now(), inv.expiresAt) : null;
-  const expires = `${left ? `in ${left}, at ` : 'at '}${f.dateTimeIn('UTC', inv.expiresAt, { zone: true })}`;
+  const expires = `${left ? `in ${left}, at ` : 'at '}${f.dateTimeIn(f.safeZone(org.timezone), inv.expiresAt, { zone: true })}`;
   let main;
   if (state === 'join' && emailTaken) {
     // POST /join found an account for this email: signing in is the way in now, not a second account.

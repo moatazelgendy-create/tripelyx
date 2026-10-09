@@ -650,6 +650,11 @@ test('describe(): the policy in plain words, with no em dash and no pressure wor
     'Up to 4-star hotels.',
     "Sahara Wings isn't used by Acme Inc.",
   ]);
+  // With no supplier (or a live one) the searches are not demo searches, so the median names no demo fares.
+  const live = describeMod.describe(r, { tier: 'standard', version: 3, orgName: 'Acme Inc', carriers: { ZS: 'Sahara Wings' }, demo: false });
+  assert.equal(live.lines[0], "Flights under 6 hours: Economy, with fares up to the median of the fares in your search plus 20% (or $600 if there aren't enough fares to compare), at most 1 stop.");
+  assert.ok(live.lines.every(line => !/demo/i.test(line)));
+  assert.deepEqual(live.lines.slice(2), d.lines.slice(2), 'only the fares wording changes');
   const x = defaultPolicy('executive');
   x.flights.shortHaul.cap = { mode: 'fixed', amountCents: 80000 };
   x.flights.shortHaul.maxStops = 0;

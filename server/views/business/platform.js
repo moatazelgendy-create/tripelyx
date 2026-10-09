@@ -1,6 +1,7 @@
 // /admin/business: the platform admin's company list (plan §I8). Companies waiting for confirmation first,
 // then active, then paused; each with its size, when it was created, who created it, how many members it
-// has, its time zone and other companies with a similar name. Confirm (pending → active), Pause (a note is
+// has, its time zone and other companies with a similar name; a pending company that was renamed after it was
+// confirmed says "Renamed from …", and a paused one shows the staff note and when it was paused. Confirm (pending → active), Pause (a note is
 // required; the company never sees it) and Reactivate, each its own small form (POST, 303 back). Then the
 // company enquiries from the /business form. Nothing inside a company: no requests, policies, budgets,
 // member lists or activity. With Travel by Budget on it is a tab of the admin control center (the trips
@@ -57,6 +58,8 @@ function orgCard(o, form, orgs = []) {
     <div class="bz-card-head"><h3>${o.name}</h3>${statusPill(o.status, { kind: 'org' })}</div>
     <p class="bz-meta">${o.size || 'Size not given'} · ${f.plural(o.memberCount, 'member')} · ${zoneOption(f.safeZone(o.timezone))} · created ${f.dateTimeIn('UTC', o.at)}</p>
     <p class="bz-meta">Created by ${o.creatorEmail || 'an account that has left'}</p>
+    ${o.status === 'pending' && o.previousName ? html`<p class="bz-meta">Renamed from ${o.previousName}, which Tripelyx had confirmed. Check the new name before you confirm it again.</p>` : ''}
+    ${o.status === 'suspended' && o.statusNote ? html`<p class="bz-meta">Paused${o.statusAt ? ` on ${f.dateTimeIn('UTC', o.statusAt)}` : ''}: ${o.statusNote}</p>` : ''}
     ${similar.length ? html`<p class="alert alert-warning bz-alert" role="note">Similar name: ${similar.join(', ')}</p>` : ''}
     ${confirm || pause ? html`<div class="bz-stack">${confirm ? html`<div class="bz-inline">${confirm}</div>` : ''}${pause}</div>` : ''}
   </li>`;

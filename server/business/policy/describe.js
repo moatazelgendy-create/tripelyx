@@ -43,14 +43,15 @@ const basisText = basis => (basis === 'excl_taxes' ? 'before taxes' : 'taxes inc
 
 const haulPhrase = (haul, minutes) => (haul === 'long' ? `Flights of ${hoursText(minutes)} or more` : `Flights under ${hoursText(minutes)}`);
 
-/** A cap in words, for the policy page. */
-function capPhrase(cap) {
+/** A cap in words, for the policy page. `demo`: the searches run on demo inventory, so their fares are demo fares. */
+function capPhrase(cap, { demo = true } = {}) {
+  const fares = demo ? 'the demo fares' : 'the fares';
   switch (cap.mode) {
     case 'fixed': return `with fares up to ${format(cap.amountCents)} each way`;
     case 'median_pct':
-      return `with fares up to the median of the demo fares in your search plus ${pctText(cap.pctTenths)}% (or ${format(cap.fallbackCents)} if there aren't enough fares to compare)`;
+      return `with fares up to the median of ${fares} in your search plus ${pctText(cap.pctTenths)}% (or ${format(cap.fallbackCents)} if there aren't enough fares to compare)`;
     case 'median_plus':
-      return `with fares up to the median of the demo fares in your search plus ${format(cap.amountCents)} (or ${format(cap.fallbackCents)} if there aren't enough fares to compare)`;
+      return `with fares up to the median of ${fares} in your search plus ${format(cap.amountCents)} (or ${format(cap.fallbackCents)} if there aren't enough fares to compare)`;
     default: return 'with no price limit';
   }
 }
@@ -63,14 +64,16 @@ function stopsPhrase(maxStops) {
 /**
  * The member-facing summary of one tier's rules.
  * @param {import('../types').PolicyRules} rules
- * @param {{ tier: import('../types').Tier, version: number, orgName: string, carriers: Record<string, string> }} opts
+ * @param {{ tier: import('../types').Tier, version: number, orgName: string, carriers: Record<string, string>,
+ *   demo?: boolean }} opts demo (default true): searches run on demo inventory, so a median cap names "the demo
+ *   fares"; false (no supplier, or a live one) says "the fares in your search"
  * @returns {import('../types').PolicyDescription} title 'Your travel policy', sub '<Tier> policy, version <n>'
  */
-function describe(rules, { tier, version, orgName, carriers = {} } = {}) {
+function describe(rules, { tier, version, orgName, carriers = {}, demo = true } = {}) {
   const f = rules.flights, h = rules.hotels;
   const lines = [];
   for (const [haul, band] of [['short', f.shortHaul], ['long', f.longHaul]]) {
-    const parts = [cabinPhrase(band.maxCabin), capPhrase(band.cap), stopsPhrase(band.maxStops),
+    const parts = [cabinPhrase(band.maxCabin), capPhrase(band.cap, { demo }), stopsPhrase(band.maxStops),
       band.refundableOnly ? 'on a fare that refunds at least part of the price' : ''].filter(Boolean);
     lines.push(`${haulPhrase(haul, f.longHaulMinutes)}: ${parts.join(', ')}.`);
   }
@@ -81,7 +84,7 @@ function describe(rules, { tier, version, orgName, carriers = {} } = {}) {
     lines.push(`Plan ${say(a, `flights under ${hoursText(f.longHaulMinutes)}`)}, and ${say(b, 'longer ones')}.`);
   }
   for (const o of f.routeOverrides) {
-    const parts = [o.maxCabin ? cabinPhrase(o.maxCabin) : '', capPhrase(o.cap)].filter(Boolean);
+    const parts = [o.maxCabin ? cabinPhrase(o.maxCabin) : '', capPhrase(o.cap, { demo })].filter(Boolean);
     lines.push(`${o.from} to ${o.to}${o.bothWays ? ' and back' : ''}: ${parts.join(', ')}.`);
   }
   if (h.defaultNightlyCents != null) lines.push(`Hotels: up to ${format(h.defaultNightlyCents)} a night, ${basisText(h.capBasis)}.`);
