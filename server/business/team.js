@@ -1055,7 +1055,10 @@ const methods = {
       format: 'tripelyx-business-company-export',
       version: 1,
       exportedAt,
-      note: `Tripelyx Business preview. Amounts are whole US cents from demo prices: nothing was booked or charged. Questions: ${BUSINESS_EMAIL}.`,
+      // Trip prices are demo prices only with demo inventory; with none (production) every amount is the company's own.
+      note: this.inventory && this.inventory.status === 'demo'
+        ? `Tripelyx Business preview. Amounts are whole US cents from demo prices: nothing was booked or charged. Questions: ${BUSINESS_EMAIL}.`
+        : `Tripelyx Business preview. Amounts are whole US cents: nothing was booked or charged. Questions: ${BUSINESS_EMAIL}.`,
       org: orgView(a.org),
       members: members.rows,
       departments: sortDepartments(departments.rows),

@@ -156,14 +156,14 @@ function bizErrorPages(ctx) {
  *   own: 'request' loads req.params.rid with Repo.getIn and requires roles.allowed for one of the permissions
  *   (a pool link for the member counts for team and decider scopes); a missing, foreign or unreachable
  *   request → 404. forbiddenView(ctx, { message, role, label, reason }) renders the 403 page.
- * @returns {import('express').RequestHandler} named bizMemberGate; sets
- *   req.biz = { org, member, actor: { org, member, user }, request? }
+ * @returns {import('express').RequestHandler} named bizMemberGate, with .perms (the permissions, frozen) and
+ *   .own; sets req.biz = { org, member, actor: { org, member, user }, request? }
  */
 function memberGate(ctx, perm, { own = false, forbiddenView = defaultForbiddenView } = {}) {
   const perms = Array.isArray(perm) ? [...perm] : [perm];
   if (!perms.length || perms.some(p => !PERMISSIONS.includes(p))) throw new Error(`[business] unknown permission ${perm}`);
   if (own !== false && own !== 'request') throw new Error(`[business] memberGate own must be false or 'request' (got ${own})`);
-  return async function bizMemberGate(req, res, next) {
+  const gate = async function bizMemberGate(req, res, next) {
     try {
       privateHeaders(res);
       if (!req.user) return toSignIn(req, res);
@@ -201,6 +201,10 @@ function memberGate(ctx, perm, { own = false, forbiddenView = defaultForbiddenVi
       next();
     } catch (e) { next(e); }
   };
+  // What the gate checks, so the structural test (business-static) can compare it with the route's ROUTES row.
+  gate.perms = Object.freeze([...perms]);
+  gate.own = own;
+  return gate;
 }
 
 /**

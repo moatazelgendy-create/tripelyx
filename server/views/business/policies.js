@@ -35,6 +35,9 @@ const CAP_LABELS = Object.freeze({
 const CAP_HINT = 'Search median: the middle fare of the flights found for the trip.';
 const COUNTRIES_DONE = 'Every country in the demo data already has its own limits.';
 const HOTEL_CLASS_HINT = 'Hotel class as shown in the demo hotel data.';
+// With no demo inventory (production) there is no demo data to point at.
+const COUNTRIES_DONE_PLAIN = 'Every country on the list already has its own limits.';
+const HOTEL_CLASS_HINT_PLAIN = 'Hotel class, from 1-star to 5-star.';
 const STOPS = Object.freeze([['', 'Any number of stops'], ['0', 'Nonstop only'], ['1', 'Up to 1 stop']]);
 const BASIS = Object.freeze([['incl_taxes', 'Taxes included'], ['excl_taxes', 'Before taxes']]);
 const STARS = Object.freeze([['', 'Any hotel class'], ...[1, 2, 3, 4, 5].map(n => [String(n), `Up to ${n}-star`])]);
@@ -198,12 +201,12 @@ function routeFieldset(n, form, errors, refs, isNew) {
  * choices (a second row for a country is refused). An existing country sits in a closed <details> with a
  * one-line summary (open when one of its fields has a problem), so the editor stays short on a phone.
  */
-function countryFieldset(n, form, errors, refs, isNew, used = new Set()) {
+function countryFieldset(n, form, errors, refs, isNew, used = new Set(), demo = true) {
   const p = `country.${n}`;
   const idp = `bz-pol-country-${n}`;
   const name = val(form, `${p}.name`);
   const choices = isNew ? refs.countries.filter(c => !used.has(c)) : refs.countries;
-  if (isNew && refs.countries.length && !choices.length && !name) return html`<p class="bz-meta">${COUNTRIES_DONE}</p>`;
+  if (isNew && refs.countries.length && !choices.length && !name) return html`<p class="bz-meta">${demo ? COUNTRIES_DONE : COUNTRIES_DONE_PLAIN}</p>`;
   const nameField = refs.countries.length
     ? selectField({
       id: `${idp}-name`, name: `${p}.name`, label: 'Country',
@@ -297,14 +300,14 @@ function policyEditView(ctx, shell, { view, form = null, errors = {}, note = '',
           <div class="bz-grid-fields">
             ${selectField({ id: 'bz-pol-hotel-capBasis', name: 'hotel.capBasis', label: 'Nightly limits are', options: BASIS, value: val(values, 'hotel.capBasis'), error: errors['hotel.capBasis'] })}
             ${textField({ id: 'bz-pol-hotel-default', name: 'hotel.default', label: 'Nightly limit everywhere else (US dollars)', value: val(values, 'hotel.default'), error: errors['hotel.default'], inputmode: 'decimal', maxlength: 12, hint: 'Leave blank for no limit.' })}
-            ${selectField({ id: 'bz-pol-hotel-maxStars', name: 'hotel.maxStars', label: 'Highest hotel class', options: STARS, value: val(values, 'hotel.maxStars'), error: errors['hotel.maxStars'], hint: HOTEL_CLASS_HINT })}
+            ${selectField({ id: 'bz-pol-hotel-maxStars', name: 'hotel.maxStars', label: 'Highest hotel class', options: STARS, value: val(values, 'hotel.maxStars'), error: errors['hotel.maxStars'], hint: demo ? HOTEL_CLASS_HINT : HOTEL_CLASS_HINT_PLAIN })}
             ${textField({ id: 'bz-pol-hotel-minAdvanceDays', name: 'hotel.minAdvanceDays', label: 'Book at least this many days ahead', value: val(values, 'hotel.minAdvanceDays'), error: errors['hotel.minAdvanceDays'], inputmode: 'numeric', maxlength: 3 })}
           </div>
           ${checkField({ id: 'bz-pol-hotel-refundableOnly', name: 'hotel.refundableOnly', label: 'Only rates that can be cancelled for free, or partly, before the stay', checked: val(values, 'hotel.refundableOnly') === '1', error: errors['hotel.refundableOnly'] })}
         </fieldset>
         <p class="bz-meta">Limits by country, with city exceptions. A city's limit wins over its country's, and a country's over the limit everywhere else.</p>
-        ${countries.map(n => countryFieldset(n, values, errors, refs, false))}
-        ${countryNew === null ? '' : countryFieldset(countryNew, values, errors, refs, true, usedCountries)}
+        ${countries.map(n => countryFieldset(n, values, errors, refs, false, undefined, demo))}
+        ${countryNew === null ? '' : countryFieldset(countryNew, values, errors, refs, true, usedCountries, demo)}
       </section>
       <section class="bz-section" aria-labelledby="bz-pol-trip"><h2 id="bz-pol-trip">Trip limit</h2>
         <div class="bz-grid-fields">

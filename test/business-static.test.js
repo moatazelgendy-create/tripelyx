@@ -120,8 +120,8 @@ test('views: no inline style, <style>, inline <script>, on* handler or javascrip
   assert.doesNotMatch(browser, /setAttribute\(\s*['"]style['"]|\.innerHTML\s*=|insertAdjacentHTML|document\.write|\beval\(|new Function\(/);
 });
 
-/** An em dash, as the character, an HTML entity or a JS escape. */
-const EM_DASH = /\u2014|&mdash;|&#8212;|&#x2014;|\\u2014/i;
+/** An em dash, as the character, an HTML entity, a JS escape or a CSS escape (content: "\\2014"). */
+const EM_DASH = /\u2014|&mdash;|&#8212;|&#x2014;|\\u2014|\\2014/i;
 
 test('copy: no em dash in any Business file (views, routes, service, browser script and styles), in any spelling', () => {
   const files = [...BUSINESS_JS, ...BROWSER_FILES, at('server/views/pages.js')];
@@ -223,7 +223,7 @@ test('routers: every POST runs limiter → sameOrigin → form parser → gate �
     if (fn === deps.form) return 'form';
     return fn.name || '(anonymous)';
   };
-  let posts = 0;
+  let posts = 0, gated = 0;
   for (const [label, mod] of sets) {
     const r = mod.router(app.ctx, deps);
     for (const row of mod.ROUTES) {
@@ -248,10 +248,19 @@ test('routers: every POST runs limiter → sameOrigin → form parser → gate �
       } else {
         assert.ok(!chain.includes('sameOrigin') && !chain.includes('form'), `${what}: a GET reads no form`);
       }
-      if (row.path.startsWith('/o/:orgId')) assert.ok(chain.includes('bizMemberGate'), `${what}: a workspace route passes the member gate`);
+      if (row.path.startsWith('/o/:orgId')) {
+        assert.ok(chain.includes('bizMemberGate'), `${what}: a workspace route passes the member gate`);
+        // The mounted gate checks what the table says: its permissions and its own:'request' (the table is
+        // what the isolation test's §D matrix is read against, so it must be what runs).
+        const mounted = layer.route.stack.find(s => s.handle.name === 'bizMemberGate').handle;
+        assert.deepEqual([...mounted.perms], Array.isArray(row.perm) ? [...row.perm] : [row.perm], `${what}: the gate's permissions are the row's`);
+        assert.equal(mounted.own, row.own, `${what}: the gate's own is the row's`);
+        gated += 1;
+      }
     }
   }
   assert.ok(posts >= 22, `${posts} POST routes checked`);
+  assert.ok(gated >= 30, `${gated} workspace gates checked against their rows`);
   // The one documented exception: bizAuthAccount keys on the parsed email, so it runs after the form.
   const signin = sets[0][1].ROUTES.find(r => key(r) === 'POST /signin');
   assert.deepEqual([...signin.limiter], ['bizAuthIp', 'bizAuthAccount']);
@@ -326,21 +335,41 @@ const TIERS_OF_MODELS = ['6f707573', '736f6e6e6574', '6861696b75'].map(h => Buff
 const GPT = Buffer.from('677074', 'hex').toString('utf8');
 const MODEL_RE = new RegExp(`(?:${FAMILIES.join('|')})|\\b(?:${TIERS_OF_MODELS.join('|')})[-_ .]?\\d|\\b${GPT}[-_ ]?(?:\\d|4o|3\\.5)`, 'i');
 const SECRET_RES = [
-  /\bsk-[A-Za-z0-9_-]{20,}/, /\bsk_live_[A-Za-z0-9]{8,}/, /\bAKIA[0-9A-Z]{16}\b/, /\bghp_[A-Za-z0-9]{30,}/, /\bxox[abprs]-[A-Za-z0-9-]{10,}/,
+  /\bsk-[A-Za-z0-9_-]{20,}/, /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{8,}/, /\bAKIA[0-9A-Z]{16}\b/, /\bghp_[A-Za-z0-9]{30,}/, /\bxox[abprs]-[A-Za-z0-9-]{10,}/,
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/, /\bAIza[0-9A-Za-z_-]{35}\b/,
+  // Supplier tokens, an Authorization header written out, and a secret-named key or variable given a long
+  // random value (letters and digits, 32 or more).
+  /\bduffel_(?:test|live)_[A-Za-z0-9_-]{8,}/, /\bBearer\s+[A-Za-z0-9._~+/=-]{20,}/,
+  /\b\w*(?:SECRET|TOKEN|API_?KEY|PRIVATE_KEY|PASSWORD|[Ss]ecret|[Tt]oken|[Aa]pi[Kk]ey)\w*['"]?\s*[=:]\s*['"`]?(?=[A-Za-z0-9+/_=-]*\d)(?=[A-Za-z0-9+/_=-]*[A-Za-z])[A-Za-z0-9+/_=-]{32,}/,
 ];
+/** A fixture that checks a secret never leaks names itself fake (FAKE_..., fakeToken, a dummy or example value). */
+const FAKE_FIXTURE = /\b(?:fake|dummy|example|placeholder)|FAKE_|_FAKE\b/i;
+/** Each pattern's own check: a made-up key of its shape (built here, so this file holds none) and a named fake. */
+const SECRET_SAMPLES = (() => {
+  const r = (n, set = 'aB3dE5gH7jK9mN1pQ2rS4tU6vW8xY0z') => set.repeat(4).slice(0, n);
+  return [
+    ['sk', '-', r(24)], ['sk_', 'live_', r(16)], ['sk_', 'test_', r(16)], ['rk_', 'live_', r(16)], ['AK', 'IA', r(16, 'ABCDEFGHIJKLMNOP2345')],
+    ['gh', 'p_', r(36)], ['xo', 'xb-', r(12)], ['-----BEGIN RSA PRIV', 'ATE KEY-----', ''], ['AI', 'za', r(35)],
+    ['duffel_', 'test_', r(20)], ['duffel_', 'live_', r(20)], ['Authorization: Bear', 'er ', r(40)],
+    ['SUPPLIER_TOK', 'EN=', r(40)], ['const apiK', "ey = '", `${r(40)}'`],
+  ].map(parts => parts.join(''));
+})();
 const TEXT_FILE = p => !/\.(?:png|jpe?g|gif|webp|ico|woff2?|ttf|otf|pdf|zip|gz)$/i.test(p);
 
 test('no AI model name or id and no provider secret in any file of the repository; the explainer is the rule-based one only', () => {
   const files = filesUnder(ROOT, TEXT_FILE).filter(p => !rel(p).startsWith('node_modules/'));
   assert.ok(files.length > 200, `${files.length} files scanned`);
   const found = [];
+  // The patterns find what they are for: each made-up key matches one, and the line that holds it fails.
+  for (const sample of SECRET_SAMPLES) {
+    assert.ok(SECRET_RES.some(re => re.test(sample)) && !FAKE_FIXTURE.test(sample), `a secret pattern finds ${sample.slice(0, 12)}...`);
+  }
   for (const f of files) {
     const src = read(f);
     if (MODEL_RE.test(src)) found.push(...hits(f, src, MODEL_RE).map(h => `model: ${h}`));
-    for (const re of SECRET_RES) if (re.test(src)) found.push(...hits(f, src, re).map(h => `secret: ${h}`));
+    // A test fixture that checks a secret never leaks is exempt only when it names itself fake.
+    for (const re of SECRET_RES) if (re.test(src)) found.push(...hits(f, src, re).filter(h => !FAKE_FIXTURE.test(h)).map(h => `secret: ${h}`));
   }
-  // Test fixtures that check a secret never leaks use obviously fake values; none of them looks like a key.
   assert.deepEqual(found, [], 'model names, model ids or secrets');
   // No .env file is kept, and .env.example holds placeholders only for anything secret.
   assert.ok(!files.some(p => /(^|\/)\.env$/.test(rel(p))), 'no .env file');
