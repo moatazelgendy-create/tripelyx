@@ -457,7 +457,8 @@ codes and hashes only.
 
 A second run on the same commit (the flip, the undo, **Re-run jobs**) reuses the image that commit already
 pushed to ECR instead of building it again: the repository's image tags are immutable, so a rebuild under
-the same tag would be refused.
+the same tag would be refused. The check asks ECR directly (`ecr:DescribeImages`). When ECR cannot answer,
+the run stops before building anything rather than guessing.
 
 #### Tripelyx Business on www: dark deploy, flip, undo
 
