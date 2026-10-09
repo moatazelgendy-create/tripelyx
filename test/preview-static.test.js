@@ -201,6 +201,8 @@ test('the deployment settings boot the app with Business on, the memory store, d
   });
   assert.match(block, /PREVIEW_PASSWORD: env\.PREVIEW_PASSWORD,/);
   assert.match(block, /ADMIN_EMAILS: \(env\.ADMIN_EMAILS \/\/ ""\),/);
+  assert.match(workflow, /ADMIN_EMAILS: \$\{\{ vars\.ADMIN_EMAILS \|\| 'platform\.admin@tripelyx-demo\.example' \}\}/,
+    'the demo seed needs an admin address, so the preview falls back to the demo one');
   assert.match(workflow, /if \(env\.DUFFEL_TEST_TOKEN \/\/ ""\) != "" then \{ DUFFEL_TEST_TOKEN: env\.DUFFEL_TEST_TOKEN \} else \{\} end/);
   assert.match(workflow, /if \(env\.LITEAPI_SANDBOX_KEY \/\/ ""\) != "" then \{ LITEAPI_SANDBOX_KEY: env\.LITEAPI_SANDBOX_KEY \} else \{\} end/);
   const config = loadConfig({ ...env, PREVIEW_PASSWORD: 'a-test-password-only', ADMIN_EMAILS: '' });

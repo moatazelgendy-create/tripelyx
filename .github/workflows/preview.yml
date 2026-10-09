@@ -131,7 +131,8 @@ jobs:
         if: steps.service.outputs.ready == 'true'
         env:
           IMAGE: ${{ steps.image.outputs.uri }}
-          ADMIN_EMAILS: ${{ vars.ADMIN_EMAILS }}
+          # The demo seed makes the first address the preview's platform admin; with no repo variable it is the demo one.
+          ADMIN_EMAILS: ${{ vars.ADMIN_EMAILS || 'platform.admin@tripelyx-demo.example' }}
           DUFFEL_TEST_TOKEN: ${{ secrets.DUFFEL_TEST_TOKEN }}
           LITEAPI_SANDBOX_KEY: ${{ secrets.LITEAPI_SANDBOX_KEY }}
         run: |
