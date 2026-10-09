@@ -17,7 +17,9 @@
 // (leg.skipped: fares in another currency, mixed cabins, fees paid in another currency, hotels with no
 // name), that it shows the 40 lowest-priced hotels when the supplier sent that many, that each way of a
 // return trip is its own one-way ticket, and, when the hotel supplier failed (leg.error), that the flights
-// can still be requested. Demo pages are unchanged.
+// can still be requested. Demo pages are unchanged. On live prices (go-live design §5.6) each card says "US
+// dollars, from the airline · Priced at … · Can change until booked" ("from the hotel supplier" for a hotel),
+// and the limits bar names who priced the search its amounts come from.
 const { html } = require('../../lib/html');
 const { icon } = require('../icons');
 const f = require('./format');
@@ -247,8 +249,10 @@ function resultsView(ctx, { org, view, all = false, pick = null, error = null, e
     const city = (h && h.city) || q.hotel.city || to;
     const sub = `${f.dayRange(q.hotel.checkIn, q.hotel.checkOut)} · ${f.plural(nightsBetween(q.hotel.checkIn, q.hotel.checkOut), 'night')}`;
     if (h && h.error === 'unavailable') {
-      // The hotel supplier failed: the flights still show (PRICE_CHECK_COPY.hotelsLeg).
-      sections.push(legSection('bz-leg-hotel', `Hotel in ${city}`, sub, html`<div class="alert alert-warning bz-alert" role="status">${icon('alert')}<span>${PRICE_CHECK_COPY.hotelsLeg}</span></div>`));
+      // The hotel supplier failed, or reached its daily cap (limit): the flights still show
+      // (PRICE_CHECK_COPY.hotelsLeg, PRICE_CHECK_COPY.hotelsLimit).
+      const why = h.limit === true ? PRICE_CHECK_COPY.hotelsLimit : PRICE_CHECK_COPY.hotelsLeg;
+      sections.push(legSection('bz-leg-hotel', `Hotel in ${city}`, sub, html`<div class="alert alert-warning bz-alert" role="status">${icon('alert')}<span>${why}</span></div>`));
     } else if (!h || !h.rows.length) {
       const off = supplier && inv && inv.hotelsConnected === false;
       sections.push(legSection('bz-leg-hotel', `Hotel in ${city}`, sub, html`${legNotes(h, 'hotel')}${p.emptyState({ title: off ? HOTELS_NOT_CONNECTED : copy.noHotels(city), text: 'You can still request the flights.', iconName: 'bed' })}`));
@@ -295,7 +299,7 @@ function resultsView(ctx, { org, view, all = false, pick = null, error = null, e
     actions: html`<a class="btn btn-ghost bz-btn" href="${base}/trips/new?${searchQuery(q)}">${icon('sliders')}<span>Change search</span></a>`,
   })}
   ${p.errorBox(missing && missing.length ? missingText(missing) : error)}
-  ${p.limitsBar(view.limits, { pricedAt: view.pricedAt, timeZone, level: 2, source })}
+  ${p.limitsBar(view.limits, { pricedAt: view.pricedAt, timeZone, level: 2, source, kind: f.liveKind(source, legRows) })}
   ${notes}
   ${form}`;
 }

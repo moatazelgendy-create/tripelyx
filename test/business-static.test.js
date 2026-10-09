@@ -451,6 +451,8 @@ const SUPPLIER_KEY_LINES = Object.freeze({
   'server/business/suppliers/index.js': [
     /^[a-zA-Z]+: '[^'`$\\]*\bLITEAPI_API_KEY\b[^'`$\\]*',$/,
     /^if \(cfg\.hotels === 'liteapi' && !isKey\(cfg\.liteapiKey, TEST_PREFIX\.liteapi\)\) return off\(PROBLEMS\.liteapiKey\);$/,
+    // Live keys (go-live design §5.3): a sandbox prefix is refused on a live stack.
+    /^if \(cfg\.hotels === 'liteapi' && !isLiveKey\(cfg\.liteapiKey, TEST_PREFIX\.liteapi\)\) return off\(PROBLEMS\.liteapiLive\);$/,
     /^apiKey: cfg\.liteapiKey, /,
   ],
   'server/business/suppliers/liteapi.js': [

@@ -68,6 +68,8 @@
 //   part that is gone gets no alternatives (no variants are priced for it). A swap to an alternative that is
 //   gone answers 410 'alternative_gone', and a pick that is gone by POST /trips 409 'option_unavailable':
 //   never the 422 of a malformed form.
+// Live prices (go-live design §5.5): only a company Tripelyx has confirmed ('active') searches, prices or
+// re-checks; any other gets 409 'company_not_confirmed' before a supplier is called (getRequest: liveError).
 
 const { AppError } = require('../lib/errors');
 const { id: newId } = require('../lib/ids');
@@ -82,7 +84,7 @@ const { text } = require('./validate');
 const { memberScope, USER_ID_RE } = require('./repo');
 const { periodKey, periodLabel, committedCents, PERIOD_KEY_RE } = require('./budgets');
 const { ROW_KEY_RE } = require('./dto');
-const { sourceOf, leastReal, requestSource, isSource, LIVE_ERROR_CODES } = require('./source');
+const { sourceOf, leastReal, requestSource, isSource, LIVE_ERROR_CODES, supplierError } = require('./source');
 
 /** Purpose length on POST /trips. */
 const PURPOSE_CHARS = Object.freeze([3, 140]);
@@ -145,6 +147,17 @@ function optionGone(e, keys, inventory) {
 /** A row that no longer prices (gone from the supplier, sold out, or from another source). */
 const isGoneRow = row => !!row && row.available === false;
 const noSupplier = () => new AppError('no_supplier', "Supplier not connected yet. Tripelyx hasn't connected airlines and hotels for company travel.", 503);
+
+/**
+ * Live search calls suppliers only for companies Tripelyx has confirmed (go-live design §5.5): with live
+ * prices, a company that is not 'active' searches, prices and re-checks nothing (409 'company_not_confirmed',
+ * "Search opens once Tripelyx confirms your company."), before any supplier call. Demo and supplier test data
+ * are as before. The gate refuses such a call again on its own (suppliers/gate.js).
+ */
+const searchOpen = (svc, org) => !(svc.inventory && svc.inventory.status === 'live' && (!org || org.status !== 'active'));
+function assertSearchOpen(svc, org) {
+  if (!searchOpen(svc, org)) throw supplierError('company_not_confirmed');
+}
 
 /** Form text bounds before the lifecycle checks it: it refuses a reason past 500 and a message past 1,000
  * characters in its own words (these bounds only keep a huge field out of memory); a decider's note is kept
@@ -584,6 +597,7 @@ function legView(svc, leg, ctx, benchmark) {
   // Real suppliers only: what the search left out (the per-cause notices) and a hotel supplier's failure.
   if (leg && leg.skipped && typeof leg.skipped === 'object') view.skipped = leg.skipped;
   if (leg && leg.error) view.error = leg.error;
+  if (leg && leg.error && leg.limit === true) view.limit = true;
   return view;
 }
 
@@ -646,6 +660,7 @@ const methods = {
         legs: { out: legView(this, null, null, null), back: null, hotel: null }, pricedAt: null, blockedCarrierNames: [],
       };
     }
+    assertSearchOpen(this, a.org);
     const query = this.composer.parseQuery(raw && typeof raw === 'object' ? raw : {}, { today: tz.localDate(a.org.timezone, now) });
     const searched = await this.composer.search(query);
     const ctx = evalCtx(this, a.org, policy, searched, now);
@@ -695,6 +710,7 @@ const methods = {
     need(a, 'trip.request');
     const inp = input && typeof input === 'object' ? input : {};
     if (!this.composer || !this.inventory || this.inventory.status === 'none') throw noSupplier();
+    assertSearchOpen(this, a.org);
     const parsed = this.composer.parseQuery(inp.query && typeof inp.query === 'object' ? inp.query : {}, { today: tz.localDate(a.org.timezone, this.now()) });
     const selection = cleanSelection(inp.selection);
     const purpose = cleanPurpose(inp.purpose);
@@ -786,7 +802,10 @@ const methods = {
     }
 
     let live = null, comparison = null, liveError = null;
-    if (deciding && this.composer) {
+    if (deciding && this.composer && !searchOpen(this, a.org)) {
+      // Live prices for a company Tripelyx hasn't confirmed (again, after a rename): nothing is checked.
+      liveError = 'company_not_confirmed';
+    } else if (deciding && this.composer) {
       // A page view never searches a real supplier ('peek'): when the check can't answer (the supplier is
       // down, the company's hourly limit is used up, it would need a search, a row in another currency) the
       // page still opens and says so (liveError). No supplier at all (503 no_supplier) leaves live null.
@@ -881,6 +900,7 @@ const methods = {
     }
     // The guards first (status, traveler), before any pricing.
     this.policy.transition(r, { type: 'swap', alternative: alt, draft: { totalCents: r.totalCents } }, opts);
+    assertSearchOpen(this, a.org);
     const searched = await this.composer.search(alt.query);
     // The stored rows stand in for a part the supplier no longer has (an unavailable row, so 410 below).
     const priced = await this.composer.price(alt.selection, searched.query, { previous: alt.rows || null }).catch(e => {
@@ -942,6 +962,7 @@ const methods = {
       now: nowIso, actor: me, member: a.member, org: a.org, recheck: { status: 'changed' },
     });
     guards(first);
+    assertSearchOpen(this, a.org);
     const category = typeof f.category === 'string' && REASON_CATEGORIES.includes(f.category) ? f.category : null;
     const reason = { text: plain(f.reason).slice(0, REASON_INPUT_MAX), category };
     const key = `${KINDS.request}:${first.id}`;
@@ -1161,6 +1182,8 @@ const methods = {
         return { request: docs[key], outcome: 'denied' };
       }
 
+      // Never approved without a check, and no check for a company Tripelyx hasn't confirmed (live prices).
+      assertSearchOpen(this, a.org);
       const rc = await this.composer.recheck(r, { check: 'final' });
       if (rc.status !== 'same') {
         const draft = await repricedDraft(this, a, r, rc, nowIso);
@@ -1333,6 +1356,7 @@ const methods = {
     if (this.policy.effectiveStatus(r, this.repo.iso(), a.org.timezone) !== 'pending' || deciderRole(a, r) === null) {
       throw forbidden(a.member.role, a.org.name);
     }
+    assertSearchOpen(this, a.org);
     return this.composer.recheck(r, { check: 'peek' });
   },
 };

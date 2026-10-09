@@ -10,11 +10,15 @@
 // Price sources (real-suppliers design §2.3): every amount says where it came from. pricedAtText names the
 // source: demo "Demo price · Priced at …" (unchanged), supplier test data "Supplier test data, not a real
 // fare · Checked at …" (a hotel: "not a real room rate"; a whole trip or a total: "not a real price"), live
-// prices "US dollars, from the airline · Priced at … · Can change until booked". SOURCE_TOTALS are the labels
-// of tiles that add many requests up (budgets, reports, home).
+// prices "US dollars, from the airline · Priced at … · Can change until booked" (go-live design §5.6). A live
+// label names who priced the amount, by its `kind` (priceKind/tripKind work it out from the rows): one
+// airline's fare, several airlines' fares, the hotel supplier's room, a trip with both, or, when the rows don't
+// say how many airlines (a list row of a return trip), "our airline suppliers" or "our airline and hotel
+// suppliers", never a count it doesn't know. SOURCE_TOTALS are the labels of tiles that add many requests up
+// (budgets, reports, home).
 const tz = require('../../business/tz');
 const { format } = require('../../lib/money');
-const { isSource, sourceOf, leastReal, requestSource } = require('../../business/source');
+const { isSource, sourceOf, leastReal, requestSource, SEARCH_CLOSED } = require('../../business/source');
 
 const WEEKDAYS = Object.freeze(['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']);
 const MONTHS = Object.freeze(['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']);
@@ -141,33 +145,113 @@ function whenIn(timeZone, iso, { now, zone = false }) {
   return `${timeIn(z, iso)}${rel}${zone ? ` (${zoneLabel(z)})` : ''}`;
 }
 
-/** What a supplier label calls the amount: a flight's fare, a hotel's room rate, or any other price. */
+/**
+ * What a supplier label calls the amount, by its kind: a flight's fare, a hotel's room rate, or any other price
+ * (a kind that names more than one thing is a price). Supplier test data only.
+ */
 const TEST_NOUNS = Object.freeze({ fare: 'fare', room: 'room rate', price: 'price' });
-const LIVE_FROM = Object.freeze({ fare: 'the airline', room: 'the hotel supplier', price: 'airlines and hotels' });
+/**
+ * Who priced a live amount, by its kind (go-live design §5.6): 'fare' one airline's fare, 'fares' fares of
+ * more than one airline, 'room' a hotel room, 'fareRoom' and 'faresRoom' a trip with flights and a hotel,
+ * 'flights' flights on airlines the caller can't count, 'price' anything else (the suppliers in general). No
+ * supplier is named: companies and travelers see only "the airline" and "the hotel supplier".
+ */
+const LIVE_FROM = Object.freeze({
+  fare: 'the airline',
+  fares: 'the airlines',
+  room: 'the hotel supplier',
+  fareRoom: 'the airline and the hotel supplier',
+  faresRoom: 'the airlines and the hotel supplier',
+  flights: 'our airline suppliers',
+  price: 'our airline and hotel suppliers',
+});
+/** Every price kind a label takes. */
+const PRICE_KINDS = Object.freeze(Object.keys(LIVE_FROM));
+/** The end of every live amount's label (go-live design §5.6). */
+const CAN_CHANGE = 'Can change until booked';
 
 /**
  * The label every amount carries (§F6), by where it came from: "Demo price · Priced at 3:42 PM, Fri 9 Oct
  * (Cairo time)"; supplier test data "Supplier test data, not a real fare · Checked at 3:42 PM, Fri 9 Oct (Cairo
  * time)"; live "US dollars, from the airline · Priced at 3:42 PM, Fri 9 Oct (Cairo time) · Can change until
- * booked". Without a time, just the first part.
+ * booked" (hotels "from the hotel supplier"). Without a time, the label without "Priced at".
  * @param {string|null} pricedAt
  * @param {string} timeZone
- * @param {{ source?: import('../../business/types').PriceSource, kind?: 'fare'|'room'|'price' }} [opts]
+ * @param {{ source?: import('../../business/types').PriceSource, kind?: string }} [opts] kind: one of
+ *   PRICE_KINDS ('price' for anything else)
  */
 function pricedAtText(pricedAt, timeZone, { source = 'demo', kind = 'price' } = {}) {
   if (source === 'sandbox') {
-    const label = `Supplier test data, not a real ${TEST_NOUNS[kind] || TEST_NOUNS.price}`;
+    const label = `Supplier test data, not a real ${Object.hasOwn(TEST_NOUNS, kind) ? TEST_NOUNS[kind] : TEST_NOUNS.price}`;
     return pricedAt ? `${label} · Checked at ${dateTimeIn(timeZone, pricedAt)}` : label;
   }
   if (source === 'live') {
-    const label = `US dollars, from ${LIVE_FROM[kind] || LIVE_FROM.price}`;
-    return pricedAt ? `${label} · Priced at ${dateTimeIn(timeZone, pricedAt)} · Can change until booked` : `${label} · Can change until booked`;
+    const label = `US dollars, from ${Object.hasOwn(LIVE_FROM, kind) ? LIVE_FROM[kind] : LIVE_FROM.price}`;
+    return pricedAt ? `${label} · Priced at ${dateTimeIn(timeZone, pricedAt)} · ${CAN_CHANGE}` : `${label} · ${CAN_CHANGE}`;
   }
   return pricedAt ? `Demo price · Priced at ${dateTimeIn(timeZone, pricedAt)}` : 'Demo price';
 }
 
-/** The label of a tile that adds many requests up (budgets, reports, home), by their least real source. */
-const SOURCE_TOTALS = Object.freeze({ demo: 'Demo prices', sandbox: 'Includes supplier test data', live: 'Supplier prices' });
+/**
+ * The price kind of a trip from what it holds: how many flights and on how many airlines (null when the
+ * airlines are not known), and whether it has a hotel. One flight is one airline's fare. Two or more flights
+ * on airlines not known (a list row of a return trip: each way is its own ticket, maybe on one airline, maybe
+ * on two) name no count: 'flights', or 'price' with a hotel.
+ * @param {{ flights?: number, carriers?: number|null, hotel?: boolean }} t
+ * @returns {string} one of PRICE_KINDS
+ */
+function tripKind({ flights = 0, carriers = null, hotel = false } = {}) {
+  const n = Number.isSafeInteger(flights) && flights > 0 ? flights : 0;
+  if (!n) return hotel ? 'room' : 'price';
+  const known = Number.isSafeInteger(carriers) && carriers > 0;
+  if (n > 1 && !known) return hotel ? 'price' : 'flights';
+  const many = n > 1 && carriers > 1;
+  if (!hotel) return many ? 'fares' : 'fare';
+  return many ? 'faresRoom' : 'fareRoom';
+}
+
+/**
+ * The price kind of some rows (a search's, a trip's out, back and hotel): the airlines that sell the flights
+ * (row.carrier), and whether a hotel is among them. 'price' when there are none.
+ * @param {Array<object|null|undefined>} rows
+ */
+function priceKind(rows) {
+  const list = (Array.isArray(rows) ? rows : []).filter(r => r && typeof r === 'object');
+  const flights = list.filter(r => r.kind !== 'hotel');
+  const carriers = new Set(flights.map(r => (r.carrier && r.carrier.code) || r.offerId || r.key));
+  return tripKind({ flights: flights.length, carriers: carriers.size, hotel: list.some(r => r.kind === 'hotel') });
+}
+
+/**
+ * The price kind of a list row (types.RequestRow): one flight, or two for a return (on airlines the row doesn't
+ * name), and a hotel when it has one.
+ */
+const requestRowKind = row => tripKind({ flights: row && row.returnDate ? 2 : 1, hotel: Boolean(row && row.hotelCity) });
+
+/** The rows of a trip (a request's or an alternative's `rows`: out, back, hotel). */
+const tripRows = rows => (rows && typeof rows === 'object' ? ['out', 'back', 'hotel'].map(c => rows[c]) : []);
+
+/** The price kind of a stored request: its own rows. */
+const requestKind = request => priceKind(tripRows(request && request.rows));
+
+/**
+ * The kind a label of `source` takes for some rows: who priced them on live prices, 'price' otherwise (so demo
+ * and supplier test data labels read as they always have).
+ * @param {unknown} source
+ * @param {Array<object|null|undefined>} rows
+ */
+const liveKind = (source, rows) => (source === 'live' ? priceKind(rows) : 'price');
+
+/**
+ * The label of a tile that adds many requests up (budgets, reports, home), by their least real source. Live:
+ * each request was priced at its own time, so no one time is named.
+ */
+const SOURCE_TOTALS = Object.freeze({ demo: 'Demo prices', sandbox: 'Includes supplier test data', live: `US dollars, from ${LIVE_FROM.price}, as each trip was priced · ${CAN_CHANGE}` });
+/**
+ * A live totals box that adds up no trip priced on supplier prices (a period with none, or a company that has
+ * priced nothing yet): its amounts are budgets the company set, so it never says they came from the suppliers.
+ */
+const LIVE_UNCOUNTED = 'Supplier prices: amounts here are budgets your company set or trips priced on supplier prices. Nothing is booked or charged.';
 
 /**
  * Where an inventory's prices come from (types.BusinessInventory.source; the frozen fakes carry none, so the
@@ -186,6 +270,26 @@ const ctxSource = ctx => inventorySource(ctx && ctx.business ? ctx.business.inve
 
 /** Whether trips can be searched here: some inventory runs (demo, supplier test data or live), not 'none'. */
 const searchable = ctx => Boolean(ctx && ctx.business && ctx.business.inventory && ctx.business.inventory.status !== 'none');
+
+/**
+ * Live search waits for the company's confirmation (go-live design §5.5): with live prices only a confirmed
+ * ('active') company searches. True when the inventory is live and the company is not confirmed yet. Demo
+ * inventory and supplier test data keep letting a pending company try a trip.
+ * @param {object} ctx
+ * @param {{ status?: string }|null|undefined} org
+ */
+const awaitingConfirmation = (ctx, org) => Boolean(ctx && ctx.business && ctx.business.inventory
+  && ctx.business.inventory.status === 'live' && org && org.status !== 'active');
+
+/** Whether this company can search now: some inventory runs, and live search has its confirmation. */
+const searchOpen = (ctx, org) => searchable(ctx) && !awaitingConfirmation(ctx, org);
+
+/**
+ * What a company waiting for confirmation is told where search would be (go-live design §5.5): the very sentence
+ * the service refuses such a search with (source.SEARCH_CLOSED, 409 'company_not_confirmed'), so a search typed
+ * in by hand says what the pages say.
+ */
+const SEARCH_AFTER_CONFIRM = SEARCH_CLOSED;
 
 /** The least real source of some rows (a trip's out, back and hotel), 'demo' when there are none. */
 const rowsSource = rows => leastReal((rows || []).filter(Boolean).map(r => sourceOf(r))) || 'demo';
@@ -223,6 +327,8 @@ function timeLeft(now, until) {
 module.exports = {
   safeZone, zoneLabel, money, plural, percent, duration, day, dayRange, clock24, timeIn, dayIn, dateTimeIn, whenIn,
   pricedAtText, timeLeft, WEEKDAYS, MONTHS,
-  SOURCE_TOTALS, inventorySource, ctxSource, rowsSource, totalsSource, sourceOf, leastReal, requestSource, isSource,
-  searchable,
+  SOURCE_TOTALS, LIVE_UNCOUNTED, inventorySource, ctxSource, rowsSource, totalsSource, sourceOf, leastReal, requestSource, isSource,
+  searchable, searchOpen, awaitingConfirmation, SEARCH_AFTER_CONFIRM,
+  // Live labels (go-live design §5.6)
+  LIVE_FROM, PRICE_KINDS, CAN_CHANGE, tripKind, priceKind, requestRowKind, requestKind, tripRows, liveKind,
 };

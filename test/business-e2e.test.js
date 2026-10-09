@@ -182,6 +182,8 @@ test('ROUTES, frozen: every Business route with its permission, request gate, li
     ['GET', '/', null, false, '', 'platform'],
     ['POST', '/:orgId/status', null, false, 'bizWrite', 'platform'],
     ['POST', '/house', null, false, 'bizWrite', 'platform'],
+    ['POST', '/suppliers/check', null, false, 'bizWrite', 'platform'],
+    ['POST', '/suppliers/live', null, false, 'bizWrite', 'platform'],
   ]);
   for (const r of [...business.ROUTES, ...platform.ROUTES]) {
     assert.ok(Object.isFrozen(r) && Object.isFrozen(r.limiter), `${r.method} ${r.path} is frozen`);

@@ -1266,7 +1266,7 @@ test('interfaces: the service facade carries exactly the frozen method list, one
   assert.deepEqual([...SERVICE_METHODS], [
     'createCompany', 'listCompaniesFor', 'getOrg', 'membership', 'listMembers', 'invite', 'inviteByToken', 'acceptInvite', 'revokeInvite',
     'updateMember', 'removeMember', 'saveDepartment', 'listDepartments', 'saveSettings', 'exportCompany', 'listAudit', 'platformListOrgs',
-    'platformSetStatus', 'platformCreateHouseCompany', 'getPolicy', 'savePolicy', 'policyHistory', 'listBudgets', 'setBudget', 'searchTrip', 'createRequest', 'getRequest',
+    'platformSetStatus', 'platformCreateHouseCompany', 'platformSuppliers', 'platformCheckSuppliers', 'platformSetLive', 'getPolicy', 'savePolicy', 'policyHistory', 'listBudgets', 'setBudget', 'searchTrip', 'createRequest', 'getRequest',
     'listRequests', 'swap', 'submit', 'cancel', 'decide', 'message', 'inbox', 'inboxCount', 'liveCheck', 'dashboard', 'exportCsv',
   ]);
   assert.ok(Object.isFrozen(SERVICE_METHODS));
@@ -1275,7 +1275,7 @@ test('interfaces: the service facade carries exactly the frozen method list, one
     assert.equal(typeof BusinessService.prototype[name], 'function', name);
     owners[METHOD_MODULE[name]] = (owners[METHOD_MODULE[name]] || 0) + 1;
   }
-  assert.deepEqual(owners, { team: 19, policies: 3, budgets: 2, requests: 12, reports: 1, csv: 1 });
+  assert.deepEqual(owners, { team: 22, policies: 3, budgets: 2, requests: 12, reports: 1, csv: 1 });
   assert.equal(METHOD_MODULE.inboxCount, 'requests');
   assert.equal(METHOD_MODULE.platformSetStatus, 'team');
 
@@ -1306,7 +1306,7 @@ test('interfaces: Business routers, the ROUTES table shape and the Business form
   assert.equal(businessRoutes.MOUNT, '/business');
   assert.equal(businessPlatform.MOUNT, '/admin/business');
   assert.deepEqual(businessRoutes.ROUTES, ['public', 'traveler', 'admin'].flatMap(file => require(`../server/routes/business/${file}`).ROUTES));
-  assert.deepEqual(businessPlatform.ROUTES.map(r => `${r.method} ${r.path}`), ['GET /', 'POST /:orgId/status', 'POST /house']);
+  assert.deepEqual(businessPlatform.ROUTES.map(r => `${r.method} ${r.path}`), ['GET /', 'POST /:orgId/status', 'POST /house', 'POST /suppliers/check', 'POST /suppliers/live']);
   for (const file of ['public', 'traveler', 'admin']) {
     const mod = require(`../server/routes/business/${file}`);
     assert.deepEqual(Object.keys(mod).sort(), ['ROUTES', 'router'], file);

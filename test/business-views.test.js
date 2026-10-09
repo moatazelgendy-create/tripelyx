@@ -752,14 +752,17 @@ test('shell: the ribbons say what runs here (demo, pending company, no supplier 
   assert.equal(pendingRibbon('X', { demo: true }), "Tripelyx is confirming X. You can set up policies, departments and budgets and try a demo trip now. Teammates can join once it's confirmed.");
   assert.equal(pendingRibbon('X'), "Tripelyx is confirming X. You can set up policies, departments and budgets now. Teammates can join once it's confirmed.");
   // No supplier (production) or a live one: no demo trip to offer, so the pending ribbon offers none.
+  // With live prices trip search waits for the confirmation too (go-live design §5.5).
   for (const status of ['none', 'live']) {
     const r = ribbons(String(shellView(ctxFor({ status }), shellFor('owner', { org: pendingOrg }), { body: '', searchPage: true })));
-    assert.deepEqual(r.find(x => x[0] === 'pending'), ['pending', pendingRibbon('Blue & Co')], status);
+    assert.deepEqual(r.find(x => x[0] === 'pending'), ['pending', pendingRibbon('Blue & Co', { live: status === 'live' })], status);
     assert.doesNotMatch(r.map(x => x[1]).join(' '), /demo trip|demo data/, `${status}: no demo claim in any ribbon`);
   }
-  // A live inventory (round 1b, never today) is not called demo data either: its ribbon says the prices are
-  // live and can change until booked (real-suppliers design §2.3).
+  assert.equal(pendingRibbon('X', { live: true }), "Tripelyx is confirming X. You can set up policies, departments and budgets now. Teammates can join, and trip search opens, once it's confirmed.");
+  // A live inventory is not called demo data either: its ribbon says the prices are live from our airline and
+  // hotel suppliers and can change until booked (go-live design §5.6).
   assert.deepEqual(ribbons(String(shellView(ctxFor({ status: 'live' }), shellFor('owner'), { body: '', searchPage: true }))), [['note', parts.LIVE_RIBBON]]);
+  assert.equal(parts.LIVE_RIBBON, "Prices are live from our airline and hotel suppliers and can change until booked. Booking isn't open in Tripelyx yet: nothing is booked or charged.");
   // No Business context at all reads as "no supplier".
   assert.deepEqual(ribbons(String(shellView({ ...ctxFor(), business: null }, shellFor('owner'), { body: '' }))), [['note', NO_BOOKING_RIBBON]]);
 
@@ -1218,4 +1221,261 @@ test('results copy never claims scarcity: live empty states say the options can\
   // Demo and sandbox copy unchanged.
   assert.equal(COPY.demo.noSeats, 'None of these flights has a seat in the demo data. Try another date.');
   assert.equal(COPY.sandbox.noSeats, "None of these flights has a seat in the supplier's test data. Try another date.");
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// Live prices (go-live design §5.5, §5.6): every amount says "US dollars, from the airline · Priced at … · Can
+// change until booked" (a hotel's "from the hotel supplier"), in a data-price-source="live" container with no
+// TEST DATA tag; the workspace ribbon, the approved trip, the sign-up box and the empty states say what is true
+// while booking is not open; nothing says "Demo price", TEST DATA or "preview". Demo and supplier test data
+// output stay as they were.
+
+const LIVE_NOTE = kind => `US dollars, from ${f.LIVE_FROM[kind]} · Priced at 3:42 PM, Fri 9 Oct (Cairo time) · Can change until booked`;
+/** Words that never sit on a live page. */
+const NOT_LIVE = /Demo price|demo data|demo trip|TEST DATA|test data|not a real|\bpreview\b|approved to book|real bookings|Duffel|LiteAPI/i;
+
+/** searchRows() in the live namespace (demo false). */
+function liveSearchRows() {
+  const { flights, hotels } = searchRows();
+  const move = list => list.map(r => ({ ...r, row: sandbox.liveRow(r.row) }));
+  const f2 = move(flights), h2 = move(hotels);
+  const offers = rows => [...new Set(rows.map(r => r.row.offerId))].map(id => rows.filter(r => r.row.offerId === id));
+  return { flights: f2, hotels: h2, flightGroups: offers(f2), hotelGroups: offers(h2) };
+}
+
+test('live labels: who priced an amount, from the rows, never a count the rows do not give and never a supplier name', () => {
+  // Every kind, word for word.
+  assert.deepEqual(f.PRICE_KINDS, ['fare', 'fares', 'room', 'fareRoom', 'faresRoom', 'flights', 'price']);
+  const labels = Object.fromEntries(f.PRICE_KINDS.map(k => [k, f.pricedAtText(PRICED, TZ, { source: 'live', kind: k })]));
+  assert.deepEqual(labels, {
+    fare: 'US dollars, from the airline · Priced at 3:42 PM, Fri 9 Oct (Cairo time) · Can change until booked',
+    fares: 'US dollars, from the airlines · Priced at 3:42 PM, Fri 9 Oct (Cairo time) · Can change until booked',
+    room: 'US dollars, from the hotel supplier · Priced at 3:42 PM, Fri 9 Oct (Cairo time) · Can change until booked',
+    fareRoom: 'US dollars, from the airline and the hotel supplier · Priced at 3:42 PM, Fri 9 Oct (Cairo time) · Can change until booked',
+    faresRoom: 'US dollars, from the airlines and the hotel supplier · Priced at 3:42 PM, Fri 9 Oct (Cairo time) · Can change until booked',
+    flights: 'US dollars, from our airline suppliers · Priced at 3:42 PM, Fri 9 Oct (Cairo time) · Can change until booked',
+    price: 'US dollars, from our airline and hotel suppliers · Priced at 3:42 PM, Fri 9 Oct (Cairo time) · Can change until booked',
+  });
+  assert.equal(f.pricedAtText(null, TZ, { source: 'live', kind: 'fare' }), 'US dollars, from the airline · Can change until booked', 'no time: no "Priced at"');
+  assert.equal(f.pricedAtText(PRICED, TZ, { source: 'live', kind: 'constructor' }), labels.price, 'an unknown kind is the general one');
+  for (const text of [...Object.values(labels), f.SOURCE_TOTALS.live]) {
+    assert.doesNotMatch(text, NOT_LIVE, text);
+    assert.ok(!text.includes('—'), `no em dash: ${text}`);
+  }
+  // Demo and supplier test data labels never take a live kind: they read as they always have.
+  for (const kind of f.PRICE_KINDS) {
+    assert.equal(f.pricedAtText(PRICED, TZ, { kind }), NOTE, `demo ${kind}`);
+    const test = f.pricedAtText(PRICED, TZ, { source: 'sandbox', kind });
+    assert.ok(['Supplier test data, not a real fare · Checked at 3:42 PM, Fri 9 Oct (Cairo time)', 'Supplier test data, not a real room rate · Checked at 3:42 PM, Fri 9 Oct (Cairo time)', 'Supplier test data, not a real price · Checked at 3:42 PM, Fri 9 Oct (Cairo time)'].includes(test), `sandbox ${kind}: ${test}`);
+  }
+  assert.equal(f.liveKind('sandbox', [fx.flight()]), 'price');
+  assert.equal(f.liveKind('demo', [fx.flight()]), 'price');
+
+  // From the rows: one airline's fare, two airlines, a hotel, both.
+  const zm = fx.flight({ carrier: 'ZM' }), zs = fx.flight({ carrier: 'ZS' }), zm2 = fx.flight({ carrier: 'ZM', n: 2 }), hotel = fx.hotel();
+  assert.equal(f.priceKind([zm]), 'fare');
+  assert.equal(f.priceKind([zm, zm2]), 'fare', 'both ways on one airline');
+  assert.equal(f.priceKind([zm, zs]), 'fares', 'each way on its own airline');
+  assert.equal(f.priceKind([hotel]), 'room');
+  assert.equal(f.priceKind([zm, zm2, hotel]), 'fareRoom');
+  assert.equal(f.priceKind([zm, zs, hotel]), 'faresRoom');
+  assert.equal(f.priceKind([null, undefined]), 'price');
+  assert.equal(f.priceKind(f.tripRows({ out: zm, back: zs, hotel: null })), 'fares');
+  assert.equal(f.requestKind({ rows: { out: zm, back: null, hotel } }), 'fareRoom');
+  // A list row doesn't name its airlines: a return reads "our airline suppliers", never a count.
+  assert.equal(f.requestRowKind({ returnDate: null, hotelCity: null }), 'fare');
+  assert.equal(f.requestRowKind({ returnDate: null, hotelCity: 'London' }), 'fareRoom');
+  assert.equal(f.requestRowKind({ returnDate: '2026-11-16', hotelCity: null }), 'flights');
+  assert.equal(f.requestRowKind({ returnDate: '2026-11-16', hotelCity: 'London' }), 'price');
+  assert.equal(f.tripKind({ flights: 2, carriers: 1 }), 'fare');
+  assert.equal(f.tripKind({ flights: 0 }), 'price');
+});
+
+test('the source rule on live prices: every amount sits in a live container that says US dollars, who priced it and that it can change until booked', () => {
+  const { flightGroups, hotelGroups, flights, hotels } = liveSearchRows();
+  const alts = sampleAlts(flights);
+  const pick = flights.find(r => r.row.key.endsWith('_1|FLEX'));
+  const opts = { pricedAt: PRICED, timeZone: TZ, source: 'live' };
+  const pieces = {
+    demoPrice: parts.demoPrice(84200, opts),
+    fare: parts.demoPrice(84200, { ...opts, kind: 'fare' }),
+    demoBox: parts.demoBox(html`<p>Total ${parts.amount(84200)}</p>`, { ...opts, kind: f.priceKind([pick.row, hotels[0].row]) }),
+    totals: parts.demoBox(html`<p>Committed ${parts.amount(84200)}</p>`, { ...opts, totals: true }),
+    linesTable: parts.linesTable(pick.row.lines, { ...opts, kind: 'fare' }),
+    limitsBar: parts.limitsBar(LIMITS, { ...opts, kind: f.priceKind([...flights, ...hotels].map(r => r.row)) }),
+    flightCards: html`${flightGroups.map(g => parts.rowCard(g, { timeZone: TZ, input: { name: 'out', checked: g[0].row.key } }))}`,
+    hotelCards: html`${hotelGroups.map(g => parts.rowCard(g, { timeZone: TZ, input: { name: 'hotelKey' }, priceToBeatCents: 30000 }))}`,
+    staticCard: parts.rowCard(pick, { timeZone: TZ, lines: true }),
+    altCard: parts.altCard(alts[0], { timeZone: TZ, action: '/swap', rev: 2 }),
+    alternativesPanel: parts.alternativesPanel({ alternatives: alts, cheapestWithin: alts[1], truncated: true }, { timeZone: TZ, action: '/swap', rev: 2 }),
+    violations: parts.violationList([{ rule: 'flight.cap', component: 'out', severity: 'approval', text: 'Over your $500 limit by $86 (median of the fares in this search plus 20%).' }], { ...opts, kind: 'fare' }),
+    verdict: parts.verdict('out', 'Over your trip limit by $86.', { ...opts, kind: 'fareRoom' }),
+  };
+  for (const [name, markup] of Object.entries(pieces)) {
+    assert.ok(sandbox.assertSourceMoney(markup, 'live', { label: name }) > 0 || /\$\d/.test(textOf(markup)), `${name} prints an amount`);
+    assertNoInline(markup, name);
+    assert.doesNotMatch(textOf(markup), NOT_LIVE, name);
+  }
+  sandbox.assertSourceMoney(html`${Object.values(pieces)}`, 'live', { label: 'all', min: 10 });
+  // Who priced each amount, word for word.
+  assert.equal(String(pieces.demoPrice), `<span class="bz-demo-price" data-price-source="live"><span class="bz-money">$842</span> <span class="bz-price-note">${LIVE_NOTE('price')}</span></span>`);
+  assert.ok(String(pieces.fare).includes(LIVE_NOTE('fare')));
+  assert.ok(String(pieces.flightCards).includes(LIVE_NOTE('fare')), 'a flight: from the airline');
+  assert.ok(String(pieces.hotelCards).includes(LIVE_NOTE('room')), 'a hotel: from the hotel supplier');
+  assert.doesNotMatch(String(pieces.hotelCards), /from the airline/);
+  assert.ok(String(pieces.demoBox).includes(LIVE_NOTE('fareRoom')));
+  assert.ok(String(pieces.limitsBar).includes(LIVE_NOTE('faresRoom')), 'a search over two airlines and hotels');
+  assert.ok(String(pieces.altCard).includes(LIVE_NOTE('fare')), 'an alternative: its own rows');
+  assert.ok(String(pieces.totals).includes(f.SOURCE_TOTALS.live));
+  assert.equal(f.SOURCE_TOTALS.live, 'US dollars, from our airline and hotel suppliers, as each trip was priced · Can change until booked');
+  // A search amount gets the "Supplier price" chip, never "Demo price" or "Test data".
+  assert.match(String(pieces.limitsBar), /<span class="bz-chip-demo">Supplier price<\/span>/);
+  assert.match(String(pieces.altCard), /Saves <span class="bz-money">\$[\d,.]+<\/span> vs your pick<\/p>/, 'a live saving says nothing about demo or test prices');
+  assert.ok(String(pieces.alternativesPanel).includes(parts.ALT_SUBS.live));
+  // A live hotel's fee paid at the hotel: what is paid when booked and what at the hotel.
+  const base = sandbox.liveRow(fx.hotel());
+  const withFee = { ...base, lines: [...base.lines, { label: 'Resort fee, paid at the hotel', kind: 'fee', cents: 4000 }], totalCents: base.totalCents + 4000 };
+  const card = String(parts.rowCard([{ row: withFee, evaluation: { status: 'within', violations: [] } }], { timeZone: TZ, lines: true }));
+  assert.ok(textOf(card).includes(`You pay ${f.money(base.totalCents)} when booked and $40 at the hotel.`));
+  sandbox.assertSourceMoney(card, 'live', { label: 'hotel with a fee', min: 3 });
+  // Not available, in the supplier's words, with no scarcity claim.
+  const gone = sandbox.liveRow(fx.hotel({ available: false }));
+  assert.ok(textOf(String(parts.rowCard([{ row: gone, evaluation: { status: 'within', violations: [] } }], { timeZone: TZ }))).includes(parts.UNAVAILABLE_BY_SOURCE.live));
+
+  // Demo and supplier test data are unchanged by a kind: the same bytes with or without one.
+  const same = (a, b, name) => assert.equal(String(a), String(b), name);
+  for (const source of ['demo', 'sandbox']) {
+    const o = { pricedAt: PRICED, timeZone: TZ, source };
+    same(parts.demoPrice(84200, o), parts.demoPrice(84200, { ...o, kind: 'price' }), `${source} demoPrice`);
+    same(parts.limitsBar(LIMITS, o), parts.limitsBar(LIMITS, { ...o, kind: 'faresRoom' }), `${source} limitsBar`);
+    same(parts.verdict('out', 'Over by $86.', o), parts.verdict('out', 'Over by $86.', { ...o, kind: 'fareRoom' }), `${source} verdict`);
+  }
+});
+
+test('live prices: the ribbon, the approved trip, the trip lists and the request page say what is true while booking is not open', () => {
+  // The ribbon (go-live design §5.6), with no TEST DATA tag and a class with no "demo" in it.
+  const s = String(shellView(ctxFor({ status: 'live' }), shellFor('owner'), { body: '', searchPage: true }));
+  assert.match(s, /<p class="bz-ribbon bz-ribbon-note" role="note"><svg[\s\S]*?<\/svg><span>Prices are live from our airline and hotel suppliers and can change until booked\. Booking isn&#39;t open in Tripelyx yet: nothing is booked or charged\.<\/span><\/p>/);
+  assert.doesNotMatch(textOf(s), NOT_LIVE);
+
+  // The approved trip, the verdict of a draft inside the policy, the confirm panel's words and the total note.
+  const request = require('../server/views/business/request');
+  assert.equal(textOf(String(request.APPROVED.live)), "Approved. Booking in Tripelyx isn't open yet, so this fare is not held and can change.");
+  assert.equal(request.WITHIN_DRAFT.live, "Every part of this trip is inside your policy. Confirm and it's approved.");
+  assert.equal(request.WITHIN_DRAFT.demo, "Every part of this trip is inside your policy. Confirm and it's approved to book.", 'demo unchanged');
+  for (const status of ['draft', 'pending']) {
+    assert.equal(request.totalNote({ status }, 'live'), 'The total is the whole price of these options, with every fee and tax: each one is under Price details. It is checked again before it is approved.', status);
+  }
+  for (const status of ['approved', 'past', 'denied', 'cancelled', 'expired']) {
+    assert.equal(request.totalNote({ status }, 'live'), 'The total is the whole price of these options, with every fee and tax: each one is under Price details.', status);
+  }
+  for (const source of ['demo', 'sandbox']) {
+    assert.equal(request.totalNote({ status: 'draft' }, source), 'The total is everything charged for these options: each fee and tax is under Price details.', `${source} unchanged`);
+  }
+  assert.equal(request.GONE.live, 'no longer available from the supplier');
+  assert.equal(parts.APPROVED_PILLS.live, 'Approved');
+
+  // A trip list: each total names who priced it, never "Demo price"; the approved filter says "Approved".
+  const { tripTable } = require('../server/views/business/trips');
+  const row = (over = {}) => ({
+    id: 'btr_AAAAAAAAAAAAAAAA', travelerId: 'usr_BBBBBBBBBBBBBBBB', travelerName: 'Sam Rivera', departmentId: null, from: 'CAI', to: 'LHR',
+    departDate: '2026-11-12', returnDate: null, hotelCity: null, totalCents: 84200, currency: 'USD', pricedAt: PRICED, status: 'approved',
+    policyStatus: 'within', at: PRICED, source: 'live', ...over,
+  });
+  const rows = [row(), row({ id: 'btr_CCCCCCCCCCCCCCCC', hotelCity: 'London' }), row({ id: 'btr_DDDDDDDDDDDDDDDD', returnDate: '2026-11-16' }), row({ id: 'btr_EEEEEEEEEEEEEEEE', returnDate: '2026-11-16', hotelCity: 'London', status: 'pending' })];
+  const table = String(tripTable({ base: '/business/o/org_AAAAAAAAAAAAAAAA', map: new Map(), rows, timeZone: TZ, caption: 'Trips' }));
+  sandbox.assertSourceMoney(table, 'live', { label: 'trip list', min: 4 });
+  for (const kind of ['fare', 'fareRoom', 'flights', 'price']) assert.ok(table.includes(LIVE_NOTE(kind)), kind);
+  assert.doesNotMatch(textOf(table), NOT_LIVE);
+  assert.match(textOf(table), /\bApproved\b/);
+  // The same table on demo and supplier test data rows: as before (no kind).
+  const demoTable = String(tripTable({ base: '/business/o/org_AAAAAAAAAAAAAAAA', map: new Map(), rows: rows.map(r => ({ ...r, source: 'demo' })), timeZone: TZ, caption: 'Trips' }));
+  assertDemoMoney(demoTable, { label: 'demo trip list' });
+});
+
+test('live prices: a company Tripelyx has not confirmed sees when its search opens, with no way to start a search', () => {
+  const pendingOrg = { ...ORG, name: 'Blue & Co', status: 'pending', settings: { outOfPolicy: 'approval', approvalHours: 24 } };
+  const ctx = { ...ctxFor({ status: 'live' }), business: { inventory: { status: 'live', source: 'live', airports: () => [{ code: 'CAI', city: 'Cairo' }, { code: 'LHR', city: 'London' }] } } };
+  assert.equal(f.SEARCH_AFTER_CONFIRM, 'Search opens once Tripelyx confirms your company.');
+  assert.equal(f.awaitingConfirmation(ctx, pendingOrg), true);
+  assert.equal(f.awaitingConfirmation(ctx, ORG), false, 'a confirmed company searches');
+  assert.equal(f.awaitingConfirmation({ business: { inventory: { status: 'demo' } } }, pendingOrg), false, 'demo: a pending company tries a trip');
+  assert.equal(f.awaitingConfirmation({ business: { inventory: { status: 'sandbox' } } }, pendingOrg), false, 'test data: a pending company tries a trip');
+  assert.equal(f.searchOpen(ctx, pendingOrg), false);
+  assert.equal(f.searchOpen(ctx, ORG), true);
+  assert.equal(f.searchOpen({ business: { inventory: { status: 'none' } } }, ORG), false, 'no supplier: no search');
+
+  // The trip form: the "Waiting for confirmation" panel, the fields off, no Search button.
+  const { tripNewView, formValues } = require('../server/views/business/tripNew');
+  const form = String(tripNewView(ctx, { org: pendingOrg, inventory: ctx.business.inventory, values: formValues({}), departmentName: 'Engineering', tierLabel: 'Standard' }));
+  assert.ok(textOf(form).includes(`${parts.AWAITING_CONFIRMATION.title} ${f.SEARCH_AFTER_CONFIRM}`));
+  assert.match(form, /<fieldset class="bz-search-fields" disabled>/);
+  assert.doesNotMatch(form, />Search<\/span><\/button>/);
+  assert.doesNotMatch(textOf(form), new RegExp(parts.NO_SUPPLIER.title), 'not the no-supplier panel');
+  const open = String(tripNewView(ctx, { org: ORG, inventory: ctx.business.inventory, values: formValues({}), departmentName: 'Engineering', tierLabel: 'Standard' }));
+  assert.match(open, />Search<\/span><\/button>/, 'a confirmed company searches');
+  assert.doesNotMatch(open, /disabled>/);
+
+  // The Trips page and the policy page: no "Plan a trip", and the empty state says when search opens.
+  const { tripsView } = require('../server/views/business/trips');
+  const trips = String(tripsView(ctx, { org: pendingOrg, scope: 'mine', scopes: ['mine'], list: { rows: [], cursor: null } }));
+  assert.ok(textOf(trips).includes(`${parts.NO_TRIPS.title} ${f.SEARCH_AFTER_CONFIRM}`));
+  assert.doesNotMatch(trips, /\/trips\/new/);
+  assert.ok(textOf(String(tripsView(ctx, { org: ORG, scope: 'mine', scopes: ['mine'], list: { rows: [], cursor: null } }))).includes(`${parts.NO_TRIPS.title} ${parts.NO_TRIPS.text}`));
+  const { policyMineView } = require('../server/views/business/policyMine');
+  const policy = { description: { title: 'Your travel policy', sub: 'Standard policy, version 1', lines: ['Hotels: up to $180 a night, taxes included.'] }, tierLabel: 'Standard', version: 1 };
+  assert.doesNotMatch(String(policyMineView(ctx, { org: pendingOrg, policy })), /\/trips\/new/);
+  assert.match(String(policyMineView(ctx, { org: ORG, policy })), /\/trips\/new/);
+
+  // The welcome checklist: "Try a trip" once Tripelyx confirms the company.
+  const { welcomeView } = require('../server/views/business/welcome');
+  const c = { policyReviewed: false, departments: false, invited: false, demoTrip: false };
+  const welcome = org => textOf(String(welcomeView(ctx, shellFor('owner', { org }), { checklist: c, demo: true, source: 'live' })));
+  assert.doesNotMatch(welcome(pendingOrg), /Try a trip/);
+  assert.match(welcome(ORG), /Try a trip/);
+
+  // The home page: when search opens, in the plan block and under My trips; Spent shows once booking is open.
+  const { homeView } = require('../server/views/business/home');
+  const dash = {
+    role: 'owner', periodKey: '2026-Q4', periodLabel: 'Q4 2026', checklist: null, waiting: null, myTrips: [], teamTrips: null,
+    policy: { sub: '', lines: [] }, pendingCompany: null, outOfPolicyShare: null, topReasons: null, recent: null, reports: null, priceSource: null,
+    budgets: [{ budgetId: 'b1', department: { id: 'dep_AAAAAAAAAAAAAAAA', name: 'Engineering', archived: false }, amountCents: 2000000, committedCents: 0, awaitingCents: 0, remainingCents: 2000000, truncated: false }],
+  };
+  const home = org => String(homeView(ctx, { org, member: { name: 'Olivia Owner', role: 'owner' }, dash, inventoryStatus: 'live' }));
+  const pendingHome = home(pendingOrg);
+  assert.ok(textOf(pendingHome).includes(`Plan a work trip ${f.SEARCH_AFTER_CONFIRM}`), textOf(pendingHome).slice(0, 600));
+  assert.ok(textOf(pendingHome).includes(`${parts.NO_TRIPS.title} ${f.SEARCH_AFTER_CONFIRM}`));
+  assert.doesNotMatch(pendingHome, /\/trips\/new/);
+  assert.ok(textOf(pendingHome).includes('Committed is what approved trips hold. Spent shows once booking is open.'));
+  sandbox.assertSourceMoney(pendingHome, 'live', { label: 'pending home', min: 4 });
+  const activeHome = home(ORG);
+  assert.match(activeHome, /\/trips\/new/);
+  assert.ok(textOf(activeHome).includes('Spent shows once booking is open.'));
+  assert.doesNotMatch(textOf(activeHome), NOT_LIVE);
+
+  // The Budgets page: Spent shows once booking is open.
+  const { budgetsView, SPENT_NO_SUPPLIER, SPENT } = require('../server/views/business/budgets');
+  const budgetRow = { budgetId: 'b1', rev: 0, department: { id: 'dep_AAAAAAAAAAAAAAAA', name: 'Engineering', archived: false }, amountCents: 2000000, committedCents: 0, awaitingCents: 0, remainingCents: 2000000, truncated: false };
+  const budgets = status => textOf(String(budgetsView({ ...ctxFor({ status }), business: { inventory: { status, source: status } } }, shellFor('finance'), {
+    rows: [budgetRow], periodKey: '2026-Q4', choices: ['2026-Q4'], canEdit: false, periodKind: 'quarter', ownOnly: false, priceSource: status,
+  })));
+  assert.ok(budgets('live').includes(SPENT_NO_SUPPLIER));
+  assert.ok(budgets('demo').includes(SPENT), 'demo unchanged');
+  assert.ok(budgets('sandbox').includes(SPENT), 'test data unchanged');
+});
+
+test('live prices: the sign-up page asks for the live acknowledgement and says search opens once the company is confirmed', () => {
+  const { startView, START_LEAD, START_LEAD_LIVE } = require('../server/views/business/auth');
+  const { SIGNUP_ACK } = require('../server/business/constants');
+  const page = status => textOf(String(startView({ ...ctxFor({ status }), business: { inventory: { status } } }, {})));
+  const live = page('live');
+  assert.ok(live.includes(START_LEAD_LIVE), live.slice(0, 400));
+  assert.equal(START_LEAD_LIVE, 'Set up your travel policy, budgets and team. Tripelyx confirms each new company before teammates can join and trip search opens.');
+  assert.ok(live.includes(SIGNUP_ACK.live.box));
+  assert.equal(SIGNUP_ACK.live.box, "I understand booking isn't open in Tripelyx Business yet.");
+  assert.equal(SIGNUP_ACK.live.error, "Tick this box to confirm you've read this.");
+  assert.doesNotMatch(live, NOT_LIVE);
+  assert.doesNotMatch(live, /Tripelyx Business · Preview/);
+  // Every other status keeps its own lead.
+  for (const status of ['demo', 'sandbox', 'none']) assert.ok(page(status).includes(START_LEAD), status);
 });

@@ -2,6 +2,10 @@
 // and tells it how each one went.
 //
 // In order, for every call:
+//   0. live mode only (`confirmedOnly`): the scope must say the company is confirmed (memberGate sets it from
+//      the company's status; the admin's live check runs as 'platform', confirmed). Anything else, a call with
+//      no company in scope included, is refused before any count → 503 'supplier_unavailable' (go-live §5.5:
+//      only confirmed companies make supplier calls; the service says why first, this only fails closed);
 //   1. the company (scope.currentCompany()): at most `companyPerHour` (120) supplier calls an hour and
 //      `companyPerMinute` (20) in any minute, all suppliers and call types together, counted once per
 //      operation (a retry is not a second call) → 429 'supplier_busy'. With no company in scope (a script, a
@@ -15,13 +19,16 @@
 //      back to the bucket);
 //   4. the supplier's global token bucket: Duffel 60 a minute with a burst of 10, LiteAPI's sandbox 4 a second
 //      (documented 5). Each caller reserves its own token, so concurrent calls queue fairly.
+//   Live mode only, before the bucket: the persisted daily caps (`usage`, business/usage.js), asked for
+//   every attempt (a retry is a call too) → 429 'supplier_daily_limit'. A call the bucket then refuses is
+//   given back.
 // A wait in 3 or 4 longer than `maxWaitMs` (2 s) answers 503 at once: never demo data, never a stale answer.
-// The counters live in memory, per task, like limits.js: a restart resets them.
+// The counters live in memory, per task, like limits.js: a restart resets them (the daily caps excepted).
 // Buckets and windows run on a monotonic clock (`mono`, milliseconds), not the business clock, which tests
 // hold still.
 const crypto = require('node:crypto');
 const { performance } = require('node:perf_hooks');
-const { currentCompany } = require('../scope');
+const { currentCompany, currentScope } = require('../scope');
 const { supplierError } = require('../source');
 
 const SECOND = 1000;
@@ -88,11 +95,12 @@ class Gate {
   /**
    * @param {{ now: () => Date, log?: object, mono?: () => number, sleep?: (ms: number) => Promise<void>,
    *   companyPerHour?: number, companyPerMinute?: number, unscopedPerHour?: number, maxWaitMs?: number,
-   *   buckets?: object, breaker?: object }} opts
+   *   buckets?: object, breaker?: object, usage?: { take: Function, giveBack: Function }|null,
+   *   confirmedOnly?: boolean }} opts usage and confirmedOnly: live mode (see the header)
    */
   constructor({
     now, log = console, mono = () => performance.now(), sleep = null, companyPerHour = 120, companyPerMinute = 20,
-    unscopedPerHour = 10, maxWaitMs = 2 * SECOND, buckets = BUCKETS, breaker = BREAKER,
+    unscopedPerHour = 10, maxWaitMs = 2 * SECOND, buckets = BUCKETS, breaker = BREAKER, usage = null, confirmedOnly = false,
   } = {}) {
     if (typeof now !== 'function') throw new TypeError('[suppliers] the gate needs a clock');
     this.now = now;
@@ -104,6 +112,9 @@ class Gate {
     this.companyPerMinute = companyPerMinute;
     this.unscopedPerHour = unscopedPerHour;
     this.maxWaitMs = maxWaitMs;
+    this.usage = usage && typeof usage.take === 'function' ? usage : null;
+    this.confirmedOnly = confirmedOnly === true;
+    this.warnedUnconfirmed = false;
     this.breakerRule = breaker;
     this.buckets = Object.fromEntries(Object.entries(buckets).map(([s, b]) => [s, new TokenBucket({ ...b, mono })]));
     /** @type {Map<string, number[]>} company → call times (monotonic), newest last, at most companyPerHour */
@@ -146,20 +157,33 @@ class Gate {
    * @param {{ vertical: 'flights'|'hotels', first?: boolean }} opts first: the operation's first attempt (it
    *   counts against the company); a retry only passes the breaker, the headers and the bucket
    * @returns {Promise<void>}
-   * @throws {AppError} 429 supplier_busy; 503 supplier_unavailable
+   * @throws {AppError} 429 supplier_busy; 429 supplier_daily_limit (live); 503 supplier_unavailable
    */
   async admit(supplier, { vertical, first = true } = {}) {
     const unavailable = () => supplierError('supplier_unavailable', { vertical });
+    const scope = currentScope();
+    if (this.confirmedOnly && !(scope && scope.confirmed === true)) {
+      if (!this.warnedUnconfirmed) {
+        this.warnedUnconfirmed = true;
+        this.log.warn('[suppliers] a live supplier call for a company that is not confirmed (or none) was refused');
+      }
+      throw unavailable();
+    }
     const t = this.mono();
     const count = first ? this._checkCaller(vertical, t) : null;
     if ((this.openUntil[supplier] || 0) > t) throw unavailable();
     const blocked = (this.blockedUntil[supplier] || 0) - t;
     if (blocked > this.maxWaitMs) throw unavailable();
     if (blocked > 0) await this.sleep(blocked);
+    if (this.usage) await this.usage.take(supplier, scope, vertical);
     const bucket = this.buckets[supplier];
     if (bucket) {
       const wait = bucket.reserve();
-      if (wait > this.maxWaitMs) { bucket.release(); throw unavailable(); }
+      if (wait > this.maxWaitMs) {
+        bucket.release();
+        if (this.usage) this.usage.giveBack(supplier, scope);
+        throw unavailable();
+      }
       if (wait > 0) await this.sleep(wait);
     }
     if (count) count();

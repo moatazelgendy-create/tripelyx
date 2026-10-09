@@ -22,6 +22,9 @@
 //   Added at the R1-m merge (both builders' needs): GetOfferOpts and QuoteInput (the provider calls),
 //   RequestRow.source, ReportTiles.priceSource, DashboardView.priceSource, CompanyExport's price_source and
 //   note, and describe's demo/source options.
+// - Live search on www (go-live design §5, stage L2), additive: the platform methods platformSuppliers,
+//   platformCheckSuppliers and platformSetLive (UserActor), PlatformView.suppliers, and HotelLegResult.limit
+//   and LegView.limit (the hotel supplier's daily cap).
 
 // =============================================================================================================
 // 0. Names
@@ -93,7 +96,7 @@
 /**
  * Who calls a service method that needs no company: createCompany, listCompaniesFor, membership,
  * inviteByToken (user may be null there), acceptInvite, platformListOrgs, platformSetStatus,
- * platformCreateHouseCompany.
+ * platformCreateHouseCompany, platformSuppliers, platformCheckSuppliers, platformSetLive.
  * @typedef {{ user: User|null }} UserActor
  */
 
@@ -604,13 +607,15 @@
 /**
  * The hotel leg. Its benchmark depends on the policy's capBasis, so both are computed. When a real hotel
  * supplier fails, the composer catches it here: { rows: [], benchmark, truncated: false, error: 'unavailable' },
- * and the flights still show.
+ * and the flights still show; when the hotel supplier has reached its daily cap (live keys), the same with
+ * `limit: true` added.
  * @typedef {object} HotelLegResult
  * @property {HotelRow[]} rows
  * @property {HotelBenchmarks} benchmark
  * @property {boolean} truncated
  * @property {SkipCounts} [skipped] real suppliers only
  * @property {'unavailable'|null} [error] the hotel supplier failed (absent or null otherwise)
+ * @property {true} [limit] the hotel supplier reached its daily cap (error is 'unavailable' too)
  */
 /** @typedef {{ incl_taxes: Benchmark, excl_taxes: Benchmark }} HotelBenchmarks */
 
@@ -1111,6 +1116,8 @@
  * @property {SkipCounts} [skipped] from the leg (real suppliers): the per-cause notices
  * @property {'unavailable'|null} [error] hotel leg only: the hotel supplier failed ("Hotels are not available right
  *   now. You can still request the flights.")
+ * @property {true} [limit] hotel leg only, with error: the hotel supplier reached its daily cap ("Hotel search has
+ *   reached today's limit. You can still request the flights.")
  */
 /** @typedef {LegView & { city: string, country: string, priceToBeatCents: number|null }} HotelLegView */
 
@@ -1226,8 +1233,12 @@
 
 /**
  * service.platformListOrgs({ user }): pending first, then active, then suspended. leads: kind 'business' only (≤ 200).
- * house: Tripelyx's own company, or null while there is none (the "Create Tripelyx Inc" panel).
- * @typedef {{ orgs: PlatformOrgRow[], leads: object[], house: { id: string, name: string, status: OrgStatus }|null }} PlatformView
+ * house: Tripelyx's own company, or null while there is none (the "Create Tripelyx Inc" panel). suppliers (added
+ * by the /admin/business route, go-live design §5.4): team.platformSuppliers, the Suppliers panel's data (the
+ * live search switch in words, booleans and times, today's calls against the caps and the newest platform audit
+ * entries; never a key or any part of one), null except on a live-keys stack.
+ * @typedef {{ orgs: PlatformOrgRow[], leads: object[], house: { id: string, name: string, status: OrgStatus }|null,
+ *   suppliers?: object|null }} PlatformView
  */
 
 /**

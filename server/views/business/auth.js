@@ -30,6 +30,13 @@ const previewing = ctx => {
   return status === 'demo' || status === 'sandbox';
 };
 const START_LEAD = 'Set up your travel policy, budgets and team. Tripelyx confirms each new company before teammates can join.';
+/**
+ * The same with live prices (go-live design §5.5): only a confirmed company searches them, so the lead says
+ * trip search waits for the confirmation too. The consent box is constants.SIGNUP_ACK.live.
+ */
+const START_LEAD_LIVE = 'Set up your travel policy, budgets and team. Tripelyx confirms each new company before teammates can join and trip search opens.';
+/** Whether the inventory runs live prices. */
+const liveNow = ctx => Boolean(ctx && ctx.business && ctx.business.inventory && ctx.business.inventory.status === 'live');
 const START_LEAD_SELF_SERVE = 'Set up your travel policy, budgets and team.';
 /** The consent box with demo inventory; every status's box and its error are constants.SIGNUP_ACK. */
 const ACK_TEXT = SIGNUP_ACK.demo.box;
@@ -214,7 +221,7 @@ function companyFields(values, errors) {
 function startView(ctx, { user = null, values = {}, accountErrors = {}, companyErrors = {}, error = null, emailTaken = false, accountReady = false, atCap = null, selfServe = false } = {}) {
   const lead = user
     ? `You're signed in as ${user.name} (${maskEmail(user.email)}). Your company workspace uses this sign-in. Your personal trips stay private: your company can't see them.`
-    : selfServe ? START_LEAD_SELF_SERVE : START_LEAD;
+    : selfServe ? START_LEAD_SELF_SERVE : liveNow(ctx) ? START_LEAD_LIVE : START_LEAD;
   const takenBox = emailTaken
     ? html`<div class="alert alert-error bz-alert" role="alert">${icon('alert')}<span>${EMAIL_TAKEN} <a href="${SIGNIN}?next=${encodeURIComponent(START)}">Sign in</a></span></div>`
     : '';
@@ -275,5 +282,5 @@ function signinView(ctx, { values = {}, error = null, next = null, invite = fals
 module.exports = {
   startView, signinView, publicPage, cardHead, signOutForm, maskEmail, zoneOption, workspaceForbiddenView,
   textField, textArea, selectField, checkField, fieldError,
-  START, SIGNIN, START_TITLE, AT_CAP_TITLE, ZONE_HINT, EYEBROW, EYEBROW_OPEN, previewing, START_LEAD, ACK_TEXT, CURRENCY_TEXT, EMAIL_TAKEN, ACCOUNT_READY, SIGNIN_TITLE, INVITE_HINT,
+  START, SIGNIN, START_TITLE, AT_CAP_TITLE, ZONE_HINT, EYEBROW, EYEBROW_OPEN, previewing, START_LEAD, START_LEAD_LIVE, ACK_TEXT, CURRENCY_TEXT, EMAIL_TAKEN, ACCOUNT_READY, SIGNIN_TITLE, INVITE_HINT,
 };

@@ -223,8 +223,9 @@ function memberGate(ctx, perm, { own = false, forbiddenView = defaultForbiddenVi
       }
       req.biz = biz;
       // Everything this request runs from here on (the service, the composer, a supplier call several awaits
-      // later) knows its company: the per-company supplier limit and result cache key on it (scope.js).
-      withCompany(org.id, () => next());
+      // later) knows its company: the per-company supplier limit and result cache key on it (scope.js), live
+      // search calls no supplier for a company Tripelyx has not confirmed, and the daily limit names its zone.
+      withCompany(org.id, () => next(), { confirmed: org.status === 'active', timezone: org.timezone });
     } catch (e) { next(e); }
   };
   // What the gate checks, so the structural test (business-static) can compare it with the route's ROUTES row.

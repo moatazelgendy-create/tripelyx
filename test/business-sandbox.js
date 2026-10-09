@@ -12,7 +12,11 @@
 //   make a method throw what a failing real supplier throws (source.supplierError, or 422 unsupported_currency).
 // - assertSourceMoney(markup, source): every amount sits in a data-price-source="<source>" container whose text
 //   names where it came from (supplier test data: the TEST DATA tag and "Supplier test data" or "Includes
-//   supplier test data"), and nothing on the page says "Demo price".
+//   supplier test data"; live prices: "US dollars, from the airline … Can change until booked", go-live design
+//   §5.6, with no TEST DATA tag anywhere), and nothing on the page says "Demo price".
+// - Live prices (go-live design §5.6), the same way: toLive, liveRow, liveInventory, liveProvider and useLive(app)
+//   move rows and offers into the live namespace (flt_l., htl_l.) with demo false. They are fixtures over the
+//   demo data: nothing here is a live supplier, and nothing calls one.
 const assert = require('node:assert/strict');
 const { AppError } = require('../server/lib/errors');
 const { TripComposer } = require('../server/business/search');
@@ -26,6 +30,13 @@ const fromSandbox = id => String(id).replace(/^([fh]\.)?(flt|htl)_t\./, (m, key,
 
 /** A row moved into the sandbox namespace (its key and offer id; nothing else changes). */
 const sandboxRow = row => (row ? { ...row, key: toSandbox(row.key), offerId: toSandbox(row.offerId) } : row);
+
+/** 'f.flt_fake_…|LIGHT' → 'f.flt_l.fake_…|LIGHT', 'htl_CA-NILE' → 'htl_l.CA-NILE' (an id already in it stays). */
+const toLive = id => String(id).replace(/^([fh]\.)?(flt|htl)_(?!l\.)/, (m, key, kind) => `${key || ''}${kind}_l.`);
+/** The reverse: the inner provider's own id. */
+const fromLive = id => String(id).replace(/^([fh]\.)?(flt|htl)_l\./, (m, key, kind) => `${key || ''}${kind}_`);
+/** A row moved into the live namespace: its key and offer id, and demo false (dto.assertRow's rule). */
+const liveRow = row => (row ? { ...row, key: toLive(row.key), offerId: toLive(row.offerId), demo: false } : row);
 
 /**
  * A fakeInventory whose rows are supplier test data. Keys from another namespace find nothing.
@@ -52,6 +63,87 @@ function sandboxInventory(inner = fakeInventory()) {
     setPrice: (key, totalCents) => inner.setPrice(fromSandbox(key), totalCents),
     setUnavailable: (key, unavailable = true) => inner.setUnavailable(fromSandbox(key), unavailable),
     clearOverrides: () => inner.clearOverrides(),
+  };
+}
+
+/**
+ * A fakeInventory whose rows are live prices (status and source 'live'). Keys from another namespace find nothing.
+ * @param {object} [inner] fakeInventory()
+ */
+function liveInventory(inner = fakeInventory()) {
+  const mine = key => sourceOf(key) === 'live';
+  const rows = list => list.map(liveRow);
+  return {
+    status: 'live', source: 'live', hotelsConnected: true, maxVariantSearches: 4, problem: null,
+    inner,
+    flights: inner.flights,
+    hotels: inner.hotels,
+    airports: () => inner.airports(),
+    carriers: () => inner.carriers(),
+    cityFor: iata => inner.cityFor(iata),
+    get searches() { return inner.searches; },
+    get quotes() { return inner.quotes; },
+    flightRows: (q, pricedAt) => rows(inner.flightRows(q, pricedAt)),
+    hotelRows: (q, pricedAt) => rows(inner.hotelRows(q, pricedAt)),
+    quoteRow: (key, q, pricedAt) => (mine(key) ? liveRow(inner.quoteRow(fromLive(key), q, pricedAt)) : null),
+    peekFlightRows: (q, pricedAt) => rows(inner.peekFlightRows(q, pricedAt)),
+    peekHotelRows: (q, pricedAt) => rows(inner.peekHotelRows(q, pricedAt)),
+    setPrice: (key, totalCents) => inner.setPrice(fromLive(key), totalCents),
+    setUnavailable: (key, unavailable = true) => inner.setUnavailable(fromLive(key), unavailable),
+    clearOverrides: () => inner.clearOverrides(),
+  };
+}
+
+/**
+ * A provider-contract provider over a real demo provider, its offer ids in the live namespace and demo false: the
+ * page fixtures of live prices (go-live design §5.6). It is not a live supplier and calls none.
+ * @param {object} inner BusinessDemoFlights or BusinessDemoHotels
+ */
+function liveProvider(inner) {
+  const offer = o => (o ? { ...o, id: toLive(o.id), demo: false } : o);
+  const gone = () => new AppError('option_sold_out', 'This option is no longer available.', 409);
+  return {
+    name: inner.name, vertical: inner.vertical, isDemo: false,
+    async search(pq) { return (await inner.search(pq)).map(offer); },
+    async getOffer(offerId, pq) {
+      if (sourceOf(offerId) !== 'live') return null;
+      return offer(await inner.getOffer(fromLive(offerId), pq));
+    },
+    async quote({ offerId, optionId, query }) {
+      if (sourceOf(offerId) !== 'live') throw gone();
+      const q = await inner.quote({ offerId: fromLive(offerId), optionId, query });
+      return { ...q, offer: offer(q.offer) };
+    },
+    async book() { throw new AppError('not_supported', 'Business never books.', 400); },
+    async cancel() { throw new AppError('not_supported', 'Business never books.', 400); },
+  };
+}
+
+/**
+ * Swap a running app's Business inventory and composer for live prices over its demo providers (status 'live').
+ * @param {object} app from startApp() with ENABLE_BUSINESS
+ * @param {{ hotels?: boolean }} [opts] hotels false: flights only
+ * @returns {{ inventory: object, composer: object, restore: () => void }}
+ */
+function useLive(app, { hotels = true } = {}) {
+  const svc = app.business;
+  const was = { inventory: svc.inventory, composer: svc.composer };
+  const demo = was.inventory;
+  assert.equal(demo.status, 'demo', 'useLive wraps the demo inventory');
+  const inventory = {
+    status: 'live', source: 'live',
+    flights: liveProvider(demo.flights),
+    hotels: hotels ? liveProvider(demo.hotels) : null,
+    airports: () => demo.airports(),
+    carriers: () => demo.carriers(),
+    cityFor: iata => demo.cityFor(iata),
+    hotelsConnected: hotels, maxVariantSearches: 4, problem: null,
+  };
+  svc.inventory = inventory;
+  svc.composer = new TripComposer({ inventory, now: app.ctx.now });
+  return {
+    inventory, composer: svc.composer,
+    restore() { svc.inventory = was.inventory; svc.composer = was.composer; },
   };
 }
 
@@ -178,10 +270,15 @@ const textOf = s => String(s).replace(/<svg[\s\S]*?<\/svg>/g, ' ').replace(/<[^>
 const hasClass = (el, cls) => new RegExp(`\\bclass="[^"]*\\b${cls}\\b`).test(el.attrs);
 const TEXT_AMOUNT = /[$€£¥]\s?\d/;
 
-/** What a container of each source says. */
+/**
+ * What a container of each source says. Live (go-live design §5.6): "US dollars, from the airline" (or the
+ * airlines, the hotel supplier, both, or our airline and hotel suppliers) and "Can change until booked"; a
+ * box of the company's own limits or of amounts it set says "Supplier prices: …" (parts.LIMITS_CHECKED.live).
+ */
+const LIVE_FROM = /US dollars, from (?:the airlines? and the hotel supplier|the airlines?|the hotel supplier|our airline(?: and hotel)? suppliers)\b/;
 const SAYS = Object.freeze({
   sandbox: text => text.includes('TEST DATA') && /Supplier test data|Includes supplier test data/.test(text),
-  live: text => /from the airline|from the hotel supplier|from airlines and hotels|Supplier prices/.test(text),
+  live: text => (LIVE_FROM.test(text) && text.includes('Can change until booked')) || /\bSupplier prices: /.test(text),
 });
 
 /**
@@ -206,7 +303,12 @@ function assertSourceMoney(markup, source, { label = '', min = 0 } = {}) {
     const text = textOf(s.slice(box.inner, box.end));
     assert.ok(SAYS[source](text), `${label}: the container of ${what} says where it came from: ${text.slice(0, 200)}`);
     if (source === 'sandbox') assert.ok(hasClass(box, 'bz-price-test'), `${label}: the container of ${what} has the test outline`);
+    if (source === 'live') assert.ok(!hasClass(box, 'bz-price-test'), `${label}: the container of ${what} has no test outline`);
   };
+  // Live prices carry no TEST DATA tag and no test outline anywhere (go-live design §5.6).
+  if (source === 'live') {
+    assert.doesNotMatch(s, /TEST DATA|bz-price-test|bz-test-tag|bz-chip-test/, `${label}: no TEST DATA on live prices`);
+  }
   let n = 0;
   for (const el of all) {
     if (!hasClass(el, 'bz-money')) continue;
@@ -228,4 +330,6 @@ function assertSourceMoney(markup, source, { label = '', min = 0 } = {}) {
 module.exports = {
   toSandbox, fromSandbox, sandboxRow, sandboxInventory, sandboxProvider, useSandbox, instrument, failure,
   elements, textOf, assertSourceMoney,
+  // Live prices (go-live design §5.6)
+  toLive, fromLive, liveRow, liveInventory, liveProvider, useLive, LIVE_FROM,
 };

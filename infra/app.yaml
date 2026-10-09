@@ -188,6 +188,64 @@ Resources:
     Properties:
       LogGroupName: !Sub '/tripelyx/${AppEnv}'
       RetentionInDays: 30
+
+  # ---------- Business supplier keys (live search) ----------
+  # Created with the placeholder "unset", which the app reads as "not set": Business has no supplier until the
+  # owner pastes a key over it in the AWS console (README "Pasting a supplier key"). A pasted value survives
+  # later deploys because SecretString below never changes; never edit it, or a deploy would put "unset" back.
+  # RetainExceptOnCreate: a rolled-back first create removes them (no fixed-name orphan blocks the next deploy),
+  # and once they exist they are kept. The admin task definition maps neither.
+  DuffelTokenSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: RetainExceptOnCreate
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub 'tripelyx-${AppEnv}/business/duffel-token'
+      Description: Duffel live access token for Tripelyx Business search. "unset" means not set.
+      SecretString: unset
+  LiteApiKeySecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: RetainExceptOnCreate
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub 'tripelyx-${AppEnv}/business/liteapi-key'
+      Description: LiteAPI production key for Tripelyx Business search. "unset" means not set.
+      SecretString: unset
+  # Only the site's execution role may read either value. The owner's own console identity is not named
+  # here yet (it is not known from the template), so reading the value in the console is refused too;
+  # writing a new value (PutSecretValue) is not, and neither is changing this policy.
+  DuffelTokenSecretPolicy:
+    Type: AWS::SecretsManager::ResourcePolicy
+    Properties:
+      SecretId: !Ref DuffelTokenSecret
+      BlockPublicPolicy: true
+      ResourcePolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: OnlyTheSiteReadsTheKey
+            Effect: Deny
+            Principal: '*'
+            Action: secretsmanager:GetSecretValue
+            Resource: '*'
+            Condition:
+              ArnNotEquals:
+                aws:PrincipalArn: !GetAtt ExecutionRole.Arn
+  LiteApiKeySecretPolicy:
+    Type: AWS::SecretsManager::ResourcePolicy
+    Properties:
+      SecretId: !Ref LiteApiKeySecret
+      BlockPublicPolicy: true
+      ResourcePolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: OnlyTheSiteReadsTheKey
+            Effect: Deny
+            Principal: '*'
+            Action: secretsmanager:GetSecretValue
+            Resource: '*'
+            Condition:
+              ArnNotEquals:
+                aws:PrincipalArn: !GetAtt ExecutionRole.Arn
   ExecutionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -207,6 +265,10 @@ Resources:
               - Effect: Allow
                 Action: secretsmanager:GetSecretValue
                 Resource: !GetAtt Database.MasterUserSecret.SecretArn
+              - Sid: ReadSupplierKeys
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: [!Ref DuffelTokenSecret, !Ref LiteApiKeySecret]
   TaskRole:
     Type: AWS::IAM::Role
     Properties:
@@ -243,6 +305,12 @@ Resources:
             - { Name: ENABLE_BUSINESS, Value: !Ref EnableBusiness }
             # Business's own demo flights and hotels: never on this site (ALLOW_DEMO_INVENTORY stays for /book).
             - { Name: BUSINESS_DEMO_INVENTORY, Value: 'false' }
+            # Business live search: live keys only, never supplier test data. While either key reads "unset"
+            # Business has no supplier, and live search stays off until a platform admin turns it on.
+            - { Name: BUSINESS_FLIGHT_SUPPLIER, Value: duffel }
+            - { Name: BUSINESS_HOTEL_SUPPLIER, Value: liteapi }
+            - { Name: BUSINESS_SUPPLIER_LIVE, Value: 'true' }
+            - { Name: BUSINESS_ALLOW_SUPPLIER_TEST, Value: 'false' }
             - { Name: ADMIN_EMAILS, Value: !Ref AdminEmails }
             - { Name: PUBLIC_BASE_URL, Value: !Ref PublicBaseUrl }
             - { Name: DATABASE_ENV, Value: !Ref AppEnv }
@@ -254,6 +322,8 @@ Resources:
           Secrets:
             - { Name: DATABASE_USER, ValueFrom: !Sub '${Database.MasterUserSecret.SecretArn}:username::' }
             - { Name: DATABASE_PASSWORD, ValueFrom: !Sub '${Database.MasterUserSecret.SecretArn}:password::' }
+            - { Name: DUFFEL_ACCESS_TOKEN, ValueFrom: !Ref DuffelTokenSecret }
+            - { Name: LITEAPI_API_KEY, ValueFrom: !Ref LiteApiKeySecret }
           LogConfiguration:
             LogDriver: awslogs
             Options:

@@ -6,7 +6,8 @@
 //   team.js      createCompany, listCompaniesFor, getOrg, membership, listMembers, invite, inviteByToken,
 //                acceptInvite, revokeInvite, updateMember, removeMember, saveDepartment, listDepartments,
 //                saveSettings, exportCompany, listAudit, platformListOrgs, platformSetStatus        (Stage 1W-a),
-//                platformCreateHouseCompany                                                      (go-live L0)
+//                platformCreateHouseCompany                                                      (go-live L0),
+//                platformSuppliers, platformCheckSuppliers, platformSetLive                      (go-live L2)
 //   policies.js  getPolicy, savePolicy, policyHistory                                               (Stage 1W-b)
 //   budgets.js   listBudgets, setBudget                                                             (Stage 1W-b)
 //   requests.js  searchTrip, createRequest, getRequest, listRequests, swap, submit, cancel, decide,
@@ -33,7 +34,8 @@ const csv = require('./csv');
 const SERVICE_METHODS = Object.freeze([
   'createCompany', 'listCompaniesFor', 'getOrg', 'membership', 'listMembers', 'invite', 'inviteByToken', 'acceptInvite',
   'revokeInvite', 'updateMember', 'removeMember', 'saveDepartment', 'listDepartments', 'saveSettings', 'exportCompany',
-  'listAudit', 'platformListOrgs', 'platformSetStatus', 'platformCreateHouseCompany', 'getPolicy', 'savePolicy', 'policyHistory', 'listBudgets',
+  'listAudit', 'platformListOrgs', 'platformSetStatus', 'platformCreateHouseCompany', 'platformSuppliers', 'platformCheckSuppliers',
+  'platformSetLive', 'getPolicy', 'savePolicy', 'policyHistory', 'listBudgets',
   'setBudget', 'searchTrip', 'createRequest', 'getRequest', 'listRequests', 'swap', 'submit', 'cancel', 'decide',
   'message', 'inbox', 'inboxCount', 'liveCheck', 'dashboard', 'exportCsv',
 ]);
