@@ -7,12 +7,20 @@ const { layout } = require('../layout');
 const { money, dollars, longDate, shortDate, plural, statusPill, demoBadge } = require('./common');
 
 const TABS = [['/admin', 'Overview'], ['/admin/bookings', 'Bookings'], ['/admin/requests', 'Trip requests'], ['/admin/settings', 'Business rules'], ['/admin/promos', 'Promo codes'], ['/admin/outbox', 'Outbox']];
+// With Tripelyx Business on (ctx.businessNav), the platform admin's company list is one more tab.
+const COMPANIES_TAB = ['/admin/business', 'Companies'];
+
+/** The admin section tabs, the current one marked (also used by views/business/platform.js). */
+function adminTabs(ctx, active) {
+  const tabs = ctx && ctx.businessNav ? [...TABS, COMPANIES_TAB] : TABS;
+  return html`<nav class="tb-admin-tabs" aria-label="Admin sections"><ul>${tabs.map(([h, l]) => html`<li><a href="${h}"${h === active ? raw(' aria-current="page"') : ''}>${l}</a></li>`)}</ul></nav>`;
+}
 
 function shell(ctx, { title, active, body, notice }) {
   const page = html`
 <div class="container tb-admin">
   <header class="tb-admin-head"><div><p class="eyebrow">Admin control center</p><h1>${title}</h1></div>${demoBadge(ctx.tripService.demo, 'Demo inventory')}</header>
-  <nav class="tb-admin-tabs" aria-label="Admin sections"><ul>${TABS.map(([h, l]) => html`<li><a href="${h}"${h === active ? raw(' aria-current="page"') : ''}>${l}</a></li>`)}</ul></nav>
+  ${adminTabs(ctx, active)}
   ${notice ? html`<div class="alert alert-success" role="status">${icon('check')}<span>${notice}</span></div>` : ''}
   ${body}
 </div>`;
@@ -168,4 +176,4 @@ function outboxView(ctx, { messages }) {
   return shell(ctx, { title: 'Notification outbox', active: '/admin/outbox', body });
 }
 
-module.exports = { overviewView, bookingsView, bookingDetailView, requestsView, settingsView, promosView, outboxView };
+module.exports = { overviewView, bookingsView, bookingDetailView, requestsView, settingsView, promosView, outboxView, adminTabs };

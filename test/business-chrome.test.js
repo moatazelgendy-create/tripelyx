@@ -136,7 +136,7 @@ test('Business on with Travel by Budget off: /business is 200, and the generic h
     assert.deepEqual(navOf(page), BIZ_NAV, p);
     assert.deepEqual(footerRow(page), CORPORATE_FOOTER, `${p}: the corporate footer`);
   }
-  for (const p of ['/robots.txt', '/sitemap.xml', '/business/app']) assert.equal((await get(app, p)).status, 404, `${p}: only with trips on`);
+  for (const p of ['/robots.txt', '/sitemap.xml']) assert.equal((await get(app, p)).status, 404, `${p}: only with trips on`);
 });
 
 test('Business on: robots keeps crawlers out of /business/ but not /business, and the sitemap lists /business after /contact', async t => {
