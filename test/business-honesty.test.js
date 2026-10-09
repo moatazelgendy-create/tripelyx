@@ -2,7 +2,7 @@
 // inventory is labelled at every amount, nothing claims a trip was booked, reserved, ticketed, issued, paid,
 // charged or emailed, no page pushes with urgency or scarcity, and no supplier, rating, review or internal
 // field reaches the HTML, the CSV or the company export. With no supplier (production) the pages, the CSV and
-// the export show the company's own figures only, and nothing says "demo".
+// the export show the company's own figures only, and nothing says "demo", "test data" or "supplier prices".
 //
 // The seeded world (test/business-world.js) has two companies with every role, requests in many states (a
 // swap that saved money, approvals by a manager and by an owner's override, a trip that departed, drafts sent
@@ -315,12 +315,29 @@ async function companyFigures(w) {
   return allowed;
 }
 
-/** Production: nothing says demo, no demo label, and every amount in <main> is a company figure. Returns the amounts. */
+/**
+ * The words and marks of a supplier price source (round 1: 'sandbox' is supplier test data, 'live' supplier
+ * prices). With no supplier connected no page, CSV or export carries any of them: the figures are the
+ * company's own, so nothing may call them test data or supplier prices. ("Supplier not connected yet", the
+ * trip search's answer in production, is not one of them.)
+ */
+const SUPPLIER_SOURCE_WORDS = /test data|\bsandbox\b|supplier test|Supplier price|test system/i;
+const SUPPLIER_SOURCE_MARKS = /bz-price-test|bz-test-tag|bz-ribbon-test|data-price-source/i;
+
+/**
+ * Production: nothing says demo or supplier test data, no price label of any source, and every amount in
+ * <main> is a company figure. Returns the amounts.
+ */
 function assertProductionPage(label, page, allowed) {
   const words = wordsOf(page);
   const demo = /\bdemo\b/i.exec(words);
   assert.ok(!demo, `${label}: says "demo" with no supplier: ${demo && words.slice(Math.max(0, demo.index - 120), demo.index + 60)}`);
   assert.doesNotMatch(page, /data-price-source="demo"|Demo price|Priced at/i, `${label}: no demo price label`);
+  const named = SUPPLIER_SOURCE_WORDS.exec(words);
+  assert.ok(!named, `${label}: names a supplier price source with no supplier: ${named && words.slice(Math.max(0, named.index - 120), named.index + 60)}`);
+  const markup = String(page).replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
+  assert.doesNotMatch(markup, SUPPLIER_SOURCE_WORDS, `${label}: no supplier price source in the markup`);
+  assert.doesNotMatch(markup, SUPPLIER_SOURCE_MARKS, `${label}: no price source container or test data tag`);
   let n = 0;
   for (const m of textOf(mainOf(page)).matchAll(AMOUNT)) {
     n += 1;
@@ -526,6 +543,7 @@ for (const production of [false, true]) {
           if (production) {
             assert.equal(lines.length, 1, 'no rows without trips');
             assert.doesNotMatch(res.text, /\bdemo\b/i, `${C.word} CSV says nothing about demo data`);
+            assert.doesNotMatch(res.text, /test data|sandbox|supplier/i, `${C.word} CSV says nothing about supplier prices or test data`);
           } else {
             assert.ok(lines.length >= 7, `${C.word} CSV has its requests`);
             for (const line of lines.slice(1)) assert.ok(line.startsWith('Demo price,'), `${C.word} CSV row: ${line.slice(0, 80)}`);
@@ -537,8 +555,10 @@ for (const production of [false, true]) {
         const data = JSON.parse(ex.text);
         assert.equal(data.org.id, C.id);
         assert.match(data.note, /nothing was booked or charged/);
-        if (production) assert.doesNotMatch(ex.text, /\bdemo\b/i, `${C.word} export says nothing about demo data`);
-        else assert.match(data.note, /\bdemo prices\b/, `${C.word} export note names demo prices`);
+        if (production) {
+          assert.doesNotMatch(ex.text, /\bdemo\b/i, `${C.word} export says nothing about demo data`);
+          assert.doesNotMatch(ex.text, /test data|sandbox|supplier/i, `${C.word} export says nothing about supplier prices or test data`);
+        } else assert.match(data.note, /\bdemo prices\b/, `${C.word} export note names demo prices`);
         assertHonestText(`${cfg} ${C.word} export`, ex.text);
       }
     } finally {
