@@ -552,6 +552,11 @@ function dryRunFetch(keys, prebook = null) {
   ], keys);
 }
 
+test('the report file is ignored by git, so a local sandbox run never adds it to a commit (R1-m)', () => {
+  const ignore = fs.readFileSync(path.join(__dirname, '..', '.gitignore'), 'utf8').split(/\r?\n/).map(l => l.trim());
+  assert.ok(ignore.includes(REPORT), `.gitignore lists ${REPORT}`);
+});
+
 test('dry run on the fixtures: the harness paces its calls and reports counts and booleans only', async () => {
   const keys = testKeys();
   const ff = dryRunFetch(keys);

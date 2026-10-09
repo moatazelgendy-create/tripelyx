@@ -126,21 +126,19 @@ const expired = () => new AppError('request_expired', 'This request expired befo
 
 const gone = () => new AppError('alternative_gone', "That option isn't available anymore. Here are the current ones.", 410);
 const optionUnavailable = () => new AppError('option_unavailable', "That option isn't available anymore. Pick another.", 409);
-/** composer.price's refusal of a key it can no longer find (search.js invalidSelection's default words). */
-const NOT_IN_SEARCH = "That option isn't part of this search.";
 /**
  * Did composer.price refuse a key because the option is gone? A supplier's option can disappear between two
  * calls (a cached search or an offer expired, real-suppliers design §5.2): price() then answers 422
- * 'invalid_selection' with its default words for a key it no longer finds. With a supplier's key, or prices
- * from a supplier, that means the option is gone, not that the form was wrong. The form's own mistakes (a
- * return flight on a one-way search, a hotel without a stay) carry other words and stay 422. Demo keys on
- * demo inventory keep today's answer.
+ * 'invalid_selection' marked `optionGone` (search.js _priceOne) for a key it no longer finds. With a
+ * supplier's key, or prices from a supplier, that means the option is gone, not that the form was wrong. The
+ * form's own mistakes (a return flight on a one-way search, a hotel without a stay, a cabin above the search)
+ * carry no mark and stay 422. Demo keys on demo inventory keep today's answer.
  * @param {unknown} e
  * @param {Array<string|null|undefined>} keys the selection's row keys
  * @param {object|null} inventory
  */
 function optionGone(e, keys, inventory) {
-  if (!(e instanceof AppError) || e.code !== 'invalid_selection' || e.message !== NOT_IN_SEARCH) return false;
+  if (!(e instanceof AppError) || e.code !== 'invalid_selection' || e.optionGone !== true) return false;
   const supplierPrices = !!inventory && inventory.status !== 'demo' && inventory.status !== 'none';
   return supplierPrices || keys.some(k => typeof k === 'string' && sourceOf(k) !== 'demo');
 }

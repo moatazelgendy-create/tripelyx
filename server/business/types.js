@@ -19,6 +19,9 @@
 //   the provider query and offer details additions, searchDetailed, leg skipped/error, Request.source,
 //   EvalCtx.priceSource, RequestView.liveError, the BusinessInventory fields). source.js holds the matching
 //   code: sourceOf, leastReal, requestSource, the row id namespaces and the frozen TERMS sentences.
+//   Added at the R1-m merge (both builders' needs): GetOfferOpts and QuoteInput (the provider calls),
+//   RequestRow.source, ReportTiles.priceSource, DashboardView.priceSource, CompanyExport's price_source and
+//   note, and describe's demo/source options.
 
 // =============================================================================================================
 // 0. Names
@@ -699,6 +702,20 @@
  */
 /** @typedef {(pq: BusinessFlightQuery|BusinessHotelQuery) => Promise<DetailedSearch>} SearchDetailed */
 
+/**
+ * How the composer calls a Business provider beyond providers/contracts.js (both additive; demo providers and the
+ * frozen fakes ignore the extra argument and field):
+ * - `provider.getOffer(offerId, pq, { optionId })`: the optional third argument names the option the caller will
+ *   quote, so a real supplier can check that one fare (DuffelFlights GETs that fare's Duffel offer at 'peek',
+ *   'confirm' and 'final'). Without it a supplier re-searches instead of guessing a fare.
+ * - `provider.quote({ offerId, optionId, query, offer })`: `offer` is the provider Offer the composer was just
+ *   handed by search, searchDetailed or getOffer for the same query. A real supplier reads the quote from it
+ *   locally (no second network call); without it, quote() calls getOffer itself. At `query.check === 'final'`
+ *   LiteApiHotels.quote prebooks the room.
+ * @typedef {{ optionId?: string|null }} GetOfferOpts
+ * @typedef {{ offerId: string, optionId: string, query: BusinessFlightQuery|BusinessHotelQuery, offer?: object|null }} QuoteInput
+ */
+
 // =============================================================================================================
 // 5. Policy evaluation (plan §E2 to §E4). Pure: no store, no clock (today is passed in).
 
@@ -777,6 +794,9 @@
  * demo price chip), then `suffix`.
  * e.g. { key: 'flight.short', text: 'Flights under 6 hours: Economy, up to', cents: 71200,
  *        suffix: 'each way (median of these demo fares plus 20%)' }
+ * On supplier prices only an amount worked out from the search (a median cap, a Price to Beat that is not only
+ * the company's limit) gets the source chip: views/business/parts.fromSearch reads that from the suffix this
+ * module writes, and test/business-policy.test.js pins the two together.
  * @typedef {{ key: string, text: string, cents: number|null, suffix: string }} LimitItem
  */
 /** describe.limitsBar(...). @typedef {{ heading: string, items: LimitItem[] }} LimitsBar heading: 'Your limits for this search (Standard policy, v3)' */
@@ -970,6 +990,9 @@
  * @property {Array<{ userId: string, name: string, requests: number, committedCents: number }>} byTraveler
  * @property {ComingSoonTile[]} comingSoon
  * @property {boolean} truncated "Based on the 5,000 most recent requests"
+ * @property {PriceSource|null} [priceSource] where the counted requests' prices came from (reports.totalsSource):
+ *   'sandbox' when any of them is supplier test data ("Includes supplier test data"), else the least real
+ *   (source.leastReal); null when none is counted
  */
 
 /**
@@ -996,6 +1019,8 @@
  * @property {AuditEntry[]|null} recent audit.view: the 5 newest
  * @property {BudgetRow[]|null} budgets budget.view.dept (own department) or budget.view.all
  * @property {ReportTiles|null} reports view 'reports' only (reports.view)
+ * @property {PriceSource|null} [priceSource] the source of the totals this page shows (the period's counted
+ *   requests and the rows it lists), by the same rule as ReportTiles.priceSource; null when it counts none
  */
 
 /**
@@ -1004,7 +1029,13 @@
  * @typedef {{ filename: string, body: string, rowCount: number, truncated: boolean }} CsvExport
  */
 
-/** service.exportCompany(actor). filename 'tripelyx-company-<org id>.json'. @typedef {{ filename: string, json: string }} CompanyExport */
+/**
+ * service.exportCompany(actor). filename 'tripelyx-company-<org id>.json'. In `json`, each request carries
+ * `price_source` ('Demo price', 'Supplier test data' or 'Supplier price', the CSV's words), and the note is
+ * team.EXPORT_NOTES.demo when every request is demo (or there are none), else EXPORT_NOTES.supplier ("from demo
+ * prices, supplier test data or supplier prices, as each request's price_source says").
+ * @typedef {{ filename: string, json: string }} CompanyExport
+ */
 
 // =============================================================================================================
 // 9. What the service methods return to routes (view models)
@@ -1035,6 +1066,7 @@
  * @property {EffectiveStatus} status
  * @property {PolicyStatus} policyStatus
  * @property {string} at
+ * @property {PriceSource} source source.requestSource(request): 'demo' for a request stored before real suppliers
  */
 
 /**
@@ -1256,7 +1288,8 @@
  * @property {(row: Row, ctx: EvalCtx) => Evaluation} evaluateComponent
  * @property {(rows: { out: FlightRow, back?: FlightRow|null, hotel?: HotelRow|null }, ctx: EvalCtx, opts: { budget: BudgetCtx|null }) => TripEvaluation} evaluateTrip
  * @property {(capCents: number|null, hotelBenchmark: Benchmark|null) => number|null} priceToBeat
- * @property {(rules: PolicyRules, opts: { tier: Tier, version: number, orgName: string, carriers: Record<string, string> }) => PolicyDescription} describe
+ * @property {(rules: PolicyRules, opts: { tier: Tier, version: number, orgName: string, carriers: Record<string, string>, demo?: boolean, source?: PriceSource|null }) => PolicyDescription} describe
+ *   demo (default true) says "the demo fares"; source, when given, wins ('sandbox': "the test fares", 'live': "the fares")
  * @property {(rules: PolicyRules, ctx: EvalCtx, search: SearchResult) => LimitsBar} limitsBar
  * @property {(traveler: Member, membersById: Record<string, Member>) => ApproverResolution} resolveApprover
  * @property {(request: Request, event: LifecycleEvent, opts: TransitionOpts) => TransitionResult} transition

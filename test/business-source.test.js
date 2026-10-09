@@ -381,3 +381,25 @@ test('types.js documents the real-suppliers round 1 contracts', () => {
   }
   assert.match(types, /@property \{string\[\]\} \[currencies\]/);
 });
+
+test('types.js documents what the R1-m merge added (both builders\' needs)', () => {
+  const types = fs.readFileSync(path.join(ROOT, 'server', 'business', 'types.js'), 'utf8');
+  for (const re of [
+    // Builder A: the provider calls the composer makes.
+    /@typedef \{\{ optionId\?: string\|null \}\} GetOfferOpts/,
+    /@typedef \{\{ offerId: string, optionId: string, query: BusinessFlightQuery\|BusinessHotelQuery, offer\?: object\|null \}\} QuoteInput/,
+    /provider\.getOffer\(offerId, pq, \{ optionId \}\)/,
+    /provider\.quote\(\{ offerId, optionId, query, offer \}\)/,
+    // Builder B: the view models and options.
+    /@property \{PriceSource\} source source\.requestSource\(request\)/,
+    /@property \{PriceSource\|null\} \[priceSource\] where the counted requests' prices came from/,
+    /@property \{PriceSource\|null\} \[priceSource\] the source of the totals this page shows/,
+    /each request carries\n \* `price_source`/,
+    /demo\?: boolean, source\?: PriceSource\|null \}\) => PolicyDescription\} describe/,
+    /parts\.fromSearch reads that from the suffix/,
+  ]) assert.match(types, re);
+  // Every exported request row carries its source, and the inbox rows inherit it.
+  const requestsSrc = fs.readFileSync(path.join(ROOT, 'server', 'business', 'requests.js'), 'utf8');
+  assert.match(requestsSrc, /function requestRow\(r, status\) \{[\s\S]*?source: requestSource\(r\),/);
+  assert.match(requestsSrc, /function inboxRow\(r, status\) \{[\s\S]*?\.\.\.requestRow\(r, status\),/);
+});

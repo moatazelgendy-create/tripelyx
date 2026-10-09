@@ -675,7 +675,14 @@ class TripComposer {
     const k = dto.parseRowKey(key);
     const gone = () => {
       const row = goneRow(prev, key, component, fallback);
-      if (!row) throw invalidSelection();
+      if (!row) {
+        // The key named no option the provider still has, and no earlier row to show as gone: still 422 with
+        // the same words, marked so requests.js can tell a supplier option that disappeared (409/410) from a
+        // form that was wrong.
+        const e = invalidSelection();
+        e.optionGone = true;
+        throw e;
+      }
       return row;
     };
     const withCheck = pq => (check ? { ...pq, check } : pq);

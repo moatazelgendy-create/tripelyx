@@ -257,3 +257,24 @@ test('a supplier that stays down during a price check is 503 with nothing decide
   const { selection, rows } = pickOf(await c.composer.search(q));
   await assert.rejects(recheck(c.composer, { selection, query: q, rows }, { check: 'confirm' }), e => e.code === 'supplier_unavailable' && e.status === 503);
 }));
+
+test('price(): a key the supplier no longer has is 422 marked optionGone; a form mistake is 422 with no mark (R1-m)', () => inOrg(async () => {
+  const { composer } = supplierComposer();
+  const q = composer.parseQuery(RAW, { today: TODAY });
+  const { selection } = pickOf(await composer.search(q));
+  const unmarked = e => e instanceof AppError && e.code === 'invalid_selection' && e.status === 422 && e.optionGone === undefined;
+  // A room the hotel no longer offers, and an itinerary the search no longer has: gone, with no earlier row.
+  for (const sel of [{ ...selection, hotel: 'h.htl_t.lp1001|no-such-room' }, { ...selection, out: 'f.flt_t.ZZ9999_20261112T0835_economy|standard' }]) {
+    await assert.rejects(composer.price(sel, q), e => e instanceof AppError && e.code === 'invalid_selection' && e.status === 422
+      && e.optionGone === true && e.message === "That option isn't part of this search.", JSON.stringify(sel));
+  }
+  // With the earlier rows, the same keys come back as unavailable rows instead (the price check's path).
+  const priced = await composer.price(selection, q);
+  const again = await composer.price({ ...selection, hotel: 'h.htl_t.lp1001|no-such-room' }, q, { previous: { ...priced.rows, hotel: { ...priced.rows.hotel, key: 'h.htl_t.lp1001|no-such-room', optionId: 'no-such-room' } } });
+  assert.deepEqual(again.unavailable, ['hotel']);
+  // The form's own mistakes keep their 422 and carry no mark: a cabin above the search (same words), a key of
+  // the wrong part, a return flight on a one-way search.
+  await assert.rejects(composer.price({ ...selection, out: selection.out.replace('_economy|', '_business|') }, q), unmarked);
+  await assert.rejects(composer.price({ ...selection, out: selection.hotel }, q), unmarked);
+  await assert.rejects(composer.price({ ...selection, back: selection.out }, q), unmarked);
+}));
