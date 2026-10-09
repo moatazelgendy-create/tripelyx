@@ -134,6 +134,9 @@ const ROUTE_PERMS = Object.freeze({
   '/admin/business GET /': [null, false, 'platform'],
   '/admin/business POST /:orgId/status': [null, false, 'platform'],
   '/admin/business POST /house': [null, false, 'platform'],
+  // Live search (go-live design §5.4): the platform admin's live check and switch.
+  '/admin/business POST /suppliers/check': [null, false, 'platform'],
+  '/admin/business POST /suppliers/live': [null, false, 'platform'],
 });
 const permOf = r => ROUTE_PERMS[keyOf(r)][0];
 
@@ -530,7 +533,7 @@ test('service: every method refuses an actor naming a company the user is not in
     message: [B.requests.pending.id, { text: 'Hello there' }], inbox: [{ tab: 'waiting' }], inboxCount: [], liveCheck: [B.requests.pending.id],
     dashboard: [{ view: 'home' }], exportCsv: [{}],
   };
-  const SKIP = new Set(['createCompany', 'listCompaniesFor', 'membership', 'inviteByToken', 'acceptInvite', 'platformListOrgs', 'platformSetStatus', 'platformCreateHouseCompany']);
+  const SKIP = new Set(['createCompany', 'listCompaniesFor', 'membership', 'inviteByToken', 'acceptInvite', 'platformListOrgs', 'platformSetStatus', 'platformCreateHouseCompany', 'platformSuppliers', 'platformCheckSuppliers', 'platformSetLive']);
   for (const name of SERVICE_METHODS) {
     if (SKIP.has(name)) continue;
     assert.ok(ARGS[name], `arguments for ${name}`);

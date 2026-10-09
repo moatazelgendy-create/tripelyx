@@ -21,6 +21,12 @@
 //   (L-ERRW, https://docs.liteapi.travel/reference/api-errors-for-hotel-booking-workflow).
 // - POST /v3.0/rates/prebook (L-PRE, https://docs.liteapi.travel/reference/post_rates-prebook): liteapi/prebook.json
 //   for the room the offerId names, priced as the rates answer that served it.
+// Live keys (go-live design §5.3, §8 row E; supplierDouble(clock, { live: true })): every Duffel answer says
+// live_mode true and every LiteAPI rates answer sandbox false, as they do for live keys (D-ORQ, D-OFF, L-RATES);
+// state.mode = 'test' makes them answer as test systems again (a mode mismatch). In live mode the double also
+// answers the platform admin's live check: CAI to DXB (the CAI to LHR offers flown on to Dubai, the arrival
+// times moved to Dubai's clock) and hotels in Dubai; and the fixture airline's name is "Example Air", so no
+// supplier name reaches a page.
 const { currentCompany } = require('../server/business/scope');
 
 const OFFER_REQUESTS = 'https://api.duffel.com/air/offer_requests';
@@ -40,6 +46,46 @@ const LONDON = Object.freeze({
   lp1003: { name: 'Downtown Inn', address: '20 Southampton Row' },
   lp1004: { name: 'Paddington Lodge', address: '3 Praed Street' },
 });
+const DUBAI = Object.freeze({
+  lp1001: { name: 'Creek View Hotel', address: '12 Al Seef Road' },
+  lp1002: { name: 'Garden Court Suites Dubai', address: '5 Al Wasl Road' },
+  lp1003: { name: 'Downtown Inn Dubai', address: '20 Sheikh Zayed Road' },
+  lp1004: { name: 'Marina Lodge', address: '3 Marina Walk' },
+});
+const CITIES = Object.freeze({
+  London: { hotels: LONDON, country: 'gb', latitude: 51.5, longitude: -0.12 },
+  Dubai: { hotels: DUBAI, country: 'ae', latitude: 25.2, longitude: 55.27 },
+});
+/** Dubai International, shaped as Duffel's airport objects (D-ORQ). */
+const DXB = Object.freeze({
+  type: 'airport', iata_code: 'DXB', iata_country_code: 'AE', name: 'Dubai International Airport', city_name: 'Dubai',
+  time_zone: 'Asia/Dubai', latitude: 25.2532, longitude: 55.3657, id: 'arp_dxb_ae',
+});
+/** London is UTC+0 and Dubai UTC+4 in November: the same instant, 4 hours later on Dubai's clock. */
+const LONDON_TO_DUBAI_HOURS = 4;
+const shiftHours = (text, hours) => (typeof text === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(text)
+  ? new Date(Date.parse(`${text.slice(0, 19)}Z`) + hours * 3600000).toISOString().slice(0, 19) + text.slice(19)
+  : text);
+/** An offer flown on to Dubai instead of London: every LHR arrival becomes DXB at the same instant. */
+function toDubai(o) {
+  for (const slice of o.slices) {
+    if (slice.destination && slice.destination.iata_code === 'LHR') slice.destination = { ...DXB };
+    for (const seg of slice.segments) {
+      if (seg.destination && seg.destination.iata_code === 'LHR') {
+        seg.destination = { ...DXB };
+        seg.arriving_at = shiftHours(seg.arriving_at, LONDON_TO_DUBAI_HOURS);
+      }
+    }
+  }
+  return o;
+}
+/** Carrier objects named after the supplier's test airline get a plain example name (live mode). */
+function renameCarriers(o) {
+  const rename = c => { if (c && typeof c.name === 'string' && /duffel/i.test(c.name)) c.name = 'Example Air'; };
+  rename(o.owner);
+  for (const slice of o.slices) for (const seg of slice.segments) { rename(seg.marketing_carrier); rename(seg.operating_carrier); }
+  return o;
+}
 const fareKey = o => `${o.slices[0].segments.map(s => s.marketing_carrier.iata_code + s.marketing_carrier_flight_number).join('-')}|${o.slices[0].fare_brand_name}`;
 const roomKey = (hotelId, rate) => `${hotelId}|${rate.name}`;
 const addAmount = (text, cents) => (Math.round(Number(text) * 100 + cents) / 100).toFixed(2);
@@ -48,8 +94,9 @@ const addAmount = (text, cents) => (Math.round(Number(text) * 100 + cents) / 100
  * The suppliers as the caller runs them: their answers follow `state`, which the caller changes between steps.
  * @param {{ now: () => Date }} clock the app's clock (offer expiries follow it)
  */
-function supplierDouble(clock) {
+function supplierDouble(clock, { live = false } = {}) {
   const state = {
+    mode: live ? 'live' : 'test', // how the answers say they were made: 'live' (live_mode true, sandbox false) or 'test'
     flights: 'up', // 'down': every Duffel call answers 500
     offerGet: 'up', // 'down': GET /air/offers answers 500 (searches still answer)
     hotels: 'up', // 'down': every LiteAPI call answers 4291 (HTTP 500)
@@ -62,11 +109,14 @@ function supplierDouble(clock) {
   const owners = new Map(); // a Duffel offer id or LiteAPI offerId → the company it was served to
   const crossed = []; // a supplier id used by a company it was not served to
   let offerRequests = 0, ratesCalls = 0, prebooks = 0;
+  let lastCity = 'London';
   const own = id => owners.set(id, currentCompany());
   const check = (id, what) => { if (owners.get(id) !== currentCompany()) crossed.push(`${what} ${id}`); };
 
+  const isLive = () => state.mode === 'live';
   const changed = offer => {
     const o = structuredClone(offer);
+    o.live_mode = isLive();
     const c = state.fares.get(fareKey(o));
     if (c && c.addCents) {
       o.total_amount = addAmount(o.total_amount, c.addCents);
@@ -80,9 +130,12 @@ function supplierDouble(clock) {
   function offerRequest(body, call) {
     const asked = call.body.data.slices[0];
     body.data.cabin_class = call.body.data.cabin_class;
+    body.data.live_mode = isLive();
     offerRequests += 1;
     const n = offerRequests;
-    if (asked.origin !== 'CAI' || asked.destination !== 'LHR') { body.data.offers = []; return body; }
+    const dubai = live && asked.destination === 'DXB';
+    if (asked.origin !== 'CAI' || (asked.destination !== 'LHR' && !dubai)) { body.data.offers = []; return body; }
+    if (dubai) body.data.slices = body.data.slices.map(sl => ({ ...sl, destination: { ...DXB } }));
     const days = dayOf(asked.departure_date) - dayOf('2026-11-12');
     const expires = new Date(clock.now().getTime() + 30 * 60000).toISOString();
     body.data.offers = body.data.offers.map(raw => {
@@ -90,6 +143,8 @@ function supplierDouble(clock) {
       // Unique to this answer (Duffel's offer ids are), so a check that used another company's id would show.
       o.id = `off_${asked.departure_date.replace(/-/g, '')}R${n}${raw.id.slice('off_0000AAAA'.length)}`;
       o.expires_at = expires;
+      if (dubai) toDubai(o);
+      if (live) renameCarriers(o);
       for (const slice of o.slices) {
         for (const seg of slice.segments) {
           seg.departing_at = shiftLocal(seg.departing_at, days);
@@ -110,10 +165,15 @@ function supplierDouble(clock) {
   function rates(body, call) {
     ratesCalls += 1;
     const n = ratesCalls;
+    body.sandbox = !isLive();
     const only = Array.isArray(call.body.hotelIds) ? new Set(call.body.hotelIds) : null;
-    if (!only && call.body.cityName !== 'London') { body.data = []; body.hotels = []; return body; }
+    // A call by hotel id names no city: the hotels stay in the city they were last served in.
+    const cityName = only ? lastCity : call.body.cityName;
+    const city = cityName === 'London' || (live && cityName === 'Dubai') ? CITIES[cityName] : null;
+    if (!city) { body.data = []; body.hotels = []; return body; }
+    lastCity = cityName;
     body.hotels = body.hotels.filter(h => !only || only.has(h.id)).map(h => ({
-      ...h, ...(LONDON[h.id] || {}), city_name: 'London', country_code: 'gb', latitude: 51.5, longitude: -0.12,
+      ...h, ...(city.hotels[h.id] || {}), city_name: cityName, country_code: city.country, latitude: city.latitude, longitude: city.longitude,
     }));
     body.data = body.data.filter(d => !only || only.has(d.hotelId)).map(d => ({
       ...d,
@@ -183,4 +243,4 @@ function opsOf(calls) {
   });
 }
 
-module.exports = { supplierDouble, opsOf, OFFER_REQUESTS, OFFER_GET, RATES, PREBOOK, LONDON };
+module.exports = { supplierDouble, opsOf, OFFER_REQUESTS, OFFER_GET, RATES, PREBOOK, LONDON, DUBAI };

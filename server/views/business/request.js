@@ -31,7 +31,7 @@ const tz = require('../../business/tz');
 const { REASON_MAX_CHARS, NOTE_MIN_CHARS, MESSAGE_CHARS } = require('../../business/lifecycle');
 const { periodKey, periodLabel } = require('../../business/budgets');
 const { places, cityOf, routeText, datesText, searchQuery, nightsBetween } = require('./trips');
-const { PRICE_CHECK_COPY } = require('../../business/source');
+const { PRICE_CHECK_COPY, SEARCH_CLOSED } = require('../../business/source');
 
 /** Where a gone option went, by the request's source: "no longer in the demo data". */
 const GONE = Object.freeze({
@@ -376,7 +376,9 @@ function deciderPanel(ctx, r, view, { base, timeZone, form, failed, refusal, err
   if (!live && view.liveError) {
     // A supplier's price check could not run on a page view (the approver's page always opens): it runs when
     // they approve.
-    check = html`<p>${icon('info')}<span>${view.liveError === 'live_check_skipped' ? PRICE_CHECK_COPY.skipped : PRICE_CHECK_COPY.failed}</span></p>`;
+    // A company Tripelyx hasn't confirmed (live prices, go-live design §5.5) checks nothing until it is.
+    const words = view.liveError === 'live_check_skipped' ? PRICE_CHECK_COPY.skipped : view.liveError === 'company_not_confirmed' ? SEARCH_CLOSED : PRICE_CHECK_COPY.failed;
+    check = html`<p>${icon('info')}<span>${words}</span></p>`;
   } else if (!live) {
     check = html`<p>${icon('info')}<span>We couldn't check the price again just now. Approving checks it once more.</span></p>`;
   } else {

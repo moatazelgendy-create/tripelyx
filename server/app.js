@@ -126,9 +126,13 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
   // BUSINESS_DEMO_INVENTORY allows it, else "Supplier not connected yet"), never the registry /book runs on; it
   // never calls BookingEngine or payments.
   if (config.business.enabled) {
-    const bizInventory = createBusinessInventory(config, { fetch: businessFetch, now: clock, log });
+    const bizRepo = new Repo({ store, now: clock, log });
+    // On a live-keys stack the inventory keeps its live search switch and daily supplier counts through the Repo
+    // (go-live design §5.4, §5.5); reading the switch once here means the first page already knows it.
+    const bizInventory = createBusinessInventory(config, { fetch: businessFetch, now: clock, log, repo: bizRepo });
+    await bizInventory.sync();
     business = new BusinessService({
-      repo: new Repo({ store, now: clock, log }),
+      repo: bizRepo,
       accounts,
       config,
       now: clock,
@@ -232,6 +236,14 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
         req.visitor = null;
         runWithContext({ user: req.user, visitor: null }, () => next());
       } catch (e) { next(e); }
+    });
+  }
+
+  // Live search (go-live design §5.4): every task reads the switch again within 30 seconds of a change, before
+  // the Business pages that depend on it. Nothing happens on any other stack (sync() does nothing there).
+  if (business && business.inventory && business.inventory.liveMode === true) {
+    app.use(['/business', '/admin/business'], (req, res, next) => {
+      business.inventory.sync().then(() => next(), next);
     });
   }
 

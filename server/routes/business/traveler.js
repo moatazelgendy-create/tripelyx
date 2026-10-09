@@ -35,6 +35,8 @@
 // swap, submit or decide re-renders the request page, untouched. When the price check at submit or decide
 // could not run, the page says "The price couldn't be checked just now, so nothing changed." (503) or the
 // supplier_busy text (429): a request is never approved without a check, nor sent back because of an outage.
+// Live prices (go-live design §5.5) add the daily limit ('supplier_daily_limit', 429, naming when search opens
+// again) and a company Tripelyx hasn't confirmed ('company_not_confirmed', 409), said the same way.
 const express = require('express');
 const { AppError } = require('../../lib/errors');
 const { PRICE_CHECK_COPY } = require('../../business/source');
@@ -96,8 +98,12 @@ function rawQuery(src) {
 /** A refusal the page itself explains (a 4xx AppError other than 404, 403 and 429). */
 const shown = e => e instanceof AppError && e.status >= 400 && e.status < 500 && ![403, 404, 429].includes(e.status);
 const isStatus = (e, status) => e instanceof AppError && e.status === status;
-/** A real supplier that failed (503) or the company's supplier limit (429): said on the page, never thrown. */
-const supplierFail = e => e instanceof AppError && (e.code === 'supplier_unavailable' || e.code === 'supplier_busy');
+/**
+ * A real supplier that failed (503), the company's hourly or daily supplier limit (429), or live search for a
+ * company Tripelyx hasn't confirmed (409): said on the page, never thrown.
+ */
+const SUPPLIER_FAILS = Object.freeze(['supplier_unavailable', 'supplier_busy', 'supplier_daily_limit', 'company_not_confirmed']);
+const supplierFail = e => e instanceof AppError && SUPPLIER_FAILS.includes(e.code);
 
 function send(res, status, page) {
   res.status(status).type('html').send(String(page));

@@ -1,12 +1,14 @@
 // "Plan a work trip" (/business/o/:orgId/trips/new, plan §B4, §B6, §F3): the search form. It is a GET form to
 // /trips/search, so a search can be shared, bookmarked and run again; nothing is stored until the traveler
 // picks options and presses Review trip. With no supplier connected it shows the "Supplier not connected yet"
-// panel, the fields disabled and no Search button. A search the form must fix comes back here with each
+// panel, the fields disabled and no Search button; with live prices, a company Tripelyx hasn't confirmed sees
+// "Search opens once Tripelyx confirms your company." the same way (go-live design §5.5). A search the form must fix comes back here with each
 // field's message.
 const { html } = require('../../lib/html');
 const { icon } = require('../icons');
 const tz = require('../../business/tz');
 const { CABINS, CABIN_LABELS } = require('../../business/constants');
+const { SEARCH_CLOSED } = require('../../business/source');
 const f = require('./format');
 const p = require('./parts');
 
@@ -58,7 +60,9 @@ function airportSelect({ id, name, label, value, airports, error }) {
  */
 function tripNewView(ctx, { org, inventory, values, errors = {}, error = null, departmentName, tierLabel }) {
   const base = `/business/o/${org.id}`;
-  const off = !inventory || inventory.status === 'none';
+  // Live prices for a company Tripelyx hasn't confirmed yet (go-live design §5.5): the form is shown but off.
+  const closed = !!inventory && inventory.status === 'live' && !!org && org.status !== 'active';
+  const off = !inventory || inventory.status === 'none' || closed;
   let airports = [];
   try { airports = off ? [] : inventory.airports(); } catch { airports = []; }
   airports = [...airports].sort((a, b) => (a.city < b.city ? -1 : a.city > b.city ? 1 : 0));
@@ -110,8 +114,11 @@ function tripNewView(ctx, { org, inventory, values, errors = {}, error = null, d
   const who = html`<p class="bz-search-who">${icon('shield')}<span>Your department: ${departmentName || 'None yet'} · Your policy: ${tierLabel}</span></p>`;
 
   return html`${p.pageHead({ title: 'Plan a work trip', sub: 'Your policy shows on every option as you search. Nothing is booked.' })}
-  ${off ? p.supplierPanel() : ''}
-  ${p.errorBox(error)}
+  ${closed ? html`<section class="bz-card bz-supplier" aria-labelledby="bz-closed-title">
+    <h2 class="bz-supplier-title" id="bz-closed-title">${icon('clock')}<span>Not open yet</span></h2>
+    <p>${SEARCH_CLOSED}</p>
+  </section>` : off ? p.supplierPanel() : ''}
+  ${closed && error === SEARCH_CLOSED ? '' : p.errorBox(error)}
   <form class="bz-card bz-search" method="get" action="${base}/trips/search">
     ${fields}
     ${who}

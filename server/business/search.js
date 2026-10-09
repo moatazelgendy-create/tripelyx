@@ -47,6 +47,8 @@
 //   variants() makes counts: at most maxSearches (20) in all, spent on the pick's legs first, then cabin,
 //   then the date shifts closest first; `searches` is the number that ran. At most POOL_CAP (200)
 //   candidates. truncated when either cap cuts anything. Never a different destination or route.
+// - Live prices (inventory status 'live', go-live design §5.5): every call needs a confirmed company in scope
+//   (scope.js), else 409 'company_not_confirmed' before any supplier is asked.
 const { AppError } = require('../lib/errors');
 const { isIsoDate, addDays, daysBetween } = require('../lib/dates');
 const { validateOffer, validateQuote } = require('../providers/contracts');
@@ -54,6 +56,8 @@ const { CABINS, CABIN_RANK, CABIN_LABELS } = require('./constants');
 const dto = require('./dto');
 const { recheck } = require('./recheck');
 const tz = require('./tz');
+const { currentScope } = require('./scope');
+const { supplierError } = require('./source');
 
 /** The most options priced per leg. */
 const MAX_PRICED_PER_LEG = 60;
@@ -565,6 +569,12 @@ class TripComposer {
   _ready() {
     const inv = this.inventory;
     if (!inv || inv.status === 'none' || !inv.flights) throw noSupplier();
+    // Live prices only for a company Tripelyx has confirmed (go-live design §5.5): the scope memberGate set
+    // says so ('platform', the admin's live check, is confirmed). requests.js refuses first, in its own words.
+    if (inv.status === 'live') {
+      const scope = currentScope();
+      if (!scope || scope.confirmed !== true) throw supplierError('company_not_confirmed');
+    }
   }
 
   _pricedAt() {

@@ -43,6 +43,8 @@
 // - Tripelyx's own company (go-live design §3.8) is the one company named Tripelyx: only
 //   platformCreateHouseCompany makes it (createCompany's commit with the house flag), its biz_house record
 //   (one fixed id, insert-only) goes in the same commit so there is only ever one, and its name never changes.
+// - Live search (go-live design §5.4): platformSuppliers, platformCheckSuppliers and platformSetLive hand the
+//   Suppliers panel to the inventory (liveState, liveCheck, setLive), the one place that holds the switch.
 const crypto = require('node:crypto');
 const { AppError } = require('../lib/errors');
 const { id } = require('../lib/ids');
@@ -1304,6 +1306,63 @@ const methods = {
       const { org } = await makeCompany.call(this, user, f, { house: true });
       return { org, created: true };
     }, { tries: 5 });
+  },
+
+  /**
+   * The Suppliers panel of /admin/business on a live-keys stack (go-live design §5.4): the live search switch
+   * read from the store now (inventory.liveState: words, booleans and times, never a key or any part of one),
+   * today's supplier calls against the daily caps (inventory.usageToday; null when they can't be read) and the
+   * newest platform audit entries. null on any other stack, where the page is as it was.
+   * @param {import('./types').UserActor} actor actor.user.isAdmin must be true, and accounts.isPlatformAdmin(actor.user) is asked again
+   * @returns {Promise<object|null>}
+   * @throws {AppError} 404 'not_found' for anyone who is not a platform admin
+   */
+  async platformSuppliers(actor) {
+    await platformUser.call(this, actor);
+    const inv = this.inventory;
+    if (!inv || inv.liveMode !== true) return null;
+    await inv.sync({ force: true });
+    let usage = null;
+    try { usage = await inv.usageToday(); } catch { usage = null; }
+    let audit = null;
+    try {
+      audit = (await this.repo.listPlatformAudit({ limit: 10 })).map(e => ({ at: e.at, action: e.action, summary: e.summary }));
+    } catch { audit = null; }
+    return { ...inv.liveState(), usage, audit };
+  },
+
+  /**
+   * "Check live connection" (go-live design §5.4): inventory.liveCheck, as this platform admin. At most 3 an
+   * hour across every task; its supplier calls count against the daily caps.
+   * @param {import('./types').UserActor} actor
+   * @returns {Promise<{ passed: boolean, mismatch: string|null, details: object }>}
+   * @throws {AppError} 404 (not a platform admin); 409 'live_unavailable' (not a live-keys stack),
+   *   'suppliers_not_ready'; 429 'live_check_limit'; 503 'switch_unreadable'
+   */
+  async platformCheckSuppliers(actor) {
+    const user = await platformUser.call(this, actor);
+    const inv = this.inventory;
+    if (!inv || inv.liveMode !== true) throw new AppError('live_unavailable', 'Live search is not set up on this site.', 409);
+    return inv.liveCheck({ actor: { platformAdmin: user.id } });
+  },
+
+  /**
+   * "Turn on live search" / "Turn off live search" (go-live design §5.4): inventory.setLive, as this platform
+   * admin, against the switch's rev the page showed (a stale page answers 409 'conflict').
+   * @param {import('./types').UserActor} actor
+   * @param {{ on: '1'|'0', rev: string|number }} form
+   * @returns {Promise<object>} the written switch
+   * @throws {AppError} 404; 422 'invalid_live'; 409 'live_unavailable', 'live_check_needed', 'suppliers_not_ready',
+   *   'conflict'
+   */
+  async platformSetLive(actor, form) {
+    const user = await platformUser.call(this, actor);
+    const inv = this.inventory;
+    if (!inv || inv.liveMode !== true) throw new AppError('live_unavailable', 'Live search is not set up on this site.', 409);
+    const f0 = form && typeof form === 'object' ? form : {};
+    const on = f0.on === '1' ? true : f0.on === '0' ? false : null;
+    if (on === null) throw new AppError('invalid_live', 'Choose whether live search is on or off.', 422);
+    return inv.setLive(on, { actor: { platformAdmin: user.id }, rev: f0.rev });
   },
 };
 

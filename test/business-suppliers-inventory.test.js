@@ -46,9 +46,11 @@ test('config: the supplier block parses, with defaults, and keeps its keys out o
   const config = loadConfig(GOOD);
   const s = config.business.suppliers;
   assert.deepEqual({ ...s }, {
-    configured: true, flights: 'duffel', hotels: 'liteapi', allowTest: true, guestNationality: 'US',
+    configured: true, flights: 'duffel', hotels: 'liteapi', live: false, allowTest: true, guestNationality: 'US',
     cacheSeconds: 300, companyCallsPerHour: 120, variantSearches: 4, problem: null,
   });
+  assert.deepEqual(s.keyState, { duffel: 'set', liteapi: 'set' }, 'what each key is, in words (non-enumerable)');
+  assert.match(s.keyPrint, /^duffel:[0-9a-f]{8} liteapi:[0-9a-f]{8}$/, 'which keys, without them (non-enumerable)');
   assert.equal(s.duffelToken, keys.token);
   assert.equal(s.liteapiKey, keys.apiKey);
   assert.ok(Object.isFrozen(s));

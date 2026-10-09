@@ -557,6 +557,36 @@ not set: Business has no supplier, companies see "Supplier not connected yet" an
 - **Undo:** paste `unset` back the same way (type `unset` at the prompt) and restart the site. Business
   is then exactly as it was before the key.
 
+#### Turning Business live search on and off
+
+With both keys pasted and the site restarted, `/admin/business` shows a **Suppliers** panel to platform
+admins only (it may name Duffel and LiteAPI; companies and travelers never see a supplier's name). Each
+supplier says where it stands: "Not set", "Test key refused", "Ready to check", "Checked, ready to turn on",
+"Live", or "Turned off after a mode mismatch at" a time. It never shows a key or any part of one.
+
+- **Check live connection** makes three supplier calls: one Duffel search (Cairo to Dubai, 30 days ahead,
+  economy, 1 adult), one Duffel check of its cheapest fare, and one LiteAPI hotel search in Dubai. The panel
+  shows what came back in counts and yes or no only: whether each answer said live mode, how many fares and
+  rooms were in US dollars, whether every row passed the checks, and how long each call took. It passes only
+  when every answer is live and each supplier sent at least one US dollar row. It can run 3 times an hour,
+  and its calls count toward the day's totals.
+- **Turn on live search** appears only after a check that passed for the keys in place, in the last 24
+  hours. A key pasted later needs a new check. Every running copy of the site follows within 30 seconds.
+  Companies Tripelyx has confirmed then search live prices; a company still waiting sees "Search opens once
+  Tripelyx confirms your company." and no supplier is called for it. Booking is not open: nothing is booked
+  or charged, and no hotel room is held.
+- **Daily limits**, per supplier and per UTC day, kept in the database so a restart or a deploy does not
+  reset them: 100 calls for one company and 500 for all companies together. Every call counts, a retry and
+  the live check included. Past a limit a company sees when search opens again (the next 00:00 UTC, in its
+  own time zone). The panel shows today's count and a notice once either supplier passes 80% of its 500.
+  Each running copy counts ahead in blocks of 10 per company, so the count can be a few calls ahead of the
+  calls made, never behind. Each company also has 120 calls an hour, counted in memory per running copy.
+- **A mode mismatch** (an answer that does not say live mode) turns live search off by itself, in the
+  database, so every copy of the site, a restart and a deploy keep it off. The panel says when, and turning
+  it on again needs a new passing check.
+- **Undo:** press **Turn off live search** (every copy follows within 30 seconds), or paste `unset` back
+  into either secret and restart the site. Nothing is booked at this stage, so nothing else needs undoing.
+
 #### One-off admin tasks
 
 `AdminTaskDefinition` (family `tripelyx-<env>-admin`, container `admin`) runs the same image as the site

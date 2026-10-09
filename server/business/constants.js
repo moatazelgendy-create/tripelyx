@@ -85,6 +85,32 @@ const KINDS = Object.freeze({
   house: 'biz_house',
 });
 
+/**
+ * Platform records (go-live design §5.4, §5.5): Tripelyx's own, owned by no company, read and written only
+ * through Repo's narrow supplier methods (never get, getIn, list, page, insert or cas).
+ * - supplierSwitch: the one live search switch (id LIVE_SWITCH_ID), with its last live check, CAS on `rev`;
+ * - supplierUsage: one record per UTC day and supplier ('2026-10-09.duffel'), the calls counted against the caps;
+ * - platformAudit: insert-only, what platform admins (and a mode mismatch) did to the switch.
+ */
+const PLATFORM_KINDS = Object.freeze({
+  supplierSwitch: 'biz_supplier_switch',
+  supplierUsage: 'biz_supplier_usage',
+  platformAudit: 'biz_platform_audit',
+});
+/** The live search switch's record id. */
+const LIVE_SWITCH_ID = 'live';
+
+/**
+ * Live search limits (go-live §5.4, §5.5; owner decision D2-1): per supplier and UTC day, 100 calls for one
+ * company and 500 for all of them together, counted ahead in blocks of 10 per running task; the usage notice
+ * on /admin/business from 80% of the total; at most 3 live checks an hour; turning live search on needs a
+ * passing check from the last 24 hours; every task reads the switch again within 30 seconds.
+ */
+const SUPPLIER_CAPS = Object.freeze({ company: 100, total: 500, block: 10, noticeShare: 0.8 });
+const LIVE_CHECKS_PER_HOUR = 3;
+const LIVE_CHECK_FRESH_MS = 24 * 60 * 60 * 1000;
+const LIVE_SWITCH_CACHE_MS = 30 * 1000;
+
 /** Id prefixes for `lib/ids.id(prefix)`: org_, dep_, btr_, aud_, inv_ (invite publicId). */
 const ID_PREFIX = Object.freeze({ org: 'org', department: 'dep', request: 'btr', audit: 'aud', invite: 'inv' });
 
@@ -158,7 +184,8 @@ const AUDIT_GROUPS = Object.freeze(Object.keys(AUDIT_ACTIONS));
 
 module.exports = {
   BUSINESS_EMAIL, HOUSE_COMPANY_NAME, HOUSE_ID, HOUSE_NAME_FIXED, SIGNUP_ACK, signupAck, ORG_STATUSES, MEMBER_STATUSES, LIST_LIMIT, PAGE_SIZE, MEMBER_CAP, SCAN_CAP, DEPARTMENT_CAP, COMPANY_SIZES,
-  GENERAL_DEPARTMENT, KINDS, ID_PREFIX,
+  GENERAL_DEPARTMENT, KINDS, ID_PREFIX, PLATFORM_KINDS, LIVE_SWITCH_ID, SUPPLIER_CAPS, LIVE_CHECKS_PER_HOUR, LIVE_CHECK_FRESH_MS,
+  LIVE_SWITCH_CACHE_MS,
   TIERS, TIER_LABELS, REQUEST_STATUSES, REASON_CATEGORIES, REASON_CATEGORY_LABELS, CABINS, CABIN_RANK, CABIN_LABELS,
   REQ_LINK_ROLES, OUT_OF_POLICY_MODES, BUDGET_PERIODS, APPROVAL_HOURS_RANGE, REASON_MIN_CHARS, DEFAULT_TIMEZONE,
   TIMEZONES, CURRENCY, AUDIT_ACTIONS, AUDIT_GROUPS,

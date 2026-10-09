@@ -29,7 +29,8 @@
 //   time zone. NRFN → "Non-refundable."; RFN without a readable deadline → TERMS.hotelNoDeadline.
 // Price checks (§5.3), by pq.check: auto = the cached search, else rates for that hotel; peek = cache only
 //   (else 503 live_check_skipped); confirm = fresh rates for that hotel; final = fresh rates, then quote()
-//   prebooks the room (POST https://book.liteapi.travel/v3.0/rates/prebook, never with the payment SDK).
+//   prebooks the room in sandbox (POST https://book.liteapi.travel/v3.0/rates/prebook, never with the payment
+//   SDK). On live keys final is fresh rates only: a prebook holds a real room, and booking is not open (go-live §5.5).
 //   Fresh rates for one hotel also refresh that hotel in the cached city search, so a later auto or peek
 //   never serves an older price than a check already saw. A prebook that changed the meal plan (boardChanged,
 //   or another board) says so in the room's name and terms text: the price check then reads it as a change.
@@ -143,7 +144,8 @@ class LiteApiHotels {
     if (mode !== 'sandbox' && mode !== 'live') throw new TypeError('[suppliers] LiteApiHotels needs a mode');
     this.name = 'LiteApiHotels';
     this.vertical = 'hotels';
-    this.isDemo = true;
+    // Not demo inventory when it runs on live keys (the provider contract's flag; Business itself reads row.demo).
+    this.isDemo = mode !== 'live';
     this.mode = mode;
     this.prefix = offerPrefix('hotel', mode);
     this.http = http;
@@ -225,7 +227,7 @@ class LiteApiHotels {
   }
 
   /**
-   * The quote for one room. For pq.check 'final' it prebooks (see the header); otherwise it reads the rates
+   * The quote for one room. For pq.check 'final' in sandbox it prebooks (see the header); otherwise it reads the rates
    * answer the offer came from.
    * @param {{ offerId: string, optionId: string, query: object, offer?: object }} input
    * @returns {Promise<object>} a SupplierQuote
@@ -240,7 +242,9 @@ class LiteApiHotels {
     if (!h) throw new AppError('offer_not_found', 'This hotel is no longer available for your dates.', 404);
     const opt = h.options.find(o => o.id === optionId);
     if (!opt) throw new AppError('option_not_found', 'That room is no longer offered.', 404);
-    if (query && query.check === 'final') return this._prebookQuote(h, opt, this._query(query));
+    // No prebook on live keys (go-live §5.5): it briefly holds a real room, and booking is not open. The
+    // 'final' check then rests on the fresh rates getOffer just fetched for this hotel.
+    if (query && query.check === 'final' && this.mode !== 'live') return this._prebookQuote(h, opt, this._query(query));
     return this._quoteOf(h, opt);
   }
 
