@@ -1,0 +1,18 @@
+{
+  "_source": "https://duffel.com/docs/api/overview/errors: offer_no_longer_available, type airline_error, HTTP 422.",
+  "_status": 422,
+  "meta": {
+    "status": 422,
+    "request_id": "FZW0H3HdJwKk5HMAAKxD"
+  },
+  "errors": [
+    {
+      "type": "airline_error",
+      "code": "offer_no_longer_available",
+      "title": "Offer no longer available",
+      "message": "The provided offer is no longer available, please select another offer or create a new offer request",
+      "documentation_url": "https://duffel.com/docs/api/overview/errors",
+      "source": null
+    }
+  ]
+}

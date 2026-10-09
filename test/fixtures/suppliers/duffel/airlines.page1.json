@@ -1,0 +1,51 @@
+{
+  "_source": "https://duffel.com/docs/api/v2/airlines: GET /air/airlines, one page (made-up ids).",
+  "_status": 200,
+  "meta": {
+    "limit": 200,
+    "after": null,
+    "before": null
+  },
+  "data": [
+    {
+      "id": "arl_00009VME7DAGiJjwomhv32",
+      "name": "Duffel Airways",
+      "iata_code": "ZZ",
+      "logo_symbol_url": null,
+      "logo_lockup_url": null,
+      "conditions_of_carriage_url": null
+    },
+    {
+      "id": "arl_00009VME7DBKeMags5CliQ",
+      "name": "EgyptAir",
+      "iata_code": "MS",
+      "logo_symbol_url": null,
+      "logo_lockup_url": null,
+      "conditions_of_carriage_url": null
+    },
+    {
+      "id": "arl_00009VME7DAGiJjwomhv03",
+      "name": "British Airways",
+      "iata_code": "BA",
+      "logo_symbol_url": null,
+      "logo_lockup_url": null,
+      "conditions_of_carriage_url": null
+    },
+    {
+      "id": "arl_00009VME7DAGiJjwomhv06",
+      "name": "Emirates",
+      "iata_code": "EK",
+      "logo_symbol_url": null,
+      "logo_lockup_url": null,
+      "conditions_of_carriage_url": null
+    },
+    {
+      "id": "arl_00009VME7DAGiJjwomhv07",
+      "name": "Turkish Airlines",
+      "iata_code": "TK",
+      "logo_symbol_url": null,
+      "logo_lockup_url": null,
+      "conditions_of_carriage_url": null
+    }
+  ]
+}

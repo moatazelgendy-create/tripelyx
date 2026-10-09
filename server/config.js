@@ -3,6 +3,7 @@
 // projection at the bottom — the frontend only ever learns which verticals are on and whether
 // payments are in test mode, never a key, URL with credentials, or provider name it doesn't need.
 const { VERTICALS } = require('./verticals');
+const { passwordDigest } = require('./lib/previewGate');
 
 const APP_ENVS = ['development', 'staging', 'production'];
 
@@ -17,6 +18,86 @@ function int(value, fallback, name) {
   const n = Number(value);
   if (!Number.isInteger(n) || n < 0) throw new Error(`${name} must be a whole number of 0 or more (got "${value}")`);
   return n;
+}
+
+// A whole number of at least one, or the fallback when unset.
+function pos(value, fallback, name) {
+  if (value === undefined || value === '') return fallback;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 1) throw new Error(`${name} must be a whole number of 1 or more (got "${value}")`);
+  return n;
+}
+
+// One of a fixed list of values; anything else fails at boot.
+function oneOf(value, list, name) {
+  const v = String(value).trim().toLowerCase();
+  if (!list.includes(v)) throw new Error(`${name} must be one of: ${list.join(', ')} (got "${value}")`);
+  return v;
+}
+
+// Tripelyx Business suppliers (real-suppliers design §1.3). Round 1 accepts only test keys.
+const SUPPLIER_TEST_PREFIX = Object.freeze({ duffel: 'duffel_test_', liteapi: 'sand_' });
+const SUPPLIER_KEY_RE = /^[\x21-\x7e]{1,512}$/;
+
+// A whole number from min to max, or the fallback when unset; null when it is anything else (never throws).
+function range(value, fallback, min, max) {
+  if (value === undefined || value === '') return fallback;
+  const n = Number(String(value).trim());
+  return Number.isInteger(n) && n >= min && n <= max ? n : null;
+}
+
+/**
+ * config.business.suppliers. Never throws, whatever the environment holds: every problem becomes `problem`, one
+ * sentence that names the variable and never its value (Business then shows "Supplier not connected yet",
+ * never demo). The keys are non-enumerable, so they never appear when the config is logged or serialised,
+ * and they are only set when there is no problem. Not in publicConfig.
+ * @param {object} env
+ * @param {string} appEnv
+ */
+function businessSuppliers(env, appEnv) {
+  const text = v => (v === undefined || v === null ? '' : String(v).trim());
+  const flightName = text(env.BUSINESS_FLIGHT_SUPPLIER).toLowerCase();
+  const hotelName = text(env.BUSINESS_HOTEL_SUPPLIER).toLowerCase();
+  const configured = Boolean(flightName || hotelName);
+  const nationality = text(env.BUSINESS_GUEST_NATIONALITY || 'US').toUpperCase();
+  const cacheSeconds = range(env.BUSINESS_SUPPLIER_CACHE_SECONDS, 300, 0, 900);
+  const companyCallsPerHour = range(env.BUSINESS_SUPPLIER_COMPANY_CALLS_PER_HOUR, 120, 1, 100000);
+  const variantSearches = range(env.BUSINESS_SUPPLIER_VARIANT_SEARCHES, 4, 0, 20);
+  const allowTest = bool(env.BUSINESS_ALLOW_SUPPLIER_TEST, appEnv === 'development');
+  const token = text(env.DUFFEL_ACCESS_TOKEN), key = text(env.LITEAPI_API_KEY);
+  const isKey = (value, prefix) => SUPPLIER_KEY_RE.test(value) && value.startsWith(prefix) && value.length > prefix.length;
+  const problems = [
+    [flightName !== '' && flightName !== 'duffel', 'BUSINESS_FLIGHT_SUPPLIER must be duffel or empty.'],
+    [hotelName !== '' && hotelName !== 'liteapi', 'BUSINESS_HOTEL_SUPPLIER must be liteapi or empty.'],
+    [hotelName !== '' && flightName === '', 'BUSINESS_HOTEL_SUPPLIER needs a working flight supplier (BUSINESS_FLIGHT_SUPPLIER).'],
+    [flightName === 'duffel' && !token, 'DUFFEL_ACCESS_TOKEN is not set.'],
+    [flightName === 'duffel' && token && !isKey(token, SUPPLIER_TEST_PREFIX.duffel), 'DUFFEL_ACCESS_TOKEN is not a Duffel test token.'],
+    [hotelName === 'liteapi' && !key, 'LITEAPI_API_KEY is not set.'],
+    [hotelName === 'liteapi' && key && !isKey(key, SUPPLIER_TEST_PREFIX.liteapi), 'LITEAPI_API_KEY is not a LiteAPI sandbox key.'],
+    [!allowTest, 'BUSINESS_ALLOW_SUPPLIER_TEST is not true, so supplier test data stays off on this site.'],
+    [!/^[A-Z]{2}$/.test(nationality), 'BUSINESS_GUEST_NATIONALITY must be a two-letter country code.'],
+    [cacheSeconds === null, 'BUSINESS_SUPPLIER_CACHE_SECONDS must be a whole number from 0 to 900.'],
+    [companyCallsPerHour === null, 'BUSINESS_SUPPLIER_COMPANY_CALLS_PER_HOUR must be a whole number of 1 or more.'],
+    [variantSearches === null, 'BUSINESS_SUPPLIER_VARIANT_SEARCHES must be a whole number from 0 to 20.'],
+  ];
+  const found = configured ? problems.find(([bad]) => bad) : null;
+  const problem = found ? found[1] : null;
+  const out = {
+    configured,
+    flights: flightName === 'duffel' ? 'duffel' : null,
+    hotels: hotelName === 'liteapi' ? 'liteapi' : null,
+    allowTest,
+    guestNationality: /^[A-Z]{2}$/.test(nationality) ? nationality : 'US',
+    cacheSeconds: cacheSeconds ?? 300,
+    companyCallsPerHour: companyCallsPerHour ?? 120,
+    variantSearches: variantSearches ?? 4,
+    problem,
+  };
+  if (configured && !problem) {
+    Object.defineProperty(out, 'duffelToken', { value: token, enumerable: false });
+    if (out.hotels) Object.defineProperty(out, 'liteapiKey', { value: key, enumerable: false });
+  }
+  return Object.freeze(out);
 }
 
 function databaseUrlFromParts(env) {
@@ -106,9 +187,55 @@ function loadConfig(env = process.env) {
     huntIntervalMinutes: int(env.HUNT_INTERVAL_MINUTES, 360, 'HUNT_INTERVAL_MINUTES'),
   };
 
+  // Tripelyx Business (company travel workspaces under /business/...). Off in every APP_ENV unless
+  // ENABLE_BUSINESS=true (D11): with it off, every existing page renders exactly as before Business. It
+  // runs with Travel by Budget on or off. Not a vertical: it is not in `flags` and never reaches publicConfig.
+  const approvalHours = pos(env.BUSINESS_APPROVAL_HOURS, 24, 'BUSINESS_APPROVAL_HOURS');
+  if (approvalHours < 4 || approvalHours > 168) throw new Error(`BUSINESS_APPROVAL_HOURS must be from 4 to 168 (got "${env.BUSINESS_APPROVAL_HOURS}")`);
+  const business = {
+    enabled: bool(env.ENABLE_BUSINESS, false),
+    // false: a new company waits for a platform admin to confirm it at /admin/business before teammates can join.
+    selfServe: bool(env.BUSINESS_SELF_SERVE, false),
+    inviteDays: pos(env.BUSINESS_INVITE_DAYS, 7, 'BUSINESS_INVITE_DAYS'),
+    maxOrgsPerUser: pos(env.BUSINESS_MAX_ORGS_PER_USER, 3, 'BUSINESS_MAX_ORGS_PER_USER'),
+    // How long a request waits for a decision before it expires: the default for new companies (each
+    // company can pick 4 to 168 hours).
+    approvalHours,
+    writeLimit: pos(env.BUSINESS_WRITE_LIMIT, 300, 'BUSINESS_WRITE_LIMIT'),
+    computeLimit: pos(env.BUSINESS_COMPUTE_LIMIT, 30, 'BUSINESS_COMPUTE_LIMIT'),
+    authLimit: pos(env.BUSINESS_AUTH_LIMIT, 20, 'BUSINESS_AUTH_LIMIT'),
+    // What writes the notes next to cheaper alternatives. Only the rule-based explainer exists ('rules'):
+    // no AI model is connected, and anything else fails at boot.
+    explainer: oneOf(env.BUSINESS_EXPLAINER || 'rules', ['rules'], 'BUSINESS_EXPLAINER'),
+    // Business's own demo flights and hotels (go-live design §3.2). On by default only in development; staging
+    // (www) and production leave it off unless BUSINESS_DEMO_INVENTORY=true (the private preview), and even then
+    // only where demo inventory is allowed at all. Never throws: anything but a true value is off.
+    // ALLOW_DEMO_INVENTORY keeps meaning only what it means for /book, the trip planner and the agent.
+    demoInventory: allowDemoInventory && bool(env.BUSINESS_DEMO_INVENTORY, appEnv === 'development'),
+  };
+  // The real suppliers (Duffel flights, LiteAPI hotels; design §1.3). Non-enumerable like the keys inside it,
+  // so the business block reads, compares and logs exactly as before for everyone who doesn't ask for it.
+  Object.defineProperty(business, 'suppliers', { value: businessSuppliers(env, appEnv), enumerable: false });
+
+  // The private preview (infra/preview.yaml, deployed by .github/workflows/preview.yml). PREVIEW_PASSWORD puts
+  // a password on every page but /healthz (server/lib/previewGate.js); only its SHA-256 digest is kept here and
+  // its text is never quoted in an error. PREVIEW_SEED=business fills an in-memory store with the Business
+  // demo companies at boot (server/lib/previewSeed.js). Production refuses both. Unset, nothing changes.
+  const previewPassword = env.PREVIEW_PASSWORD || '';
+  if (previewPassword && isProduction) throw new Error('PREVIEW_PASSWORD is not allowed when APP_ENV=production');
+  if (previewPassword && previewPassword.length < 12) throw new Error('PREVIEW_PASSWORD must be at least 12 characters');
+  const previewSeed = env.PREVIEW_SEED ? oneOf(env.PREVIEW_SEED, ['business'], 'PREVIEW_SEED') : null;
+  if (previewSeed && isProduction) throw new Error('PREVIEW_SEED is not allowed when APP_ENV=production');
+  const preview = {
+    gate: previewPassword ? { passwordDigest: passwordDigest(previewPassword) } : null,
+    seed: previewSeed,
+  };
+
   return {
     appEnv,
     trips,
+    business,
+    preview,
     isProduction,
     port: Number(env.PORT || 4100),
     publicBaseUrl: env.PUBLIC_BASE_URL || null,

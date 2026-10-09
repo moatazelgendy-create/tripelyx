@@ -658,3 +658,50 @@ test('a letter is a menu answer only while that menu is open: an old card\'s "Op
     assert.equal(s.current.token, p.token);
   } finally { await app.close(); }
 });
+
+test('Tripelyx Business on with the real suppliers configured, good or bad (round 1, design §1.6): /ai-travel-agent and a whole conversation are byte-identical, and no supplier is called', async t => {
+  const path = require('node:path');
+  const { FIXED_NOW, freezeDate, bootApp, normalise, sha256, stripBusiness } = require('../scripts/capture-baseline');
+  const manifest = require('./fixtures/baseline/manifest.json');
+  const { SANDBOX_ENV, BAD_SUPPLIER_ENVS, blockSupplierHosts } = require('./supplier-fetch');
+  const ROOT = path.join(__dirname, '..');
+  const block = blockSupplierHosts();
+  t.after(block.restore);
+  const restore = freezeDate(FIXED_NOW);
+  t.after(restore);
+  // The page, then a build and a cheaper ask, as the agent says them (timings read as N s).
+  const conversation = async env => {
+    const app = await bootApp(ROOT, env);
+    try {
+      const res = await fetch(`${app.base}/ai-travel-agent`, { headers: { 'x-forwarded-proto': 'https', 'sec-fetch-site': 'same-origin' }, redirect: 'manual' });
+      const page = stripBusiness(normalise(await res.text())).text;
+      const s0 = await app.agent.create({ visitor: 'v-preserve' });
+      await app.agent.say(s0.id, 'I have $2,000, two of us from JFK, 5 nights, beach, only nonstop. Booking budget.');
+      await app.agent.jobs.drain();
+      await app.agent.say(s0.id, 'Make it cheaper');
+      await app.agent.jobs.drain();
+      const s = await app.agent.load(s0.id);
+      const said = s.messages.map(m => `${m.role}: ${m.text}`).join('\n').replace(/\d+(?:\.\d+)? s\b/g, 'N s');
+      const flights = app.registry.get('flights');
+      return { page, said, options: s.options.map(o => o.token), flights: flights.constructor.name, status: app.business ? app.business.inventory.status : null };
+    } finally {
+      await app.close();
+    }
+  };
+  const off = await conversation({});
+  assert.equal(sha256(off.page), manifest.envs.dev.pages['/ai-travel-agent'].sha256, 'the baseline page');
+  assert.match(off.said, /First strong match/);
+  const on = await conversation(SANDBOX_ENV);
+  assert.equal(on.status, 'sandbox');
+  assert.equal(on.page, off.page, 'the page');
+  assert.equal(on.said, off.said, 'every word the agent said');
+  assert.deepEqual(on.options, off.options, 'the same trips');
+  for (const [label, bad] of BAD_SUPPLIER_ENVS) {
+    const r = await conversation({ ...SANDBOX_ENV, ...bad });
+    assert.equal(r.status, 'none', label);
+    assert.equal(r.page, off.page, `${label}: the page`);
+    assert.equal(r.said, off.said, `${label}: the conversation`);
+  }
+  for (const r of [off, on]) assert.ok(!['DuffelFlights', 'BusinessDemoFlights'].includes(r.flights), r.flights);
+  assert.equal(block.count(), 0, 'no supplier call');
+});

@@ -3,6 +3,10 @@
 # keys are stored in GitHub. The role and region below were created by infra/bootstrap.yaml; the
 # repository variables AWS_ROLE_ARN / AWS_REGION override them (for example for another account).
 # Optional variables: APP_ENV (default staging) and CERTIFICATE_ARN (HTTPS on your own domain).
+# ENABLE_BUSINESS (default false) turns Tripelyx Business on; it is trimmed and lowercased first, and any
+# value but true or false stops the run before the build. ADMIN_EMAILS is read from the repository secret
+# of that name (masked in the run logs); a run with only a variable of that name stops before the build,
+# because a variable would print in clear.
 # An AWS account ID and role name are identifiers, not secrets: the role only trusts this repo's main.
 name: Deploy to AWS
 
@@ -11,8 +15,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Only the deploy job may ask GitHub for an OIDC token (to sign in to AWS as the deploy role); the test job,
+# which installs and runs every dependency, cannot.
 permissions:
-  id-token: write
   contents: read
 
 concurrency:
@@ -41,7 +46,47 @@ jobs:
   deploy:
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
     steps:
+      # First, before the build: CloudFormation allows exactly 'true' and 'false', so a value like "True "
+      # would fail the change set and block every later deploy. Unset or empty means false (Business off).
+      - name: Check the switches
+        id: switches
+        env:
+          ENABLE_BUSINESS: ${{ vars.ENABLE_BUSINESS || 'false' }}
+          # The text true or false, never the address: a variable is not masked in the public run log.
+          ADMIN_EMAILS_ONLY_IN_VARIABLE: ${{ secrets.ADMIN_EMAILS == '' && vars.ADMIN_EMAILS != '' }}
+        run: |
+          # normalise NAME DEFAULT ALLOWED_TEXT ALLOWED...: trims and lowercases the variable NAME, uses DEFAULT
+          # when it is empty, passes the result on as a step output, and stops the run, naming NAME, when the
+          # result is not one of ALLOWED. The value itself is never printed in an error.
+          normalise() {
+            local name="$1" default="$2" text="$3"
+            shift 3
+            local value="${!name}" a
+            value="${value#"${value%%[![:space:]]*}"}"
+            value="${value%"${value##*[![:space:]]}"}"
+            value="${value,,}"
+            if [ -z "$value" ]; then value="$default"; fi
+            for a in "$@"; do
+              if [ "$value" = "$a" ]; then
+                echo "${name,,}=${value}" >> "$GITHUB_OUTPUT"
+                echo "${name} is ${value}."
+                return 0
+              fi
+            done
+            echo "::error title=${name}::${name} must be ${text} (lowercase). Change the repository variable ${name} (Settings, Secrets and variables, Actions, Variables), then run the deploy again."
+            exit 1
+          }
+          normalise ENABLE_BUSINESS false 'true or false' true false
+          # "Deploy the stack" would print a variable's value in clear in its env block, so stop here first.
+          if [ "$ADMIN_EMAILS_ONLY_IN_VARIABLE" = true ]; then
+            echo "::error title=ADMIN_EMAILS::ADMIN_EMAILS is set as a repository variable, which prints in the public run log. Move it to a repository secret of that name (Settings, Secrets and variables, Actions, Secrets), delete the variable, then run the deploy again."
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
 
       - uses: aws-actions/configure-aws-credentials@v4
@@ -52,16 +97,112 @@ jobs:
       - id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      # The tag is the commit, and the repository's tags are immutable (infra/bootstrap.yaml). A rebuild is
+      # never byte for byte the same image, so its push would be refused. A second run on the same commit
+      # (the flip, the undo, a re-run) therefore reuses the image this commit already pushed.
       - name: Build and push the image
         id: image
         env:
           IMAGE: ${{ steps.ecr.outputs.registry }}/tripelyx:${{ github.sha }}
         run: |
-          docker build -t "$IMAGE" .
-          docker push "$IMAGE"
+          if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
+            echo "The image for this commit is already in ECR; reusing it."
+          else
+            docker build -t "$IMAGE" .
+            docker push "$IMAGE"
+          fi
           echo "uri=$IMAGE" >> "$GITHUB_OUTPUT"
 
+      # Report only, before and after the deploy: the status code and sha256 of /, /book and /ai-travel-agent
+      # (asset ?v= versions removed), read from this stack's own SiteUrl output, then "same" or "changed".
+      # After, also /healthz and, with Business on, two Business pages. The run turns red only when /healthz
+      # does not answer 200 or a Business page shows demo wording. Nothing here changes or undoes anything,
+      # and nothing from a page but its status code and hash is printed.
+      - name: Page hashes before the deploy
+        env:
+          PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL || 'https://www.tripelyx.com' }}
+        run: |
+          cat > "$RUNNER_TEMP/page-check.sh" <<'SCRIPT'
+          # page-check.sh before|after
+          phase="$1"
+          saved="$RUNNER_TEMP/page-hashes-before.txt"
+          body="$RUNNER_TEMP/page-body"
+          url=$(aws cloudformation describe-stacks --stack-name "tripelyx-${APP_ENV}" \
+            --query "Stacks[0].Outputs[?OutputKey=='SiteUrl'].OutputValue" --output text 2>/dev/null) || url=''
+          if [ -z "$url" ] || [ "$url" = None ]; then
+            if [ "$phase" = before ]; then echo "No SiteUrl output to read (no stack yet?): nothing to compare."; exit 0; fi
+            echo "::error title=Health check::The stack's SiteUrl output could not be read, so /healthz was not checked."
+            exit 1
+          fi
+          scheme="${url%%://*}"
+          lb="${url#*://}"; lb="${lb%%/*}"
+          host="${PUBLIC_BASE_URL#*://}"; host="${host%%/*}"
+          # fetch PATH: sets code (000 when nothing answered) and leaves the body in $body. With HTTPS the
+          # certificate names the site, not the load balancer, so the site's name is asked for over a
+          # connection to this stack's load balancer.
+          fetch() {
+            : > "$body"
+            if [ "$scheme" = https ] && [ -n "$host" ]; then
+              code=$(curl -s -o "$body" -w '%{http_code}' --max-time 20 --connect-to "${host}:443:${lb}:443" "https://${host}$1" 2>/dev/null) || code=000
+            else
+              code=$(curl -s -o "$body" -w '%{http_code}' --max-time 20 "${url}$1" 2>/dev/null) || code=000
+            fi
+          }
+          digest() { sed -E 's/\?v=[0-9a-z]+//g' "$body" | sha256sum | cut -d ' ' -f 1; }
+          report() { echo "$1"; echo "- $1" >> "$GITHUB_STEP_SUMMARY"; }
+
+          echo "### Pages ${phase} the deploy" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$phase" = before ]; then : > "$saved"; fi
+          for p in / /book /ai-travel-agent; do
+            fetch "$p"
+            sum=$(digest)
+            if [ "$phase" = before ]; then
+              echo "$p $code $sum" >> "$saved"
+              report "$p: $code sha256 $sum"
+            else
+              was=$(awk -v p="$p" '$1 == p { print $2 " " $3 }' "$saved" 2>/dev/null)
+              if [ -z "$was" ]; then note='no hash from before'
+              elif [ "$was" = "$code $sum" ]; then note=same
+              else note=changed; fi
+              report "$p: $code sha256 $sum, $note"
+              # A status that is not 200, or not the one from before, gets a warning (never red), so it
+              # stands out from a hash change, which the flip itself brings.
+              before="${was%% *}"
+              if [ "$code" != 200 ] || { [ -n "$before" ] && [ "$code" != "$before" ]; }; then
+                echo "::warning title=Page status::${p} answered ${code}, before the deploy ${before:-unknown}."
+                echo "- Warning: ${p} answered ${code}, before the deploy ${before:-unknown}." >> "$GITHUB_STEP_SUMMARY"
+              fi
+            fi
+          done
+          if [ "$phase" = before ]; then exit 0; fi
+
+          red=0
+          fetch /healthz
+          report "/healthz: $code"
+          if [ "$code" != 200 ]; then echo "::error title=Health check::/healthz answered ${code}, not 200."; red=1; fi
+          if [ "$ENABLE_BUSINESS" = true ]; then
+            for p in /business:200 /business/no-such-page:404; do
+              path="${p%:*}"; want="${p##*:}"
+              fetch "$path"
+              report "$path: $code sha256 $(digest)"
+              if [ "$code" != "$want" ]; then echo "::warning title=Business page::${path} answered ${code}, expected ${want}."; fi
+              if grep -qiE 'demo data|demo price|demo inventory|data-price-source="demo"|class="env-banner"' "$body"; then
+                echo "::error title=Demo wording::${path} shows demo wording or the environment banner."; red=1
+              fi
+            done
+          else
+            report "Business is off: no Business page checked."
+          fi
+          exit "$red"
+          SCRIPT
+          bash "$RUNNER_TEMP/page-check.sh" before
+
       - name: Deploy the stack
+        env:
+          # The repository secret ADMIN_EMAILS (masked in the run logs) wins. "Check the switches" has already
+          # stopped any run where only the variable is set, so a variable's value never reaches this env block.
+          ADMIN_EMAILS: ${{ secrets.ADMIN_EMAILS || vars.ADMIN_EMAILS }}
+          ENABLE_BUSINESS: ${{ steps.switches.outputs.enable_business }}
         run: |
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           aws cloudformation deploy \
@@ -74,7 +215,8 @@ jobs:
               AppEnv="${APP_ENV}" \
               ImageUri="${{ steps.image.outputs.uri }}" \
               CertificateArn="${CERTIFICATE_ARN}" \
-              AdminEmails="${{ vars.ADMIN_EMAILS }}" \
+              AdminEmails="${ADMIN_EMAILS}" \
+              EnableBusiness="${ENABLE_BUSINESS}" \
               PublicBaseUrl="${{ vars.PUBLIC_BASE_URL || 'https://www.tripelyx.com' }}"
 
       - name: Show the site address
@@ -83,3 +225,9 @@ jobs:
             --query "Stacks[0].Outputs[?OutputKey=='SiteUrl'].OutputValue" --output text)
           echo "Tripelyx (${APP_ENV}) is live at ${URL}"
           echo "### Tripelyx (${APP_ENV}) is live at ${URL}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Page hashes after the deploy, and checks
+        env:
+          PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL || 'https://www.tripelyx.com' }}
+          ENABLE_BUSINESS: ${{ steps.switches.outputs.enable_business }}
+        run: bash "$RUNNER_TEMP/page-check.sh" after

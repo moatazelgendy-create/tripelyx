@@ -176,22 +176,35 @@ ${pageHero({ eyebrow: 'Partners', title: 'Let’s build the future of travel', a
   return layout({ title: 'Partners', active: 'partners', body, ctx, scripts: ['/js/forms.js'], corporate: true });
 }
 
+// The select under the email field, per form: the partner form, the Business form on /business, and Contact.
+// A third entry is the lead's `kind`, sent as a hidden field: only the Business form has one, so its enquiries
+// reach /admin/business (validatePartnerLead keeps `kind` only when it is exactly 'business').
+const LEAD_TYPES = {
+  partner: ['Partnership type', ['Property owner', 'Transport company', 'Activity provider', 'Destination', 'Other']],
+  business: ['Company size', ['1-10 people', '11-50 people', '51-200 people', '201-1,000 people', 'More than 1,000 people'], 'business'],
+  contact: ['Topic', ['General enquiry', 'Partnerships', 'Press', 'Careers', 'Booking support']],
+};
+
+// A form's own thank-you line, shown by /js/forms.js from data-success after a send. Only the Business enquiry
+// form has one; every other form keeps forms.js's original text and exactly its original markup.
+const LEAD_SUCCESS = { business: 'Thanks, your message is in. We’ll be in touch soon.' };
+
 function leadForm(kind) {
-  return html`<form class="form-card form" data-lead-form novalidate>
+  const [typeLabel, types, leadKind] = LEAD_TYPES[kind] || LEAD_TYPES.contact;
+  const success = Object.prototype.hasOwnProperty.call(LEAD_SUCCESS, kind) ? LEAD_SUCCESS[kind] : '';
+  return html`<form class="form-card form" data-lead-form${success ? html` data-success="${success}"` : ''} novalidate>
     <div class="form-row">
       <div class="field"><label for="lf-name">Your name</label><input id="lf-name" name="name" autocomplete="name" required maxlength="100"><p class="field-error" data-error-for="name"></p></div>
       <div class="field"><label for="lf-company">Company</label><input id="lf-company" name="company" autocomplete="organization" maxlength="120"></div>
     </div>
     <div class="form-row">
       <div class="field"><label for="lf-email">Email</label><input id="lf-email" name="email" type="email" autocomplete="email" required maxlength="120"><p class="field-error" data-error-for="email"></p></div>
-      <div class="field"><label for="lf-type">${kind === 'partner' ? 'Partnership type' : 'Topic'}</label>
-        <select id="lf-type" name="type">${(kind === 'partner'
-          ? ['Property owner', 'Transport company', 'Activity provider', 'Destination', 'Other']
-          : ['General enquiry', 'Partnerships', 'Press', 'Careers', 'Booking support']).map(o => html`<option>${o}</option>`)}</select></div>
+      <div class="field"><label for="lf-type">${typeLabel}</label>
+        <select id="lf-type" name="type">${types.map(o => html`<option>${o}</option>`)}</select></div>
     </div>
     <div class="field"><label for="lf-message">Message</label><textarea id="lf-message" name="message" required maxlength="2000"></textarea><p class="field-error" data-error-for="message"></p></div>
     <div class="sr-only" aria-hidden="true"><label for="lf-website">Website</label><input id="lf-website" name="website" tabindex="-1" autocomplete="off"></div>
-    <div data-form-status role="status" aria-live="polite"></div>
+    ${leadKind ? html`<input type="hidden" name="kind" value="${leadKind}">` : ''}<div data-form-status role="status" aria-live="polite"></div>
     <button class="btn btn-navy btn-lg" type="submit"><span class="btn-label">Send message</span> ${icon('arrow')}</button>
     <noscript><p class="alert alert-info">This form needs JavaScript. You can also reach us by email.</p></noscript>
   </form>`;
@@ -243,4 +256,4 @@ ${pageHero({ eyebrow: 'Contact', title: 'Let’s talk.', lead: 'Questions about 
   return layout({ title: 'Contact', active: 'contact', body, ctx, scripts: ['/js/forms.js'], corporate: true });
 }
 
-module.exports = { brandsView, technologyView, partnersView, aboutView, contactView, pageHero };
+module.exports = { brandsView, technologyView, partnersView, aboutView, contactView, pageHero, leadForm, LEAD_TYPES, LEAD_SUCCESS };

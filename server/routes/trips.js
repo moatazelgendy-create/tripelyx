@@ -2,7 +2,7 @@
 const express = require('express');
 const { AppError } = require('../lib/errors');
 const { addDays, today, isIsoDate, daysBetween } = require('../lib/dates');
-const { str } = require('../lib/validate');
+const { str, localPath } = require('../lib/validate');
 const optimizer = require('../trips/optimizer');
 const { encodeSpec, decodeSpec } = require('../trips/spec');
 const { publicTrip, requireTrip } = require('../trips/pricing');
@@ -38,7 +38,7 @@ function requireUser(req, res, next) {
   res.redirect(303, `/signin?next=${encodeURIComponent(req.originalUrl)}`);
 }
 
-function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
+function tripsRouter(ctx, { writeLimiter, computeLimiter, accountLimiter }) {
   const compute = computeLimiter || ((req, res, next) => next());
   const { tripService: svc, accounts, config } = ctx;
   const r = express.Router();
@@ -415,8 +415,11 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
   // ---- accounts ----
   r.get('/signin', (req, res) => send(res, authView(ctx, { mode: 'signin', next: str(req.query.next, 300) })));
   r.get('/signup', (req, res) => send(res, authView(ctx, { mode: 'signup', next: str(req.query.next, 300) })));
-  const safeNext = n => (typeof n === 'string' && /^\/(?!\/)/.test(n) ? n.slice(0, 300) : '/my-trips');
-  r.post('/signin', writeLimiter, sameOrigin, form, async (req, res, next) => {
+  // Where to go after signing in or up: a same-site path only (lib/validate localPath, D10), else My Trips.
+  const safeNext = n => localPath(n, '/my-trips');
+  // accountLimiter (business/limits.js) keys on the parsed email, so it runs after the form: failed sign-ins per
+  // address, shared with /business/signin. A failure answers 4xx below, so it counts; a success does not.
+  r.post('/signin', writeLimiter, sameOrigin, form, accountLimiter, async (req, res, next) => {
     try {
       const u = await accounts.authenticate(req.body);
       await accounts.createSession(res, u);
@@ -542,10 +545,13 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
     landing(req, res, next, { title: `Trips under $${n.toLocaleString('en-US')}`, eyebrow: 'Budget inspiration', lead: `Complete trips (flights, hotel and more) for under $${n.toLocaleString('en-US')}, taxes and fees included. Change the budget to see what else is possible.`, intro: `What $${n.toLocaleString('en-US')} really buys${raw.style ? ` for a ${raw.style} trip` : ''}.`, canonical: `/trips-under-${n}`, budget: n, raw, moreLinks: [500, 1000, 1500, 2000, 3000, 5000].filter(x => x !== n).slice(0, 3).map(x => [`/trips-under-${x}`, `Trips under $${x.toLocaleString('en-US')}`, '']) });
   });
 
-  r.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nDisallow: /trip/\nDisallow: /trips\nDisallow: /compare\nDisallow: /plan\nDisallow: /checkout/\nDisallow: /booking/\nDisallow: /admin\nDisallow: /my-trips\n${config.publicBaseUrl ? `Sitemap: ${config.publicBaseUrl}/sitemap.xml\n` : ''}`));
+  // Tripelyx Business adds its lines only when it is enabled: crawlers stay out of the workspace (/business/...)
+  // and the sitemap lists its company page.
+  const bizOn = !!(config.business && config.business.enabled);
+  r.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nDisallow: /trip/\nDisallow: /trips\nDisallow: /compare\nDisallow: /plan\nDisallow: /checkout/\nDisallow: /booking/\nDisallow: /admin\nDisallow: /my-trips\n${bizOn ? 'Disallow: /business/\n' : ''}${config.publicBaseUrl ? `Sitemap: ${config.publicBaseUrl}/sitemap.xml\n` : ''}`));
   r.get('/sitemap.xml', (req, res) => {
     const base = config.publicBaseUrl || '';
-    const urls = ['/', '/ai-travel-agent', '/how-it-works', '/faq', '/destinations', '/beach-vacations', '/about', '/contact', ...[500, 1000, 1500, 2000, 3000, 5000].map(n => `/trips-under-${n}`), ...svc.inv.maps.listDestinations().map(d => `/trips-to-${slug(d.name)}`)];
+    const urls = ['/', '/ai-travel-agent', '/how-it-works', '/faq', '/destinations', '/beach-vacations', '/about', '/contact', ...(bizOn ? ['/business'] : []), ...[500, 1000, 1500, 2000, 3000, 5000].map(n => `/trips-under-${n}`), ...svc.inv.maps.listDestinations().map(d => `/trips-to-${slug(d.name)}`)];
     res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.map(u => `  <url><loc>${base}${u}</loc></url>`).join('\n')}\n</urlset>\n`);
   });
 

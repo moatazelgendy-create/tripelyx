@@ -1,9 +1,13 @@
 const { loadConfig } = require('./config');
 const { createApp } = require('./app');
+const { runPreviewSeed } = require('./lib/previewSeed');
 
 async function main() {
   const config = loadConfig();
-  const { app, store } = await createApp(config);
+  const built = await createApp(config);
+  const { app, store } = built;
+  // The private preview's demo companies (PREVIEW_SEED=business), before the first request; off otherwise.
+  await runPreviewSeed(config, built);
   const server = app.listen(config.port, () => {
     console.log(`Tripelyx (${config.appEnv}) listening on http://localhost:${config.port} — store: ${store.kind}, payments: ${config.payment.mode}`);
   });

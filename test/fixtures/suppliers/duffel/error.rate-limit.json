@@ -1,0 +1,23 @@
+{
+  "_source": "https://duffel.com/docs/api/overview/errors: rate_limit_exceeded, HTTP 429, with ratelimit-reset as an RFC 2616 HTTP-date (example \"Tue, 24 Nov 2020 08:22:00 GMT\").",
+  "_status": 429,
+  "_headers": {
+    "ratelimit-limit": "60",
+    "ratelimit-remaining": "0",
+    "ratelimit-reset": "Fri, 09 Oct 2026 09:00:02 GMT"
+  },
+  "meta": {
+    "status": 429,
+    "request_id": "FZW0H3HdJwKk5HMAAKxD"
+  },
+  "errors": [
+    {
+      "type": "rate_limit_error",
+      "code": "rate_limit_exceeded",
+      "title": "Rate limit exceeded",
+      "message": "You have exceeded the rate limit",
+      "documentation_url": "https://duffel.com/docs/api/overview/errors",
+      "source": null
+    }
+  ]
+}

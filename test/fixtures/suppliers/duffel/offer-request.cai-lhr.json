@@ -1,0 +1,2948 @@
+{
+  "_source": "https://duffel.com/docs/api/v2/offer-requests/create-offer-request (response shape); field types from https://raw.githubusercontent.com/duffelhq/duffel-api-javascript/main/src/booking/Offers/OfferTypes.ts. CAI to LHR on 12 Nov 2026, economy, 1 adult. Made-up ids and amounts.",
+  "_status": 201,
+  "_headers": {
+    "x-request-id": "FZW0H3HdJwKk5HMAAKxB",
+    "ratelimit-limit": "60",
+    "ratelimit-remaining": "58",
+    "ratelimit-reset": "Fri, 09 Oct 2026 09:01:00 GMT"
+  },
+  "data": {
+    "id": "orq_0000AAAA0000000000000001",
+    "live_mode": false,
+    "created_at": "2026-10-09T08:59:58.000000Z",
+    "cabin_class": "economy",
+    "client_key": null,
+    "slices": [
+      {
+        "origin": {
+          "type": "airport",
+          "iata_code": "CAI",
+          "iata_country_code": "EG",
+          "name": "Cairo International Airport",
+          "city_name": "Cairo",
+          "time_zone": "Africa/Cairo",
+          "latitude": 30.1219,
+          "longitude": 31.4056,
+          "id": "arp_cai_eg"
+        },
+        "destination": {
+          "type": "airport",
+          "iata_code": "LHR",
+          "iata_country_code": "GB",
+          "name": "Heathrow Airport",
+          "city_name": "London",
+          "time_zone": "Europe/London",
+          "latitude": 51.47,
+          "longitude": -0.4543,
+          "id": "arp_lhr_gb"
+        },
+        "departure_date": "2026-11-12",
+        "origin_type": "airport",
+        "destination_type": "airport"
+      }
+    ],
+    "passengers": [
+      {
+        "id": "pas_0000AAAA0000000000000001",
+        "type": "adult",
+        "age": null,
+        "given_name": null,
+        "family_name": null,
+        "loyalty_programme_accounts": []
+      }
+    ],
+    "offers": [
+      {
+        "id": "off_0000AAAA0000000000000001",
+        "live_mode": false,
+        "expires_at": "2026-10-09T09:30:00.000000Z",
+        "created_at": "2026-10-09T08:59:58.000000Z",
+        "updated_at": "2026-10-09T08:59:58.000000Z",
+        "total_amount": "245.30",
+        "total_currency": "USD",
+        "base_amount": "200.00",
+        "base_currency": "USD",
+        "tax_amount": "45.30",
+        "tax_currency": "USD",
+        "total_emissions_kg": "460",
+        "owner": {
+          "id": "arl_00009VME7DAGiJjwomhv32",
+          "name": "Duffel Airways",
+          "iata_code": "ZZ",
+          "logo_symbol_url": null,
+          "logo_lockup_url": null,
+          "conditions_of_carriage_url": null
+        },
+        "passenger_identity_documents_required": false,
+        "payment_requirements": {
+          "requires_instant_payment": false,
+          "price_guarantee_expires_at": null,
+          "payment_required_by": null
+        },
+        "partial": false,
+        "passengers": [
+          {
+            "id": "pas_0000AAAA0000000000000001",
+            "type": "adult",
+            "age": null,
+            "given_name": null,
+            "family_name": null,
+            "loyalty_programme_accounts": []
+          }
+        ],
+        "conditions": {
+          "refund_before_departure": {
+            "allowed": false,
+            "penalty_amount": null,
+            "penalty_currency": null
+          },
+          "change_before_departure": {
+            "allowed": false,
+            "penalty_amount": null,
+            "penalty_currency": null
+          }
+        },
+        "slices": [
+          {
+            "id": "sli_0000AAAA1",
+            "origin": {
+              "type": "airport",
+              "iata_code": "CAI",
+              "iata_country_code": "EG",
+              "name": "Cairo International Airport",
+              "city_name": "Cairo",
+              "time_zone": "Africa/Cairo",
+              "latitude": 30.1219,
+              "longitude": 31.4056,
+              "id": "arp_cai_eg"
+            },
+            "destination": {
+              "type": "airport",
+              "iata_code": "LHR",
+              "iata_country_code": "GB",
+              "name": "Heathrow Airport",
+              "city_name": "London",
+              "time_zone": "Europe/London",
+              "latitude": 51.47,
+              "longitude": -0.4543,
+              "id": "arp_lhr_gb"
+            },
+            "origin_type": "airport",
+            "destination_type": "airport",
+            "duration": "PT6H15M",
+            "fare_brand_name": "Basic",
+            "conditions": {
+              "change_before_departure": null
+            },
+            "segments": [
+              {
+                "id": "seg_0000AAAACAILHR1234",
+                "origin": {
+                  "type": "airport",
+                  "iata_code": "CAI",
+                  "iata_country_code": "EG",
+                  "name": "Cairo International Airport",
+                  "city_name": "Cairo",
+                  "time_zone": "Africa/Cairo",
+                  "latitude": 30.1219,
+                  "longitude": 31.4056,
+                  "id": "arp_cai_eg"
+                },
+                "destination": {
+                  "type": "airport",
+                  "iata_code": "LHR",
+                  "iata_country_code": "GB",
+                  "name": "Heathrow Airport",
+                  "city_name": "London",
+                  "time_zone": "Europe/London",
+                  "latitude": 51.47,
+                  "longitude": -0.4543,
+                  "id": "arp_lhr_gb"
+                },
+                "origin_terminal": null,
+                "destination_terminal": null,
+                "departing_at": "2026-11-12T08:35:00",
+                "arriving_at": "2026-11-12T12:50:00",
+                "duration": "PT6H15M",
+                "marketing_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "marketing_carrier_flight_number": "1234",
+                "operating_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "operating_carrier_flight_number": "1234",
+                "aircraft": {
+                  "iata_code": "320",
+                  "name": "Airbus A320",
+                  "id": "arc_00009VMF8AhXSSRnQDI6Hi"
+                },
+                "distance": null,
+                "stops": [],
+                "passengers": [
+                  {
+                    "passenger_id": "pas_0000AAAA0000000000000001",
+                    "cabin_class": "economy",
+                    "cabin_class_marketing_name": "Economy",
+                    "fare_basis_code": "Y20LGTN2",
+                    "baggages": [
+                      {
+                        "type": "checked",
+                        "quantity": 0
+                      },
+                      {
+                        "type": "carry_on",
+                        "quantity": 1
+                      }
+                    ],
+                    "cabin": null
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "available_services": null,
+        "supported_passenger_identity_document_types": [
+          "passport"
+        ]
+      },
+      {
+        "id": "off_0000AAAA0000000000000002",
+        "live_mode": false,
+        "expires_at": "2026-10-09T09:30:00.000000Z",
+        "created_at": "2026-10-09T08:59:58.000000Z",
+        "updated_at": "2026-10-09T08:59:58.000000Z",
+        "total_amount": "289.90",
+        "total_currency": "USD",
+        "base_amount": "240.00",
+        "base_currency": "USD",
+        "tax_amount": "49.90",
+        "tax_currency": "USD",
+        "total_emissions_kg": "460",
+        "owner": {
+          "id": "arl_00009VME7DAGiJjwomhv32",
+          "name": "Duffel Airways",
+          "iata_code": "ZZ",
+          "logo_symbol_url": null,
+          "logo_lockup_url": null,
+          "conditions_of_carriage_url": null
+        },
+        "passenger_identity_documents_required": false,
+        "payment_requirements": {
+          "requires_instant_payment": false,
+          "price_guarantee_expires_at": null,
+          "payment_required_by": null
+        },
+        "partial": false,
+        "passengers": [
+          {
+            "id": "pas_0000AAAA0000000000000001",
+            "type": "adult",
+            "age": null,
+            "given_name": null,
+            "family_name": null,
+            "loyalty_programme_accounts": []
+          }
+        ],
+        "conditions": {
+          "refund_before_departure": {
+            "allowed": true,
+            "penalty_amount": "50.00",
+            "penalty_currency": "USD"
+          },
+          "change_before_departure": {
+            "allowed": true,
+            "penalty_amount": "25.00",
+            "penalty_currency": "USD"
+          }
+        },
+        "slices": [
+          {
+            "id": "sli_0000AAAA2",
+            "origin": {
+              "type": "airport",
+              "iata_code": "CAI",
+              "iata_country_code": "EG",
+              "name": "Cairo International Airport",
+              "city_name": "Cairo",
+              "time_zone": "Africa/Cairo",
+              "latitude": 30.1219,
+              "longitude": 31.4056,
+              "id": "arp_cai_eg"
+            },
+            "destination": {
+              "type": "airport",
+              "iata_code": "LHR",
+              "iata_country_code": "GB",
+              "name": "Heathrow Airport",
+              "city_name": "London",
+              "time_zone": "Europe/London",
+              "latitude": 51.47,
+              "longitude": -0.4543,
+              "id": "arp_lhr_gb"
+            },
+            "origin_type": "airport",
+            "destination_type": "airport",
+            "duration": "PT6H15M",
+            "fare_brand_name": "Standard",
+            "conditions": {
+              "change_before_departure": null
+            },
+            "segments": [
+              {
+                "id": "seg_0000AAAACAILHR1234",
+                "origin": {
+                  "type": "airport",
+                  "iata_code": "CAI",
+                  "iata_country_code": "EG",
+                  "name": "Cairo International Airport",
+                  "city_name": "Cairo",
+                  "time_zone": "Africa/Cairo",
+                  "latitude": 30.1219,
+                  "longitude": 31.4056,
+                  "id": "arp_cai_eg"
+                },
+                "destination": {
+                  "type": "airport",
+                  "iata_code": "LHR",
+                  "iata_country_code": "GB",
+                  "name": "Heathrow Airport",
+                  "city_name": "London",
+                  "time_zone": "Europe/London",
+                  "latitude": 51.47,
+                  "longitude": -0.4543,
+                  "id": "arp_lhr_gb"
+                },
+                "origin_terminal": null,
+                "destination_terminal": null,
+                "departing_at": "2026-11-12T08:35:00",
+                "arriving_at": "2026-11-12T12:50:00",
+                "duration": "PT6H15M",
+                "marketing_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "marketing_carrier_flight_number": "1234",
+                "operating_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "operating_carrier_flight_number": "1234",
+                "aircraft": {
+                  "iata_code": "320",
+                  "name": "Airbus A320",
+                  "id": "arc_00009VMF8AhXSSRnQDI6Hi"
+                },
+                "distance": null,
+                "stops": [],
+                "passengers": [
+                  {
+                    "passenger_id": "pas_0000AAAA0000000000000001",
+                    "cabin_class": "economy",
+                    "cabin_class_marketing_name": "Economy",
+                    "fare_basis_code": "Y20LGTN2",
+                    "baggages": [
+                      {
+                        "type": "checked",
+                        "quantity": 1
+                      },
+                      {
+                        "type": "carry_on",
+                        "quantity": 1
+                      }
+                    ],
+                    "cabin": null
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "available_services": null,
+        "supported_passenger_identity_document_types": [
+          "passport"
+        ]
+      },
+      {
+        "id": "off_0000AAAA0000000000000003",
+        "live_mode": false,
+        "expires_at": "2026-10-09T09:30:00.000000Z",
+        "created_at": "2026-10-09T08:59:58.000000Z",
+        "updated_at": "2026-10-09T08:59:58.000000Z",
+        "total_amount": "412.00",
+        "total_currency": "USD",
+        "base_amount": "350.00",
+        "base_currency": "USD",
+        "tax_amount": "62.00",
+        "tax_currency": "USD",
+        "total_emissions_kg": "460",
+        "owner": {
+          "id": "arl_00009VME7DAGiJjwomhv32",
+          "name": "Duffel Airways",
+          "iata_code": "ZZ",
+          "logo_symbol_url": null,
+          "logo_lockup_url": null,
+          "conditions_of_carriage_url": null
+        },
+        "passenger_identity_documents_required": false,
+        "payment_requirements": {
+          "requires_instant_payment": false,
+          "price_guarantee_expires_at": null,
+          "payment_required_by": null
+        },
+        "partial": false,
+        "passengers": [
+          {
+            "id": "pas_0000AAAA0000000000000001",
+            "type": "adult",
+            "age": null,
+            "given_name": null,
+            "family_name": null,
+            "loyalty_programme_accounts": []
+          }
+        ],
+        "conditions": {
+          "refund_before_departure": {
+            "allowed": true,
+            "penalty_amount": "0.00",
+            "penalty_currency": "USD"
+          },
+          "change_before_departure": {
+            "allowed": true,
+            "penalty_amount": "0.00",
+            "penalty_currency": "USD"
+          }
+        },
+        "slices": [
+          {
+            "id": "sli_0000AAAA3",
+            "origin": {
+              "type": "airport",
+              "iata_code": "CAI",
+              "iata_country_code": "EG",
+              "name": "Cairo International Airport",
+              "city_name": "Cairo",
+              "time_zone": "Africa/Cairo",
+              "latitude": 30.1219,
+              "longitude": 31.4056,
+              "id": "arp_cai_eg"
+            },
+            "destination": {
+              "type": "airport",
+              "iata_code": "LHR",
+              "iata_country_code": "GB",
+              "name": "Heathrow Airport",
+              "city_name": "London",
+              "time_zone": "Europe/London",
+              "latitude": 51.47,
+              "longitude": -0.4543,
+              "id": "arp_lhr_gb"
+            },
+            "origin_type": "airport",
+            "destination_type": "airport",
+            "duration": "PT6H15M",
+            "fare_brand_name": "Flexible",
+            "conditions": {
+              "change_before_departure": null
+            },
+            "segments": [
+              {
+                "id": "seg_0000AAAACAILHR1234",
+                "origin": {
+                  "type": "airport",
+                  "iata_code": "CAI",
+                  "iata_country_code": "EG",
+                  "name": "Cairo International Airport",
+                  "city_name": "Cairo",
+                  "time_zone": "Africa/Cairo",
+                  "latitude": 30.1219,
+                  "longitude": 31.4056,
+                  "id": "arp_cai_eg"
+                },
+                "destination": {
+                  "type": "airport",
+                  "iata_code": "LHR",
+                  "iata_country_code": "GB",
+                  "name": "Heathrow Airport",
+                  "city_name": "London",
+                  "time_zone": "Europe/London",
+                  "latitude": 51.47,
+                  "longitude": -0.4543,
+                  "id": "arp_lhr_gb"
+                },
+                "origin_terminal": null,
+                "destination_terminal": null,
+                "departing_at": "2026-11-12T08:35:00",
+                "arriving_at": "2026-11-12T12:50:00",
+                "duration": "PT6H15M",
+                "marketing_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "marketing_carrier_flight_number": "1234",
+                "operating_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "operating_carrier_flight_number": "1234",
+                "aircraft": {
+                  "iata_code": "320",
+                  "name": "Airbus A320",
+                  "id": "arc_00009VMF8AhXSSRnQDI6Hi"
+                },
+                "distance": null,
+                "stops": [],
+                "passengers": [
+                  {
+                    "passenger_id": "pas_0000AAAA0000000000000001",
+                    "cabin_class": "economy",
+                    "cabin_class_marketing_name": "Economy",
+                    "fare_basis_code": "Y20LGTN2",
+                    "baggages": [
+                      {
+                        "type": "checked",
+                        "quantity": 2
+                      },
+                      {
+                        "type": "carry_on",
+                        "quantity": 1
+                      }
+                    ],
+                    "cabin": null
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "available_services": null,
+        "supported_passenger_identity_document_types": [
+          "passport"
+        ]
+      },
+      {
+        "id": "off_0000AAAA0000000000000004",
+        "live_mode": false,
+        "expires_at": "2026-10-09T09:30:00.000000Z",
+        "created_at": "2026-10-09T08:59:58.000000Z",
+        "updated_at": "2026-10-09T08:59:58.000000Z",
+        "total_amount": "1890.00",
+        "total_currency": "USD",
+        "base_amount": "1700.00",
+        "base_currency": "USD",
+        "tax_amount": "190.00",
+        "tax_currency": "USD",
+        "total_emissions_kg": "460",
+        "owner": {
+          "id": "arl_00009VME7DAGiJjwomhv32",
+          "name": "Duffel Airways",
+          "iata_code": "ZZ",
+          "logo_symbol_url": null,
+          "logo_lockup_url": null,
+          "conditions_of_carriage_url": null
+        },
+        "passenger_identity_documents_required": false,
+        "payment_requirements": {
+          "requires_instant_payment": false,
+          "price_guarantee_expires_at": null,
+          "payment_required_by": null
+        },
+        "partial": false,
+        "passengers": [
+          {
+            "id": "pas_0000AAAA0000000000000001",
+            "type": "adult",
+            "age": null,
+            "given_name": null,
+            "family_name": null,
+            "loyalty_programme_accounts": []
+          }
+        ],
+        "conditions": {
+          "refund_before_departure": {
+            "allowed": true,
+            "penalty_amount": "0.00",
+            "penalty_currency": "USD"
+          },
+          "change_before_departure": {
+            "allowed": true,
+            "penalty_amount": "0.00",
+            "penalty_currency": "USD"
+          }
+        },
+        "slices": [
+          {
+            "id": "sli_0000AAAA4",
+            "origin": {
+              "type": "airport",
+              "iata_code": "CAI",
+              "iata_country_code": "EG",
+              "name": "Cairo International Airport",
+              "city_name": "Cairo",
+              "time_zone": "Africa/Cairo",
+              "latitude": 30.1219,
+              "longitude": 31.4056,
+              "id": "arp_cai_eg"
+            },
+            "destination": {
+              "type": "airport",
+              "iata_code": "LHR",
+              "iata_country_code": "GB",
+              "name": "Heathrow Airport",
+              "city_name": "London",
+              "time_zone": "Europe/London",
+              "latitude": 51.47,
+              "longitude": -0.4543,
+              "id": "arp_lhr_gb"
+            },
+            "origin_type": "airport",
+            "destination_type": "airport",
+            "duration": "PT6H15M",
+            "fare_brand_name": "First",
+            "conditions": {
+              "change_before_departure": null
+            },
+            "segments": [
+              {
+                "id": "seg_0000AAAACAILHR1234",
+                "origin": {
+                  "type": "airport",
+                  "iata_code": "CAI",
+                  "iata_country_code": "EG",
+                  "name": "Cairo International Airport",
+                  "city_name": "Cairo",
+                  "time_zone": "Africa/Cairo",
+                  "latitude": 30.1219,
+                  "longitude": 31.4056,
+                  "id": "arp_cai_eg"
+                },
+                "destination": {
+                  "type": "airport",
+                  "iata_code": "LHR",
+                  "iata_country_code": "GB",
+                  "name": "Heathrow Airport",
+                  "city_name": "London",
+                  "time_zone": "Europe/London",
+                  "latitude": 51.47,
+                  "longitude": -0.4543,
+                  "id": "arp_lhr_gb"
+                },
+                "origin_terminal": null,
+                "destination_terminal": null,
+                "departing_at": "2026-11-12T08:35:00",
+                "arriving_at": "2026-11-12T12:50:00",
+                "duration": "PT6H15M",
+                "marketing_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "marketing_carrier_flight_number": "1234",
+                "operating_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "operating_carrier_flight_number": "1234",
+                "aircraft": {
+                  "iata_code": "320",
+                  "name": "Airbus A320",
+                  "id": "arc_00009VMF8AhXSSRnQDI6Hi"
+                },
+                "distance": null,
+                "stops": [],
+                "passengers": [
+                  {
+                    "passenger_id": "pas_0000AAAA0000000000000001",
+                    "cabin_class": "first",
+                    "cabin_class_marketing_name": "First",
+                    "fare_basis_code": "Y20LGTN2",
+                    "baggages": [
+                      {
+                        "type": "checked",
+                        "quantity": 2
+                      },
+                      {
+                        "type": "carry_on",
+                        "quantity": 1
+                      }
+                    ],
+                    "cabin": null
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "available_services": null,
+        "supported_passenger_identity_document_types": [
+          "passport"
+        ]
+      },
+      {
+        "id": "off_0000AAAA0000000000000005",
+        "live_mode": false,
+        "expires_at": "2026-10-09T09:30:00.000000Z",
+        "created_at": "2026-10-09T08:59:58.000000Z",
+        "updated_at": "2026-10-09T08:59:58.000000Z",
+        "total_amount": "221.10",
+        "total_currency": "USD",
+        "base_amount": "180.00",
+        "base_currency": "USD",
+        "tax_amount": "41.10",
+        "tax_currency": "USD",
+        "total_emissions_kg": "460",
+        "owner": {
+          "id": "arl_00009VME7DAGiJjwomhv32",
+          "name": "Duffel Airways",
+          "iata_code": "ZZ",
+          "logo_symbol_url": null,
+          "logo_lockup_url": null,
+          "conditions_of_carriage_url": null
+        },
+        "passenger_identity_documents_required": false,
+        "payment_requirements": {
+          "requires_instant_payment": false,
+          "price_guarantee_expires_at": null,
+          "payment_required_by": null
+        },
+        "partial": false,
+        "passengers": [
+          {
+            "id": "pas_0000AAAA0000000000000001",
+            "type": "adult",
+            "age": null,
+            "given_name": null,
+            "family_name": null,
+            "loyalty_programme_accounts": []
+          }
+        ],
+        "conditions": {
+          "refund_before_departure": null,
+          "change_before_departure": {
+            "allowed": false,
+            "penalty_amount": null,
+            "penalty_currency": null
+          }
+        },
+        "slices": [
+          {
+            "id": "sli_0000AAAA5",
+            "origin": {
+              "type": "airport",
+              "iata_code": "CAI",
+              "iata_country_code": "EG",
+              "name": "Cairo International Airport",
+              "city_name": "Cairo",
+              "time_zone": "Africa/Cairo",
+              "latitude": 30.1219,
+              "longitude": 31.4056,
+              "id": "arp_cai_eg"
+            },
+            "destination": {
+              "type": "airport",
+              "iata_code": "LHR",
+              "iata_country_code": "GB",
+              "name": "Heathrow Airport",
+              "city_name": "London",
+              "time_zone": "Europe/London",
+              "latitude": 51.47,
+              "longitude": -0.4543,
+              "id": "arp_lhr_gb"
+            },
+            "origin_type": "airport",
+            "destination_type": "airport",
+            "duration": "PT6H15M",
+            "fare_brand_name": "Basic",
+            "conditions": {
+              "change_before_departure": null
+            },
+            "segments": [
+              {
+                "id": "seg_0000AAAACAILHR88",
+                "origin": {
+                  "type": "airport",
+                  "iata_code": "CAI",
+                  "iata_country_code": "EG",
+                  "name": "Cairo International Airport",
+                  "city_name": "Cairo",
+                  "time_zone": "Africa/Cairo",
+                  "latitude": 30.1219,
+                  "longitude": 31.4056,
+                  "id": "arp_cai_eg"
+                },
+                "destination": {
+                  "type": "airport",
+                  "iata_code": "LHR",
+                  "iata_country_code": "GB",
+                  "name": "Heathrow Airport",
+                  "city_name": "London",
+                  "time_zone": "Europe/London",
+                  "latitude": 51.47,
+                  "longitude": -0.4543,
+                  "id": "arp_lhr_gb"
+                },
+                "origin_terminal": null,
+                "destination_terminal": null,
+                "departing_at": "2026-11-12T13:40:00",
+                "arriving_at": "2026-11-12T17:55:00",
+                "duration": "PT6H15M",
+                "marketing_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "marketing_carrier_flight_number": "88",
+                "operating_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "operating_carrier_flight_number": "88",
+                "aircraft": {
+                  "iata_code": "320",
+                  "name": "Airbus A320",
+                  "id": "arc_00009VMF8AhXSSRnQDI6Hi"
+                },
+                "distance": null,
+                "stops": [],
+                "passengers": [
+                  {
+                    "passenger_id": "pas_0000AAAA0000000000000001",
+                    "cabin_class": "economy",
+                    "cabin_class_marketing_name": "Economy",
+                    "fare_basis_code": "Y20LGTN2",
+                    "baggages": [
+                      {
+                        "type": "checked",
+                        "quantity": 0
+                      },
+                      {
+                        "type": "carry_on",
+                        "quantity": 1
+                      }
+                    ],
+                    "cabin": null
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "available_services": null,
+        "supported_passenger_identity_document_types": [
+          "passport"
+        ]
+      },
+      {
+        "id": "off_0000AAAA0000000000000006",
+        "live_mode": false,
+        "expires_at": "2026-10-09T09:30:00.000000Z",
+        "created_at": "2026-10-09T08:59:58.000000Z",
+        "updated_at": "2026-10-09T08:59:58.000000Z",
+        "total_amount": "268.40",
+        "total_currency": "USD",
+        "base_amount": "220.00",
+        "base_currency": "USD",
+        "tax_amount": "48.40",
+        "tax_currency": "USD",
+        "total_emissions_kg": "460",
+        "owner": {
+          "id": "arl_00009VME7DAGiJjwomhv32",
+          "name": "Duffel Airways",
+          "iata_code": "ZZ",
+          "logo_symbol_url": null,
+          "logo_lockup_url": null,
+          "conditions_of_carriage_url": null
+        },
+        "passenger_identity_documents_required": false,
+        "payment_requirements": {
+          "requires_instant_payment": false,
+          "price_guarantee_expires_at": null,
+          "payment_required_by": null
+        },
+        "partial": false,
+        "passengers": [
+          {
+            "id": "pas_0000AAAA0000000000000001",
+            "type": "adult",
+            "age": null,
+            "given_name": null,
+            "family_name": null,
+            "loyalty_programme_accounts": []
+          }
+        ],
+        "conditions": {
+          "refund_before_departure": {
+            "allowed": true,
+            "penalty_amount": "60.00",
+            "penalty_currency": "GBP"
+          },
+          "change_before_departure": null
+        },
+        "slices": [
+          {
+            "id": "sli_0000AAAA6",
+            "origin": {
+              "type": "airport",
+              "iata_code": "CAI",
+              "iata_country_code": "EG",
+              "name": "Cairo International Airport",
+              "city_name": "Cairo",
+              "time_zone": "Africa/Cairo",
+              "latitude": 30.1219,
+              "longitude": 31.4056,
+              "id": "arp_cai_eg"
+            },
+            "destination": {
+              "type": "airport",
+              "iata_code": "LHR",
+              "iata_country_code": "GB",
+              "name": "Heathrow Airport",
+              "city_name": "London",
+              "time_zone": "Europe/London",
+              "latitude": 51.47,
+              "longitude": -0.4543,
+              "id": "arp_lhr_gb"
+            },
+            "origin_type": "airport",
+            "destination_type": "airport",
+            "duration": "PT6H15M",
+            "fare_brand_name": "Standard",
+            "conditions": {
+              "change_before_departure": {
+                "allowed": true,
+                "penalty_amount": "40.00",
+                "penalty_currency": "USD"
+              }
+            },
+            "segments": [
+              {
+                "id": "seg_0000AAAACAILHR88",
+                "origin": {
+                  "type": "airport",
+                  "iata_code": "CAI",
+                  "iata_country_code": "EG",
+                  "name": "Cairo International Airport",
+                  "city_name": "Cairo",
+                  "time_zone": "Africa/Cairo",
+                  "latitude": 30.1219,
+                  "longitude": 31.4056,
+                  "id": "arp_cai_eg"
+                },
+                "destination": {
+                  "type": "airport",
+                  "iata_code": "LHR",
+                  "iata_country_code": "GB",
+                  "name": "Heathrow Airport",
+                  "city_name": "London",
+                  "time_zone": "Europe/London",
+                  "latitude": 51.47,
+                  "longitude": -0.4543,
+                  "id": "arp_lhr_gb"
+                },
+                "origin_terminal": null,
+                "destination_terminal": null,
+                "departing_at": "2026-11-12T13:40:00",
+                "arriving_at": "2026-11-12T17:55:00",
+                "duration": "PT6H15M",
+                "marketing_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "marketing_carrier_flight_number": "88",
+                "operating_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "operating_carrier_flight_number": "88",
+                "aircraft": {
+                  "iata_code": "320",
+                  "name": "Airbus A320",
+                  "id": "arc_00009VMF8AhXSSRnQDI6Hi"
+                },
+                "distance": null,
+                "stops": [],
+                "passengers": [
+                  {
+                    "passenger_id": "pas_0000AAAA0000000000000001",
+                    "cabin_class": "economy",
+                    "cabin_class_marketing_name": "Economy",
+                    "fare_basis_code": "Y20LGTN2",
+                    "baggages": [
+                      {
+                        "type": "checked",
+                        "quantity": 1
+                      },
+                      {
+                        "type": "carry_on",
+                        "quantity": 1
+                      }
+                    ],
+                    "cabin": null
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "available_services": null,
+        "supported_passenger_identity_document_types": [
+          "passport"
+        ]
+      },
+      {
+        "id": "off_0000AAAA0000000000000007",
+        "live_mode": false,
+        "expires_at": "2026-10-09T09:30:00.000000Z",
+        "created_at": "2026-10-09T08:59:58.000000Z",
+        "updated_at": "2026-10-09T08:59:58.000000Z",
+        "total_amount": "180.00",
+        "total_currency": "GBP",
+        "base_amount": "150.00",
+        "base_currency": "GBP",
+        "tax_amount": "30.00",
+        "tax_currency": "GBP",
+        "total_emissions_kg": "460",
+        "owner": {
+          "id": "arl_00009VME7DAGiJjwomhv32",
+          "name": "Duffel Airways",
+          "iata_code": "ZZ",
+          "logo_symbol_url": null,
+          "logo_lockup_url": null,
+          "conditions_of_carriage_url": null
+        },
+        "passenger_identity_documents_required": false,
+        "payment_requirements": {
+          "requires_instant_payment": false,
+          "price_guarantee_expires_at": null,
+          "payment_required_by": null
+        },
+        "partial": false,
+        "passengers": [
+          {
+            "id": "pas_0000AAAA0000000000000001",
+            "type": "adult",
+            "age": null,
+            "given_name": null,
+            "family_name": null,
+            "loyalty_programme_accounts": []
+          }
+        ],
+        "conditions": {
+          "refund_before_departure": {
+            "allowed": false,
+            "penalty_amount": null,
+            "penalty_currency": null
+          },
+          "change_before_departure": {
+            "allowed": false,
+            "penalty_amount": null,
+            "penalty_currency": null
+          }
+        },
+        "slices": [
+          {
+            "id": "sli_0000AAAA7",
+            "origin": {
+              "type": "airport",
+              "iata_code": "CAI",
+              "iata_country_code": "EG",
+              "name": "Cairo International Airport",
+              "city_name": "Cairo",
+              "time_zone": "Africa/Cairo",
+              "latitude": 30.1219,
+              "longitude": 31.4056,
+              "id": "arp_cai_eg"
+            },
+            "destination": {
+              "type": "airport",
+              "iata_code": "LHR",
+              "iata_country_code": "GB",
+              "name": "Heathrow Airport",
+              "city_name": "London",
+              "time_zone": "Europe/London",
+              "latitude": 51.47,
+              "longitude": -0.4543,
+              "id": "arp_lhr_gb"
+            },
+            "origin_type": "airport",
+            "destination_type": "airport",
+            "duration": "PT6H15M",
+            "fare_brand_name": "Saver",
+            "conditions": {
+              "change_before_departure": null
+            },
+            "segments": [
+              {
+                "id": "seg_0000AAAACAILHR88",
+                "origin": {
+                  "type": "airport",
+                  "iata_code": "CAI",
+                  "iata_country_code": "EG",
+                  "name": "Cairo International Airport",
+                  "city_name": "Cairo",
+                  "time_zone": "Africa/Cairo",
+                  "latitude": 30.1219,
+                  "longitude": 31.4056,
+                  "id": "arp_cai_eg"
+                },
+                "destination": {
+                  "type": "airport",
+                  "iata_code": "LHR",
+                  "iata_country_code": "GB",
+                  "name": "Heathrow Airport",
+                  "city_name": "London",
+                  "time_zone": "Europe/London",
+                  "latitude": 51.47,
+                  "longitude": -0.4543,
+                  "id": "arp_lhr_gb"
+                },
+                "origin_terminal": null,
+                "destination_terminal": null,
+                "departing_at": "2026-11-12T13:40:00",
+                "arriving_at": "2026-11-12T17:55:00",
+                "duration": "PT6H15M",
+                "marketing_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "marketing_carrier_flight_number": "88",
+                "operating_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "operating_carrier_flight_number": "88",
+                "aircraft": {
+                  "iata_code": "320",
+                  "name": "Airbus A320",
+                  "id": "arc_00009VMF8AhXSSRnQDI6Hi"
+                },
+                "distance": null,
+                "stops": [],
+                "passengers": [
+                  {
+                    "passenger_id": "pas_0000AAAA0000000000000001",
+                    "cabin_class": "economy",
+                    "cabin_class_marketing_name": "Economy",
+                    "fare_basis_code": "Y20LGTN2",
+                    "baggages": [
+                      {
+                        "type": "checked",
+                        "quantity": 0
+                      },
+                      {
+                        "type": "carry_on",
+                        "quantity": 1
+                      }
+                    ],
+                    "cabin": null
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "available_services": null,
+        "supported_passenger_identity_document_types": [
+          "passport"
+        ]
+      },
+      {
+        "id": "off_0000AAAA0000000000000008",
+        "live_mode": false,
+        "expires_at": "2026-10-09T09:30:00.000000Z",
+        "created_at": "2026-10-09T08:59:58.000000Z",
+        "updated_at": "2026-10-09T08:59:58.000000Z",
+        "total_amount": "199.00",
+        "total_currency": "USD",
+        "base_amount": "160.00",
+        "base_currency": "USD",
+        "tax_amount": "39.00",
+        "tax_currency": "USD",
+        "total_emissions_kg": "460",
+        "owner": {
+          "id": "arl_00009VME7DAGiJjwomhv32",
+          "name": "Duffel Airways",
+          "iata_code": "ZZ",
+          "logo_symbol_url": null,
+          "logo_lockup_url": null,
+          "conditions_of_carriage_url": null
+        },
+        "passenger_identity_documents_required": false,
+        "payment_requirements": {
+          "requires_instant_payment": false,
+          "price_guarantee_expires_at": null,
+          "payment_required_by": null
+        },
+        "partial": false,
+        "passengers": [
+          {
+            "id": "pas_0000AAAA0000000000000001",
+            "type": "adult",
+            "age": null,
+            "given_name": null,
+            "family_name": null,
+            "loyalty_programme_accounts": []
+          }
+        ],
+        "conditions": {
+          "refund_before_departure": {
+            "allowed": false,
+            "penalty_amount": null,
+            "penalty_currency": null
+          },
+          "change_before_departure": null
+        },
+        "slices": [
+          {
+            "id": "sli_0000AAAA8",
+            "origin": {
+              "type": "airport",
+              "iata_code": "CAI",
+              "iata_country_code": "EG",
+              "name": "Cairo International Airport",
+              "city_name": "Cairo",
+              "time_zone": "Africa/Cairo",
+              "latitude": 30.1219,
+              "longitude": 31.4056,
+              "id": "arp_cai_eg"
+            },
+            "destination": {
+              "type": "airport",
+              "iata_code": "LHR",
+              "iata_country_code": "GB",
+              "name": "Heathrow Airport",
+              "city_name": "London",
+              "time_zone": "Europe/London",
+              "latitude": 51.47,
+              "longitude": -0.4543,
+              "id": "arp_lhr_gb"
+            },
+            "origin_type": "airport",
+            "destination_type": "airport",
+            "duration": "PT7H50M",
+            "fare_brand_name": null,
+            "conditions": {
+              "change_before_departure": null
+            },
+            "segments": [
+              {
+                "id": "seg_0000AAAACAIIST402",
+                "origin": {
+                  "type": "airport",
+                  "iata_code": "CAI",
+                  "iata_country_code": "EG",
+                  "name": "Cairo International Airport",
+                  "city_name": "Cairo",
+                  "time_zone": "Africa/Cairo",
+                  "latitude": 30.1219,
+                  "longitude": 31.4056,
+                  "id": "arp_cai_eg"
+                },
+                "destination": {
+                  "type": "airport",
+                  "iata_code": "IST",
+                  "iata_country_code": "TR",
+                  "name": "Istanbul Airport",
+                  "city_name": "Istanbul",
+                  "time_zone": "Europe/Istanbul",
+                  "latitude": 41.2753,
+                  "longitude": 28.7519,
+                  "id": "arp_ist_tr"
+                },
+                "origin_terminal": null,
+                "destination_terminal": null,
+                "departing_at": "2026-11-12T05:10:00",
+                "arriving_at": "2026-11-12T07:50:00",
+                "duration": "PT1H40M",
+                "marketing_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "marketing_carrier_flight_number": "402",
+                "operating_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "operating_carrier_flight_number": "402",
+                "aircraft": {
+                  "iata_code": "320",
+                  "name": "Airbus A320",
+                  "id": "arc_00009VMF8AhXSSRnQDI6Hi"
+                },
+                "distance": null,
+                "stops": [],
+                "passengers": [
+                  {
+                    "passenger_id": "pas_0000AAAA0000000000000001",
+                    "cabin_class": "economy",
+                    "cabin_class_marketing_name": "Economy",
+                    "fare_basis_code": "Y20LGTN2",
+                    "baggages": [
+                      {
+                        "type": "checked",
+                        "quantity": 1
+                      },
+                      {
+                        "type": "carry_on",
+                        "quantity": 1
+                      }
+                    ],
+                    "cabin": null
+                  }
+                ]
+              },
+              {
+                "id": "seg_0000AAAAISTLHR403",
+                "origin": {
+                  "type": "airport",
+                  "iata_code": "IST",
+                  "iata_country_code": "TR",
+                  "name": "Istanbul Airport",
+                  "city_name": "Istanbul",
+                  "time_zone": "Europe/Istanbul",
+                  "latitude": 41.2753,
+                  "longitude": 28.7519,
+                  "id": "arp_ist_tr"
+                },
+                "destination": {
+                  "type": "airport",
+                  "iata_code": "LHR",
+                  "iata_country_code": "GB",
+                  "name": "Heathrow Airport",
+                  "city_name": "London",
+                  "time_zone": "Europe/London",
+                  "latitude": 51.47,
+                  "longitude": -0.4543,
+                  "id": "arp_lhr_gb"
+                },
+                "origin_terminal": null,
+                "destination_terminal": null,
+                "departing_at": "2026-11-12T09:50:00",
+                "arriving_at": "2026-11-12T11:00:00",
+                "duration": "PT4H10M",
+                "marketing_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "marketing_carrier_flight_number": "403",
+                "operating_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "operating_carrier_flight_number": "403",
+                "aircraft": {
+                  "iata_code": "320",
+                  "name": "Airbus A320",
+                  "id": "arc_00009VMF8AhXSSRnQDI6Hi"
+                },
+                "distance": null,
+                "stops": [],
+                "passengers": [
+                  {
+                    "passenger_id": "pas_0000AAAA0000000000000001",
+                    "cabin_class": "economy",
+                    "cabin_class_marketing_name": "Economy",
+                    "fare_basis_code": "Y20LGTN2",
+                    "baggages": [
+                      {
+                        "type": "checked",
+                        "quantity": 1
+                      },
+                      {
+                        "type": "carry_on",
+                        "quantity": 1
+                      }
+                    ],
+                    "cabin": null
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "available_services": null,
+        "supported_passenger_identity_document_types": [
+          "passport"
+        ]
+      },
+      {
+        "id": "off_0000AAAA0000000000000009",
+        "live_mode": false,
+        "expires_at": "2026-10-09T09:30:00.000000Z",
+        "created_at": "2026-10-09T08:59:58.000000Z",
+        "updated_at": "2026-10-09T08:59:58.000000Z",
+        "total_amount": "236.00",
+        "total_currency": "USD",
+        "base_amount": "236.00",
+        "base_currency": "USD",
+        "tax_amount": null,
+        "tax_currency": null,
+        "total_emissions_kg": "460",
+        "owner": {
+          "id": "arl_00009VME7DAGiJjwomhv32",
+          "name": "Duffel Airways",
+          "iata_code": "ZZ",
+          "logo_symbol_url": null,
+          "logo_lockup_url": null,
+          "conditions_of_carriage_url": null
+        },
+        "passenger_identity_documents_required": false,
+        "payment_requirements": {
+          "requires_instant_payment": false,
+          "price_guarantee_expires_at": null,
+          "payment_required_by": null
+        },
+        "partial": false,
+        "passengers": [
+          {
+            "id": "pas_0000AAAA0000000000000001",
+            "type": "adult",
+            "age": null,
+            "given_name": null,
+            "family_name": null,
+            "loyalty_programme_accounts": []
+          }
+        ],
+        "conditions": {
+          "refund_before_departure": {
+            "allowed": true,
+            "penalty_amount": "30.00",
+            "penalty_currency": "USD"
+          },
+          "change_before_departure": {
+            "allowed": true,
+            "penalty_amount": "0.00",
+            "penalty_currency": "USD"
+          }
+        },
+        "slices": [
+          {
+            "id": "sli_0000AAAA9",
+            "origin": {
+              "type": "airport",
+              "iata_code": "CAI",
+              "iata_country_code": "EG",
+              "name": "Cairo International Airport",
+              "city_name": "Cairo",
+              "time_zone": "Africa/Cairo",
+              "latitude": 30.1219,
+              "longitude": 31.4056,
+              "id": "arp_cai_eg"
+            },
+            "destination": {
+              "type": "airport",
+              "iata_code": "LHR",
+              "iata_country_code": "GB",
+              "name": "Heathrow Airport",
+              "city_name": "London",
+              "time_zone": "Europe/London",
+              "latitude": 51.47,
+              "longitude": -0.4543,
+              "id": "arp_lhr_gb"
+            },
+            "origin_type": "airport",
+            "destination_type": "airport",
+            "duration": "PT7H50M",
+            "fare_brand_name": "Standard",
+            "conditions": {
+              "change_before_departure": null
+            },
+            "segments": [
+              {
+                "id": "seg_0000AAAACAIIST402",
+                "origin": {
+                  "type": "airport",
+                  "iata_code": "CAI",
+                  "iata_country_code": "EG",
+                  "name": "Cairo International Airport",
+                  "city_name": "Cairo",
+                  "time_zone": "Africa/Cairo",
+                  "latitude": 30.1219,
+                  "longitude": 31.4056,
+                  "id": "arp_cai_eg"
+                },
+                "destination": {
+                  "type": "airport",
+                  "iata_code": "IST",
+                  "iata_country_code": "TR",
+                  "name": "Istanbul Airport",
+                  "city_name": "Istanbul",
+                  "time_zone": "Europe/Istanbul",
+                  "latitude": 41.2753,
+                  "longitude": 28.7519,
+                  "id": "arp_ist_tr"
+                },
+                "origin_terminal": null,
+                "destination_terminal": null,
+                "departing_at": "2026-11-12T05:10:00",
+                "arriving_at": "2026-11-12T07:50:00",
+                "duration": "PT1H40M",
+                "marketing_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "marketing_carrier_flight_number": "402",
+                "operating_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "operating_carrier_flight_number": "402",
+                "aircraft": {
+                  "iata_code": "320",
+                  "name": "Airbus A320",
+                  "id": "arc_00009VMF8AhXSSRnQDI6Hi"
+                },
+                "distance": null,
+                "stops": [],
+                "passengers": [
+                  {
+                    "passenger_id": "pas_0000AAAA0000000000000001",
+                    "cabin_class": "economy",
+                    "cabin_class_marketing_name": "Economy",
+                    "fare_basis_code": "Y20LGTN2",
+                    "baggages": [
+                      {
+                        "type": "checked",
+                        "quantity": 1
+                      },
+                      {
+                        "type": "carry_on",
+                        "quantity": 1
+                      }
+                    ],
+                    "cabin": null
+                  }
+                ]
+              },
+              {
+                "id": "seg_0000AAAAISTLHR403",
+                "origin": {
+                  "type": "airport",
+                  "iata_code": "IST",
+                  "iata_country_code": "TR",
+                  "name": "Istanbul Airport",
+                  "city_name": "Istanbul",
+                  "time_zone": "Europe/Istanbul",
+                  "latitude": 41.2753,
+                  "longitude": 28.7519,
+                  "id": "arp_ist_tr"
+                },
+                "destination": {
+                  "type": "airport",
+                  "iata_code": "LHR",
+                  "iata_country_code": "GB",
+                  "name": "Heathrow Airport",
+                  "city_name": "London",
+                  "time_zone": "Europe/London",
+                  "latitude": 51.47,
+                  "longitude": -0.4543,
+                  "id": "arp_lhr_gb"
+                },
+                "origin_terminal": null,
+                "destination_terminal": null,
+                "departing_at": "2026-11-12T09:50:00",
+                "arriving_at": "2026-11-12T11:00:00",
+                "duration": "PT4H10M",
+                "marketing_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "marketing_carrier_flight_number": "403",
+                "operating_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "operating_carrier_flight_number": "403",
+                "aircraft": {
+                  "iata_code": "320",
+                  "name": "Airbus A320",
+                  "id": "arc_00009VMF8AhXSSRnQDI6Hi"
+                },
+                "distance": null,
+                "stops": [],
+                "passengers": [
+                  {
+                    "passenger_id": "pas_0000AAAA0000000000000001",
+                    "cabin_class": "economy",
+                    "cabin_class_marketing_name": "Economy",
+                    "fare_basis_code": "Y20LGTN2",
+                    "baggages": [
+                      {
+                        "type": "checked",
+                        "quantity": 1
+                      },
+                      {
+                        "type": "carry_on",
+                        "quantity": 1
+                      }
+                    ],
+                    "cabin": null
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "available_services": null,
+        "supported_passenger_identity_document_types": [
+          "passport"
+        ]
+      },
+      {
+        "id": "off_0000AAAA0000000000000010",
+        "live_mode": false,
+        "expires_at": "2026-10-09T09:30:00.000000Z",
+        "created_at": "2026-10-09T08:59:58.000000Z",
+        "updated_at": "2026-10-09T08:59:58.000000Z",
+        "total_amount": "520.00",
+        "total_currency": "USD",
+        "base_amount": "450.00",
+        "base_currency": "USD",
+        "tax_amount": "70.00",
+        "tax_currency": "USD",
+        "total_emissions_kg": "460",
+        "owner": {
+          "id": "arl_00009VME7DAGiJjwomhv32",
+          "name": "Duffel Airways",
+          "iata_code": "ZZ",
+          "logo_symbol_url": null,
+          "logo_lockup_url": null,
+          "conditions_of_carriage_url": null
+        },
+        "passenger_identity_documents_required": false,
+        "payment_requirements": {
+          "requires_instant_payment": false,
+          "price_guarantee_expires_at": null,
+          "payment_required_by": null
+        },
+        "partial": false,
+        "passengers": [
+          {
+            "id": "pas_0000AAAA0000000000000001",
+            "type": "adult",
+            "age": null,
+            "given_name": null,
+            "family_name": null,
+            "loyalty_programme_accounts": []
+          }
+        ],
+        "conditions": {
+          "refund_before_departure": {
+            "allowed": false,
+            "penalty_amount": null,
+            "penalty_currency": null
+          },
+          "change_before_departure": {
+            "allowed": false,
+            "penalty_amount": null,
+            "penalty_currency": null
+          }
+        },
+        "slices": [
+          {
+            "id": "sli_0000AAAA10",
+            "origin": {
+              "type": "airport",
+              "iata_code": "CAI",
+              "iata_country_code": "EG",
+              "name": "Cairo International Airport",
+              "city_name": "Cairo",
+              "time_zone": "Africa/Cairo",
+              "latitude": 30.1219,
+              "longitude": 31.4056,
+              "id": "arp_cai_eg"
+            },
+            "destination": {
+              "type": "airport",
+              "iata_code": "LHR",
+              "iata_country_code": "GB",
+              "name": "Heathrow Airport",
+              "city_name": "London",
+              "time_zone": "Europe/London",
+              "latitude": 51.47,
+              "longitude": -0.4543,
+              "id": "arp_lhr_gb"
+            },
+            "origin_type": "airport",
+            "destination_type": "airport",
+            "duration": "PT7H50M",
+            "fare_brand_name": "Upgrade",
+            "conditions": {
+              "change_before_departure": null
+            },
+            "segments": [
+              {
+                "id": "seg_0000AAAACAIIST402",
+                "origin": {
+                  "type": "airport",
+                  "iata_code": "CAI",
+                  "iata_country_code": "EG",
+                  "name": "Cairo International Airport",
+                  "city_name": "Cairo",
+                  "time_zone": "Africa/Cairo",
+                  "latitude": 30.1219,
+                  "longitude": 31.4056,
+                  "id": "arp_cai_eg"
+                },
+                "destination": {
+                  "type": "airport",
+                  "iata_code": "IST",
+                  "iata_country_code": "TR",
+                  "name": "Istanbul Airport",
+                  "city_name": "Istanbul",
+                  "time_zone": "Europe/Istanbul",
+                  "latitude": 41.2753,
+                  "longitude": 28.7519,
+                  "id": "arp_ist_tr"
+                },
+                "origin_terminal": null,
+                "destination_terminal": null,
+                "departing_at": "2026-11-12T05:10:00",
+                "arriving_at": "2026-11-12T07:50:00",
+                "duration": "PT1H40M",
+                "marketing_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "marketing_carrier_flight_number": "402",
+                "operating_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "operating_carrier_flight_number": "402",
+                "aircraft": {
+                  "iata_code": "320",
+                  "name": "Airbus A320",
+                  "id": "arc_00009VMF8AhXSSRnQDI6Hi"
+                },
+                "distance": null,
+                "stops": [],
+                "passengers": [
+                  {
+                    "passenger_id": "pas_0000AAAA0000000000000001",
+                    "cabin_class": "economy",
+                    "cabin_class_marketing_name": "Economy",
+                    "fare_basis_code": "Y20LGTN2",
+                    "baggages": [
+                      {
+                        "type": "checked",
+                        "quantity": 1
+                      },
+                      {
+                        "type": "carry_on",
+                        "quantity": 1
+                      }
+                    ],
+                    "cabin": null
+                  }
+                ]
+              },
+              {
+                "id": "seg_0000AAAAISTLHR403",
+                "origin": {
+                  "type": "airport",
+                  "iata_code": "IST",
+                  "iata_country_code": "TR",
+                  "name": "Istanbul Airport",
+                  "city_name": "Istanbul",
+                  "time_zone": "Europe/Istanbul",
+                  "latitude": 41.2753,
+                  "longitude": 28.7519,
+                  "id": "arp_ist_tr"
+                },
+                "destination": {
+                  "type": "airport",
+                  "iata_code": "LHR",
+                  "iata_country_code": "GB",
+                  "name": "Heathrow Airport",
+                  "city_name": "London",
+                  "time_zone": "Europe/London",
+                  "latitude": 51.47,
+                  "longitude": -0.4543,
+                  "id": "arp_lhr_gb"
+                },
+                "origin_terminal": null,
+                "destination_terminal": null,
+                "departing_at": "2026-11-12T09:50:00",
+                "arriving_at": "2026-11-12T11:00:00",
+                "duration": "PT4H10M",
+                "marketing_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "marketing_carrier_flight_number": "403",
+                "operating_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "operating_carrier_flight_number": "403",
+                "aircraft": {
+                  "iata_code": "320",
+                  "name": "Airbus A320",
+                  "id": "arc_00009VMF8AhXSSRnQDI6Hi"
+                },
+                "distance": null,
+                "stops": [],
+                "passengers": [
+                  {
+                    "passenger_id": "pas_0000AAAA0000000000000001",
+                    "cabin_class": "business",
+                    "cabin_class_marketing_name": "Business",
+                    "fare_basis_code": "Y20LGTN2",
+                    "baggages": [
+                      {
+                        "type": "checked",
+                        "quantity": 1
+                      },
+                      {
+                        "type": "carry_on",
+                        "quantity": 1
+                      }
+                    ],
+                    "cabin": null
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "available_services": null,
+        "supported_passenger_identity_document_types": [
+          "passport"
+        ]
+      },
+      {
+        "id": "off_0000AAAA0000000000000011",
+        "live_mode": false,
+        "expires_at": "2026-10-09T09:30:00.000000Z",
+        "created_at": "2026-10-09T08:59:58.000000Z",
+        "updated_at": "2026-10-09T08:59:58.000000Z",
+        "total_amount": "210.00",
+        "total_currency": "USD",
+        "base_amount": "170.00",
+        "base_currency": "USD",
+        "tax_amount": "40.00",
+        "tax_currency": "USD",
+        "total_emissions_kg": "460",
+        "owner": {
+          "id": "arl_00009VME7DAGiJjwomhv32",
+          "name": "Duffel Airways",
+          "iata_code": "ZZ",
+          "logo_symbol_url": null,
+          "logo_lockup_url": null,
+          "conditions_of_carriage_url": null
+        },
+        "passenger_identity_documents_required": false,
+        "payment_requirements": {
+          "requires_instant_payment": false,
+          "price_guarantee_expires_at": null,
+          "payment_required_by": null
+        },
+        "partial": false,
+        "passengers": [
+          {
+            "id": "pas_0000AAAA0000000000000001",
+            "type": "adult",
+            "age": null,
+            "given_name": null,
+            "family_name": null,
+            "loyalty_programme_accounts": []
+          }
+        ],
+        "conditions": {
+          "refund_before_departure": {
+            "allowed": false,
+            "penalty_amount": null,
+            "penalty_currency": null
+          },
+          "change_before_departure": {
+            "allowed": false,
+            "penalty_amount": null,
+            "penalty_currency": null
+          }
+        },
+        "slices": [
+          {
+            "id": "sli_0000AAAA11",
+            "origin": {
+              "type": "airport",
+              "iata_code": "CAI",
+              "iata_country_code": "EG",
+              "name": "Cairo International Airport",
+              "city_name": "Cairo",
+              "time_zone": "Africa/Cairo",
+              "latitude": 30.1219,
+              "longitude": 31.4056,
+              "id": "arp_cai_eg"
+            },
+            "destination": {
+              "type": "airport",
+              "iata_code": "LHR",
+              "iata_country_code": "GB",
+              "name": "Heathrow Airport",
+              "city_name": "London",
+              "time_zone": "Europe/London",
+              "latitude": 51.47,
+              "longitude": -0.4543,
+              "id": "arp_lhr_gb"
+            },
+            "origin_type": "airport",
+            "destination_type": "airport",
+            "duration": "PT8H30M",
+            "fare_brand_name": "Basic",
+            "conditions": {
+              "change_before_departure": null
+            },
+            "segments": [
+              {
+                "id": "seg_0000AAAACAILHR990",
+                "origin": {
+                  "type": "airport",
+                  "iata_code": "CAI",
+                  "iata_country_code": "EG",
+                  "name": "Cairo International Airport",
+                  "city_name": "Cairo",
+                  "time_zone": "Africa/Cairo",
+                  "latitude": 30.1219,
+                  "longitude": 31.4056,
+                  "id": "arp_cai_eg"
+                },
+                "destination": {
+                  "type": "airport",
+                  "iata_code": "LHR",
+                  "iata_country_code": "GB",
+                  "name": "Heathrow Airport",
+                  "city_name": "London",
+                  "time_zone": "Europe/London",
+                  "latitude": 51.47,
+                  "longitude": -0.4543,
+                  "id": "arp_lhr_gb"
+                },
+                "origin_terminal": null,
+                "destination_terminal": null,
+                "departing_at": "2026-11-12T10:00:00",
+                "arriving_at": "2026-11-12T16:30:00",
+                "duration": "PT8H30M",
+                "marketing_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "marketing_carrier_flight_number": "990",
+                "operating_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "operating_carrier_flight_number": "990",
+                "aircraft": {
+                  "iata_code": "320",
+                  "name": "Airbus A320",
+                  "id": "arc_00009VMF8AhXSSRnQDI6Hi"
+                },
+                "distance": null,
+                "stops": [
+                  {
+                    "id": "sto_0000AAAA0001",
+                    "airport": {
+                      "type": "airport",
+                      "iata_code": "ATH",
+                      "iata_country_code": "GR",
+                      "name": "Athens International Airport",
+                      "city_name": "Athens",
+                      "time_zone": "Europe/Athens",
+                      "latitude": 37.9364,
+                      "longitude": 23.9445,
+                      "id": "arp_ath_gr"
+                    },
+                    "arriving_at": "2026-11-12T11:30:00",
+                    "departing_at": "2026-11-12T12:30:00",
+                    "duration": "PT1H"
+                  }
+                ],
+                "passengers": [
+                  {
+                    "passenger_id": "pas_0000AAAA0000000000000001",
+                    "cabin_class": "economy",
+                    "cabin_class_marketing_name": "Economy",
+                    "fare_basis_code": "Y20LGTN2",
+                    "baggages": [
+                      {
+                        "type": "checked",
+                        "quantity": 0
+                      },
+                      {
+                        "type": "carry_on",
+                        "quantity": 1
+                      }
+                    ],
+                    "cabin": null
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "available_services": null,
+        "supported_passenger_identity_document_types": [
+          "passport"
+        ]
+      },
+      {
+        "id": "off_0000AAAA0000000000000012",
+        "live_mode": false,
+        "expires_at": "2026-10-09T09:30:00.000000Z",
+        "created_at": "2026-10-09T08:59:58.000000Z",
+        "updated_at": "2026-10-09T08:59:58.000000Z",
+        "total_amount": "255.00",
+        "total_currency": "USD",
+        "base_amount": "205.00",
+        "base_currency": "USD",
+        "tax_amount": "50.00",
+        "tax_currency": "USD",
+        "total_emissions_kg": "460",
+        "owner": {
+          "id": "arl_00009VME7DAGiJjwomhv32",
+          "name": "Duffel Airways",
+          "iata_code": "ZZ",
+          "logo_symbol_url": null,
+          "logo_lockup_url": null,
+          "conditions_of_carriage_url": null
+        },
+        "passenger_identity_documents_required": false,
+        "payment_requirements": {
+          "requires_instant_payment": false,
+          "price_guarantee_expires_at": null,
+          "payment_required_by": null
+        },
+        "partial": false,
+        "passengers": [
+          {
+            "id": "pas_0000AAAA0000000000000001",
+            "type": "adult",
+            "age": null,
+            "given_name": null,
+            "family_name": null,
+            "loyalty_programme_accounts": []
+          }
+        ],
+        "conditions": {
+          "refund_before_departure": {
+            "allowed": true,
+            "penalty_amount": "40.00",
+            "penalty_currency": "USD"
+          },
+          "change_before_departure": {
+            "allowed": true,
+            "penalty_amount": "20.00",
+            "penalty_currency": "USD"
+          }
+        },
+        "slices": [
+          {
+            "id": "sli_0000AAAA12",
+            "origin": {
+              "type": "airport",
+              "iata_code": "CAI",
+              "iata_country_code": "EG",
+              "name": "Cairo International Airport",
+              "city_name": "Cairo",
+              "time_zone": "Africa/Cairo",
+              "latitude": 30.1219,
+              "longitude": 31.4056,
+              "id": "arp_cai_eg"
+            },
+            "destination": {
+              "type": "airport",
+              "iata_code": "LHR",
+              "iata_country_code": "GB",
+              "name": "Heathrow Airport",
+              "city_name": "London",
+              "time_zone": "Europe/London",
+              "latitude": 51.47,
+              "longitude": -0.4543,
+              "id": "arp_lhr_gb"
+            },
+            "origin_type": "airport",
+            "destination_type": "airport",
+            "duration": "PT8H30M",
+            "fare_brand_name": "Standard",
+            "conditions": {
+              "change_before_departure": null
+            },
+            "segments": [
+              {
+                "id": "seg_0000AAAACAILHR990",
+                "origin": {
+                  "type": "airport",
+                  "iata_code": "CAI",
+                  "iata_country_code": "EG",
+                  "name": "Cairo International Airport",
+                  "city_name": "Cairo",
+                  "time_zone": "Africa/Cairo",
+                  "latitude": 30.1219,
+                  "longitude": 31.4056,
+                  "id": "arp_cai_eg"
+                },
+                "destination": {
+                  "type": "airport",
+                  "iata_code": "LHR",
+                  "iata_country_code": "GB",
+                  "name": "Heathrow Airport",
+                  "city_name": "London",
+                  "time_zone": "Europe/London",
+                  "latitude": 51.47,
+                  "longitude": -0.4543,
+                  "id": "arp_lhr_gb"
+                },
+                "origin_terminal": null,
+                "destination_terminal": null,
+                "departing_at": "2026-11-12T10:00:00",
+                "arriving_at": "2026-11-12T16:30:00",
+                "duration": "PT8H30M",
+                "marketing_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "marketing_carrier_flight_number": "990",
+                "operating_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "operating_carrier_flight_number": "990",
+                "aircraft": {
+                  "iata_code": "320",
+                  "name": "Airbus A320",
+                  "id": "arc_00009VMF8AhXSSRnQDI6Hi"
+                },
+                "distance": null,
+                "stops": [
+                  {
+                    "id": "sto_0000AAAA0001",
+                    "airport": {
+                      "type": "airport",
+                      "iata_code": "ATH",
+                      "iata_country_code": "GR",
+                      "name": "Athens International Airport",
+                      "city_name": "Athens",
+                      "time_zone": "Europe/Athens",
+                      "latitude": 37.9364,
+                      "longitude": 23.9445,
+                      "id": "arp_ath_gr"
+                    },
+                    "arriving_at": "2026-11-12T11:30:00",
+                    "departing_at": "2026-11-12T12:30:00",
+                    "duration": "PT1H"
+                  }
+                ],
+                "passengers": [
+                  {
+                    "passenger_id": "pas_0000AAAA0000000000000001",
+                    "cabin_class": "economy",
+                    "cabin_class_marketing_name": "Economy",
+                    "fare_basis_code": "Y20LGTN2",
+                    "baggages": [
+                      {
+                        "type": "checked",
+                        "quantity": 1
+                      },
+                      {
+                        "type": "carry_on",
+                        "quantity": 1
+                      }
+                    ],
+                    "cabin": null
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "available_services": null,
+        "supported_passenger_identity_document_types": [
+          "passport"
+        ]
+      },
+      {
+        "id": "off_0000AAAA0000000000000013",
+        "live_mode": false,
+        "expires_at": "2026-10-09T09:30:00.000000Z",
+        "created_at": "2026-10-09T08:59:58.000000Z",
+        "updated_at": "2026-10-09T08:59:58.000000Z",
+        "total_amount": "260.00",
+        "total_currency": "USD",
+        "base_amount": "215.00",
+        "base_currency": "USD",
+        "tax_amount": "45.00",
+        "tax_currency": "USD",
+        "total_emissions_kg": "460",
+        "owner": {
+          "id": "arl_00009VME7DAGiJjwomhv32",
+          "name": "Duffel Airways",
+          "iata_code": "ZZ",
+          "logo_symbol_url": null,
+          "logo_lockup_url": null,
+          "conditions_of_carriage_url": null
+        },
+        "passenger_identity_documents_required": false,
+        "payment_requirements": {
+          "requires_instant_payment": false,
+          "price_guarantee_expires_at": null,
+          "payment_required_by": null
+        },
+        "partial": false,
+        "passengers": [
+          {
+            "id": "pas_0000AAAA0000000000000001",
+            "type": "adult",
+            "age": null,
+            "given_name": null,
+            "family_name": null,
+            "loyalty_programme_accounts": []
+          }
+        ],
+        "conditions": {
+          "refund_before_departure": {
+            "allowed": false,
+            "penalty_amount": null,
+            "penalty_currency": null
+          },
+          "change_before_departure": {
+            "allowed": false,
+            "penalty_amount": null,
+            "penalty_currency": null
+          }
+        },
+        "slices": [
+          {
+            "id": "sli_0000AAAA13",
+            "origin": {
+              "type": "airport",
+              "iata_code": "CAI",
+              "iata_country_code": "EG",
+              "name": "Cairo International Airport",
+              "city_name": "Cairo",
+              "time_zone": "Africa/Cairo",
+              "latitude": 30.1219,
+              "longitude": 31.4056,
+              "id": "arp_cai_eg"
+            },
+            "destination": {
+              "type": "airport",
+              "iata_code": "LHR",
+              "iata_country_code": "GB",
+              "name": "Heathrow Airport",
+              "city_name": "London",
+              "time_zone": "Europe/London",
+              "latitude": 51.47,
+              "longitude": -0.4543,
+              "id": "arp_lhr_gb"
+            },
+            "origin_type": "airport",
+            "destination_type": "airport",
+            "duration": null,
+            "fare_brand_name": "Basic",
+            "conditions": {
+              "change_before_departure": null
+            },
+            "segments": [
+              {
+                "id": "seg_0000AAAACAILHR77",
+                "origin": {
+                  "type": "airport",
+                  "iata_code": "CAI",
+                  "iata_country_code": "EG",
+                  "name": "Cairo International Airport",
+                  "city_name": "Cairo",
+                  "time_zone": "Africa/Cairo",
+                  "latitude": 30.1219,
+                  "longitude": 31.4056,
+                  "id": "arp_cai_eg"
+                },
+                "destination": {
+                  "type": "airport",
+                  "iata_code": "LHR",
+                  "iata_country_code": "GB",
+                  "name": "Heathrow Airport",
+                  "city_name": "London",
+                  "time_zone": "Europe/London",
+                  "latitude": 51.47,
+                  "longitude": -0.4543,
+                  "id": "arp_lhr_gb"
+                },
+                "origin_terminal": null,
+                "destination_terminal": null,
+                "departing_at": "2026-11-12T15:20:00",
+                "arriving_at": "2026-11-12T19:35:00",
+                "duration": null,
+                "marketing_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "marketing_carrier_flight_number": "77",
+                "operating_carrier": {
+                  "id": "arl_00009VME7DBKeMags5CliQ",
+                  "name": "EgyptAir",
+                  "iata_code": "MS",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "operating_carrier_flight_number": "77",
+                "aircraft": {
+                  "iata_code": "320",
+                  "name": "Airbus A320",
+                  "id": "arc_00009VMF8AhXSSRnQDI6Hi"
+                },
+                "distance": null,
+                "stops": [],
+                "passengers": [
+                  {
+                    "passenger_id": "pas_0000AAAA0000000000000001",
+                    "cabin_class": "economy",
+                    "cabin_class_marketing_name": "Economy",
+                    "fare_basis_code": "Y20LGTN2",
+                    "baggages": [
+                      {
+                        "type": "checked",
+                        "quantity": 1
+                      },
+                      {
+                        "type": "carry_on",
+                        "quantity": 1
+                      }
+                    ],
+                    "cabin": null
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "available_services": null,
+        "supported_passenger_identity_document_types": [
+          "passport"
+        ]
+      },
+      {
+        "id": "off_0000AAAA0000000000000014",
+        "live_mode": false,
+        "expires_at": "2026-10-09T09:30:00.000000Z",
+        "created_at": "2026-10-09T08:59:58.000000Z",
+        "updated_at": "2026-10-09T08:59:58.000000Z",
+        "total_amount": "300.00",
+        "total_currency": "USD",
+        "base_amount": "250.00",
+        "base_currency": "USD",
+        "tax_amount": "50.00",
+        "tax_currency": "USD",
+        "total_emissions_kg": "460",
+        "owner": {
+          "id": "arl_00009VME7DAGiJjwomhv32",
+          "name": "Duffel Airways",
+          "iata_code": "ZZ",
+          "logo_symbol_url": null,
+          "logo_lockup_url": null,
+          "conditions_of_carriage_url": null
+        },
+        "passenger_identity_documents_required": false,
+        "payment_requirements": {
+          "requires_instant_payment": false,
+          "price_guarantee_expires_at": null,
+          "payment_required_by": null
+        },
+        "partial": false,
+        "passengers": [
+          {
+            "id": "pas_0000AAAA0000000000000001",
+            "type": "adult",
+            "age": null,
+            "given_name": null,
+            "family_name": null,
+            "loyalty_programme_accounts": []
+          }
+        ],
+        "conditions": {
+          "refund_before_departure": {
+            "allowed": true,
+            "penalty_amount": "50.00",
+            "penalty_currency": "USD"
+          },
+          "change_before_departure": {
+            "allowed": true,
+            "penalty_amount": "25.00",
+            "penalty_currency": "USD"
+          }
+        },
+        "slices": [
+          {
+            "id": "sli_0000AAAA14",
+            "origin": {
+              "type": "airport",
+              "iata_code": "CAI",
+              "iata_country_code": "EG",
+              "name": "Cairo International Airport",
+              "city_name": "Cairo",
+              "time_zone": "Africa/Cairo",
+              "latitude": 30.1219,
+              "longitude": 31.4056,
+              "id": "arp_cai_eg"
+            },
+            "destination": {
+              "type": "airport",
+              "iata_code": "LHR",
+              "iata_country_code": "GB",
+              "name": "Heathrow Airport",
+              "city_name": "London",
+              "time_zone": "Europe/London",
+              "latitude": 51.47,
+              "longitude": -0.4543,
+              "id": "arp_lhr_gb"
+            },
+            "origin_type": "airport",
+            "destination_type": "airport",
+            "duration": null,
+            "fare_brand_name": "Standard",
+            "conditions": {
+              "change_before_departure": null
+            },
+            "segments": [
+              {
+                "id": "seg_0000AAAACAILHR77",
+                "origin": {
+                  "type": "airport",
+                  "iata_code": "CAI",
+                  "iata_country_code": "EG",
+                  "name": "Cairo International Airport",
+                  "city_name": "Cairo",
+                  "time_zone": "Africa/Cairo",
+                  "latitude": 30.1219,
+                  "longitude": 31.4056,
+                  "id": "arp_cai_eg"
+                },
+                "destination": {
+                  "type": "airport",
+                  "iata_code": "LHR",
+                  "iata_country_code": "GB",
+                  "name": "Heathrow Airport",
+                  "city_name": "London",
+                  "time_zone": "Europe/London",
+                  "latitude": 51.47,
+                  "longitude": -0.4543,
+                  "id": "arp_lhr_gb"
+                },
+                "origin_terminal": null,
+                "destination_terminal": null,
+                "departing_at": "2026-11-12T15:20:00",
+                "arriving_at": "2026-11-12T19:35:00",
+                "duration": null,
+                "marketing_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "marketing_carrier_flight_number": "77",
+                "operating_carrier": {
+                  "id": "arl_00009VME7DBKeMags5CliQ",
+                  "name": "EgyptAir",
+                  "iata_code": "MS",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "operating_carrier_flight_number": "77",
+                "aircraft": {
+                  "iata_code": "320",
+                  "name": "Airbus A320",
+                  "id": "arc_00009VMF8AhXSSRnQDI6Hi"
+                },
+                "distance": null,
+                "stops": [],
+                "passengers": [
+                  {
+                    "passenger_id": "pas_0000AAAA0000000000000001",
+                    "cabin_class": "economy",
+                    "cabin_class_marketing_name": "Economy",
+                    "fare_basis_code": "Y20LGTN2",
+                    "baggages": [
+                      {
+                        "type": "checked",
+                        "quantity": 1
+                      },
+                      {
+                        "type": "carry_on",
+                        "quantity": 1
+                      }
+                    ],
+                    "cabin": null
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "available_services": null,
+        "supported_passenger_identity_document_types": [
+          "passport"
+        ]
+      },
+      {
+        "id": "off_0000AAAA0000000000000015",
+        "live_mode": false,
+        "expires_at": "2026-10-09T09:30:00.000000Z",
+        "created_at": "2026-10-09T08:59:58.000000Z",
+        "updated_at": "2026-10-09T08:59:58.000000Z",
+        "total_amount": "330.00",
+        "total_currency": "USD",
+        "base_amount": "270.00",
+        "base_currency": "USD",
+        "tax_amount": "60.00",
+        "tax_currency": "USD",
+        "total_emissions_kg": "460",
+        "owner": {
+          "id": "arl_00009VME7DAGiJjwomhv03",
+          "name": "British Airways",
+          "iata_code": "BA",
+          "logo_symbol_url": null,
+          "logo_lockup_url": null,
+          "conditions_of_carriage_url": null
+        },
+        "passenger_identity_documents_required": false,
+        "payment_requirements": {
+          "requires_instant_payment": false,
+          "price_guarantee_expires_at": null,
+          "payment_required_by": null
+        },
+        "partial": false,
+        "passengers": [
+          {
+            "id": "pas_0000AAAA0000000000000001",
+            "type": "adult",
+            "age": null,
+            "given_name": null,
+            "family_name": null,
+            "loyalty_programme_accounts": []
+          }
+        ],
+        "conditions": {
+          "refund_before_departure": {
+            "allowed": false,
+            "penalty_amount": null,
+            "penalty_currency": null
+          },
+          "change_before_departure": {
+            "allowed": true,
+            "penalty_amount": "75.00",
+            "penalty_currency": "USD"
+          }
+        },
+        "slices": [
+          {
+            "id": "sli_0000AAAA15",
+            "origin": {
+              "type": "airport",
+              "iata_code": "CAI",
+              "iata_country_code": "EG",
+              "name": "Cairo International Airport",
+              "city_name": "Cairo",
+              "time_zone": "Africa/Cairo",
+              "latitude": 30.1219,
+              "longitude": 31.4056,
+              "id": "arp_cai_eg"
+            },
+            "destination": {
+              "type": "airport",
+              "iata_code": "LHR",
+              "iata_country_code": "GB",
+              "name": "Heathrow Airport",
+              "city_name": "London",
+              "time_zone": "Europe/London",
+              "latitude": 51.47,
+              "longitude": -0.4543,
+              "id": "arp_lhr_gb"
+            },
+            "origin_type": "airport",
+            "destination_type": "airport",
+            "duration": "PT6H15M",
+            "fare_brand_name": null,
+            "conditions": {
+              "change_before_departure": null
+            },
+            "segments": [
+              {
+                "id": "seg_0000AAAACAILHR154",
+                "origin": {
+                  "type": "airport",
+                  "iata_code": "CAI",
+                  "iata_country_code": "EG",
+                  "name": "Cairo International Airport",
+                  "city_name": "Cairo",
+                  "time_zone": "Africa/Cairo",
+                  "latitude": 30.1219,
+                  "longitude": 31.4056,
+                  "id": "arp_cai_eg"
+                },
+                "destination": {
+                  "type": "airport",
+                  "iata_code": "LHR",
+                  "iata_country_code": "GB",
+                  "name": "Heathrow Airport",
+                  "city_name": "London",
+                  "time_zone": "Europe/London",
+                  "latitude": 51.47,
+                  "longitude": -0.4543,
+                  "id": "arp_lhr_gb"
+                },
+                "origin_terminal": null,
+                "destination_terminal": null,
+                "departing_at": "2026-11-12T07:00:00",
+                "arriving_at": "2026-11-12T11:15:00",
+                "duration": "PT6H15M",
+                "marketing_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv03",
+                  "name": "British Airways",
+                  "iata_code": "BA",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "marketing_carrier_flight_number": "154",
+                "operating_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv03",
+                  "name": "British Airways",
+                  "iata_code": "BA",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "operating_carrier_flight_number": "154",
+                "aircraft": {
+                  "iata_code": "320",
+                  "name": "Airbus A320",
+                  "id": "arc_00009VMF8AhXSSRnQDI6Hi"
+                },
+                "distance": null,
+                "stops": [],
+                "passengers": [
+                  {
+                    "passenger_id": "pas_0000AAAA0000000000000001",
+                    "cabin_class": "economy",
+                    "cabin_class_marketing_name": "Economy Basic",
+                    "fare_basis_code": "Y20LGTN2",
+                    "baggages": [
+                      {
+                        "type": "checked",
+                        "quantity": 1
+                      },
+                      {
+                        "type": "carry_on",
+                        "quantity": 1
+                      }
+                    ],
+                    "cabin": null
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "available_services": null,
+        "supported_passenger_identity_document_types": [
+          "passport"
+        ]
+      },
+      {
+        "id": "off_0000AAAA0000000000000016",
+        "live_mode": false,
+        "expires_at": "2026-10-09T09:30:00.000000Z",
+        "created_at": "2026-10-09T08:59:58.000000Z",
+        "updated_at": "2026-10-09T08:59:58.000000Z",
+        "total_amount": "150.00",
+        "total_currency": "USD",
+        "base_amount": "120.00",
+        "base_currency": "USD",
+        "tax_amount": "30.00",
+        "tax_currency": "USD",
+        "total_emissions_kg": "460",
+        "owner": {
+          "id": "arl_00009VME7DNONIATA00001",
+          "name": "Charter Carrier",
+          "iata_code": null,
+          "logo_symbol_url": null,
+          "logo_lockup_url": null,
+          "conditions_of_carriage_url": null
+        },
+        "passenger_identity_documents_required": false,
+        "payment_requirements": {
+          "requires_instant_payment": false,
+          "price_guarantee_expires_at": null,
+          "payment_required_by": null
+        },
+        "partial": false,
+        "passengers": [
+          {
+            "id": "pas_0000AAAA0000000000000001",
+            "type": "adult",
+            "age": null,
+            "given_name": null,
+            "family_name": null,
+            "loyalty_programme_accounts": []
+          }
+        ],
+        "conditions": {
+          "refund_before_departure": {
+            "allowed": false,
+            "penalty_amount": null,
+            "penalty_currency": null
+          },
+          "change_before_departure": {
+            "allowed": false,
+            "penalty_amount": null,
+            "penalty_currency": null
+          }
+        },
+        "slices": [
+          {
+            "id": "sli_0000AAAA16",
+            "origin": {
+              "type": "airport",
+              "iata_code": "CAI",
+              "iata_country_code": "EG",
+              "name": "Cairo International Airport",
+              "city_name": "Cairo",
+              "time_zone": "Africa/Cairo",
+              "latitude": 30.1219,
+              "longitude": 31.4056,
+              "id": "arp_cai_eg"
+            },
+            "destination": {
+              "type": "airport",
+              "iata_code": "LHR",
+              "iata_country_code": "GB",
+              "name": "Heathrow Airport",
+              "city_name": "London",
+              "time_zone": "Europe/London",
+              "latitude": 51.47,
+              "longitude": -0.4543,
+              "id": "arp_lhr_gb"
+            },
+            "origin_type": "airport",
+            "destination_type": "airport",
+            "duration": "PT6H15M",
+            "fare_brand_name": "Basic",
+            "conditions": {
+              "change_before_departure": null
+            },
+            "segments": [
+              {
+                "id": "seg_0000AAAACAILHR555",
+                "origin": {
+                  "type": "airport",
+                  "iata_code": "CAI",
+                  "iata_country_code": "EG",
+                  "name": "Cairo International Airport",
+                  "city_name": "Cairo",
+                  "time_zone": "Africa/Cairo",
+                  "latitude": 30.1219,
+                  "longitude": 31.4056,
+                  "id": "arp_cai_eg"
+                },
+                "destination": {
+                  "type": "airport",
+                  "iata_code": "LHR",
+                  "iata_country_code": "GB",
+                  "name": "Heathrow Airport",
+                  "city_name": "London",
+                  "time_zone": "Europe/London",
+                  "latitude": 51.47,
+                  "longitude": -0.4543,
+                  "id": "arp_lhr_gb"
+                },
+                "origin_terminal": null,
+                "destination_terminal": null,
+                "departing_at": "2026-11-12T06:00:00",
+                "arriving_at": "2026-11-12T10:15:00",
+                "duration": "PT6H15M",
+                "marketing_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "marketing_carrier_flight_number": "555",
+                "operating_carrier": {
+                  "id": "arl_00009VME7DAGiJjwomhv32",
+                  "name": "Duffel Airways",
+                  "iata_code": "ZZ",
+                  "logo_symbol_url": null,
+                  "logo_lockup_url": null,
+                  "conditions_of_carriage_url": null
+                },
+                "operating_carrier_flight_number": "555",
+                "aircraft": {
+                  "iata_code": "320",
+                  "name": "Airbus A320",
+                  "id": "arc_00009VMF8AhXSSRnQDI6Hi"
+                },
+                "distance": null,
+                "stops": [],
+                "passengers": [
+                  {
+                    "passenger_id": "pas_0000AAAA0000000000000001",
+                    "cabin_class": "economy",
+                    "cabin_class_marketing_name": "Economy",
+                    "fare_basis_code": "Y20LGTN2",
+                    "baggages": [
+                      {
+                        "type": "checked",
+                        "quantity": 0
+                      },
+                      {
+                        "type": "carry_on",
+                        "quantity": 1
+                      }
+                    ],
+                    "cabin": null
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "available_services": null,
+        "supported_passenger_identity_document_types": [
+          "passport"
+        ]
+      }
+    ]
+  }
+}

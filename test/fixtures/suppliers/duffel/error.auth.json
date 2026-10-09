@@ -1,0 +1,18 @@
+{
+  "_source": "https://duffel.com/docs/api/overview/errors: authentication_error access_token_not_found, HTTP 401.",
+  "_status": 401,
+  "meta": {
+    "status": 401,
+    "request_id": "FZW0H3HdJwKk5HMAAKxD"
+  },
+  "errors": [
+    {
+      "type": "authentication_error",
+      "code": "access_token_not_found",
+      "title": "Access token not found",
+      "message": "The provided access token was not found",
+      "documentation_url": "https://duffel.com/docs/api/overview/errors",
+      "source": null
+    }
+  ]
+}

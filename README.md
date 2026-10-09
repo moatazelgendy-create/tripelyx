@@ -26,8 +26,8 @@ Test cards at checkout: `4242 4242 4242 4242` (success), `5555 5555 5555 4444` (
 ## Travel by Budget
 
 The planner is on by default outside production (`ENABLE_TRIPS`). Its homepage is `/ai-travel-agent`;
-`/` stays the corporate homepage, and Our Brands and Technology link to the agent. Admin access is
-given by email (`ADMIN_EMAILS`).
+`/` stays the corporate homepage, and Our Brands and Technology link to the agent. Admin access needs
+an `ADMIN_EMAILS` address and a platform admin record (see [Platform admins](#platform-admins)).
 
 | Route | What it is |
 | --- | --- |
@@ -180,6 +180,124 @@ waits for data we don't have or belongs after booking:
 - Vacation Auction: priorities compete for the budget (hotel, nonstop, nights, location, food, experiences, keeping money), money locks, "give the trip $100 / take $100 away", a pressure test that finds the natural price floor, couples and group auctions with private budgets shown as ranges. Keep-money always competes; the reserve is never used to make a booking fit without permission.
 - Trip Proof: the recommendation receipt (why we picked it, why it beat the others, what it sacrifices, what would change our mind), every fact labeled by evidence type (live supplier data, current search, provider information, public rating, estimate, customer preference, platform calculation, needs verification) with its freshness, "prove the savings" with a comparability check, and "what's the catch" that says "we didn't find a major trade-off in the data currently available" rather than inventing one. Today: Our call, why not the cheapest, what would change our mind, the scorecard and the trade-offs, Save more's "why it's cheaper than our pick" (where the money differs, what it gives up, or that the data shows no trade-off), where the money goes on compare, with demo data labeled demo and prices checked at the review page.
 
+## Tripelyx Business
+
+Company travel workspaces under `/business`: a company signs up, sets its travel policy, departments and
+budgets, invites its people, and its travelers plan work trips that are checked against the policy as they
+search and go to their manager when they need approval. Finance sees reports and a CSV. Nothing is booked
+or charged: an approved trip is approved to book, and booking is not open yet. No emails are sent; invites
+are copy links. In local development and on the private preview every flight, hotel and price is demo
+data (`BUSINESS_DEMO_INVENTORY`), labelled as such on every page. www.tripelyx.com and production have no
+supplier yet and no Business demo data, so trip planning says "Supplier not connected yet" while sign-up,
+people, policies, budgets and approvals still work.
+
+| Route | What it is |
+| --- | --- |
+| `/business` | The Business page (company page; sign up or sign in from it) |
+| `/business/start`, `/business/signin` | Create a company (its first account becomes the Owner), sign in |
+| `/business/invite/:token` | An invite link: sign up or sign in, then join the company |
+| `/business/app` | Your companies (straight to the company when there is one; the switcher is in the header) |
+| `/business/o/:orgId/...` | The workspace: home, trips, approvals, policies, people, budgets, reports, activity, settings, as the member's role allows |
+| `/admin/business` | Platform admins only: every company, confirming a new one, and creating Tripelyx's own company |
+
+### Switches
+
+Every setting is in `.env.example` with its default.
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `ENABLE_BUSINESS` | `false` | Turns Business on. With it off, every other page is exactly as it was before Business. Works with `ENABLE_TRIPS` on or off. |
+| `BUSINESS_SELF_SERVE` | `false` | `false`: a new company waits until a platform admin confirms it at `/admin/business` before anyone can join it. |
+| `BUSINESS_INVITE_DAYS` | `7` | Days an invite link stays usable. |
+| `BUSINESS_MAX_ORGS_PER_USER` | `3` | Companies one account can create or join. |
+| `BUSINESS_APPROVAL_HOURS` | `24` | Hours a request waits for a decision before it expires, for new companies (each company picks 4 to 168 in Settings). |
+| `BUSINESS_WRITE_LIMIT`, `BUSINESS_COMPUTE_LIMIT`, `BUSINESS_AUTH_LIMIT` | `300`, `30`, `20` | Business's own rate limits: writes per user per 10 minutes, searches and decisions per user per minute, sign-up and sign-in attempts per IP per 10 minutes. |
+| `BUSINESS_EXPLAINER` | `rules` | What writes the notes beside cheaper alternatives. Only `rules` exists: rule-based, and no trip data leaves Tripelyx. |
+| `BUSINESS_DEMO_INVENTORY` | `true` in development only | Business's own demo flights and hotels (fictional carriers, demo prices), for local work and the private preview. Off on www (`APP_ENV=staging`) and in production, where Business says "Supplier not connected yet" until a real supplier is connected. It needs `ALLOW_DEMO_INVENTORY` as well, and a configured supplier always comes first. |
+| `ALLOW_DEMO_INVENTORY` | `true` outside production | The demo inventory of `/book`, the trip planner and the agent. It no longer gives Business anything on its own: Business never uses the providers `/book` runs on. |
+
+### Platform admins
+
+An account opens `/admin` and `/admin/business` only when its email is in `ADMIN_EMAILS` **and** it has an
+active `platform_admin` record for that email. Adding an address to `ADMIN_EMAILS` alone gives nothing.
+
+- **One-time grandfather seed.** The first boot after this change writes a grandfather list once (the
+  `platform_admin_seed` record `v1`, insert-only): the `ADMIN_EMAILS` accounts that already existed and were
+  created before `2026-10-08T00:00:00Z`. Those accounts get their record at that boot (granted by
+  `legacy-email-match`), so existing admins keep `/admin`. No later boot grants anyone else: an address added
+  to `ADMIN_EMAILS` later, or an account signed up with a listed address, needs a grant. Removing an address
+  from `ADMIN_EMAILS` takes access away at the next restart; a revoked record stays revoked.
+- **`scripts/platform-admin.js`** grants and revokes records on the site's own database (configured exactly
+  as the server reads it: `DATABASE_URL` or `DATABASE_HOST`, `APP_ENV`, `ADMIN_EMAILS`). It refuses the
+  in-memory store.
+
+  ```sh
+  node scripts/platform-admin.js list                                   # every listed address and where it stands
+  node scripts/platform-admin.js grant --email ops@example.com          # the address must be in ADMIN_EMAILS and have an account
+  node scripts/platform-admin.js revoke --email ops@example.com --sign-out
+  ```
+
+  On AWS, run it as a one-off task of the admin task definition (family `tripelyx-<env>-admin`, container
+  `admin`, never the site's own task definition) and read its output in the task's log stream; see
+  [One-off admin tasks](#one-off-admin-tasks).
+
+#### Tripelyx's own company
+
+Sign-up and every rename refuse a company name that says "Tripelyx", in any spelling. Tripelyx's own company
+is made once, by a platform admin, with the **Create Tripelyx Inc** button in the "Tripelyx's own company"
+panel at `/admin/business` (with Business on). The name is fixed (`HOUSE_COMPANY_NAME` in
+`server/business/constants.js`, the confirmed legal entity) and never typed. The admin who presses it becomes
+its Owner, and it is active straight away. The same commit writes a `biz_house` record with the fixed id `v1`
+(insert-only), so a second press, or two at once, makes nothing. After that the panel shows the company's
+name and its company id (`org_…`), and the company's settings show the name without a field to change it.
+The activity log records it as `org.house_created`, by "Tripelyx".
+
+### The demo
+
+`scripts/business-demo.js` fills the in-memory store with two fictional demo companies, through the same
+service the pages use, so you can click through every role:
+
+```sh
+APP_ENV=development node scripts/business-demo.js --port 4400 --production-preview 4401
+```
+
+It runs only with `APP_ENV=development` on the in-memory store (no `DATABASE_URL`, or `DATABASE_URL=memory`)
+and refuses anything else. It starts the app in the same process with Business on and prints every demo
+account (email, role and company) to sign in as at `http://127.0.0.1:4400/business/signin`, and a link to
+each test scenario's page. Every demo account's password is
+`preview-only-password`. `--production-preview 4401` also starts the production configuration
+(`APP_ENV=production`, no supplier, trips off, an empty in-memory store) on a second port, with HTTPS
+forced off so it opens over plain http on your computer only; sign up a company there to see
+"Supplier not connected yet".
+
+What it seeds:
+
+- a platform admin: the first `ADMIN_EMAILS` address (`platform.admin@tripelyx-demo.example` when unset),
+  given a `platform_admin` record;
+- **Demo Company (preview)**, confirmed: `owner@`, `travel.admin@`, `finance@`, `sales.manager@`,
+  `engineering.manager@`, and four employees (`eli.employee@`, `emma.employee@`, `ezra.employee@`,
+  `esme.employee@`), all at `demo-company.example`; Sales and Engineering with budgets for the quarter;
+  the Standard policy plus a Cairo to London route exception and the demo airline ZS blocked (each only when
+  the inventory lists those airports and that airline);
+- only when Business prices come from demo data, trip requests in every state: approved by policy, waiting, approved by a manager after a swap, denied,
+  cancelled (its budget hold released), waiting with the manager's question, and a draft with cheaper
+  alternatives; and two test scenarios whose purpose starts with "Test scenario": one whose approval window
+  ran out (made under a clock set two days back, so it shows Expired) and one sent back because its hotel
+  price changed (one demo hotel room on those dates prices $29 more, and the log says so). On any other price
+  source (the private preview on supplier test keys, or no supplier) it makes no trips, so it never calls a
+  supplier, and the log says why;
+- **Second Demo Company (preview)** (`owner@second-demo-company.example`), which shares Eli, so the company
+  switcher has two companies.
+
+The private preview's boot hook (`PREVIEW_SEED=business`, on an in-memory staging app with Business on)
+calls the same `seed()` from this file, with the app and its config. The demo accounts then use the
+preview's own password: `config.preview.password` when the config carries one, else `PREVIEW_PASSWORD` when
+its SHA-256 matches the preview gate's digest (`config.preview.gate.passwordDigest`), else
+`preview-only-password`. The platform admin is the first `ADMIN_EMAILS` address; the preview workflow always
+sets it to the demo address `platform.admin@tripelyx-demo.example`, never a real one. `seed()` logs every demo account with its role and company, and the path of each test
+scenario, so the preview log says who to sign in as. It throws on any store but the in-memory one and in
+production, and never logs a password.
+
 ## Pages
 
 | Route | What it is |
@@ -226,6 +344,39 @@ exactly the same mapping from vendor-like raw data, so swapping one in is a conf
 2. Register it in `server/providers/adapters/index.js`, e.g. `hotels: { acme: env => new AcmeHotels(env) }`.
 3. Set `HOTEL_PROVIDER=acme` and the adapter's credentials in that environment's secret store.
 
+### Tripelyx Business: real suppliers (round 1)
+
+Business workspaces (`ENABLE_BUSINESS`) can search a real flight supplier (Duffel) and hotel supplier
+(LiteAPI) instead of demo data. Round 1 uses their **test systems only**; nothing is booked or charged.
+These suppliers serve Business only: `/book`, `/` and the rest of the site never use them.
+
+- **Settings** (all in `.env.example`): `BUSINESS_FLIGHT_SUPPLIER=duffel` with `DUFFEL_ACCESS_TOKEN` (a
+  `duffel_test_` token), `BUSINESS_HOTEL_SUPPLIER=liteapi` with `LITEAPI_API_KEY` (a `sand_` key; hotels need a
+  working flight supplier), `BUSINESS_ALLOW_SUPPLIER_TEST` (true by default only in development, so every
+  deployed stack switches test data on by hand), `BUSINESS_GUEST_NATIONALITY`, `BUSINESS_SUPPLIER_CACHE_SECONDS`,
+  `BUSINESS_SUPPLIER_COMPANY_CALLS_PER_HOUR` and `BUSINESS_SUPPLIER_VARIANT_SEARCHES`.
+- **Keys only from the environment:** GitHub secrets for CI and for the private preview (its workflow writes them
+  into the Lightsail container's settings, see [Private preview](#private-preview)). No key
+  is ever in the repo, a log, an error page or `/api/config` (test fixtures use placeholders such as
+  `duffel_test_PLACEHOLDER`).
+- **A bad setting never stops the app.** A missing key, a key that is not a test key, an unknown supplier name or
+  a number out of range switches the suppliers off: Business shows "Supplier not connected yet" and
+  `/admin/business` tells platform admins which variable to fix, without its value. It never falls back to demo
+  data.
+- **Labels.** Every amount says where it came from. Demo data keeps "Demo price". Supplier test data says
+  "Supplier test data, not a real fare" (hotels: "not a real room rate") with a dashed outline and a TEST DATA
+  tag, the workspace ribbon says the prices are test data, an approved test trip says "Approved (test data).
+  Nothing was booked.", and budgets, reports and home say "Includes supplier test data" when any request they
+  count was priced that way. The CSV export's `price_source` column says it per request. A request keeps the
+  source it was priced from; requests made before this change read as demo.
+- **Honest failure.** A supplier that fails never serves demo or stale data: the page says flights or hotels
+  are not available right now (hotels failing still lets the traveler request the flights), and a price check
+  that cannot run at submit or decide changes nothing ("The price couldn't be checked just now, so nothing
+  changed."). The approver's page always opens; its price is checked again when they approve.
+- **In-memory limits.** The supplier call counters (per company per hour), the circuit breaker and the short
+  result cache live in memory per running task, like the other Business rate limits: a restart resets them,
+  and each task counts on its own.
+
 ### Connecting a real payment processor
 
 1. Implement the `PaymentProcessor` interface and register it in `server/payments/live/index.js`.
@@ -245,7 +396,8 @@ Every push to `main` runs the tests, builds the Docker image, pushes it to Amazo
 - ECS Fargate running the app behind an Application Load Balancer, with health checks on `/healthz`
   and automatic rollback if a new version fails them.
 - Its own private, encrypted PostgreSQL database on RDS. RDS keeps the password in Secrets Manager,
-  and the app receives it at start-up; it never appears in GitHub or in the image.
+  and the app receives it at start-up; it never appears in GitHub or in the image. Deletion protection
+  and 14 days of backups are on in every environment (see [Protecting the database](#protecting-the-database)).
 - Logs in CloudWatch (`/tripelyx/staging`).
 
 GitHub signs in to AWS with OpenID Connect, so no AWS keys are stored in GitHub. The deploy role only
@@ -266,12 +418,207 @@ To deploy into a different AWS account, do this **one-time setup (about 5 minute
    15 minutes, mostly creating the database. The run summary shows the site's address.
 
 Optional repository variables: `APP_ENV=production` deploys a separate `tripelyx-production` stack
-with its own database (Multi-AZ, deletion protection). `CERTIFICATE_ARN` is an ACM certificate for
+with its own database (Multi-AZ). `CERTIFICATE_ARN` is an ACM certificate for
 your domain, which turns on HTTPS. Then point the domain at the load balancer with a CNAME.
 
+**www.tripelyx.com is the `tripelyx-staging` stack**, with `APP_ENV=staging` on purpose: in production
+every vertical is off by default. "Staging" here names the live site, so keep the `staging` default in
+`deploy.yml` (a static test pins it) and never point another experiment at that stack.
+
 Staging runs demo inventory with `PAYMENT_MODE=test`, so it is safe to share. A staging stack
-costs roughly USD 40 to 50 a month (load balancer, a small database, one small container). If a
-first deploy fails, delete the `tripelyx-staging` stack in CloudFormation before running it again.
+costs roughly USD 40 to 50 a month (load balancer, a small database, one small container). If the
+very first creation of a stack fails (its status is `ROLLBACK_COMPLETE` or `ROLLBACK_FAILED` and it never
+reached `CREATE_COMPLETE`), delete that stack in CloudFormation before running the deploy again (turn
+off the database's deletion protection first: RDS console, **Modify**). This never applies to the
+existing www stack: a failed update there rolls itself back (`UPDATE_ROLLBACK_COMPLETE`) and the next
+deploy simply runs again.
+
+#### Repository settings the deploy reads
+
+- `ENABLE_BUSINESS` (variable, default `false`): Tripelyx Business on or off. The deploy job's first step
+  trims and lowercases it; any value but `true` or `false` stops the run before the build with
+  "ENABLE_BUSINESS must be true or false (lowercase).", so a typo never reaches CloudFormation (which
+  allows exactly those two and would block every later deploy).
+- `ADMIN_EMAILS`: a repository **secret**, never a variable. The repository is public and so are its run
+  logs; a secret is masked in them, a variable prints in clear. The workflow still reads
+  `secrets.ADMIN_EMAILS || vars.ADMIN_EMAILS`, but when only the variable is set the first step stops the
+  run before anything prints it ("ADMIN_EMAILS is set as a repository variable..."): move the addresses to
+  the secret and delete the variable. A variable of that name must never hold real addresses.
+- `PUBLIC_BASE_URL` (default `https://www.tripelyx.com`), `APP_ENV`, `CERTIFICATE_ARN`, `AWS_ROLE_ARN`,
+  `AWS_REGION` as above.
+
+Every deploy also prints, before and after "Deploy the stack", the status code and sha256 of `/`, `/book`
+and `/ai-travel-agent` (with the `?v=` asset versions removed), read through the stack's own `SiteUrl`
+output, and "same" or "changed". After the deploy it opens `/healthz` and, with Business on, `/business`
+and a Business 404. A page that answers anything but 200, or another status than before the deploy, gets
+a "Page status" warning. It only reports: the run turns red when `/healthz` does not answer 200 or a
+Business page shows demo wording or the environment banner, and it never undoes anything. It prints status
+codes and hashes only.
+
+A second run on the same commit (the flip, the undo, **Re-run jobs**) reuses the image that commit already
+pushed to ECR instead of building it again: the repository's image tags are immutable, so a rebuild under
+the same tag would be refused.
+
+#### Tripelyx Business on www: dark deploy, flip, undo
+
+1. **Stack policy first.** After the change set preview and before the merge, apply the stack policy
+   ([Protecting the database](#protecting-the-database)). The dark deploy is the first update
+   CloudFormation makes to the database, so it already runs with the database protected against an
+   unexpected replacement. The policy allows in-place changes, so it does not stop that deploy.
+2. **Dark deploy.** Merge with `ENABLE_BUSINESS` unset, so Business is off. Add the secret `ADMIN_EMAILS`
+   in the same sitting, never earlier: until this code runs, the site's `/admin` check is the email alone
+   (see [Platform admins](#platform-admins)). The page hashes of
+   `/`, `/book` and `/ai-travel-agent` should read "same", with no "Page status" warning. Then run `list`
+   on the admin task ([One-off admin tasks](#one-off-admin-tasks)).
+3. **The flip.** Add the repository variable `ENABLE_BUSINESS` = `true` (lowercase), then run
+   **Actions → Deploy to AWS → Run workflow**. A variable reaches the site only with a deploy. Only the
+   container's environment changes; the check step then also opens `/business` and a Business 404. The
+   three pages above now differ by the approved "Business" header item and trip footer link only, so
+   they read "changed"; a "Page status" warning means a page answered something other than 200.
+4. **Undo.** Set `ENABLE_BUSINESS` to `false` and run the deploy again. Company data stays in the
+   database. A failed deploy rolls itself back (ECS circuit breaker, then CloudFormation).
+5. **Never undo with a git revert.** A revert would bring back the older email-only `/admin` check while
+   `ADMIN_EMAILS` is set, and turn the database's deletion protection off. If code ever has to be
+   reverted, keep the accounts code, `ProtectDatabase`, the admin task definition and every secret
+   resource, and remove `ADMIN_EMAILS` first.
+
+#### Protecting the database
+
+- **`ProtectDatabase`** (stack parameter, default `true`) turns on deletion protection and 14 days of
+  automated backups whatever `APP_ENV` is (production always has them). Both change in place, with no
+  replacement and no outage (RDS only has an outage when backups go from 0 days to some or back).
+  `deploy.yml` does not pass it, so every deploy keeps the stack's current value. Set it to `false` only
+  when deleting a stack on purpose: one update with `ProtectDatabase=false`, then the delete.
+- **The stack policy** `infra/www-stack-policy.json` denies `Update:Replace` and `Update:Delete` on the
+  `Database` resource and allows every other update. With it in place, a deploy whose change set would
+  replace or remove the database fails and rolls back, and the database stays as it is. The deploy role
+  cannot set it: it is applied once after the change set preview and before the merge that brings this
+  code (so the dark deploy already runs under it), by whoever runs the go-live (with the owner's
+  approval), and again each time the file changes (later stages add their secrets to the deny list):
+
+  ```bash
+  aws cloudformation set-stack-policy --region us-east-1 --stack-name tripelyx-staging \
+    --stack-policy-body file://infra/www-stack-policy.json
+  aws cloudformation get-stack-policy --region us-east-1 --stack-name tripelyx-staging   # check it
+  ```
+
+- **A deliberate database migration** (a change that replaces the instance) overrides the policy for one
+  update only, never through the deploy workflow (`aws cloudformation deploy` has no override, so a
+  deploy can never replace the database). With the owner's approval: take a manual snapshot, plan how the
+  data moves (a replacement starts a new, empty instance; `UpdateReplacePolicy: Snapshot` keeps a snapshot
+  of the old one), then run one update with a temporary policy. Every parameter keeps its current value
+  except what the migration changes:
+
+  ```bash
+  aws cloudformation update-stack --region us-east-1 --stack-name tripelyx-staging \
+    --template-body file://infra/app.yaml --capabilities CAPABILITY_IAM \
+    --role-arn arn:aws:iam::<account id>:role/tripelyx-cfn-execution \
+    --parameters ParameterKey=AppEnv,UsePreviousValue=true ParameterKey=ImageUri,UsePreviousValue=true ... \
+    --stack-policy-during-update-body '{"Statement":[{"Effect":"Allow","Action":"Update:*","Principal":"*","Resource":"*"}]}'
+  ```
+
+  The stored policy applies again to the next update without being set again.
+
+#### One-off admin tasks
+
+`AdminTaskDefinition` (family `tripelyx-<env>-admin`, container `admin`) runs the same image as the site
+with `node scripts/platform-admin.js list` by default. It gets `APP_ENV`, `ADMIN_EMAILS` and the
+database settings, the database secret and nothing else; it has no task role (so no AWS credentials)
+and its own execution role, which can only pull the image, read the database secret and write its own
+log streams. Every one-off task runs on it, never on the site's task definition, so a mistaken command
+can never print a key the site holds. On the web service's network:
+
+```bash
+NET=$(aws ecs describe-services --region us-east-1 --cluster tripelyx-staging --services web \
+  --query 'services[0].networkConfiguration' --output json)
+aws ecs run-task --region us-east-1 --cluster tripelyx-staging --task-definition tripelyx-staging-admin \
+  --launch-type FARGATE --network-configuration "$NET" \
+  --overrides '{"containerOverrides":[{"name":"admin","command":["node","scripts/platform-admin.js","list"]}]}'
+```
+
+Its output is in the log group `/tripelyx/staging`, in the stream `admin/admin/<task id>`.
+
+### Private preview
+
+A password-protected copy of the site with Tripelyx Business switched on, on its own small AWS service and
+its own address (`https://tripelyx-preview.<id>.us-east-1.cs.amazonlightsail.com`). It is for clicking
+through Business before it goes anywhere near the live site: tripelyx.com, its load balancer, containers,
+database and DNS are never touched, and Business stays off there.
+
+- **What runs:** the same Docker image as the live site, with `APP_ENV=staging`, `DATABASE_URL=memory`
+  (data lives in memory only), `ENABLE_BUSINESS=true`, demo inventory (or the suppliers' test systems, see
+  **Supplier test keys** below), `PAYMENT_MODE=test`, and the demo companies from `scripts/business-demo.js`
+  when that script is in the build (`PREVIEW_SEED=business`; on supplier test keys, without trips).
+  Nothing is booked or charged and no email is sent. **Test data starts fresh with every update.**
+- **The password:** every page asks for it (HTTP Basic auth, any user name); only `/healthz` is open, for
+  the health check. Search engines are told not to index anything. After 10 wrong passwords from one
+  address, that address waits out the rest of a 15-minute window. The password is generated by AWS Secrets Manager when the stack is
+  created; it is not in the repository, the image or any log. Production refuses `PREVIEW_PASSWORD` and
+  `PREVIEW_SEED` at start-up.
+- **Cost:** about USD 10.50 a month: the Lightsail container service at power micro with one node is USD 10
+  a month (500 GB of data transfer included), the password secret USD 0.40 a month, and the last 5
+  preview images in Amazon ECR a few cents of storage.
+- **Updates:** every push to `claude/travel-by-budget-uv85qf` runs the tests, then
+  `.github/workflows/preview.yml` builds the image, pushes it to the `tripelyx-preview` registry and
+  deploys it to the `tripelyx-preview` service. It never runs on `main` and never uses the live site's
+  deploy role; it signs in as `tripelyx-github-preview`, which only this workflow on that branch can use.
+  The run summary shows the address. Until the stack below exists, the workflow ends with a notice saying
+  so and deploys nothing.
+- **Running it again without a push:** open the latest **Private preview** run in the Actions tab and
+  choose **Re-run all jobs**. It runs the same commit on the same branch, and reads the password fresh
+  from AWS. GitHub allows re-runs for 30 days after a run; after that, push to the branch, or, from a
+  computer with the GitHub CLI, run `gh workflow run preview.yml --ref claude/travel-by-budget-uv85qf`
+  (this works once the workflow has run at least once). GitHub only shows a **Run workflow** button for
+  workflows that are on the default branch (`main`), so this one has none while it lives on the
+  development branch.
+
+**One-time setup (about 10 minutes, AWS account 957123506077, `us-east-1`).** Create the
+`tripelyx-preview` stack from `infra/preview.yaml`, either in the console (**CloudFormation → Create
+stack → With new resources**, upload the file, stack name `tripelyx-preview`, keep the defaults, tick
+the IAM acknowledgement) or with the AWS CLI:
+
+```bash
+aws cloudformation deploy --region us-east-1 --stack-name tripelyx-preview \
+  --template-file infra/preview.yaml --capabilities CAPABILITY_NAMED_IAM
+```
+
+It uses the GitHub identity provider that `tripelyx-bootstrap` already created. When it finishes, open the
+latest **Private preview** run (the one that ended with "not set up yet") and choose **Re-run all jobs**,
+or push to the branch.
+
+**Supplier test keys (optional).** Two repository secrets switch the preview's Business prices from demo data to
+the suppliers' test systems. The workflow writes them into the container's settings only when they are set:
+
+| Secret | Container settings |
+| --- | --- |
+| `DUFFEL_TEST_TOKEN` (a Duffel test token, `duffel_test_...`) | `BUSINESS_FLIGHT_SUPPLIER=duffel`, `DUFFEL_ACCESS_TOKEN`, `BUSINESS_ALLOW_SUPPLIER_TEST=true` |
+| `LITEAPI_SANDBOX_KEY` (a LiteAPI sandbox key, `sand_...`), with `DUFFEL_TEST_TOKEN` | `BUSINESS_HOTEL_SUPPLIER=liteapi`, `LITEAPI_API_KEY` |
+
+Hotels need flights, so `LITEAPI_SANDBOX_KEY` alone changes nothing. With the keys, Business prices are
+labelled TEST DATA, and the demo seed makes the companies, people, budgets and policy but no trips, so the
+preview calls no supplier when it starts. Before anything is built, the run stops
+when either secret is set to anything but a test key (a Duffel token not starting with `duffel_test_`, a
+LiteAPI key not starting with `sand_`); the message names the secret, never its value. The preview's
+`ADMIN_EMAILS` is always the demo address `platform.admin@tripelyx-demo.example`, so no real address is in
+this public repository's run log.
+
+**Reading the password:** in the console, open **Secrets Manager → `tripelyx-preview/password` →
+Retrieve secret value**, or:
+
+```bash
+aws secretsmanager get-secret-value --region us-east-1 --secret-id tripelyx-preview/password \
+  --query SecretString --output text
+```
+
+To change it, edit that secret's value in the console, then choose **Re-run all jobs** on the latest
+**Private preview** run (or push to the branch).
+
+**Taking it down:** delete the stack. That removes the service, its address, the preview images, the
+password and the role, and the charges stop:
+
+```bash
+aws cloudformation delete-stack --region us-east-1 --stack-name tripelyx-preview
+```
 
 ### Other hosts
 
@@ -305,7 +652,8 @@ deployments on `staging`.
 - Security headers via helmet with a strict Content-Security-Policy (no inline scripts or styles),
   rate limiting on the API, HttpOnly SameSite=Strict booking cookies with hashed access tokens.
 - Accounts: scrypt password hashes, server-side sessions (only a hash of the session token is stored),
-  HttpOnly SameSite=Lax session cookie, cross-site form posts refused. `ADMIN_EMAILS` grants `/admin`.
+  HttpOnly SameSite=Lax session cookie, cross-site form posts refused. `/admin` needs an `ADMIN_EMAILS`
+  address and an active platform admin record (see [Platform admins](#platform-admins)).
 - Notifications default to an outbox (`NOTIFY_PROVIDER=outbox`): recorded and visible to admins, never
   sent, until a real provider is registered.
 - Hunts are re-run by an in-process scheduler every `HUNT_INTERVAL_MINUTES` (default 360; 0 means on

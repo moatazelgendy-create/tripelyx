@@ -74,3 +74,80 @@ test('HTTPS_ONLY defaults on outside development and production refuses to turn 
   assert.equal(loadConfig({ APP_ENV: 'staging', HTTPS_ONLY: 'false', ...db }).httpsOnly, false);
   assert.throws(() => loadConfig({ APP_ENV: 'production', HTTPS_ONLY: 'false', ...db }), /HTTPS_ONLY=false/);
 });
+
+test('Tripelyx Business: off in every APP_ENV unless ENABLE_BUSINESS=true, never a vertical or public', () => {
+  const db = { DATABASE_URL: 'postgres://u:p@h/db' };
+  assert.equal(loadConfig({}).business.enabled, false, 'development');
+  assert.equal(loadConfig({ APP_ENV: 'staging', ...db }).business.enabled, false, 'staging (the live site)');
+  assert.equal(loadConfig({ APP_ENV: 'production', ...db }).business.enabled, false, 'production');
+  for (const APP_ENV of ['development', 'staging', 'production']) {
+    assert.equal(loadConfig({ APP_ENV, ENABLE_BUSINESS: 'true', ...db }).business.enabled, true, `${APP_ENV}: ENABLE_BUSINESS=true`);
+    assert.equal(loadConfig({ APP_ENV, ENABLE_BUSINESS: 'false', ...db }).business.enabled, false, `${APP_ENV}: ENABLE_BUSINESS=false`);
+    assert.equal(loadConfig({ APP_ENV, ENABLE_BUSINESS: '', ...db }).business.enabled, false, `${APP_ENV}: ENABLE_BUSINESS empty`);
+  }
+  const c = loadConfig({});
+  assert.deepEqual(c.business, {
+    enabled: false, selfServe: false, inviteDays: 7, maxOrgsPerUser: 3, approvalHours: 24, writeLimit: 300,
+    computeLimit: 30, authLimit: 20, explainer: 'rules', demoInventory: true,
+  });
+  assert.equal(loadConfig({ BUSINESS_SELF_SERVE: 'true' }).business.selfServe, true);
+  assert.equal(loadConfig({ BUSINESS_INVITE_DAYS: '14' }).business.inviteDays, 14);
+  assert.equal(loadConfig({ BUSINESS_AUTH_LIMIT: '50' }).business.authLimit, 50);
+  assert.equal(Object.values(c.flags).filter(Boolean).length, 8, 'still exactly 8 vertical flags');
+  assert.ok(!('business' in c.flags));
+  const pub = JSON.stringify(publicConfig(c));
+  assert.ok(!('business' in publicConfig(c)) && !/business|selfServe|approvalHours|explainer/i.test(pub), 'publicConfig has no business settings');
+});
+
+test('BUSINESS_DEMO_INVENTORY: Business demo inventory by default only in development, never where demo inventory is refused, never a throw', () => {
+  const db = { DATABASE_URL: 'postgres://u:p@h/db' };
+  assert.equal(loadConfig({}).business.demoInventory, true, 'development');
+  assert.equal(loadConfig({ APP_ENV: 'staging', ...db }).business.demoInventory, false, 'staging');
+  // www: staging with ALLOW_DEMO_INVENTORY=true for /book, the trip planner and the agent, and Business on.
+  const www = loadConfig({ APP_ENV: 'staging', DATABASE_URL: 'memory', ALLOW_DEMO_INVENTORY: 'true', ENABLE_TRIPS: 'true', ENABLE_BUSINESS: 'true' });
+  assert.equal(www.allowDemoInventory, true, 'ALLOW_DEMO_INVENTORY keeps its meaning for /book');
+  assert.equal(www.business.demoInventory, false, 'www: no Business demo inventory');
+  assert.equal(loadConfig({ APP_ENV: 'production', ...db }).business.demoInventory, false, 'production');
+  // The private preview turns it on.
+  assert.equal(loadConfig({ APP_ENV: 'staging', DATABASE_URL: 'memory', ALLOW_DEMO_INVENTORY: 'true', BUSINESS_DEMO_INVENTORY: 'true' }).business.demoInventory, true);
+  assert.equal(loadConfig({ BUSINESS_DEMO_INVENTORY: 'false' }).business.demoInventory, false, 'off in development on purpose');
+  assert.equal(loadConfig({ BUSINESS_DEMO_INVENTORY: '' }).business.demoInventory, true, 'empty: the default');
+  // Only where demo inventory is allowed at all.
+  assert.equal(loadConfig({ ALLOW_DEMO_INVENTORY: 'false', BUSINESS_DEMO_INVENTORY: 'true' }).business.demoInventory, false);
+  assert.equal(loadConfig({ APP_ENV: 'production', BUSINESS_DEMO_INVENTORY: 'true', ...db }).business.demoInventory, false);
+  // Never throws: anything that is not a true value is off.
+  for (const odd of ['maybe', 'TRUE ', '2', 'null']) {
+    assert.doesNotThrow(() => loadConfig({ APP_ENV: 'staging', ...db, BUSINESS_DEMO_INVENTORY: odd }), odd);
+    assert.equal(loadConfig({ APP_ENV: 'staging', ...db, BUSINESS_DEMO_INVENTORY: odd }).business.demoInventory, false, odd);
+  }
+  assert.equal(loadConfig({ APP_ENV: 'staging', ...db, BUSINESS_DEMO_INVENTORY: 'yes' }).business.demoInventory, true, 'the same true words as every switch');
+  assert.ok(!/demoInventory/.test(JSON.stringify(publicConfig(www))), 'not public');
+});
+
+test('Tripelyx Business numbers must be whole numbers of 1 or more', () => {
+  const names = ['BUSINESS_INVITE_DAYS', 'BUSINESS_MAX_ORGS_PER_USER', 'BUSINESS_APPROVAL_HOURS', 'BUSINESS_WRITE_LIMIT',
+    'BUSINESS_COMPUTE_LIMIT', 'BUSINESS_AUTH_LIMIT'];
+  for (const name of names) {
+    for (const bad of ['soon', '-5', '1.5', '0']) {
+      assert.throws(() => loadConfig({ [name]: bad }), new RegExp(`${name} must be a whole number`), `${name}=${bad}`);
+    }
+    assert.ok(loadConfig({ [name]: '' }), `${name} empty falls back to the default`);
+  }
+  // The advisor-era settings are gone: setting them changes nothing.
+  for (const gone of ['BUSINESS_SHARE_LINK_DAYS', 'BUSINESS_FOLLOW_UP_DAYS', 'BUSINESS_CLIENT_WRITE_LIMIT', 'BUSINESS_LOGO_MAX_KB']) {
+    assert.deepEqual(loadConfig({ [gone]: '9' }).business, loadConfig({}).business, gone);
+  }
+});
+
+test('Tripelyx Business approval hours are 4 to 168, and the only explainer is the rule-based one', () => {
+  for (const ok of ['4', '24', '72', '168']) assert.equal(loadConfig({ BUSINESS_APPROVAL_HOURS: ok }).business.approvalHours, Number(ok));
+  for (const bad of ['1', '3', '169', '1000']) {
+    assert.throws(() => loadConfig({ BUSINESS_APPROVAL_HOURS: bad }), /BUSINESS_APPROVAL_HOURS must be from 4 to 168/, bad);
+  }
+  assert.equal(loadConfig({ BUSINESS_EXPLAINER: 'rules' }).business.explainer, 'rules');
+  assert.equal(loadConfig({ BUSINESS_EXPLAINER: '' }).business.explainer, 'rules');
+  assert.equal(loadConfig({ BUSINESS_EXPLAINER: ' Rules ' }).business.explainer, 'rules', 'case and spaces are forgiven');
+  for (const bad of ['model', 'ai', 'rule', 'none']) {
+    assert.throws(() => loadConfig({ BUSINESS_EXPLAINER: bad }), /BUSINESS_EXPLAINER must be one of: rules/, bad);
+  }
+});

@@ -1,0 +1,18 @@
+{
+  "_source": "https://duffel.com/docs/api/overview/errors: offer_expired, type invalid_state_error, HTTP 422.",
+  "_status": 422,
+  "meta": {
+    "status": 422,
+    "request_id": "FZW0H3HdJwKk5HMAAKxD"
+  },
+  "errors": [
+    {
+      "type": "invalid_state_error",
+      "code": "offer_expired",
+      "title": "Offer expired",
+      "message": "The selected offer has already expired",
+      "documentation_url": "https://duffel.com/docs/api/overview/errors",
+      "source": null
+    }
+  ]
+}
