@@ -41,7 +41,7 @@ const { SupplierUsage, opensAtText } = require('../server/business/usage');
 const { withCompany, currentScope } = require('../server/business/scope');
 const { SEARCH_CLOSED } = require('../server/business/source');
 const { KINDS, SUPPLIER_CAPS } = require('../server/business/constants');
-const { LIVE_RIBBON, NO_SUPPLIER, AWAITING_CONFIRMATION } = require('../server/views/business/parts');
+const { LIVE_RIBBON, NO_SUPPLIER, AWAITING_CONFIRMATION, NO_TRIPS, SEARCH_OFF: SEARCH_TURNED_OFF } = require('../server/views/business/parts');
 const { APPROVED } = require('../server/views/business/request');
 const { SOURCE_TOTALS } = require('../server/views/business/format');
 const { linksOf } = require('./business-world');
@@ -534,7 +534,9 @@ test('end to end on the supplier double: check, turn on, search, request, submit
   before = w.ff.calls.length;
   res = await co.c.sam.get(`${co.B}/trips/search?${qs(Q)}`);
   assert.equal(res.status, 503);
-  assert.ok(textOf(res.text).includes(NO_SUPPLIER.title));
+  // Acme has a trip priced on live prices: search is turned off for now, not "Supplier not connected yet".
+  assert.ok(textOf(res.text).includes(SEARCH_TURNED_OFF.title));
+  assert.ok(!textOf(res.text).includes(NO_SUPPLIER.title));
   res = await co.c.sam.get(`${co.B}/trips/${rid}`);
   assert.equal(res.status, 200, 'the approved request still opens, with its stored prices');
   res = await co.c.dana.get(`${co.B}/trips/${rid}`);
@@ -865,6 +867,7 @@ const SEARCH_OFF = Object.freeze({
   decide: "Trip search is off right now, so the price can't be checked and this trip can't be approved yet. You can still deny it or send a message.",
   confirm: "Trip search is off right now, so the price can't be checked and this trip can't be confirmed yet.",
   request: "Trip search is off right now, so the price can't be checked and this trip can't be sent for approval yet.",
+  swap: "Trip search is off right now, so you can't switch to one of these options yet.",
 });
 
 /** Acme with live trips: Sam's draft inside the policy, his draft over it, and his Flexible fare waiting for Dana. */
@@ -941,6 +944,134 @@ test('live trips after live search is turned off: no page promises a confirm or 
   assertClean(w);
 });
 
+test('live trips after live search is turned off: a draft offers no switch to a cheaper option, and a switch sent anyway says trip search is off and changes nothing', async t => {
+  const w = await world();
+  t.after(w.close);
+  const co = await company(w, 'Acme Inc');
+  const admin = await platformAdmin(w);
+  await goLive(w, admin);
+  const { over } = await liveTrips(w, co);
+  const swapForm = new RegExp(`action="${co.B}/trips/${over}/swap"`);
+
+  // On: Sam's draft over the policy offers cheaper options, each with "Use this option".
+  let res = await co.c.sam.get(`${co.B}/trips/${over}`);
+  assert.equal(res.status, 200);
+  assert.match(res.text, swapForm, 'the options can be used while search is on');
+  const altId = mainOf(res.text).match(/name="altId" value="([^"]+)"/)[1];
+
+  res = await turn(admin, false);
+  assert.equal(res.location, '/admin/business?ok=live_off');
+  assert.equal(w.inv().status, 'none');
+  const stored = await w.repo().getIn(KINDS.request, over, co.org.id);
+  const before = w.ff.calls.length;
+
+  // Off: the options still show, with no form, and the page says why; nothing promises a switch or a request.
+  res = await co.c.sam.get(`${co.B}/trips/${over}`);
+  assert.equal(res.status, 200);
+  let main = textMain(res.text);
+  assert.ok(main.includes('AI-powered cheaper alternatives'), main.slice(0, 600));
+  assert.ok(main.includes(SEARCH_OFF.swap), main.slice(0, 900));
+  assert.ok(main.includes(SEARCH_OFF.request));
+  assert.doesNotMatch(main, SEARCH_OFF_WRONG);
+  assert.doesNotMatch(main, /Use this option|Pick another option|Pick one of the options|request approval with a reason/i);
+  assert.doesNotMatch(res.text, swapForm);
+  assert.doesNotMatch(res.text, /name="altId"/);
+
+  // A switch sent anyway (a tab opened while search was on): refused in the words a refused Confirm uses, and
+  // the request is exactly as it was.
+  res = await co.c.sam.post(`${co.B}/trips/${over}/swap`, { altId, rev: String(stored.rev) });
+  assert.equal(res.status, 503);
+  main = textMain(res.text);
+  assert.ok(main.includes(SEARCH_OFF.failed), main.slice(0, 600));
+  assert.ok(!main.includes(NO_SUPPLIER.title), 'not "Supplier not connected yet"');
+  assert.doesNotMatch(main, SEARCH_OFF_WRONG);
+  assert.doesNotMatch(res.text, swapForm);
+  assert.deepEqual(await w.repo().getIn(KINDS.request, over, co.org.id), stored, 'nothing changed');
+  assert.equal(w.ff.calls.length, before, 'no supplier call once live search is off');
+  assertClean(w);
+});
+
+test('live trips after live search is turned off: a company with trips priced on live prices is told trip search is turned off for now, not that suppliers were never connected; a company with none sees the same pages as before', async t => {
+  const w = await world();
+  t.after(w.close);
+  const co = await company(w, 'Acme Inc');
+  const other = await company(w, 'Globex Ltd');
+  const admin = await platformAdmin(w);
+  const NEVER = /hasn't connected|connects airlines|suppliers are connected|Supplier not connected/;
+  // The pages that speak about search with no supplier: home and Trips (Sam has trips, the Owner none), the form.
+  const urls = c => [[c.c.sam, c.B], [c.c.owner, c.B], [c.c.sam, `${c.B}/trips/new`], [c.c.owner, `${c.B}/trips`]];
+  const pages = async c => {
+    const out = [];
+    for (const [who, url] of urls(c)) {
+      const res = await who.get(url);
+      assert.equal(res.status, 200, url);
+      out.push(res.text);
+    }
+    return out;
+  };
+  // Every read of the company's requests, by its page size (the check is one read of the newest request).
+  const store = w.app.store;
+  const reads = [];
+  const listPage = store.listRecordsPage;
+  store.listRecordsPage = function spy(kind, opts) {
+    if (kind === KINDS.request) reads.push(opts.limit);
+    return listPage.call(this, kind, opts);
+  };
+  t.after(() => { store.listRecordsPage = listPage; });
+
+  // Before live search: no supplier, nothing priced. Globex's pages are kept to compare with afterwards.
+  const globex = await pages(other);
+  const [samHome0, , form0] = await pages(co);
+  assert.ok(textMain(samHome0).includes(`${NO_SUPPLIER.title} ${NO_SUPPLIER.text}`));
+  assert.ok(textMain(form0).includes(`${NO_SUPPLIER.title} ${NO_SUPPLIER.text}`));
+
+  await goLive(w, admin);
+  await liveTrips(w, co);
+  reads.length = 0;
+  let res = await co.c.sam.get(`${co.B}/trips/new`);
+  assert.equal(res.status, 200);
+  assert.deepEqual(reads, [], 'search on: no read for it');
+
+  res = await turn(admin, false);
+  assert.equal(res.location, '/admin/business?ok=live_off');
+  assert.equal(w.inv().status, 'none');
+
+  // Acme priced trips on live prices: every page says search is turned off for now and its trips keep their
+  // prices, and none says Tripelyx never connected airlines and hotels.
+  const said = `${SEARCH_TURNED_OFF.title} ${SEARCH_TURNED_OFF.text}`;
+  assert.equal(SEARCH_TURNED_OFF.title, 'Trip search is turned off for now.');
+  assert.equal(SEARCH_TURNED_OFF.text, "Trips already planned keep their prices, but they can't be confirmed or approved until it's back on. Your policies, people and budgets still work.");
+  assert.equal(NO_TRIPS.textSearchOff, "Trip search is turned off for now. You can plan a trip once it's back on.");
+  reads.length = 0;
+  const [samHome, ownerHome, form, ownerTrips] = await pages(co);
+  for (const [label, page] of [['Sam\'s home', samHome], ['the Owner\'s home', ownerHome], ['the form', form], ['the Owner\'s trips', ownerTrips]]) {
+    assert.doesNotMatch(textMain(page), NEVER, label);
+    assert.doesNotMatch(textMain(page), /try again in a few minutes/i, label);
+  }
+  assert.ok(textMain(samHome).includes(`Plan a work trip ${said}`), textMain(samHome).slice(0, 600));
+  assert.ok(textMain(ownerHome).includes(`Plan a work trip ${said}`));
+  assert.ok(textMain(ownerHome).includes(`${NO_TRIPS.title} ${NO_TRIPS.textSearchOff}`), textMain(ownerHome).slice(0, 900));
+  assert.ok(textMain(form).includes(said), textMain(form).slice(0, 600));
+  assert.match(form, /<fieldset class="bz-search-fields" disabled>/);
+  assert.doesNotMatch(mainOf(form), /type="submit"/, 'no Search button');
+  assert.ok(textMain(ownerTrips).includes(`${NO_TRIPS.title} ${NO_TRIPS.textSearchOff}`), textMain(ownerTrips).slice(0, 600));
+  // One read of the newest request a page, at most: Sam's home (his trips are listed, so the Trips page needs
+  // none), the Owner's home and Trips page (nothing of hers to list), the form. Each is one row.
+  assert.deepEqual(reads.filter(n => n === 1), [1, 1, 1, 1], reads.join(' '));
+  reads.length = 0;
+  res = await co.c.sam.get(`${co.B}/trips/new`);
+  assert.deepEqual(reads, [1], 'the form: one read of the newest request');
+  // A search typed in: the form again (503), with the same panel.
+  res = await co.c.sam.get(`${co.B}/trips/search?${qs(Q)}`);
+  assert.equal(res.status, 503);
+  assert.ok(textMain(res.text).includes(said));
+  assert.doesNotMatch(textMain(res.text), NEVER);
+
+  // Globex priced nothing: its pages are byte for byte what they were before live search.
+  assert.deepEqual(await pages(other), globex);
+  assertClean(w);
+});
+
 test('a search, a Confirm or an Approve that meets a mode mismatch does not say "try again in a few minutes": search is off until a new check', async t => {
   const w = await world();
   t.after(w.close);
@@ -979,14 +1110,14 @@ test('a search, a Confirm or an Approve that meets a mode mismatch does not say 
   assert.equal((await w.repo().getIn(KINDS.request, within, co.org.id)).status, 'draft');
 
   // Sam searches (another day, so nothing comes from the search before); the search meets the mismatch: the
-  // form says search is off, and nothing else.
+  // form says search is off (turned off for now: Acme has trips priced on live prices), and nothing else.
   await again();
   res = await co.c.sam.get(`${co.B}/trips/search?${qs({ ...Q_FLIGHTS, depart: '2026-11-13' })}`);
   assert.equal(res.status, 503);
   assert.equal(w.inv().status, 'none');
   main = textMain(res.text);
-  assert.ok(main.includes(NO_SUPPLIER.title), main.slice(0, 600));
-  assert.ok(!main.includes(FLIGHTS_DOWN), 'no "try again in a few minutes" next to "Supplier not connected yet"');
+  assert.ok(main.includes(SEARCH_TURNED_OFF.title), main.slice(0, 600));
+  assert.ok(!main.includes(FLIGHTS_DOWN), 'no "try again in a few minutes" next to "Trip search is turned off for now"');
   assert.doesNotMatch(main, /try again in a few minutes/i);
   assertClean(w);
 });

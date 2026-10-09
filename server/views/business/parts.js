@@ -164,14 +164,27 @@ const NO_SUPPLIER = Object.freeze({
 });
 
 /**
+ * NO_SUPPLIER's place for a company that already has trips priced on live prices, while live search is off
+ * (turned off by a platform admin, a mode mismatch, or a key taken out: inventory status 'none'). Airlines and
+ * hotels were connected, so it never says they weren't: its trips keep their prices and wait until search is on
+ * again (source.PRICE_CHECK_COPY.searchOff*, on each trip's page).
+ */
+const SEARCH_OFF = Object.freeze({
+  title: 'Trip search is turned off for now.',
+  text: "Trips already planned keep their prices, but they can't be confirmed or approved until it's back on. Your policies, people and budgets still work.",
+});
+
+/**
  * The empty "your trips" list (the Trips page and home): how to start one, or, with no supplier, when search
- * turns on instead of asking for a trip nobody can plan yet; with live prices and a company Tripelyx has not
- * confirmed yet, when its search opens (go-live design §5.5).
+ * turns on instead of asking for a trip nobody can plan yet (textSearchOff for a company that already has trips
+ * priced on live prices: SEARCH_OFF); with live prices and a company Tripelyx has not confirmed yet, when its
+ * search opens (go-live design §5.5).
  */
 const NO_TRIPS = Object.freeze({
   title: 'No work trips yet.',
   text: "Plan one and you'll see your policy as you search.",
   textNoSupplier: 'Trip search turns on when Tripelyx connects airlines and hotels.',
+  textSearchOff: "Trip search is turned off for now. You can plan a trip once it's back on.",
   textWaiting: f.SEARCH_AFTER_CONFIRM,
 });
 
@@ -188,10 +201,16 @@ function confirmPanel({ level = 2 } = {}) {
   </section>`;
 }
 
-function supplierPanel({ level = 2 } = {}) {
+/**
+ * Where search would be with no supplier: "Supplier not connected yet" (NO_SUPPLIER), or, for a company that
+ * already has trips priced on live prices (liveTrips), that trip search is turned off for now (SEARCH_OFF).
+ * @param {{ level?: number, liveTrips?: boolean }} [opts]
+ */
+function supplierPanel({ level = 2, liveTrips = false } = {}) {
+  const words = liveTrips ? SEARCH_OFF : NO_SUPPLIER;
   return html`<section class="bz-card bz-supplier" aria-labelledby="bz-supplier-title">
-    ${heading(level, html` class="bz-supplier-title" id="bz-supplier-title"`, html`${icon('plug')}<span>${NO_SUPPLIER.title}</span>`)}
-    <p>${NO_SUPPLIER.text}</p>
+    ${heading(level, html` class="bz-supplier-title" id="bz-supplier-title"`, html`${icon(liveTrips ? 'info' : 'plug')}<span>${words.title}</span>`)}
+    <p>${words.text}</p>
   </section>`;
 }
 
@@ -775,7 +794,7 @@ module.exports = {
   policyBadge, statusPill, violationList, limitsBar, rowCard, altCard, alternativesPanel,
   dataTable, emptyState, notice, errorBox, actionBar,
   pageHead, tabs, pager, kvList, checklist, verdict, outsideToggle, copyLink, charCount, budgetBar,
-  DEMO_RIBBON, NO_SUPPLIER, NO_TRIPS, BADGES, PILLS, CHEAPEST_WITHIN_LABEL, PIN_BADGE, ALT_HEADING, ALT_SUB, ALT_TRUNCATED, ALT_NONE,
+  DEMO_RIBBON, NO_SUPPLIER, SEARCH_OFF, NO_TRIPS, BADGES, PILLS, CHEAPEST_WITHIN_LABEL, PIN_BADGE, ALT_HEADING, ALT_SUB, ALT_TRUNCATED, ALT_NONE,
   UNAVAILABLE,
   // Price sources (real-suppliers design §2.3)
   SANDBOX_RIBBON, LIVE_RIBBON, APPROVED_PILLS, ALT_SUBS, LIMIT_CHIPS, LIMITS_NOTES, LIMITS_CHECKED, limitsNote, fromSearch, NO_STARS, UNAVAILABLE_BY_SOURCE, unavailableText, paidAtHotel, tripSource,

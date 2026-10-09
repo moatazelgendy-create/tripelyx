@@ -9,7 +9,8 @@
 // dollars, from the airline · Priced at … · Can change until booked"). The status filter says "Approved", not
 // "Approved to book", once the workspace or a listed request is on supplier prices. With live prices a company
 // Tripelyx has not confirmed yet cannot search (go-live design §5.5): no "Plan a trip" button, and the empty
-// state says search opens once Tripelyx confirms the company.
+// state says search opens once Tripelyx confirms the company. With live search off, a company that already has
+// trips priced on live prices (liveTrips) is told search is turned off for now (parts.NO_TRIPS.textSearchOff).
 const { html } = require('../../lib/html');
 const { icon } = require('../icons');
 const f = require('./format');
@@ -124,9 +125,10 @@ function select({ id, name, label, value, options, error }) {
  *   (filters: the ones the list was read with; a refused filter is left out, so no select shows a filter that
  *   was not applied)
  *   options: { departments: object[], travelers: Array<{ userId: string, name: string }>, periods: string[] }|null,
- *   filterError?: string|null, filterErrors?: Record<string, string> }} m
+ *   filterError?: string|null, filterErrors?: Record<string, string>, liveTrips?: boolean }} m liveTrips: search
+ *   is off and the company already has trips priced on live prices (read for an empty list of the member's own)
  */
-function tripsView(ctx, { org, scope, scopes, list, filters = {}, options = null, filterError = null, filterErrors = {} }) {
+function tripsView(ctx, { org, scope, scopes, list, filters = {}, options = null, filterError = null, filterErrors = {}, liveTrips = false }) {
   const base = `/business/o/${org.id}`;
   const tz = f.safeZone(org.timezone);
   const map = places(ctx);
@@ -146,7 +148,7 @@ function tripsView(ctx, { org, scope, scopes, list, filters = {}, options = null
   let body;
   if (!rows.length && scope === 'mine') {
     body = p.emptyState({
-      title: p.NO_TRIPS.title, text: searchable ? p.NO_TRIPS.text : waiting ? p.NO_TRIPS.textWaiting : p.NO_TRIPS.textNoSupplier, iconName: 'plane',
+      title: p.NO_TRIPS.title, text: searchable ? p.NO_TRIPS.text : waiting ? p.NO_TRIPS.textWaiting : liveTrips ? p.NO_TRIPS.textSearchOff : p.NO_TRIPS.textNoSupplier, iconName: 'plane',
       action: searchable ? { href: `${base}/trips/new`, label: 'Plan a trip' } : null,
     });
   } else if (!rows.length) {
