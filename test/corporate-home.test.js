@@ -204,3 +204,36 @@ test('Our Brands lists the Tripelyx AI Travel Agent as a brand card next to Alam
   assert.ok(footerOf(book.text).includes(COPYRIGHT));
   assert.match((await get(off, '/nope')).text, /<a class="btn btn-navy btn-lg" href="\/">Back to home /);
 });
+
+test('the laptop and phone picture on Home and Technology shows the coming summer\'s dates and no sample price or rating', async t => {
+  const { sampleStayYear } = require('../server/views/home');
+  assert.equal(sampleStayYear(new Date('2026-10-09T09:00:00Z')), 2027, 'after this summer: next summer');
+  assert.equal(sampleStayYear(new Date('2027-03-01T00:00:00Z')), 2027, 'before the summer: this summer');
+  assert.equal(sampleStayYear(new Date('2027-07-14T23:59:00Z')), 2027, 'the day before: this summer');
+  assert.equal(sampleStayYear(new Date('2027-07-15T00:00:00Z')), 2028, 'from Jul 15: next summer, never a check-in that is already past');
+  assert.equal(sampleStayYear(new Date('2028-12-31T23:59:00Z')), 2029);
+
+  const app = await live();
+  t.after(app.close);
+  const year = sampleStayYear(app.ctx.now());
+  for (const path of ['/', '/technology']) {
+    const devices = part((await get(app, path)).text, /<div class="devices" aria-hidden="true">[\s\S]*?<div class="phone-btn">Book Now<\/div>/);
+    assert.ok(devices, `${path}: the picture is there`);
+    assert.ok(devices.includes(`<small>Check in</small><b>Jul 15, ${year}</b>`) && devices.includes(`<small>Check out</small><b>Jul 20, ${year}</b>`), `${path}: Jul 15 to 20, ${year}`);
+    assert.match(devices, /<div class="phone-title">Luxury Beach Apartment<\/div>\s*<div class="phone-place"><svg class="icon"[^>]*><use href="#i-pin"\/><\/svg> New Alamein, North Coast<\/div>\s*<div class="phone-stay"><b>5 nights<\/b> · 2 guests<\/div>/);
+    assert.doesNotMatch(devices, /2025|\$|review|rating|night<|i-star/, `${path}: no past dates, prices or ratings`);
+  }
+
+  // The year comes from the app's clock on both pages, not from the calendar the code was written in.
+  const later = await startApp(LIVE, { store: new MemoryStore(), now: () => new Date('2028-03-01T12:00:00Z') });
+  t.after(later.close);
+  for (const path of ['/', '/technology']) assert.ok((await get(later, path)).text.includes('<small>Check in</small><b>Jul 15, 2028</b>'), `${path}: the clock's year`);
+});
+
+test('the AI travel agent homepage claims no booking activity it cannot show', async t => {
+  const app = await live();
+  t.after(app.close);
+  const ai = (await get(app, '/ai-travel-agent')).text;
+  assert.ok(ai.includes('<b>5-night beach trips under $1,500</b><span>Five nights by the sea</span>'));
+  assert.doesNotMatch(ai, /most-built|most popular|most booked/i);
+});

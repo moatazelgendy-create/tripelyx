@@ -283,10 +283,10 @@ main:focus { outline: none; }
   background-size: cover; background-position: center;
 }
 .phone-title { font-size: calc(10.5 * var(--p)); font-weight: 600; line-height: 1.18; margin: 0 calc(2 * var(--p)) calc(4 * var(--p)); letter-spacing: -0.01em; }
-.phone-rating { display: flex; align-items: center; gap: calc(2 * var(--p)); font-size: calc(4.8 * var(--p)); color: var(--muted); margin: 0 calc(2 * var(--p)) calc(16 * var(--p)); }
-.phone-rating .icon { width: calc(6 * var(--p)); height: calc(6 * var(--p)); color: #f5a524; }
-.phone-price { font-size: calc(5.5 * var(--p)); color: var(--muted); margin: 0 calc(2 * var(--p)) calc(7 * var(--p)); }
-.phone-price b { font-size: calc(9 * var(--p)); color: var(--ink); }
+.phone-place { display: flex; align-items: center; gap: calc(2 * var(--p)); font-size: calc(4.8 * var(--p)); color: var(--muted); margin: 0 calc(2 * var(--p)) calc(16 * var(--p)); }
+.phone-place .icon { width: calc(6 * var(--p)); height: calc(6 * var(--p)); color: #f5a524; }
+.phone-stay { font-size: calc(5.5 * var(--p)); color: var(--muted); margin: 0 calc(2 * var(--p)) calc(7 * var(--p)); }
+.phone-stay b { font-size: calc(9 * var(--p)); color: var(--ink); }
 .phone-btn { background: #1a6fd0; color: #fff; text-align: center; border-radius: 999px; padding: calc(5 * var(--p)) 0; margin: 0 calc(1 * var(--p)); font-size: calc(6.5 * var(--p)); font-weight: 500; }
 
 /* Why work with Tripelyx */

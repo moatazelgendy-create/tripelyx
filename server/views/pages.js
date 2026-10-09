@@ -114,7 +114,7 @@ ${pageHero({ eyebrow: 'Our Technology', title: 'A complete travel commerce platf
         <li>${icon('check')}<span>Processor-agnostic payments with a full test mode.</span></li>
       </ul>
     </div>
-    <div class="split-media split-tech">${devices()}</div>
+    <div class="split-media split-tech">${devices(ctx.now && ctx.now())}</div>
   </div>
 </section>
 <section class="section section-soft">

@@ -1,6 +1,7 @@
 const { html, raw } = require('../lib/html');
 const { icon } = require('./icons');
 const { layout } = require('./layout');
+const { today } = require('../lib/dates');
 
 // "ALAMEIN GO" wordmark: typeset, with the two-stroke wave under GO.
 function alameinGoWordmark() {
@@ -25,9 +26,19 @@ const WHY = [
   { icon: 'chart', title: 'Long-Term Value', text: 'More bookings, stronger partnerships.' },
 ];
 
+// The sample stay in the device mockup: Jul 15 to 20, two guests, in the coming North Coast summer,
+// so its dates are never in the past (from Jul 15 on it is next year's, so not even in New Alamein,
+// three hours ahead of UTC, is the check-in already yesterday). The mockup is an illustration, not an
+// offer, so it shows no price and no rating.
+function sampleStayYear(now = new Date()) {
+  const year = now.getUTCFullYear();
+  return today(now) < `${year}-07-15` ? year : year + 1;
+}
+
 // The laptop + phone composition in the Technology section is live HTML (a miniature of the real
 // booking UI), not a screenshot, so it stays crisp at every size.
-function devices() {
+function devices(now) {
+  const year = sampleStayYear(now);
   return html`
 <div class="devices" aria-hidden="true">
   <div class="laptop">
@@ -41,8 +52,8 @@ function devices() {
           </div>
           <div class="mini-field mini-where"><small>Where are you going?</small><b>New Alamein</b>${icon('pin')}</div>
           <div class="mini-row">
-            <div class="mini-field"><small>Check in</small><b>Jul 15, 2025</b></div>
-            <div class="mini-field"><small>Check out</small><b>Jul 20, 2025</b></div>
+            <div class="mini-field"><small>Check in</small><b>Jul 15, ${year}</b></div>
+            <div class="mini-field"><small>Check out</small><b>Jul 20, ${year}</b></div>
             <div class="mini-field"><small>Guests</small><b>2 Guests</b></div>
           </div>
           <div class="mini-btn">Search</div>
@@ -57,8 +68,8 @@ function devices() {
       <div class="phone-bar"><span>${icon('arrow-left')}</span><i></i><span>${icon('user')}</span></div>
       <div class="phone-photo"></div>
       <div class="phone-title">Luxury Beach Apartment</div>
-      <div class="phone-rating">${icon('star')} 4.8 (100 reviews)</div>
-      <div class="phone-price"><b>$250</b> / night</div>
+      <div class="phone-place">${icon('pin')} New Alamein, North Coast</div>
+      <div class="phone-stay"><b>5 nights</b> · 2 guests</div>
       <div class="phone-btn">Book Now</div>
     </div>
   </div>
@@ -113,7 +124,7 @@ function homeView(ctx) {
       <p class="section-lead">Tripelyx provides the technology, infrastructure and expertise to launch and grow travel platforms — from accommodations and transport to activities and beyond.</p>
       <a class="btn btn-navy btn-lg" href="/technology">Explore Our Technology ${icon('arrow')}</a>
     </div>
-    ${devices()}
+    ${devices(ctx.now && ctx.now())}
   </div>
 </section>
 
@@ -143,4 +154,4 @@ function homeView(ctx) {
   });
 }
 
-module.exports = { homeView, alameinGoWordmark, devices, WHY, TILES };
+module.exports = { homeView, alameinGoWordmark, devices, sampleStayYear, WHY, TILES };

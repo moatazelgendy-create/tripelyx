@@ -145,7 +145,7 @@ ${recent ? html`<section class="tb-section tb-section-tight" aria-label="Your un
     <ul class="tb-inspo" aria-label="Budget inspiration">
       <li><a href="/trips-under-1000"><b>Trips under $1,000</b><span>Short city breaks and beach escapes</span></a></li>
       <li><a href="/trips-under-500?nights=2&style=city"><b>Weekend trips under $500</b><span>Two nights, one bag</span></a></li>
-      <li><a href="/trips-under-1500?style=beach&nights=5"><b>5-night beach trips under $1,500</b><span>Our most-built trip</span></a></li>
+      <li><a href="/trips-under-1500?style=beach&nights=5"><b>5-night beach trips under $1,500</b><span>Five nights by the sea</span></a></li>
       <li><a href="/trips-under-2000?region=international"><b>International trips under $2,000</b><span>Passport required</span></a></li>
       <li><a href="/trips-under-3000?style=all-inclusive"><b>All-inclusive trips under $3,000</b><span>Meals and drinks in the price</span></a></li>
     </ul>

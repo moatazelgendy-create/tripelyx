@@ -46,7 +46,7 @@ class MockExperienceProvider extends BaseMockProvider {
       location: { name: i.meeting.name, city: i.city },
       media: [media(i.scene, id, i.name)],
       rating: { score: i.rating, count: i.reviews },
-      badges: slots.some(s => s.remaining > 0 && s.remaining <= 4) ? ['Selling fast'] : [],
+      badges: [],
       fromPrice: { amount: Math.min(...options.map(o => o.price.amount)), currency: 'USD', unit: 'ticket' },
       attributes: [
         { label: 'Duration', value: hours },

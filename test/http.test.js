@@ -116,3 +116,24 @@ test('partner form: validation, honeypot and storage', async t => {
   assert.equal((await post({ name: 'Omar', email: 'omar@example.com', message: 'We run 40 chalets in Hacienda Bay.' })).status, 201);
   assert.equal(app.store.leads.length, 1);
 });
+
+test('demo booking pages show no made-up scarcity: no "only N left" and no "Selling fast"', async t => {
+  const { sampleQueries } = require('./helpers');
+  const app = await startApp();
+  t.after(app.close);
+  const SCARCITY = /left at this price|only \d+ left|\d+ left<|Selling fast/i;
+  const queries = sampleQueries();
+  for (const v of ['hotels', 'flights', 'cars', 'cruises', 'yachts', 'transfers', 'activities', 'experiences']) {
+    const qs = new URLSearchParams(queries[v]).toString();
+    const results = await (await fetch(`${app.base}/book/${v}?${qs}`)).text();
+    assert.match(results, /chip-demo/, `${v}: demo inventory is labelled`);
+    assert.doesNotMatch(results, SCARCITY, `${v} results`);
+    const links = [...new Set([...results.matchAll(new RegExp(`href="(/book/${v}/[^"?]+\\?[^"]*)"`, 'g'))].map(m => m[1].replace(/&amp;/g, '&')))].slice(0, 6);
+    assert.ok(links.length, `${v}: has offers`);
+    for (const link of links) {
+      const page = await (await fetch(app.base + link)).text();
+      assert.doesNotMatch(page, SCARCITY, link);
+      if (v === 'activities' || v === 'experiences') assert.match(page, /<small>(Open|Full)<\/small>/, `${link}: time slots say open or full`);
+    }
+  }
+});
