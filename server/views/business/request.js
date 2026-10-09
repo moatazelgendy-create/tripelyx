@@ -20,7 +20,10 @@
 // until booked" (who priced it from the trip's own rows: format.requestKind), the approved banner says
 // "Approved. Booking in Tripelyx isn't open yet, so this fare is not held and can change.", a trip inside the
 // policy is "approved" (never "approved to book"), and a draft or waiting trip's total says it is checked again
-// before it is approved.
+// before it is approved. With live search off (inventory status 'none': turned off, or a mode mismatch) a trip
+// priced on live prices can't be checked, so nothing is confirmed, sent or approved until it is on again: the
+// traveler's draft and the approver's panel say so (PRICE_CHECK_COPY.searchOff*) instead of offering Confirm,
+// Request Approval or Approve; deny, cancel and messages still work.
 //
 // What the page never does: blame the company policy for an option that is gone from the demo data (that is
 // said as availability, with a way to plan the trip again); offer a form that can only fail (a draft whose
@@ -46,6 +49,12 @@ const GONE = Object.freeze({
   live: 'no longer available from the supplier',
 });
 const goneWords = source => GONE[source] || GONE.demo;
+
+/**
+ * Live search is off (inventory status 'none') and this trip was priced on live prices: its price can't be
+ * checked, so it can't be confirmed, sent or approved until a platform admin turns live search on again.
+ */
+const searchOffFor = (ctx, source) => source === 'live' && !!(ctx && ctx.business && ctx.business.inventory) && ctx.business.inventory.status === 'none';
 
 const COMPONENTS = Object.freeze(['out', 'back', 'hotel']);
 /** Who priced a request's amounts, for its labels: from its own rows on live prices, 'price' otherwise. */
@@ -205,7 +214,7 @@ const WITHIN_DRAFT = Object.freeze({
 });
 
 /** The policy verdict and its reasons. `again` is the "Plan this trip again" link, for a draft that has no way forward here. */
-function policyBlock(r, view, { org, timeZone, pick = false, again = '', source = 'demo' }) {
+function policyBlock(r, view, { org, timeZone, pick = false, again = '', source = 'demo', off = false }) {
   const ev = r.evaluation || { status: 'within', violations: [] };
   const n = (ev.violations || []).length;
   const first = firstName(r.travelerName);
@@ -223,7 +232,8 @@ function policyBlock(r, view, { org, timeZone, pick = false, again = '', source 
     </section>`;
   }
   let text;
-  if (ev.status === 'within') text = view.status === 'draft' && view.self ? (WITHIN_DRAFT[source] || WITHIN_DRAFT.demo) : 'Every part of this trip is inside the policy.';
+  if (ev.status === 'within' && view.status === 'draft' && view.self && off) text = 'Every part of this trip is inside your policy.';
+  else if (ev.status === 'within') text = view.status === 'draft' && view.self ? (WITHIN_DRAFT[source] || WITHIN_DRAFT.demo) : 'Every part of this trip is inside the policy.';
   else if (ev.status === 'out') text = `Out of policy: ${f.plural(n, 'reason')}`;
   else if (view.status === 'draft' && !view.self) text = `This trip can't be requested under ${org.name}'s policy.`;
   else if (view.status === 'draft') text = pick ? `This trip can't be requested under ${org.name}'s policy. Pick one of the options below.` : `This trip can't be requested under ${org.name}'s policy. Plan it again with options marked Within Policy.`;
@@ -396,14 +406,17 @@ function overBy(r, view) {
 }
 
 /** The approver's panel: price check, comparison, reason, decision form. */
-function deciderPanel(ctx, r, view, { base, timeZone, form, failed, refusal, error, role, budget, source = 'demo' }) {
+function deciderPanel(ctx, r, view, { base, timeZone, form, failed, refusal, error, role, budget, source = 'demo', off = false }) {
   const now = ctx.now();
   const first = firstName(r.travelerName);
   const live = view.live;
   // Approve on a trip that changed sends it back instead: the button says so.
   const sendsBack = !!live && live.status !== 'same';
   let check;
-  if (!live && view.liveError) {
+  if (off) {
+    // Live search is off: nothing can be checked, so there is no Approve until it is on again.
+    check = html`<p>${icon('info')}<span>${PRICE_CHECK_COPY.searchOffDecide}</span></p>`;
+  } else if (!live && view.liveError) {
     // A supplier's price check could not run on a page view (the approver's page always opens): it runs when
     // they approve.
     // A company Tripelyx hasn't confirmed (live prices, go-live design §5.5) checks nothing until it is.
@@ -461,7 +474,9 @@ function deciderPanel(ctx, r, view, { base, timeZone, form, failed, refusal, err
   const ackInput = html`<input id="d-ack" type="checkbox" name="ackOverBudget" value="1"${mine && form.ack ? html` checked` : ''}${ackError ? html` aria-invalid="true" aria-describedby="d-ack-err"` : ''}>`;
   const ackErr = ackError ? html`<p class="field-error" id="d-ack-err">${ackError}</p>` : '';
   let ack = '';
-  if (showAck && over > 0 && b) {
+  // With live search off there is no Approve, so nothing to acknowledge.
+  if (off) ack = '';
+  else if (showAck && over > 0 && b) {
     ack = html`<div class="bz-ack">${p.demoBox(html`<div class="bz-choices${ackError ? ' is-invalid' : ''}"><label class="bz-choice" for="d-ack">${ackInput}<span>Approve even though ${b.departmentName} goes ${p.amount(over)} over its ${b.periodLabel} budget.</span></label>${ackErr}</div>`, { pricedAt: r.pricedAt, timeZone, cls: 'bz-ack-box', source, kind })}</div>`;
   } else if (showAck) {
     ack = html`<div class="bz-choices${ackError ? ' is-invalid' : ''}"><label class="bz-choice" for="d-ack">${ackInput}<span>Approve even though it goes over the department's budget.</span></label>${ackErr}</div>`;
@@ -487,14 +502,14 @@ function deciderPanel(ctx, r, view, { base, timeZone, form, failed, refusal, err
         ${view.can.message ? html`<p class="bz-ask-line"><a class="bz-ask" href="#message">${icon('mail')}<span>Ask ${first} a question</span></a></p>` : ''}
       </div>
       ${ack}
-      ${p.actionBar(html`<button class="btn btn-navy bz-btn" type="submit" name="action" value="approve">${sendsBack ? html`${icon('arrow')}<span>Send back to ${first}</span>` : html`${icon('check')}<span>Approve</span>`}</button>
-        <button class="btn btn-ghost bz-btn" type="submit" name="action" value="deny">${icon('close')}<span>Deny</span></button>`)}
+      ${p.actionBar(html`${off ? '' : html`<button class="btn btn-navy bz-btn" type="submit" name="action" value="approve">${sendsBack ? html`${icon('arrow')}<span>Send back to ${first}</span>` : html`${icon('check')}<span>Approve</span>`}</button>
+        `}<button class="btn btn-ghost bz-btn" type="submit" name="action" value="deny">${icon('close')}<span>Deny</span></button>`)}
     </form>
   </section>`;
 }
 
 /** The traveler's primary action on a draft: Confirm trip, Request Approval, or what to do instead. */
-function submitPanel(r, view, { org, member, base, form, failed, refusal, error, soon = false, source = 'demo' }) {
+function submitPanel(r, view, { org, member, base, form, failed, refusal, error, soon = false, source = 'demo', off = false }) {
   const ev = r.evaluation || { status: 'within' };
   const action = `${base}/trips/${r.id}/submit`;
   const hours = org.settings && Number.isInteger(org.settings.approvalHours) ? org.settings.approvalHours : 24;
@@ -504,6 +519,12 @@ function submitPanel(r, view, { org, member, base, form, failed, refusal, error,
       <h2 id="bz-submit-title">Request Approval</h2>
       <p>This trip leaves today, too soon to wait for an approval. Choose an option inside your policy, or plan the trip again with a later date.</p>
       <p><a class="btn btn-ghost bz-btn" href="${base}/trips/new?${searchQuery(r.query)}">${icon('arrow')}<span>Plan it again with new dates</span></a></p>
+    </section>`;
+  }
+  if (ev.status === 'within' && off) {
+    return html`<section class="bz-card bz-submit" aria-labelledby="bz-submit-title">
+      <h2 id="bz-submit-title">Confirm your trip</h2>
+      <p>${PRICE_CHECK_COPY.searchOffConfirm}</p>
     </section>`;
   }
   if (ev.status === 'within') {
@@ -520,6 +541,12 @@ function submitPanel(r, view, { org, member, base, form, failed, refusal, error,
       <h2 id="bz-submit-title">Request Approval</h2>
       <p>No one else at ${org.name} can approve this yet, and nobody approves their own trip. Invite a Manager or Travel Admin, or choose an option inside your policy.</p>
       ${invite ? p.actionBar(html`<a class="btn btn-navy bz-btn" href="${base}/people">${icon('users')}<span>Invite</span></a>`) : ''}
+    </section>`;
+  }
+  if (off) {
+    return html`<section class="bz-card bz-submit" aria-labelledby="bz-submit-title">
+      <h2 id="bz-submit-title">Request Approval</h2>
+      <p>${PRICE_CHECK_COPY.searchOffRequest}</p>
     </section>`;
   }
   const min = org.settings && Number.isInteger(org.settings.reasonMinChars) ? org.settings.reasonMinChars : REASON_MIN_CHARS;
@@ -720,6 +747,7 @@ function requestView(ctx, { org, member, view, departmentName = null, ok = '', e
   const draftSelf = view.status === 'draft' && view.self;
   // Where this request's prices came from (an old request with no source reads as demo).
   const source = f.requestSource(r);
+  const off = searchOffFor(ctx, source);
 
   // A draft whose departure date has passed (in the company's time zone) can't be sent: the page says so and
   // links to plan it again, with no form that would only fail. Leaving today is fine inside policy, and too
@@ -799,15 +827,15 @@ function requestView(ctx, { org, member, view, departmentName = null, ok = '', e
   ${p.errorBox(topError)}
   ${lateBanner}
   ${banner}
-  ${policyBlock(r, view, { org, timeZone, pick, again, source })}
+  ${policyBlock(r, view, { org, timeZone, pick, again, source, off })}
   ${selfCannotDecide}
-  ${deciding ? deciderPanel(ctx, r, view, { base, timeZone, form, failed, refusal, error, role: member.role, budget: budgetBlock(r, view, { org, departmentName, timeZone, deciding, level: 3, source }), source }) : ''}
+  ${deciding ? deciderPanel(ctx, r, view, { base, timeZone, form, failed, refusal, error, role: member.role, budget: budgetBlock(r, view, { org, departmentName, timeZone, deciding, level: 3, source }), source, off }) : ''}
   ${facts ? html`<div class="bz-card bz-facts">${facts}</div>` : ''}
   ${reasonBlock}
   ${tripParts(r, view, { timeZone, map, source })}
   ${deciding ? '' : budgetBlock(r, view, { org, departmentName, timeZone, deciding, level: 2, source })}
   ${alts}
-  ${draftSelf && !late ? submitPanel(r, view, { org, member, base, form, failed, refusal, error, soon, source }) : ''}
+  ${draftSelf && !late ? submitPanel(r, view, { org, member, base, form, failed, refusal, error, soon, source, off }) : ''}
   ${cancelPanel(r, view, { base, confirm, dest })}
   ${messagesPanel(ctx, r, view, { base, timeZone, form, failed, refusal, error, member, canRequest })}
   ${historyPanel(ctx, r, { timeZone, member, source })}`;

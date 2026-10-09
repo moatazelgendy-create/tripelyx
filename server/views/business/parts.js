@@ -94,14 +94,17 @@ const keyId = (prefix, key) => `${prefix}-${crypto.createHash('sha256').update(S
  * for supplier test data.
  * @param {string|null} pricedAt
  * @param {string} timeZone the company's
- * @param {{ inline?: boolean, source?: import('../../business/types').PriceSource, kind?: string, totals?: boolean, limits?: boolean }} [opts]
+ * @param {{ inline?: boolean, source?: import('../../business/types').PriceSource, kind?: string, totals?: boolean, limits?: boolean, counted?: boolean }} [opts]
  *   inline: a <span> for use inside a sentence; totals: the container adds many requests up (budgets, reports,
- *   home), so a supplier source says format.SOURCE_TOTALS ("Includes supplier test data"); limits: the container
- *   holds the company's own policy limits, so a supplier source says what they are checked against
- *   (LIMITS_CHECKED), never "not a real price"; demo is unchanged; kind: who priced the amount (format.PRICE_KINDS)
+ *   home), so a supplier source says format.SOURCE_TOTALS ("Includes supplier test data"); counted: false when
+ *   such a live container adds up no trip priced on supplier prices (only budgets the company set), so it says
+ *   format.LIVE_UNCOUNTED instead of "from our airline and hotel suppliers"; limits: the container holds the
+ *   company's own policy limits, so a supplier source says what they are checked against (LIMITS_CHECKED), never
+ *   "not a real price"; demo is unchanged; kind: who priced the amount (format.PRICE_KINDS)
  */
-function priceNote(pricedAt, timeZone, { inline = false, source = 'demo', kind = 'price', totals = false, limits = false } = {}) {
+function priceNote(pricedAt, timeZone, { inline = false, source = 'demo', kind = 'price', totals = false, limits = false, counted = true } = {}) {
   const text = limits && known(source) !== 'demo' ? LIMITS_CHECKED[known(source)]
+    : totals && known(source) === 'live' && counted === false ? f.LIVE_UNCOUNTED
     : totals && known(source) !== 'demo' ? f.SOURCE_TOTALS[known(source)] : f.pricedAtText(pricedAt, timeZone, { source: known(source), kind });
   if (known(source) !== 'sandbox') {
     return inline
@@ -133,13 +136,13 @@ const BOX_TAGS = Object.freeze(['div', 'section', 'article', 'aside']);
  * Wrap money-bearing markup in a price container that ends with its label.
  * @param {*} body markup from html``
  * @param {{ pricedAt: string|null, timeZone: string, tag?: 'div'|'section'|'article'|'aside', cls?: string, label?: string,
- *   source?: import('../../business/types').PriceSource, kind?: string, totals?: boolean, limits?: boolean }} opts
- *   label: an aria-label for a section or aside; totals, limits, kind: see priceNote
+ *   source?: import('../../business/types').PriceSource, kind?: string, totals?: boolean, limits?: boolean, counted?: boolean }} opts
+ *   label: an aria-label for a section or aside; totals, counted, limits, kind: see priceNote
  */
-function demoBox(body, { pricedAt, timeZone, tag = 'div', cls = '', label = '', source = 'demo', kind = 'price', totals = false, limits = false }) {
+function demoBox(body, { pricedAt, timeZone, tag = 'div', cls = '', label = '', source = 'demo', kind = 'price', totals = false, limits = false, counted = true }) {
   const t = BOX_TAGS.includes(tag) ? tag : 'div';
   const s = known(source);
-  return html`${raw(`<${t}`)} class="${boxClass(`bz-demo-box${cls ? ` ${cls}` : ''}`, s)}" data-price-source="${s}"${label ? html` aria-label="${label}"` : ''}>${body}${priceNote(pricedAt, timeZone, { source: s, kind, totals, limits })}${raw(`</${t}>`)}`;
+  return html`${raw(`<${t}`)} class="${boxClass(`bz-demo-box${cls ? ` ${cls}` : ''}`, s)}" data-price-source="${s}"${label ? html` aria-label="${label}"` : ''}>${body}${priceNote(pricedAt, timeZone, { source: s, kind, totals, limits, counted })}${raw(`</${t}>`)}`;
 }
 
 /** The workspace's demo ribbon (§B3): shown on every workspace page. */

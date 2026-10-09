@@ -292,7 +292,7 @@ test('the two supplier key secrets: fixed names, the placeholder "unset" that is
   assert.equal((body.match(/SecretString:/g) || []).length, 2);
   assert.equal((body.match(/^\s+SecretString: unset$/gm) || []).length, 2);
   assert.doesNotMatch(app, /\b(AKIA|ASIA)[0-9A-Z]{16}\b|duffel_(test|live)_|\bsand_[0-9a-f-]{8}|\bprod_[0-9a-z]{8}/i, 'no key or key-shaped value in the template');
-  assert.doesNotMatch(app, /PII|BUSINESS_BOOKING|PREVIEW_/, 'nothing from later stages');
+  assert.doesNotMatch(app, /PII|BUSINESS_BOOKING|PREVIEW_/i, 'nothing from later stages');
 });
 
 test('only the site\'s execution role may read a supplier key: each secret has a deny-everyone-else resource policy', () => {

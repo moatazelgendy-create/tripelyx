@@ -25,7 +25,7 @@ const AMOUNTS_NOTE_PLAIN = 'Amounts here are budgets and limits your company set
 const AMOUNTS_NOTES = Object.freeze({
   demo: AMOUNTS_NOTE,
   sandbox: 'Includes supplier test data: amounts here are budgets your company set or trips priced on supplier test data. Nothing is charged.',
-  live: 'Supplier prices: amounts here are budgets your company set or trips priced on supplier prices. Nothing is booked or charged.',
+  live: f.LIVE_UNCOUNTED,
 });
 
 /** Who did it, as the entry snapshotted it: a member's name, "Tripelyx" for the platform, or the system. */

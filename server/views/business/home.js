@@ -13,7 +13,9 @@
 // policy box holds the company's own limits: on supplier prices it says what they are checked against
 // (parts.LIMITS_CHECKED), never "not a real price". Live prices (go-live design §5.5, §5.6): booking is not open,
 // so Spent "shows once booking is open"; a company Tripelyx has not confirmed yet is told its search opens once
-// it is confirmed, with no "Plan a work trip" button.
+// it is confirmed, with no "Plan a work trip" button. A live totals box that counts no request (nothing priced
+// in the period, or a company that priced nothing yet) holds budgets the company set, so it says so
+// (format.LIVE_UNCOUNTED), never that the amounts came from the suppliers.
 const { html } = require('../../lib/html');
 const { icon } = require('../icons');
 const { LABELS, can } = require('../../business/roles');
@@ -37,7 +39,7 @@ function section(id, title, body, { iconName = null, action = null, cls = '' } =
  * it is one demo container (what trips commit is priced from demo data); in production it is the company's
  * own figures.
  */
-function budgetTable(rows, { label, timeZone, demo, source = 'demo', bookable = true }) {
+function budgetTable(rows, { label, timeZone, demo, source = 'demo', bookable = true, counted = true }) {
   const cell = c => (c === null || c === undefined ? 'No budget set' : p.amount(c));
   const table = p.dataTable({
     caption: `Budgets for ${label}`,
@@ -50,7 +52,7 @@ function budgetTable(rows, { label, timeZone, demo, source = 'demo', bookable = 
     empty: `No budgets for ${label}. Without a budget, trips are checked against the policy only.`,
   });
   const body = html`${table}<p class="bz-muted">Committed is what approved trips hold. ${bookable ? 'Spent shows once real bookings exist.' : 'Spent shows once booking is open.'}</p>`;
-  return demo ? p.demoBox(body, { pricedAt: null, timeZone, cls: 'bz-budgets-box', source, totals: true }) : html`<div class="bz-budgets-box">${body}</div>`;
+  return demo ? p.demoBox(body, { pricedAt: null, timeZone, cls: 'bz-budgets-box', source, totals: true, counted }) : html`<div class="bz-budgets-box">${body}</div>`;
 }
 
 /**
@@ -70,6 +72,8 @@ function homeView(ctx, { org, member, dash, inventoryStatus }) {
   // requests are labelled whatever the inventory says now (switched off, they were still priced somewhere).
   const totals = dash.priceSource || inv || 'demo';
   const totalsBox = demo || f.isSource(dash.priceSource);
+  // Did the totals count any request (dash.priceSource), or only budgets the company set?
+  const counted = f.isSource(dash.priceSource);
   // Live search waits for the company's confirmation (go-live design §5.5).
   const waiting = f.awaitingConfirmation(ctx, org);
   const blocks = [];
@@ -116,7 +120,7 @@ function homeView(ctx, { org, member, dash, inventoryStatus }) {
   }
 
   if (dash.budgets) {
-    blocks.push(section('bz-h-budgets', `Budgets, ${dash.periodLabel}`, budgetTable(dash.budgets, { label: dash.periodLabel, timeZone, demo: totalsBox, source: totals, bookable: inventoryStatus !== 'none' && inventoryStatus !== 'live' }), {
+    blocks.push(section('bz-h-budgets', `Budgets, ${dash.periodLabel}`, budgetTable(dash.budgets, { label: dash.periodLabel, timeZone, demo: totalsBox, source: totals, bookable: inventoryStatus !== 'none' && inventoryStatus !== 'live', counted }), {
       iconName: 'wallet', action: { href: `${base}/budgets`, label: 'All budgets' },
     }));
     if (role === 'finance' && can(role, 'reports.view') && !tiles.length) {
@@ -159,7 +163,7 @@ function homeView(ctx, { org, member, dash, inventoryStatus }) {
     const list = dash.recent.length
       ? html`<ol class="bz-timeline">${dash.recent.map(e => html`<li><span class="bz-timeline-when">${f.whenIn(timeZone, e.at, { now, zone: true })}</span>${e.summary}</li>`)}</ol>`
       : html`<p class="bz-muted">Nothing here yet.</p>`;
-    blocks.push(section('bz-h-recent', 'Recent activity', totalsBox && dash.recent.some(e => MONEY.test(e.summary || '')) ? p.demoBox(list, { pricedAt: null, timeZone, cls: 'bz-card', source: totals, totals: true }) : html`<div class="bz-card">${list}</div>`, {
+    blocks.push(section('bz-h-recent', 'Recent activity', totalsBox && dash.recent.some(e => MONEY.test(e.summary || '')) ? p.demoBox(list, { pricedAt: null, timeZone, cls: 'bz-card', source: totals, totals: true, counted }) : html`<div class="bz-card">${list}</div>`, {
       iconName: 'clock', action: can(role, 'audit.view') ? { href: `${base}/activity`, label: 'All activity' } : null,
     }));
   }

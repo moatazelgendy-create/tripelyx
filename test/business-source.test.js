@@ -333,6 +333,12 @@ test('PRICE_CHECK_COPY: the request and results page copy around a price check',
     failed: "We couldn't check the price just now. It is checked again when you approve.",
     unchanged: "The price couldn't be checked just now, so nothing changed. Try again in a few minutes.",
     hotelsLeg: 'Hotels are not available right now. You can still request the flights.',
+    // Live search (go-live design §5.5, §5.7): the hotel supplier's daily cap, and live search turned off.
+    hotelsLimit: "Hotel search has reached today's limit. You can still request the flights.",
+    searchOff: "Trip search is off right now, so the price can't be checked and nothing changed.",
+    searchOffDecide: "Trip search is off right now, so the price can't be checked and this trip can't be approved yet. You can still deny it or send a message.",
+    searchOffConfirm: "Trip search is off right now, so the price can't be checked and this trip can't be confirmed yet.",
+    searchOffRequest: "Trip search is off right now, so the price can't be checked and this trip can't be sent for approval yet.",
   });
   assert.ok(Object.isFrozen(PRICE_CHECK_COPY));
 });

@@ -14,8 +14,10 @@
 // none; then its name and company id.
 // Live search (go-live design §5.4, a live-keys stack only: data.suppliers is null anywhere else): the Suppliers
 // panel takes the place of "Flights and hotels". Per supplier its state ("Not set", "Test key refused", "Ready
-// to check", "Live", "Turned off after a mode mismatch at 3:42 PM, Fri 9 Oct (UTC)") and the problem sentence,
-// never a key or any part of one; today's calls against the daily caps, with a notice once a total passes 80%;
+// to check", "Live", "Turned off after a mode mismatch at 3:42 PM, Fri 9 Oct (UTC)": on the task that latched,
+// when it did) and the problem sentence, never a key or any part of one; today's calls against the daily caps,
+// with a notice once a total passes 80%, and another once it has reached the cap (new searches are paused: a
+// task may still spend the few calls it already counted, so it never says search has stopped outright);
 // the last live check in counts and yes or no; "Check live connection", "Turn on live search" (only after a
 // passing check for the keys in place, in the last 24 hours) and "Turn off live search"; and what was done to
 // the switch lately. Supplier names appear here only, never to companies or travelers.
@@ -111,7 +113,11 @@ function supplierState(v, key) {
   if (Object.hasOwn(KEY_WORDS, k)) return { label: KEY_WORDS[k], tone: k === 'not_set' ? 'muted' : 'warn', help: KEY_HELP[k] };
   if (!v.ready) return { label: 'Needs attention', tone: 'warn', help: '' };
   const st = v.stored;
-  if (v.latched && v.latched[key]) return { label: 'Turned off after a mode mismatch', tone: 'warn', help: 'It answered in test mode on this task. A new passing check turns live search on again.' };
+  if (v.latched && v.latched[key]) {
+    // When this task latched it; else the stored mismatch for this supplier, if any.
+    const at = v.latchedAt || (st && st.mismatch && st.mismatch.supplier === key ? st.mismatch.at : null);
+    return { label: at ? `Turned off after a mode mismatch at ${utc(at)}` : 'Turned off after a mode mismatch', tone: 'warn', help: 'It answered in test mode on this task. A new passing check turns live search on again.' };
+  }
   if (st && st.offReason === 'mismatch' && st.mismatch && st.mismatch.supplier === key && st.mismatch.at) {
     return { label: `Turned off after a mode mismatch at ${utc(st.mismatch.at)}`, tone: 'warn', help: 'It answered in test mode. Check the key, then run the live check again.' };
   }
@@ -162,7 +168,10 @@ function livePanel(v) {
       <p class="bz-meta">${u ? `Calls today: ${String(u.total)} of ${String(u.cap)}. Each company can make up to ${String(caps.company)}.` : usage ? '' : "Today's calls could not be read just now."}</p>
     </li>`;
   });
-  const notices = usage ? SUPPLIER_ROWS.filter(([key]) => usage[key] && usage[key].notice).map(([key, name]) => html`<p class="alert alert-warning bz-alert" role="status">${icon('alert')}<span>${name} calls today have passed 80% of the daily total (${String(usage[key].total)} of ${String(usage[key].cap)}). At ${String(usage[key].cap)} search stops for every company until 00:00 UTC.</span></p>`) : [];
+  const noticeText = (u, name) => (u.total >= u.cap
+    ? `${name} calls today have reached the daily total (${String(u.total)} of ${String(u.cap)}). New searches are paused for every company until 00:00 UTC.`
+    : `${name} calls today have passed 80% of the daily total (${String(u.total)} of ${String(u.cap)}). At ${String(u.cap)} search stops for every company until 00:00 UTC.`);
+  const notices = usage ? SUPPLIER_ROWS.filter(([key]) => usage[key] && usage[key].notice).map(([key, name]) => html`<p class="alert alert-warning bz-alert" role="status">${icon('alert')}<span>${noticeText(usage[key], name)}</span></p>`) : [];
   const problem = typeof v.problem === 'string' && v.problem.trim() ? v.problem.trim() : null;
   const state = v.on ? 'Live search is on. Confirmed companies search live prices. Booking is not open, so nothing is booked or charged.'
     : 'Live search is off. Companies see "Supplier not connected yet".';

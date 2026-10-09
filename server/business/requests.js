@@ -597,6 +597,7 @@ function legView(svc, leg, ctx, benchmark) {
   // Real suppliers only: what the search left out (the per-cause notices) and a hotel supplier's failure.
   if (leg && leg.skipped && typeof leg.skipped === 'object') view.skipped = leg.skipped;
   if (leg && leg.error) view.error = leg.error;
+  if (leg && leg.error && leg.limit === true) view.limit = true;
   return view;
 }
 

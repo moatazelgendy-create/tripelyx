@@ -249,8 +249,10 @@ function resultsView(ctx, { org, view, all = false, pick = null, error = null, e
     const city = (h && h.city) || q.hotel.city || to;
     const sub = `${f.dayRange(q.hotel.checkIn, q.hotel.checkOut)} · ${f.plural(nightsBetween(q.hotel.checkIn, q.hotel.checkOut), 'night')}`;
     if (h && h.error === 'unavailable') {
-      // The hotel supplier failed: the flights still show (PRICE_CHECK_COPY.hotelsLeg).
-      sections.push(legSection('bz-leg-hotel', `Hotel in ${city}`, sub, html`<div class="alert alert-warning bz-alert" role="status">${icon('alert')}<span>${PRICE_CHECK_COPY.hotelsLeg}</span></div>`));
+      // The hotel supplier failed, or reached its daily cap (limit): the flights still show
+      // (PRICE_CHECK_COPY.hotelsLeg, PRICE_CHECK_COPY.hotelsLimit).
+      const why = h.limit === true ? PRICE_CHECK_COPY.hotelsLimit : PRICE_CHECK_COPY.hotelsLeg;
+      sections.push(legSection('bz-leg-hotel', `Hotel in ${city}`, sub, html`<div class="alert alert-warning bz-alert" role="status">${icon('alert')}<span>${why}</span></div>`));
     } else if (!h || !h.rows.length) {
       const off = supplier && inv && inv.hotelsConnected === false;
       sections.push(legSection('bz-leg-hotel', `Hotel in ${city}`, sub, html`${legNotes(h, 'hotel')}${p.emptyState({ title: off ? HOTELS_NOT_CONNECTED : copy.noHotels(city), text: 'You can still request the flights.', iconName: 'bed' })}`));

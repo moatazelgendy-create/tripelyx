@@ -170,16 +170,21 @@ async function world({ open = async () => new MemoryStore(), clock = mutableCloc
     const out = body === null ? text : JSON.stringify(w.tamper(String(url), body) ?? body);
     return new globalThis.Response(out, { status: res.status, headers: res.headers });
   };
+  w.env = env;
   w.boot = async () => {
     const store = await open();
-    const app = await startApp({ ...liveEnv(w.keys), ...env }, { now: clock.now, store, log, businessFetch: w.fetch });
+    const app = await startApp({ ...liveEnv(w.keys), ...w.env }, { now: clock.now, store, log, businessFetch: w.fetch });
     w.tasks.push(app);
     return app;
   };
-  /** Stop this task and start a new one (a restart or a deploy), on the same store; new keys when given. */
-  w.restart = async ({ keys: next = null } = {}) => {
+  /**
+   * Stop this task and start a new one (a restart or a deploy), on the same store; new keys when given, and
+   * these settings over the live ones from now on when given (e.g. a key secret holding "unset" again).
+   */
+  w.restart = async ({ keys: next = null, env: settings = null } = {}) => {
     await w.app.close();
     w.tasks = w.tasks.filter(a => a !== w.app);
+    if (settings) w.env = settings;
     if (next) {
       w.keys = next;
       w.ff = fakeFetch(double.routes, next);
@@ -226,7 +231,7 @@ async function company(w, name, { status = 'active', timezone } = {}) {
 async function platformAdmin(w) {
   const ops = await seedUser(w.app, { name: 'Pat Platform', email: ADMIN_EMAIL });
   await w.app.accounts.grantPlatformAdmin(ops.user.id, { by: 'test' });
-  return { ...browser(w, ops), user: ops.user };
+  return { ...browser(w, ops), user: ops.user, on: task => browser(w, ops, () => task) };
 }
 
 /** Press "Turn on live search" or "Turn off live search" from the panel as it is now. */
@@ -729,7 +734,9 @@ for (const [storeName, url] of STORES) {
         let before = w.ff.calls.length;
         let res = await samThere.get(`${co.B}/trips/search?${qs(Q_FLIGHTS)}`);
         assert.equal(res.status, 503, textMain(res.text).slice(0, 300));
-        assert.ok(textMain(res.text).includes(FLIGHTS_DOWN));
+        // Search is off now: the form says so alone, never "try again in a few minutes".
+        assert.ok(textMain(res.text).includes(NO_SUPPLIER.title));
+        assert.ok(!textMain(res.text).includes(FLIGHTS_DOWN));
         assert.deepEqual(opsOf(w.ff.calls.slice(before)), ['offer_request']);
         assert.equal(other.business.inventory.status, 'none');
         await other.business.inventory.flush();
@@ -740,6 +747,9 @@ for (const [storeName, url] of STORES) {
         const off = (await w.repo().listPlatformAudit({ limit: 10 })).find(e => e.action === 'suppliers.live_off');
         assert.deepEqual(off.actor, { system: 'mode_check' });
         assert.equal(off.summary, 'Live search turned off: Duffel answered in test mode');
+        // The panel on the task that latched (www runs one task) says when, too.
+        res = await admin.on(other).get('/admin/business');
+        assert.match(textOf(panelOf(res.text)), /Duffel \(flights\)\s*Turned off after a mode mismatch at 9:00 AM, Fri 9 Oct \(UTC\)\s*It answered in test mode on this task\./);
 
         // The first task: on from its 30-second read of the switch, then off once it reads it again.
         assert.equal(w.inv().status, 'live');
@@ -790,6 +800,196 @@ for (const [storeName, url] of STORES) {
     });
   });
 }
+
+test('a mismatch that comes in after live search was turned off is still recorded: the check before it no longer counts, and the latched task stays off', async t => {
+  const mem = new MemoryStore();
+  const w = await world({ open: async () => mem });
+  t.after(w.close);
+  const co = await company(w, 'Acme Inc');
+  const admin = await platformAdmin(w);
+  await goLive(w, admin);
+  const other = await w.boot();
+  assert.equal(other.business.inventory.status, 'live');
+  const samThere = browser(w, co.sam, () => other);
+
+  // Turned off on this task; the second task still has "on" from its 30-second read, and Duffel answers it in
+  // test mode.
+  let res = await turn(admin, false);
+  assert.equal(res.location, '/admin/business?ok=live_off');
+  tick(w.clock, 5 * 1000);
+  w.state.mode = 'test';
+  res = await samThere.get(`${co.B}/trips/search?${qs(Q_FLIGHTS)}`);
+  assert.equal(res.status, 503);
+  assert.equal(other.business.inventory.status, 'none');
+  await other.business.inventory.flush();
+  const at = w.clock.now().toISOString();
+  const sw = await w.repo().supplierSwitch();
+  assert.deepEqual([sw.on, sw.offReason, sw.offBy, sw.mismatch], [false, 'admin', admin.user.id, { at, supplier: 'duffel' }], 'who turned it off is kept; the mismatch is recorded');
+  const audit = await w.repo().listPlatformAudit({ limit: 10 });
+  assert.deepEqual([audit[0].action, audit[0].summary], ['suppliers.mismatch', 'Duffel answered in test mode (live search was already off)']);
+  assert.deepEqual(audit[0].actor, { system: 'mode_check' });
+
+  // The panel: the check from before no longer counts, and nothing offers to turn live search on.
+  w.state.mode = 'live';
+  res = await admin.get('/admin/business');
+  const panel = textOf(panelOf(res.text));
+  assert.match(panel, /A supplier answered in test mode after it, so it no longer counts\./);
+  assert.match(panel, /What was done lately.*Duffel answered in test mode \(live search was already off\)/);
+  assert.doesNotMatch(res.text, /Turn on live search/);
+  res = await admin.post('/admin/business/suppliers/live', { on: '1', rev: String(sw.rev) });
+  assert.equal(res.status, 409);
+  assert.ok(textOf(res.text).includes(CHECK_NEEDED));
+  assert.equal((await w.repo().supplierSwitch()).on, false);
+
+  // The latched task stays off when it reads the switch again.
+  tick(w.clock, 31 * 1000);
+  await other.business.inventory.sync();
+  assert.equal(other.business.inventory.status, 'none');
+  assert.deepEqual(other.business.inventory.liveState().latched, { duffel: true, liteapi: false });
+  assertClean(w);
+});
+
+/** The first fare a results page marks Within Policy. */
+function withinFare(page) {
+  for (const s of mainOf(page).split('class="bz-opt-radio"').slice(1)) {
+    const m = s.match(/name="out" value="([^"]*)"/);
+    if (m && s.includes('Within Policy')) return m[1];
+  }
+  assert.fail('a fare inside the policy');
+}
+
+/** Words that promise a trip can be confirmed or approved now, or blame a supplier that was never connected. */
+const SEARCH_OFF_WRONG = /hasn't connected|Confirm and it's approved|confirming approves it|Approving checks it once more|Try again in a few minutes|try again in a few minutes/;
+const SEARCH_OFF = Object.freeze({
+  failed: "Trip search is off right now, so the price can't be checked and nothing changed.",
+  decide: "Trip search is off right now, so the price can't be checked and this trip can't be approved yet. You can still deny it or send a message.",
+  confirm: "Trip search is off right now, so the price can't be checked and this trip can't be confirmed yet.",
+  request: "Trip search is off right now, so the price can't be checked and this trip can't be sent for approval yet.",
+});
+
+/** Acme with live trips: Sam's draft inside the policy, his draft over it, and his Flexible fare waiting for Dana. */
+async function liveTrips(w, co) {
+  const res = await co.c.sam.get(`${co.B}/trips/search?${qs(Q_FLIGHTS)}`);
+  assert.equal(res.status, 200, textMain(res.text).slice(0, 300));
+  const within = await createDraft(co, { ...Q_FLIGHTS, out: withinFare(res.text), purpose: 'Team visit in London' });
+  const over = await createDraft(co, { ...formFor(FLEX, LODGE), purpose: 'Client dinner in London' });
+  const waiting = await createDraft(co, formFor(FLEX, LODGE));
+  let page = await co.c.sam.get(`${co.B}/trips/${waiting}`);
+  page = await co.c.sam.post(`${co.B}/trips/${waiting}/submit`, { rev: revOf(mainOf(page.text), 'submit'), reason: REASON, category: 'client_meeting' });
+  assert.equal(page.location, `${co.B}/trips/${waiting}?ok=submitted`);
+  const ev = (await w.repo().getIn(KINDS.request, within, co.org.id)).evaluation.status;
+  assert.equal(ev, 'within');
+  return { within, over, waiting };
+}
+
+test('live trips after live search is turned off: no page promises a confirm or an approval that cannot run, and none says suppliers were never connected', async t => {
+  const w = await world();
+  t.after(w.close);
+  const co = await company(w, 'Acme Inc');
+  const admin = await platformAdmin(w);
+  await goLive(w, admin);
+  const { within, over, waiting } = await liveTrips(w, co);
+  const res0 = await turn(admin, false);
+  assert.equal(res0.location, '/admin/business?ok=live_off');
+  assert.equal(w.inv().status, 'none');
+  const before = w.ff.calls.length;
+
+  // Sam's draft inside the policy: no Confirm, and why.
+  let res = await co.c.sam.get(`${co.B}/trips/${within}`);
+  assert.equal(res.status, 200);
+  let main = textMain(res.text);
+  assert.ok(main.includes(SEARCH_OFF.confirm), main.slice(0, 600));
+  assert.ok(main.includes('Every part of this trip is inside your policy.'));
+  assert.doesNotMatch(main, SEARCH_OFF_WRONG);
+  assert.doesNotMatch(res.text, /Confirm trip/);
+  // A Confirm sent anyway (an open tab): refused, in the same words.
+  const rev = String((await w.repo().getIn(KINDS.request, within, co.org.id)).rev);
+  res = await co.c.sam.post(`${co.B}/trips/${within}/submit`, { rev, reason: '', category: '' });
+  assert.equal(res.status, 503);
+  main = textMain(res.text);
+  assert.ok(main.includes(SEARCH_OFF.failed), main.slice(0, 600));
+  assert.doesNotMatch(main, SEARCH_OFF_WRONG);
+  assert.equal((await w.repo().getIn(KINDS.request, within, co.org.id)).status, 'draft');
+
+  // Sam's draft over the policy: no Request Approval form, and why.
+  res = await co.c.sam.get(`${co.B}/trips/${over}`);
+  main = textMain(res.text);
+  assert.ok(main.includes(SEARCH_OFF.request), main.slice(0, 600));
+  assert.doesNotMatch(main, SEARCH_OFF_WRONG);
+  assert.doesNotMatch(res.text, /name="reason"/);
+
+  // Dana's decision page: no Approve, and why; Deny and messages still work.
+  res = await co.c.dana.get(`${co.B}/trips/${waiting}`);
+  assert.equal(res.status, 200);
+  main = textMain(res.text);
+  assert.ok(main.includes(SEARCH_OFF.decide), main.slice(0, 600));
+  assert.doesNotMatch(main, SEARCH_OFF_WRONG);
+  assert.doesNotMatch(res.text, /name="action" value="approve"/);
+  assert.match(res.text, /name="action" value="deny"/);
+  res = await co.c.dana.post(`${co.B}/trips/${waiting}/decide`, { action: 'approve', note: '', rev: revOf(mainOf(res.text), 'decide') });
+  assert.equal(res.status, 503);
+  main = textMain(res.text);
+  assert.ok(main.includes(SEARCH_OFF.failed), main.slice(0, 600));
+  assert.doesNotMatch(main, SEARCH_OFF_WRONG);
+  assert.equal((await w.repo().getIn(KINDS.request, waiting, co.org.id)).status, 'pending', 'never approved without a check');
+  res = await co.c.dana.post(`${co.B}/trips/${waiting}/message`, { text: 'Can this wait until search is back?' });
+  assert.equal(res.location, `${co.B}/trips/${waiting}?ok=message`);
+  res = await co.c.dana.get(res.location);
+  res = await co.c.dana.post(`${co.B}/trips/${waiting}/decide`, { action: 'deny', note: 'Please plan this once search is back on.', rev: revOf(mainOf(res.text), 'decide') });
+  assert.equal(res.location, `${co.B}/trips/${waiting}?ok=denied`, textMain(res.text).slice(0, 300));
+  assert.equal(w.ff.calls.length, before, 'no supplier call once live search is off');
+  assertClean(w);
+});
+
+test('a search, a Confirm or an Approve that meets a mode mismatch does not say "try again in a few minutes": search is off until a new check', async t => {
+  const w = await world();
+  t.after(w.close);
+  const co = await company(w, 'Acme Inc');
+  const admin = await platformAdmin(w);
+  await goLive(w, admin);
+  const { within, waiting } = await liveTrips(w, co);
+  const again = async () => {
+    w.state.mode = 'live';
+    tick(w.clock, 60 * 1000);
+    await goLive(w, admin);
+    w.state.mode = 'test';
+  };
+
+  // Dana approves; the final check meets the mismatch (revs from the store: a decider's page view checks too).
+  w.state.mode = 'test';
+  let rev = String((await w.repo().getIn(KINDS.request, waiting, co.org.id)).rev);
+  let res = await co.c.dana.post(`${co.B}/trips/${waiting}/decide`, { action: 'approve', note: '', rev });
+  assert.equal(res.status, 503);
+  assert.equal(w.inv().status, 'none');
+  let main = textMain(res.text);
+  assert.ok(main.includes(SEARCH_OFF.failed), main.slice(0, 600));
+  assert.ok(main.includes(SEARCH_OFF.decide));
+  assert.doesNotMatch(main, SEARCH_OFF_WRONG);
+  assert.equal((await w.repo().getIn(KINDS.request, waiting, co.org.id)).status, 'pending');
+
+  // Sam confirms his trip inside the policy; the final check meets the mismatch.
+  await again();
+  rev = String((await w.repo().getIn(KINDS.request, within, co.org.id)).rev);
+  res = await co.c.sam.post(`${co.B}/trips/${within}/submit`, { rev, reason: '', category: '' });
+  assert.equal(res.status, 503);
+  assert.equal(w.inv().status, 'none');
+  main = textMain(res.text);
+  assert.ok(main.includes(SEARCH_OFF.failed), main.slice(0, 600));
+  assert.doesNotMatch(main, SEARCH_OFF_WRONG);
+  assert.equal((await w.repo().getIn(KINDS.request, within, co.org.id)).status, 'draft');
+
+  // Sam searches (another day, so nothing comes from the search before); the search meets the mismatch: the
+  // form says search is off, and nothing else.
+  await again();
+  res = await co.c.sam.get(`${co.B}/trips/search?${qs({ ...Q_FLIGHTS, depart: '2026-11-13' })}`);
+  assert.equal(res.status, 503);
+  assert.equal(w.inv().status, 'none');
+  main = textMain(res.text);
+  assert.ok(main.includes(NO_SUPPLIER.title), main.slice(0, 600));
+  assert.ok(!main.includes(FLIGHTS_DOWN), 'no "try again in a few minutes" next to "Supplier not connected yet"');
+  assert.doesNotMatch(main, /try again in a few minutes/i);
+  assertClean(w);
+});
 
 test('a mismatch in the live check itself turns live search off; a missing live_mode is a mismatch too', async t => {
   const w = await world();
@@ -926,6 +1126,57 @@ for (const [storeName, url] of STORES) {
 }
 
 // ---------------------------------------------------------------------------------------------------------
+// Undo by putting "unset" back (go-live design §5.9)
+
+for (const [storeName, url] of STORES) {
+  test(`undo by putting "unset" back in a key secret turns the stored switch off: the same key pasted again needs a passing check from the last 24 hours and Turn on (${storeName})`, {
+    skip: skipFor(storeName, url), timeout: 120000,
+  }, async () => {
+    await withStores(url, async open => {
+      const w = await world({ open });
+      try {
+        const co = await company(w, 'Acme Inc');
+        const admin = await platformAdmin(w);
+        await goLive(w, admin);
+        for (const secret of ['DUFFEL_ACCESS_TOKEN', 'LITEAPI_API_KEY']) {
+          // "unset" pasted back and the service restarted: off, and the stored switch says so.
+          await w.restart({ env: { [secret]: 'unset' } });
+          await w.inv().flush();
+          assert.equal(w.inv().status, 'none', secret);
+          const sw = await w.repo().supplierSwitch();
+          assert.deepEqual([sw.on, sw.offReason, sw.offBy], [false, 'keys', null], secret);
+          const audit = await w.repo().listPlatformAudit({ limit: 1 });
+          assert.deepEqual([audit[0].action, audit[0].summary, audit[0].actor], ['suppliers.live_off', 'Live search turned off: a supplier key is not in place', { system: 'keys_check' }]);
+          let res = await admin.get('/admin/business');
+          assert.match(textOf(panelOf(res.text)), /^Suppliers\s*Live search is off/);
+          assert.doesNotMatch(res.text, /Turn off live search|Turn on live search/, `${secret}: nothing to press with a key not in place`);
+
+          // The same key pasted again more than 24 hours after the check: still off, and the check no longer counts.
+          tick(w.clock, 24 * 60 * 60 * 1000 + 60 * 1000);
+          await w.restart({ env: {} });
+          assert.equal(w.inv().status, 'none', `${secret}: the same keys again turn nothing on`);
+          const st = w.inv().liveState();
+          assert.deepEqual([st.stored.on, st.canTurnOn, st.lastCheck.stale], [false, false, 'old']);
+          const before = w.ff.calls.length;
+          res = await co.c.sam.get(`${co.B}/trips/search?${qs(Q_FLIGHTS)}`);
+          assert.equal(res.status, 503);
+          assert.equal(w.ff.calls.length, before, 'no supplier call');
+          res = await admin.post('/admin/business/suppliers/live', { on: '1', rev: String((await w.repo().supplierSwitch()).rev) });
+          assert.equal(res.status, 409);
+          assert.ok(textOf(res.text).includes(CHECK_NEEDED));
+
+          // A new passing check and Turn on bring it back.
+          await goLive(w, admin);
+        }
+        assertClean(w);
+      } finally {
+        await w.close();
+      }
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------------------------------------
 // The daily caps
 
 for (const [storeName, url] of STORES) {
@@ -1050,7 +1301,8 @@ for (const [storeName, url] of STORES) {
         res = await admin.get('/admin/business');
         const panel = textOf(panelOf(res.text));
         assert.match(panel, /Duffel \(flights\)[\s\S]*Calls today: 500 of 500\./);
-        assert.match(panel, /Duffel calls today have passed 80% of the daily total \(500 of 500\)\. At 500 search stops for every company until 00:00 UTC\./);
+        assert.match(panel, /Duffel calls today have reached the daily total \(500 of 500\)\. New searches are paused for every company until 00:00 UTC\./);
+        assert.doesNotMatch(panel, /passed 80%|search stops/, 'not said as still to come');
         assertClean(w);
       } finally {
         await w.close();
@@ -1058,6 +1310,40 @@ for (const [storeName, url] of STORES) {
     });
   });
 }
+
+test('daily caps: a hotel supplier at its limit keeps the flights; the hotel part says so and search is not called closed', async t => {
+  const w = await world();
+  t.after(w.close);
+  const co = await company(w, 'Acme Inc');
+  const la = await company(w, 'Westside Co', { timezone: 'America/Los_Angeles' });
+  const admin = await platformAdmin(w);
+  await goLive(w, admin);
+  const LIMIT = "Hotel search has reached today's limit. You can still request the flights.";
+  const flightsStand = async (who, label) => {
+    const before = w.ff.calls.length;
+    const res = await who.c.sam.get(`${who.B}/trips/search?${qs(Q)}`);
+    assert.equal(res.status, 200, `${label}: ${textMain(res.text).slice(0, 300)}`);
+    const main = textMain(res.text);
+    assert.ok(main.includes(LIMIT), `${label}: the hotel part says why: ${main.slice(0, 400)}`);
+    assert.doesNotMatch(main, /search limit|Search is paused|Search opens again/, `${label}: search is not called closed`);
+    const outs = radioKeys(res.text, 'out');
+    assert.ok(outs.length > 0 && outs.every(k => k.startsWith('f.flt_l.')), `${label}: the fares still show`);
+    assert.deepEqual(radioKeys(res.text, 'hotelKey'), [], `${label}: no room to pick`);
+    assert.match(mainOf(res.text), /type="submit">.*<span>Review trip<\/span>/, `${label}: the flights can still be requested`);
+    assert.deepEqual(opsOf(w.ff.calls.slice(before)), ['offer_request'], `${label}: no hotel call over the cap`);
+    assertSourceMoney(mainOf(res.text), 'live', { label, min: 1 });
+  };
+
+  // Acme Inc at its 100 LiteAPI calls for today; its Duffel calls well under.
+  await w.repo().reserveSupplierUsage({ day: TODAY, supplier: 'liteapi', company: co.org.id, want: 100, caps: SUPPLIER_CAPS });
+  await flightsStand(co, 'company at its hotel limit');
+
+  // Every company together at 500 LiteAPI calls: Westside Co's hotels stop too, and its flights still show.
+  const day = await w.repo().supplierUsage(TODAY);
+  await w.repo().reserveSupplierUsage({ day: TODAY, supplier: 'liteapi', company: 'unscoped', want: 500 - day.liteapi.total, caps: { company: 500, total: 500 } });
+  await flightsStand(la, 'hotel total at 500');
+  assertClean(w);
+});
 
 test('the 80% notice: none at 399 of 500, then one for that supplier at 400', async t => {
   const w = await world();

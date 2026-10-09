@@ -12,10 +12,10 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { world, crawl, textOf, mainOf, Q } = require('./business-world');
 const { assertSourceMoney } = require('./business-sandbox');
-const { seedUser, seedOrg } = require('./business-helpers');
+const { seedUser, seedOrg, seedDepartment, seedBudget } = require('./business-helpers');
 const { LIVE_RIBBON, NO_TRIPS, AWAITING_CONFIRMATION } = require('../server/views/business/parts');
 const { APPROVED, WITHIN_DRAFT } = require('../server/views/business/request');
-const { SEARCH_AFTER_CONFIRM, SOURCE_TOTALS } = require('../server/views/business/format');
+const { SEARCH_AFTER_CONFIRM, SOURCE_TOTALS, LIVE_UNCOUNTED } = require('../server/views/business/format');
 const { SPENT_NO_SUPPLIER } = require('../server/views/business/budgets');
 const { CSV_SOURCES_LIVE } = require('../server/views/business/reports');
 const { NOTES } = require('../server/views/business/marketing');
@@ -145,4 +145,42 @@ test('live prices: a company Tripelyx has not confirmed sees when its search ope
   for (const res of [home, trips, welcome, await page(`${B}/policy`)]) {
     assert.doesNotMatch(mainOf(res.text), /href="[^"]*\/trips\/new/, 'no way to start a search');
   }
+});
+
+test('live prices: budgets with no trip counted are labelled as the company\'s own amounts, never as supplier prices', async t => {
+  const w = await world({ live: true });
+  t.after(w.close);
+  assert.equal(LIVE_UNCOUNTED, 'Supplier prices: amounts here are budgets your company set or trips priced on supplier prices. Nothing is booked or charged.');
+  // What each budget box says: the line under it, inside its live container.
+  const budgetNote = (res, label) => {
+    assert.equal(res.status, 200, label);
+    checkLive(label)(label, res);
+    const main = mainOf(res.text);
+    const table = main.search(/<table[^>]*>\s*<caption[^>]*>Budgets for /);
+    assert.ok(table >= 0, `${label}: a budget table`);
+    const start = main.lastIndexOf('data-price-source="live"', table);
+    assert.ok(start >= 0, `${label}: the budget table sits in a live container`);
+    return textOf(main.slice(start, main.indexOf('</p>', main.indexOf('bz-price-note', table))));
+  };
+
+  // A company Tripelyx has not confirmed: it priced nothing, so its budgets are its own.
+  const owner = await seedUser(w.app, { name: 'Blue Owner', email: 'blue.owner@blue.example' });
+  const org = await seedOrg(w.app, owner, { status: 'pending', name: 'Blue Co' });
+  const eng = await seedDepartment(w.app, org, { name: 'Engineering' });
+  await seedBudget(w.app, org, eng.id, { periodKey: '2026-Q4', amountCents: 2000000 });
+  const http = w.http(owner.cookie);
+  const B = `/business/o/${org.id}`;
+  for (const url of [B, `${B}/budgets`]) {
+    const note = budgetNote(await http.get(url), `pending owner ${url}`);
+    assert.ok(note.includes('$20,000'), `${url}: ${note.slice(0, 300)}`);
+    assert.ok(note.includes(LIVE_UNCOUNTED), `${url}: ${note.slice(0, 400)}`);
+    assert.ok(!note.includes(SOURCE_TOTALS.live), `${url}: not "from our airline and hotel suppliers"`);
+  }
+
+  // Acme: a period with no trips says the same; the period its trips were priced in keeps the supplier label.
+  const fin = w.A.people.finance.http;
+  let note = budgetNote(await fin.get(`${w.A.B}/budgets?period=2026-Q2`), 'Acme finance 2026-Q2');
+  assert.ok(note.includes(LIVE_UNCOUNTED) && !note.includes(SOURCE_TOTALS.live), note.slice(0, 400));
+  note = budgetNote(await fin.get(`${w.A.B}/budgets`), 'Acme finance this quarter');
+  assert.ok(note.includes(SOURCE_TOTALS.live) && !note.includes(LIVE_UNCOUNTED), note.slice(0, 400));
 });

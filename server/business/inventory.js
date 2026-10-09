@@ -32,6 +32,10 @@
 // - A mode mismatch (an answer whose live_mode or sandbox flag says test) latches this task off at once and
 //   turns the stored switch off (CAS, audit "turned off after a mode mismatch"), so every other task, a restart
 //   and a deploy keep it off until a platform admin runs a new passing check and turns it on again.
+// - A task whose keys are not in place (the undo of go-live design §5.9: "unset" back in a key secret, or a key
+//   this site refuses) turns a stored switch that is on off when it reads it (CAS, offReason 'keys', audit
+//   "Live search turned off: a supplier key is not in place"), so the same keys pasted again turn nothing on:
+//   live search needs a passing check from the last 24 hours and Turn on, as the first time.
 // - Every live supplier call counts against the persisted daily caps (business/usage.js), and only companies
 //   Tripelyx has confirmed make supplier calls (suppliers/gate.js; requests.js says why first).
 //
@@ -235,20 +239,31 @@ function createLiveSearch({ cfg, repo, now, log, mono, fetch, lookups, createBus
   });
   const ready = () => Boolean(suppliers.flights) && typeof cfg.keyPrint === 'string' && cfg.keyPrint !== '';
 
-  /** Turn the stored switch off after a mode mismatch (retried on a lost race; logged, never thrown). */
+  /**
+   * Turn the stored switch off after a mode mismatch (retried on a lost race; logged, never thrown). A switch
+   * that is already off (turned off while this task still read it as on, or with a call in flight) keeps who
+   * turned it off and why, and the mismatch is still recorded, so the check before it no longer counts.
+   */
   async function mismatchOff(supplier, at) {
+    const name = SUPPLIER_NAMES[supplier] || 'A supplier';
     for (let attempt = 0; attempt < 5; attempt += 1) {
       try {
         const cur = await repo.supplierSwitch();
-        if (!cur || cur.on !== true) return;
-        const doc = await repo.writeSupplierSwitch(null, d => {
-          d.on = false;
-          d.offAt = at;
-          d.offBy = null;
-          d.offReason = 'mismatch';
+        if (!cur) return;
+        const wasOn = cur.on === true;
+        // Against the rev read here, so the audit's words match the switch it changes (a lost race reads again).
+        const doc = await repo.writeSupplierSwitch(cur.rev ?? 0, d => {
+          if (d.on === true) {
+            d.on = false;
+            d.offAt = at;
+            d.offBy = null;
+            d.offReason = 'mismatch';
+          }
           d.mismatch = { at, supplier };
           d.updatedAt = at;
-        }, { action: 'suppliers.live_off', actor: { system: 'mode_check' }, summary: `Live search turned off: ${SUPPLIER_NAMES[supplier] || 'a supplier'} answered in test mode` });
+        }, wasOn
+          ? { action: 'suppliers.live_off', actor: { system: 'mode_check' }, summary: `Live search turned off: ${name} answered in test mode` }
+          : { action: 'suppliers.mismatch', actor: { system: 'mode_check' }, summary: `${name} answered in test mode (live search was already off)` });
         remember(doc);
         return;
       } catch (e) {
@@ -257,6 +272,33 @@ function createLiveSearch({ cfg, repo, now, log, mono, fetch, lookups, createBus
       }
     }
     log.error('[business] live search could not be turned off in the store after a mode mismatch; this task stays off');
+  }
+
+  /**
+   * Turn the stored switch off because this task's keys are not in place (retried on a lost race; logged,
+   * never thrown). Nothing to do when it is already off.
+   */
+  async function keysOff() {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        const cur = await repo.supplierSwitch();
+        if (!cur || cur.on !== true) return;
+        const at = iso();
+        const doc = await repo.writeSupplierSwitch(cur.rev ?? 0, d => {
+          d.on = false;
+          d.offAt = at;
+          d.offBy = null;
+          d.offReason = 'keys';
+          d.updatedAt = at;
+        }, { action: 'suppliers.live_off', actor: { system: 'keys_check' }, summary: 'Live search turned off: a supplier key is not in place' });
+        remember(doc);
+        return;
+      } catch (e) {
+        if (e instanceof AppError && e.code === 'conflict') continue;
+        break;
+      }
+    }
+    log.error('[business] live search could not be turned off in the store while a supplier key is not in place; this task stays off');
   }
 
   /** The stored switch, read again when the cache is older than 30 s (or `force`). Never throws. */
@@ -268,6 +310,9 @@ function createLiveSearch({ cfg, repo, now, log, mono, fetch, lookups, createBus
       try {
         const doc = await repo.supplierSwitch();
         remember(doc);
+        // On in the store, but this task's keys are not in place (taken out to undo live search): off in the
+        // store too, so pasting the same keys again needs a check and Turn on.
+        if (!ready() && doc && doc.on === true) await track(keysOff());
         // Turned on again (after a new passing check) since this task latched: the latch is cleared.
         if (latchedAt && doc && doc.on === true && typeof doc.onAt === 'string' && doc.onAt > latchedAt) {
           suppliers.state.reset();
@@ -346,6 +391,8 @@ function createLiveSearch({ cfg, repo, now, log, mono, fetch, lookups, createBus
         mismatch: d.mismatch && typeof d.mismatch === 'object' ? { at: d.mismatch.at || null, supplier: d.mismatch.supplier || null } : null,
       } : null,
       latched: suppliers.state ? { duffel: suppliers.state.latched.duffel, liteapi: suppliers.state.latched.liteapi } : { duffel: false, liteapi: false },
+      // When this task latched a supplier off after a mode mismatch (ISO), or null.
+      latchedAt,
       rev: d ? d.rev ?? 0 : 0,
       lastCheck: c ? {
         at: c.at, passed: c.passed === true, current: c.keyPrint === cfg.keyPrint, counts: checkCounts(d, t), details: c.details || null,

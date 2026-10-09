@@ -247,6 +247,11 @@ const liveKind = (source, rows) => (source === 'live' ? priceKind(rows) : 'price
  * each request was priced at its own time, so no one time is named.
  */
 const SOURCE_TOTALS = Object.freeze({ demo: 'Demo prices', sandbox: 'Includes supplier test data', live: `US dollars, from ${LIVE_FROM.price}, as each trip was priced · ${CAN_CHANGE}` });
+/**
+ * A live totals box that adds up no trip priced on supplier prices (a period with none, or a company that has
+ * priced nothing yet): its amounts are budgets the company set, so it never says they came from the suppliers.
+ */
+const LIVE_UNCOUNTED = 'Supplier prices: amounts here are budgets your company set or trips priced on supplier prices. Nothing is booked or charged.';
 
 /**
  * Where an inventory's prices come from (types.BusinessInventory.source; the frozen fakes carry none, so the
@@ -322,7 +327,7 @@ function timeLeft(now, until) {
 module.exports = {
   safeZone, zoneLabel, money, plural, percent, duration, day, dayRange, clock24, timeIn, dayIn, dateTimeIn, whenIn,
   pricedAtText, timeLeft, WEEKDAYS, MONTHS,
-  SOURCE_TOTALS, inventorySource, ctxSource, rowsSource, totalsSource, sourceOf, leastReal, requestSource, isSource,
+  SOURCE_TOTALS, LIVE_UNCOUNTED, inventorySource, ctxSource, rowsSource, totalsSource, sourceOf, leastReal, requestSource, isSource,
   searchable, searchOpen, awaitingConfirmation, SEARCH_AFTER_CONFIRM,
   // Live labels (go-live design §5.6)
   LIVE_FROM, PRICE_KINDS, CAN_CHANGE, tripKind, priceKind, requestRowKind, requestKind, tripRows, liveKind,

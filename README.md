@@ -555,7 +555,9 @@ not set: Business has no supplier, companies see "Supplier not connected yet" an
   tripelyx-staging/business/duffel-token` shows when it last changed. Nobody runs `get-secret-value` on
   these, from a script, a task or the AWS connector.
 - **Undo:** paste `unset` back the same way (type `unset` at the prompt) and restart the site. Business
-  is then exactly as it was before the key.
+  then shows companies what it showed before the key, and the restarted site turns live search off in the
+  database too, so pasting the same key again later turns nothing on by itself: it needs a passing live
+  check from the last 24 hours and **Turn on live search**.
 
 #### Turning Business live search on and off
 
@@ -578,14 +580,19 @@ supplier says where it stands: "Not set", "Test key refused", "Ready to check", 
 - **Daily limits**, per supplier and per UTC day, kept in the database so a restart or a deploy does not
   reset them: 100 calls for one company and 500 for all companies together. Every call counts, a retry and
   the live check included. Past a limit a company sees when search opens again (the next 00:00 UTC, in its
-  own time zone). The panel shows today's count and a notice once either supplier passes 80% of its 500.
+  own time zone). The panel shows today's count and a notice once either supplier passes 80% of its 500,
+  and another once it reaches 500 (new searches are paused until 00:00 UTC).
   Each running copy counts ahead in blocks of 10 per company, so the count can be a few calls ahead of the
   calls made, never behind. Each company also has 120 calls an hour, counted in memory per running copy.
 - **A mode mismatch** (an answer that does not say live mode) turns live search off by itself, in the
   database, so every copy of the site, a restart and a deploy keep it off. The panel says when, and turning
   it on again needs a new passing check.
 - **Undo:** press **Turn off live search** (every copy follows within 30 seconds), or paste `unset` back
-  into either secret and restart the site. Nothing is booked at this stage, so nothing else needs undoing.
+  into either secret and restart the site (that turns live search off in the database as well, so the same
+  key pasted again needs a check and Turn on). Nothing is booked at this stage, so nothing else needs undoing.
+- **While live search is off**, trips already priced on live prices stay readable, and deny, cancel and
+  messages still work, but nothing can be confirmed, sent or approved: their price can't be checked. Those
+  pages say so instead of offering the button.
 
 #### One-off admin tasks
 

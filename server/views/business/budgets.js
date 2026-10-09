@@ -7,7 +7,9 @@
 // Every amount sits in a demo container (§F6): committed and awaiting sum demo prices, so the whole table does.
 // With real suppliers (real-suppliers design §2.3) the container is labelled with the least real source of the
 // requests it adds up (priceSource, from the route): "Includes supplier test data". With no supplier and nothing
-// counted (production) priceSource is null: the figures are the company's own, with no price label.
+// counted (production) priceSource is null: the figures are the company's own, with no price label. With live
+// prices and nothing counted (counted false) the live container says the amounts are budgets the company set
+// (format.LIVE_UNCOUNTED), never that they came from the suppliers.
 const { html } = require('../../lib/html');
 const { pageHead, tabs, dataTable, emptyState, amount, budgetBar, demoBox } = require('./parts');
 const f = require('./format');
@@ -41,13 +43,14 @@ function dollarsText(cents) {
  * @param {{ rows: import('../../business/types').BudgetRow[], periodKey: string, choices: string[], canEdit: boolean,
  *   periodKind: 'quarter'|'month', ownOnly: boolean, uncounted?: Record<string, number>|null,
  *   values?: Record<string, string>, errors?: Record<string, Record<string, string>>, notice?: string|null, error?: string|null,
- *   priceSource?: import('../../business/types').PriceSource|null }} v
+ *   priceSource?: import('../../business/types').PriceSource|null, counted?: boolean }} v
  *   ownOnly: the member sees only their own department; uncounted: per department id, the approved trips of the
  *   period its budget doesn't count, in cents (null when unknown); values/errors: keyed by department id after a 422;
  *   priceSource: the least real source of the amounts the table adds up ('demo' when absent; null with no
- *   supplier and no counted requests, so the table carries no price label)
+ *   supplier and no counted requests, so the table carries no price label); counted: false when the table adds
+ *   up no request (only the budgets set)
  */
-function budgetsView(ctx, shell, { rows, periodKey, choices, canEdit, periodKind, ownOnly, uncounted = null, values = {}, errors = {}, notice = null, error = null, priceSource = 'demo' }) {
+function budgetsView(ctx, shell, { rows, periodKey, choices, canEdit, periodKind, ownOnly, uncounted = null, values = {}, errors = {}, notice = null, error = null, priceSource = 'demo', counted = true }) {
   const { org } = shell;
   const base = `/business/o/${org.id}`;
   const tz = f.safeZone(org.timezone);
@@ -73,7 +76,7 @@ function budgetsView(ctx, shell, { rows, periodKey, choices, canEdit, periodKind
       rows: tableRows,
     })}
       <p class="bz-meta">${committedText(label)} Awaiting approval: trips waiting for a decision, not counted as committed.${truncated ? ` Awaiting approval counts the ${SCAN_CAP.toLocaleString('en-US')} most recent requests.` : ''}</p>
-      <p class="bz-meta">${f.searchable(ctx) && f.ctxSource(ctx) !== 'live' ? SPENT : SPENT_NO_SUPPLIER}</p>`, { pricedAt: null, timeZone: tz, tag: 'section', label: `Budgets for ${label}`, source: priceSource, totals: true })
+      <p class="bz-meta">${f.searchable(ctx) && f.ctxSource(ctx) !== 'live' ? SPENT : SPENT_NO_SUPPLIER}</p>`, { pricedAt: null, timeZone: tz, tag: 'section', label: `Budgets for ${label}`, source: priceSource, totals: true, counted })
     : emptyState({ title: ownOnly ? "You're not in a department yet, so there's no budget to show." : 'No departments yet.', text: ownOnly ? 'Ask a travel admin to add you to one.' : 'Add departments on the People page, then set their budgets here.', iconName: 'wallet' });
   const editable = rows.filter(r => !r.department.archived);
   const forms = canEdit && editable.length

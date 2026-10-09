@@ -274,6 +274,19 @@ const PRICE_CHECK_COPY = Object.freeze({
   unchanged: "The price couldn't be checked just now, so nothing changed. Try again in a few minutes.",
   // Results page, hotel leg error 'unavailable' (the flights still show).
   hotelsLeg: 'Hotels are not available right now. You can still request the flights.',
+  // Results page, hotel leg error 'limit': the hotel supplier's daily cap (the flights still show).
+  hotelsLimit: "Hotel search has reached today's limit. You can still request the flights.",
+  // Live prices with live search off (turned off, or a mode mismatch; inventory status 'none'), for a trip priced
+  // on live prices: nothing can be checked until a platform admin turns live search on again, so no page says
+  // "try again in a few minutes" or that suppliers were never connected (go-live design §5.4, §5.7).
+  // Submit or decide refused (the request is untouched).
+  searchOff: "Trip search is off right now, so the price can't be checked and nothing changed.",
+  // Approver page, instead of the price check line (no Approve button).
+  searchOffDecide: "Trip search is off right now, so the price can't be checked and this trip can't be approved yet. You can still deny it or send a message.",
+  // The traveler's draft inside the policy, instead of the Confirm form.
+  searchOffConfirm: "Trip search is off right now, so the price can't be checked and this trip can't be confirmed yet.",
+  // The traveler's draft over the policy, instead of the Request Approval form.
+  searchOffRequest: "Trip search is off right now, so the price can't be checked and this trip can't be sent for approval yet.",
 });
 
 /**
