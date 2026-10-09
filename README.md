@@ -26,8 +26,8 @@ Test cards at checkout: `4242 4242 4242 4242` (success), `5555 5555 5555 4444` (
 ## Travel by Budget
 
 The planner is on by default outside production (`ENABLE_TRIPS`). Its homepage is `/ai-travel-agent`;
-`/` stays the corporate homepage, and Our Brands and Technology link to the agent. Admin access is
-given by email (`ADMIN_EMAILS`).
+`/` stays the corporate homepage, and Our Brands and Technology link to the agent. Admin access needs
+an `ADMIN_EMAILS` address and a platform admin record (see [Platform admins](#platform-admins)).
 
 | Route | What it is |
 | --- | --- |
@@ -180,6 +180,110 @@ waits for data we don't have or belongs after booking:
 - Vacation Auction: priorities compete for the budget (hotel, nonstop, nights, location, food, experiences, keeping money), money locks, "give the trip $100 / take $100 away", a pressure test that finds the natural price floor, couples and group auctions with private budgets shown as ranges. Keep-money always competes; the reserve is never used to make a booking fit without permission.
 - Trip Proof: the recommendation receipt (why we picked it, why it beat the others, what it sacrifices, what would change our mind), every fact labeled by evidence type (live supplier data, current search, provider information, public rating, estimate, customer preference, platform calculation, needs verification) with its freshness, "prove the savings" with a comparability check, and "what's the catch" that says "we didn't find a major trade-off in the data currently available" rather than inventing one. Today: Our call, why not the cheapest, what would change our mind, the scorecard and the trade-offs, Save more's "why it's cheaper than our pick" (where the money differs, what it gives up, or that the data shows no trade-off), where the money goes on compare, with demo data labeled demo and prices checked at the review page.
 
+## Tripelyx Business
+
+Company travel workspaces under `/business`: a company signs up, sets its travel policy, departments and
+budgets, invites its people, and its travelers plan work trips that are checked against the policy as they
+search and go to their manager when they need approval. Finance sees reports and a CSV. Nothing is booked
+or charged: an approved trip is approved to book, and booking is not open yet. No emails are sent; invites
+are copy links. Outside production every flight, hotel and price is demo data, labelled as such on every
+page; production has no supplier yet, so trip planning says "Supplier not connected yet" while sign-up,
+people, policies, budgets and approvals still work.
+
+| Route | What it is |
+| --- | --- |
+| `/business` | The Business page (company page; sign up or sign in from it) |
+| `/business/start`, `/business/signin` | Create a company (its first account becomes the Owner), sign in |
+| `/business/invite/:token` | An invite link: sign up or sign in, then join the company |
+| `/business/app` | Your companies (straight to the company when there is one; the switcher is in the header) |
+| `/business/o/:orgId/...` | The workspace: home, trips, approvals, policies, people, budgets, reports, activity, settings, as the member's role allows |
+| `/admin/business` | Platform admins only: every company, and confirming a new one |
+
+### Switches
+
+Every setting is in `.env.example` with its default.
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `ENABLE_BUSINESS` | `false` | Turns Business on. With it off, every other page is exactly as it was before Business. Works with `ENABLE_TRIPS` on or off. |
+| `BUSINESS_SELF_SERVE` | `false` | `false`: a new company waits until a platform admin confirms it at `/admin/business` before anyone can join it. |
+| `BUSINESS_INVITE_DAYS` | `7` | Days an invite link stays usable. |
+| `BUSINESS_MAX_ORGS_PER_USER` | `3` | Companies one account can create or join. |
+| `BUSINESS_APPROVAL_HOURS` | `24` | Hours a request waits for a decision before it expires, for new companies (each company picks 4 to 168 in Settings). |
+| `BUSINESS_WRITE_LIMIT`, `BUSINESS_COMPUTE_LIMIT`, `BUSINESS_AUTH_LIMIT` | `300`, `30`, `20` | Business's own rate limits: writes per user per 10 minutes, searches and decisions per user per minute, sign-up and sign-in attempts per IP per 10 minutes. |
+| `BUSINESS_EXPLAINER` | `rules` | What writes the notes beside cheaper alternatives. Only `rules` exists: rule-based, and no trip data leaves Tripelyx. |
+| `ALLOW_DEMO_INVENTORY` | `true` outside production | Business's demo flights and hotels need it. Without it (production), there is no supplier. |
+
+### Platform admins
+
+An account opens `/admin` and `/admin/business` only when its email is in `ADMIN_EMAILS` **and** it has an
+active `platform_admin` record for that email. Adding an address to `ADMIN_EMAILS` alone gives nothing.
+
+- **One-time grandfather seed.** The first boot after this change writes a grandfather list once (the
+  `platform_admin_seed` record `v1`, insert-only): the `ADMIN_EMAILS` accounts that already existed and were
+  created before `2026-10-08T00:00:00Z`. Those accounts get their record at that boot (granted by
+  `legacy-email-match`), so existing admins keep `/admin`. No later boot grants anyone else: an address added
+  to `ADMIN_EMAILS` later, or an account signed up with a listed address, needs a grant. Removing an address
+  from `ADMIN_EMAILS` takes access away at the next restart; a revoked record stays revoked.
+- **`scripts/platform-admin.js`** grants and revokes records on the site's own database (configured exactly
+  as the server reads it: `DATABASE_URL` or `DATABASE_HOST`, `APP_ENV`, `ADMIN_EMAILS`). It refuses the
+  in-memory store.
+
+  ```sh
+  node scripts/platform-admin.js list                                   # every listed address and where it stands
+  node scripts/platform-admin.js grant --email ops@example.com          # the address must be in ADMIN_EMAILS and have an account
+  node scripts/platform-admin.js revoke --email ops@example.com --sign-out
+  ```
+
+  On AWS, run it as a one-off task of the app's task definition (the container is `web`) and read its output
+  in the task's log stream:
+
+  ```sh
+  aws ecs run-task --cluster <cluster> --task-definition <app task definition> --launch-type FARGATE \
+    --network-configuration '<the service network configuration>' \
+    --overrides '{"containerOverrides":[{"name":"web","command":["node","scripts/platform-admin.js","list"]}]}'
+  ```
+
+### The demo
+
+`scripts/business-demo.js` fills the in-memory store with two fictional demo companies, through the same
+service the pages use, so you can click through every role:
+
+```sh
+APP_ENV=development node scripts/business-demo.js --port 4400 --production-preview 4401
+```
+
+It runs only with `APP_ENV=development` on the in-memory store (no `DATABASE_URL`, or `DATABASE_URL=memory`)
+and refuses anything else. It starts the app in the same process with Business on and prints who to sign
+in as at `http://127.0.0.1:4400/business/signin`. Every demo account's password is
+`preview-only-password`. `--production-preview 4401` also starts the production configuration
+(`APP_ENV=production`, no supplier, trips off, an empty in-memory store) on a second port, with HTTPS
+forced off so it opens over plain http on your computer only; sign up a company there to see
+"Supplier not connected yet".
+
+What it seeds:
+
+- a platform admin: the first `ADMIN_EMAILS` address (`platform.admin@tripelyx-demo.example` when unset),
+  given a `platform_admin` record;
+- **Demo Company (preview)**, confirmed: `owner@`, `travel.admin@`, `finance@`, `sales.manager@`,
+  `engineering.manager@`, and four employees (`eli.employee@`, `emma.employee@`, `ezra.employee@`,
+  `esme.employee@`), all at `demo-company.example`; Sales and Engineering with budgets for the quarter;
+  the Standard policy plus a Cairo to London route exception and the demo airline ZS blocked;
+- trip requests in every state: approved by policy, waiting, approved by a manager after a swap, denied,
+  cancelled (its budget hold released), waiting with the manager's question, and a draft with cheaper
+  alternatives; and two test scenarios whose purpose starts with "Test scenario": one whose approval window
+  ran out (made under a clock set two days back, so it shows Expired) and one sent back because its hotel
+  price changed (one demo hotel room on those dates prices $29 more, and the log says so);
+- **Second Demo Company (preview)** (`owner@second-demo-company.example`), which shares Eli, so the company
+  switcher has two companies.
+
+The private preview's boot hook (`PREVIEW_SEED=business`, on an in-memory staging app with Business on)
+calls the same `seed()` from this file, with the app and its config. The demo accounts then use
+`config.preview.password` when the config carries one (the preview's own password), else
+`preview-only-password`; the platform admin is the first `ADMIN_EMAILS` address, so the preview needs
+`ADMIN_EMAILS` set. `seed()` throws on any store but the in-memory one and in production, and never logs
+the password.
+
 ## Pages
 
 | Route | What it is |
@@ -305,7 +409,8 @@ deployments on `staging`.
 - Security headers via helmet with a strict Content-Security-Policy (no inline scripts or styles),
   rate limiting on the API, HttpOnly SameSite=Strict booking cookies with hashed access tokens.
 - Accounts: scrypt password hashes, server-side sessions (only a hash of the session token is stored),
-  HttpOnly SameSite=Lax session cookie, cross-site form posts refused. `ADMIN_EMAILS` grants `/admin`.
+  HttpOnly SameSite=Lax session cookie, cross-site form posts refused. `/admin` needs an `ADMIN_EMAILS`
+  address and an active platform admin record (see [Platform admins](#platform-admins)).
 - Notifications default to an outbox (`NOTIFY_PROVIDER=outbox`): recorded and visible to admins, never
   sent, until a real provider is registered.
 - Hunts are re-run by an in-process scheduler every `HUNT_INTERVAL_MINUTES` (default 360; 0 means on
