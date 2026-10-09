@@ -24,17 +24,20 @@
 // - a platform admin (the first ADMIN_EMAILS address, given a platform_admin record with grantPlatformAdmin);
 // - "Demo Company (preview)", confirmed: an Owner, a Travel Admin, Finance, two Managers and four Employees;
 //   Sales and Engineering with budgets for this quarter (and the trips' quarter, when that is a later one);
-//   the Standard policy plus a Cairo to London route exception and the blocked demo airline ZS (Sahara Wings);
-// - trip requests in every state: approved by policy, waiting for approval, approved by a manager, denied,
+//   the Standard policy plus a Cairo to London route exception and the blocked demo airline ZS (Sahara Wings)
+//   (each only when the inventory lists those airports and that airline);
+// - only when Business prices come from demo data (inventory.source 'demo'), trip requests in every state: approved by policy, waiting for approval, approved by a manager, denied,
 //   cancelled, waiting with a question from the manager, a draft with cheaper alternatives, and two test
 //   scenarios, captioned "Test scenario" at the start of their purpose (on each one's request page, in the log
 //   and in the command's output; the trip lists show route, dates and status, not the purpose): one that
 //   expired (made under a clock set two days back) and one sent back because its hotel price changed (the
 //   hotel provider is wrapped so that one room on those dates prices $29 more, and the log says so); after
 //   the expired one is made, approvers get 7 days (Settings), so the waiting requests stay waiting for a week
-//   after the preview starts;
+//   after the preview starts. With any other source (the suppliers' test systems on the preview, or no
+//   supplier) it makes no trips, so it never calls a supplier, and the log says why;
 // - "Second Demo Company (preview)", which shares one employee, so the company switcher has two companies.
-// Every name is fictional, every address is on the reserved .example domain, and every price is a demo price.
+// Every name is fictional, every address is on the reserved .example domain, and every trip it makes is priced
+// from demo data.
 'use strict';
 
 const crypto = require('node:crypto');
@@ -76,6 +79,13 @@ const SECOND_OWNER = Object.freeze({ key: 'secondOwner', name: 'Owen Owner', ema
 const SHARED = 'eli';
 const BUDGETS = Object.freeze({ Sales: '15000', Engineering: '30000' });
 const REASON = 'The client meeting is on the first morning, and this is the only flight that lands the evening before.';
+
+/** Why no trips were seeded, per price source: the seed makes trips from demo prices only. */
+const NO_TRIPS = Object.freeze({
+  sandbox: "No trip requests were seeded: trip prices here come from the suppliers' test systems, and the seed never calls a supplier.",
+  live: 'No trip requests were seeded: trip prices here come from the suppliers, and the seed never calls a supplier.',
+  none: 'No trip requests were seeded: no supplier is connected, so there are no trip prices.',
+});
 
 /** One line for the log (info when the logger has it). */
 function say(log, message) {
@@ -188,19 +198,29 @@ async function seed(deps = {}) {
   };
   for (const p of PEOPLE.slice(1)) await join(p, org.id, 'owner');
 
+  // Where Business prices come from: trips are made from demo prices only, so the seed never calls a supplier.
+  const inventory = svc.inventory;
+  const priceSource = (inventory && inventory.source) || 'none';
+  const seedTrips = priceSource === 'demo';
+
   // The Standard policy: a Cairo to London route exception (both ways, Premium economy, up to the median of
-  // the fares plus 30%) and the demo airline ZS blocked. A new version, with its note.
-  const standard = await svc.getPolicy(as('owner'), 'standard');
-  await svc.savePolicy(as('owner'), 'standard', {
-    rev: standard.rev,
-    note: 'Demo policy: Premium economy on Cairo to London, and Sahara Wings (ZS) blocked.',
-    form: {
-      ...standard.form,
-      'route.0.from': 'CAI', 'route.0.to': 'LHR', 'route.0.bothWays': '1',
-      'route.0.capMode': 'median_pct', 'route.0.capPct': '30', 'route.0.fallback': '900', 'route.0.maxCabin': 'premium',
-      blockedCarriers: [...new Set([...(standard.form.blockedCarriers || []), 'ZS'])],
-    },
-  });
+  // the fares plus 30%) and the demo airline ZS blocked. A new version, with its note. Each part only when the
+  // inventory lists its airports or airline (the policy refuses any other), and no new version with neither.
+  const route = Boolean(inventory) && ['CAI', 'LHR'].every(code => inventory.airports().some(a => a.code === code));
+  const blockZs = Boolean(inventory) && inventory.carriers().some(c => c.code === 'ZS');
+  if (route || blockZs) {
+    const standard = await svc.getPolicy(as('owner'), 'standard');
+    const form = { ...standard.form };
+    if (route) {
+      Object.assign(form, {
+        'route.0.from': 'CAI', 'route.0.to': 'LHR', 'route.0.bothWays': '1',
+        'route.0.capMode': 'median_pct', 'route.0.capPct': '30', 'route.0.fallback': '900', 'route.0.maxCabin': 'premium',
+      });
+    }
+    if (blockZs) form.blockedCarriers = [...new Set([...(standard.form.blockedCarriers || []), 'ZS'])];
+    const parts = [route && 'Premium economy on Cairo to London', blockZs && 'Sahara Wings (ZS) blocked'].filter(Boolean);
+    await svc.savePolicy(as('owner'), 'standard', { rev: standard.rev, note: `Demo policy: ${parts.join(', and ')}.`, form });
+  }
 
   // Trips leave three to five weeks from today (company time); budgets cover this quarter and theirs.
   const today = tz.localDate(org.timezone, now());
@@ -247,62 +267,67 @@ async function seed(deps = {}) {
   // Test scenario: expired. Made and sent under a clock set two days back, so its approval window (the
   // company's 24 hours at the time) has run out by now. Nothing writes the expiry: the pages show it expired.
   let r;
-  const past = () => new Date(now().getTime() - 2 * DAY_MS);
-  const pastSvc = new BusinessService({
-    repo: new Repo({ store, now: past, log }), accounts, config, now: past, log, inventory: svc.inventory,
-    composer: new TripComposer({ inventory: svc.inventory, now: past }), policy: svc.policy, alternatives: svc.alternatives, explainer: svc.explainer,
-  });
-  r = await draftTrip(pastSvc, 'emma', { offset: 30, cabin: 'business', purpose: `${TEST_SCENARIO}: the approval window ran out` });
-  r = (await send(pastSvc, 'emma', r)).request;
-  note({ ...r, status: svc.policy.effectiveStatus(r, now().toISOString(), org.timezone) }, 'emma');
+  if (seedTrips) {
+    const past = () => new Date(now().getTime() - 2 * DAY_MS);
+    const pastSvc = new BusinessService({
+      repo: new Repo({ store, now: past, log }), accounts, config, now: past, log, inventory: svc.inventory,
+      composer: new TripComposer({ inventory: svc.inventory, now: past }), policy: svc.policy, alternatives: svc.alternatives, explainer: svc.explainer,
+    });
+    r = await draftTrip(pastSvc, 'emma', { offset: 30, cabin: 'business', purpose: `${TEST_SCENARIO}: the approval window ran out` });
+    r = (await send(pastSvc, 'emma', r)).request;
+    note({ ...r, status: svc.policy.effectiveStatus(r, now().toISOString(), org.timezone) }, 'emma');
+  }
 
-  // Then approvers get 7 days (Settings, 4 to 168 hours), so the requests below stay waiting for a week
-  // after the preview starts.
+  // Then approvers get 7 days (Settings, 4 to 168 hours), so the requests below (and any made on the
+  // preview) stay waiting for a week after it starts.
   const fresh = await svc.getOrg(as('owner'));
   await svc.saveSettings(as('owner'), { approvalHours: '168', rev: fresh.rev });
+  if (!seedTrips) {
+    say(log, `[demo] ${NO_TRIPS[priceSource] || NO_TRIPS.none} The companies, people, budgets and policy are ready: sign in as an employee to search for a trip.`);
+  } else {
+    // 1. Inside the policy: approved by policy, with its budget hold.
+    r = await draftTrip(svc, 'ezra', { offset: 21, purpose: 'Client workshop in London' });
+    note((await send(svc, 'ezra', r)).request, 'ezra');
+    // 2. Out of policy, waiting for the manager.
+    r = await draftTrip(svc, 'esme', { offset: 22, cabin: 'business', purpose: 'Board meeting in London' });
+    note((await send(svc, 'esme', r)).request, 'esme');
+    // 3. A cheaper alternative used, still out of policy, then approved by the manager.
+    r = await draftTrip(svc, 'eli', { offset: 23, cabin: 'business', purpose: 'Partner summit in London' });
+    const cheaper = (r.alternatives || []).find(a => a.evaluation && a.evaluation.status === 'out');
+    if (cheaper) r = await svc.swap(as('eli'), r.id, { altId: cheaper.id, rev: r.rev });
+    r = (await send(svc, 'eli', r)).request;
+    await svc.decide(as('salesManager'), r.id, { action: 'approve', rev: r.rev });
+    note(await current('eli', r.id), 'eli');
+    // 4. Denied, with the manager's reason.
+    r = await draftTrip(svc, 'emma', { offset: 24, cabin: 'business', purpose: 'Sales conference in London' });
+    r = (await send(svc, 'emma', r)).request;
+    await svc.decide(as('salesManager'), r.id, { action: 'deny', note: 'Please fly Economy for this one; the conference is a short trip.', rev: r.rev });
+    note(await current('emma', r.id), 'emma');
+    // 5. Approved by policy, then cancelled by the traveler (the budget hold is released).
+    r = (await send(svc, 'ezra', await draftTrip(svc, 'ezra', { offset: 25, purpose: 'Team offsite in London' }))).request;
+    await svc.cancel(as('ezra'), r.id, { rev: r.rev });
+    note(await current('ezra', r.id), 'ezra');
+    // 6. Waiting, with a question from the manager.
+    r = (await send(svc, 'esme', await draftTrip(svc, 'esme', { offset: 26, cabin: 'business', purpose: 'Product launch in London' }))).request;
+    await svc.message(as('engManager'), r.id, { text: 'Could you share the launch agenda? I want to check the dates before I decide.' });
+    note(await current('esme', r.id), 'esme');
+    // 7. A draft out of policy, with its cheaper alternatives, not sent yet.
+    note(await draftTrip(svc, 'eli', { offset: 27, cabin: 'business', purpose: 'Customer visit in London' }), 'eli');
 
-  // 1. Inside the policy: approved by policy, with its budget hold.
-  r = await draftTrip(svc, 'ezra', { offset: 21, purpose: 'Client workshop in London' });
-  note((await send(svc, 'ezra', r)).request, 'ezra');
-  // 2. Out of policy, waiting for the manager.
-  r = await draftTrip(svc, 'esme', { offset: 22, cabin: 'business', purpose: 'Board meeting in London' });
-  note((await send(svc, 'esme', r)).request, 'esme');
-  // 3. A cheaper alternative used, still out of policy, then approved by the manager.
-  r = await draftTrip(svc, 'eli', { offset: 23, cabin: 'business', purpose: 'Partner summit in London' });
-  const cheaper = (r.alternatives || []).find(a => a.evaluation && a.evaluation.status === 'out');
-  if (cheaper) r = await svc.swap(as('eli'), r.id, { altId: cheaper.id, rev: r.rev });
-  r = (await send(svc, 'eli', r)).request;
-  await svc.decide(as('salesManager'), r.id, { action: 'approve', rev: r.rev });
-  note(await current('eli', r.id), 'eli');
-  // 4. Denied, with the manager's reason.
-  r = await draftTrip(svc, 'emma', { offset: 24, cabin: 'business', purpose: 'Sales conference in London' });
-  r = (await send(svc, 'emma', r)).request;
-  await svc.decide(as('salesManager'), r.id, { action: 'deny', note: 'Please fly Economy for this one; the conference is a short trip.', rev: r.rev });
-  note(await current('emma', r.id), 'emma');
-  // 5. Approved by policy, then cancelled by the traveler (the budget hold is released).
-  r = (await send(svc, 'ezra', await draftTrip(svc, 'ezra', { offset: 25, purpose: 'Team offsite in London' }))).request;
-  await svc.cancel(as('ezra'), r.id, { rev: r.rev });
-  note(await current('ezra', r.id), 'ezra');
-  // 6. Waiting, with a question from the manager.
-  r = (await send(svc, 'esme', await draftTrip(svc, 'esme', { offset: 26, cabin: 'business', purpose: 'Product launch in London' }))).request;
-  await svc.message(as('engManager'), r.id, { text: 'Could you share the launch agenda? I want to check the dates before I decide.' });
-  note(await current('esme', r.id), 'esme');
-  // 7. A draft out of policy, with its cheaper alternatives, not sent yet.
-  note(await draftTrip(svc, 'eli', { offset: 27, cabin: 'business', purpose: 'Customer visit in London' }), 'eli');
-
-  // 8. Test scenario: sent back because the price changed. The draft is made at today's demo price; then the
-  //    hotel provider is wrapped so this one room on these dates prices $29 more, and sending it re-checks the
-  //    price and returns it to the traveler with the old and new totals. The wrap stays, so sending it again
-  //    goes through at the new price.
-  r = await draftTrip(svc, 'ezra', { offset: 34, purpose: `${TEST_SCENARIO}: the hotel price changed before sending` });
-  const hotelKey = /^h\.(.+)\|([^|]+)$/.exec(r.selection.hotel || r.selection.hotelKey || '');
-  if (!hotelKey) throw new Error('The price-change scenario needs a hotel in its trip.');
-  const stay = r.query.hotel;
-  svc.inventory.hotels = priceStep(svc.inventory.hotels, { offerId: hotelKey[1], optionId: hotelKey[2], checkIn: stay.checkIn, checkOut: stay.checkOut }, PRICE_STEP_CENTS);
-  say(log, `[demo] Test scenario: one demo hotel room in ${stay.city} for ${stay.checkIn} to ${stay.checkOut} now prices $29 more, so "${r.purpose}" is sent back when it is sent.`);
-  const repriced = await send(svc, 'ezra', r);
-  if (repriced.outcome !== 'repriced') throw new Error(`The price-change scenario was ${repriced.outcome}, not sent back.`);
-  note(repriced.request, 'ezra');
+    // 8. Test scenario: sent back because the price changed. The draft is made at today's demo price; then the
+    //    hotel provider is wrapped so this one room on these dates prices $29 more, and sending it re-checks the
+    //    price and returns it to the traveler with the old and new totals. The wrap stays, so sending it again
+    //    goes through at the new price.
+    r = await draftTrip(svc, 'ezra', { offset: 34, purpose: `${TEST_SCENARIO}: the hotel price changed before sending` });
+    const hotelKey = /^h\.(.+)\|([^|]+)$/.exec(r.selection.hotel || r.selection.hotelKey || '');
+    if (!hotelKey) throw new Error('The price-change scenario needs a hotel in its trip.');
+    const stay = r.query.hotel;
+    svc.inventory.hotels = priceStep(svc.inventory.hotels, { offerId: hotelKey[1], optionId: hotelKey[2], checkIn: stay.checkIn, checkOut: stay.checkOut }, PRICE_STEP_CENTS);
+    say(log, `[demo] Test scenario: one demo hotel room in ${stay.city} for ${stay.checkIn} to ${stay.checkOut} now prices $29 more, so "${r.purpose}" is sent back when it is sent.`);
+    const repriced = await send(svc, 'ezra', r);
+    if (repriced.outcome !== 'repriced') throw new Error(`The price-change scenario was ${repriced.outcome}, not sent back.`);
+    note(repriced.request, 'ezra');
+  }
 
   // The second company, which shares one employee (the company switcher).
   const second = await svc.createCompany({ user: users.secondOwner }, { name: SECOND_COMPANY, size: '1-10 people', timezone: 'Africa/Cairo', ack: '1' });
@@ -341,6 +366,11 @@ async function seed(deps = {}) {
 
 // ---------------------------------------------------------------------------------------------------------
 // The command
+
+/** The command's words for where the demo's prices come from. */
+const PRICE_WORDS = Object.freeze({
+  demo: 'demo prices', sandbox: "prices from the suppliers' test systems", live: 'prices from the suppliers', none: 'no supplier connected',
+});
 
 const USAGE = 'Usage: APP_ENV=development node scripts/business-demo.js [--port 4400] [--production-preview 4401]';
 
@@ -438,7 +468,8 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
   }
 
   out.log('');
-  out.log(`Tripelyx Business demo: ${devUrl}/business  (development, demo prices; nothing is booked, charged or emailed)`);
+  const prices = PRICE_WORDS[built.business.inventory && built.business.inventory.source] || PRICE_WORDS.none;
+  out.log(`Tripelyx Business demo: ${devUrl}/business  (development, ${prices}; nothing is booked, charged or emailed)`);
   if (prodUrl) out.log(`Production preview:     ${prodUrl}/business/start  (no supplier: "Supplier not connected yet"; nothing seeded)`);
   out.log(`Sign in at ${devUrl}/business/signin with the demo accounts listed above.`);
   out.log(result.passwordSource === 'default' ? `Password for every demo account: ${DEMO_PASSWORD}` : 'Password for every demo account: the preview password you set.');
@@ -461,5 +492,5 @@ if (require.main === module) {
 
 module.exports = {
   seed, main, parseArgs, priceStep, demoPassword, assertDemoAllowed,
-  DEMO_PASSWORD, DEMO_COMPANY, SECOND_COMPANY, TEST_SCENARIO, DEMO_ADMIN_EMAIL, PRICE_STEP_CENTS, PEOPLE, SECOND_OWNER, SHARED,
+  DEMO_PASSWORD, DEMO_COMPANY, SECOND_COMPANY, TEST_SCENARIO, DEMO_ADMIN_EMAIL, PRICE_STEP_CENTS, PEOPLE, SECOND_OWNER, SHARED, NO_TRIPS,
 };

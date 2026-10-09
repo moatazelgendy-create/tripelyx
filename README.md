@@ -264,12 +264,15 @@ What it seeds:
 - **Demo Company (preview)**, confirmed: `owner@`, `travel.admin@`, `finance@`, `sales.manager@`,
   `engineering.manager@`, and four employees (`eli.employee@`, `emma.employee@`, `ezra.employee@`,
   `esme.employee@`), all at `demo-company.example`; Sales and Engineering with budgets for the quarter;
-  the Standard policy plus a Cairo to London route exception and the demo airline ZS blocked;
-- trip requests in every state: approved by policy, waiting, approved by a manager after a swap, denied,
+  the Standard policy plus a Cairo to London route exception and the demo airline ZS blocked (each only when
+  the inventory lists those airports and that airline);
+- only when Business prices come from demo data, trip requests in every state: approved by policy, waiting, approved by a manager after a swap, denied,
   cancelled (its budget hold released), waiting with the manager's question, and a draft with cheaper
   alternatives; and two test scenarios whose purpose starts with "Test scenario": one whose approval window
   ran out (made under a clock set two days back, so it shows Expired) and one sent back because its hotel
-  price changed (one demo hotel room on those dates prices $29 more, and the log says so);
+  price changed (one demo hotel room on those dates prices $29 more, and the log says so). On any other price
+  source (the private preview on supplier test keys, or no supplier) it makes no trips, so it never calls a
+  supplier, and the log says why;
 - **Second Demo Company (preview)** (`owner@second-demo-company.example`), which shares Eli, so the company
   switcher has two companies.
 
@@ -527,8 +530,9 @@ through Business before it goes anywhere near the live site: tripelyx.com, its l
 database and DNS are never touched, and Business stays off there.
 
 - **What runs:** the same Docker image as the live site, with `APP_ENV=staging`, `DATABASE_URL=memory`
-  (data lives in memory only), `ENABLE_BUSINESS=true`, demo inventory, `PAYMENT_MODE=test`, and the demo
-  companies from `scripts/business-demo.js` when that script is in the build (`PREVIEW_SEED=business`).
+  (data lives in memory only), `ENABLE_BUSINESS=true`, demo inventory (or the suppliers' test systems, see
+  **Supplier test keys** below), `PAYMENT_MODE=test`, and the demo companies from `scripts/business-demo.js`
+  when that script is in the build (`PREVIEW_SEED=business`; on supplier test keys, without trips).
   Nothing is booked or charged and no email is sent. **Test data starts fresh with every update.**
 - **The password:** every page asks for it (HTTP Basic auth, any user name); only `/healthz` is open, for
   the health check. Search engines are told not to index anything. After 10 wrong passwords from one
@@ -574,7 +578,9 @@ the suppliers' test systems. The workflow writes them into the container's setti
 | `DUFFEL_TEST_TOKEN` (a Duffel test token, `duffel_test_...`) | `BUSINESS_FLIGHT_SUPPLIER=duffel`, `DUFFEL_ACCESS_TOKEN`, `BUSINESS_ALLOW_SUPPLIER_TEST=true` |
 | `LITEAPI_SANDBOX_KEY` (a LiteAPI sandbox key, `sand_...`), with `DUFFEL_TEST_TOKEN` | `BUSINESS_HOTEL_SUPPLIER=liteapi`, `LITEAPI_API_KEY` |
 
-Hotels need flights, so `LITEAPI_SANDBOX_KEY` alone changes nothing. Before anything is built, the run stops
+Hotels need flights, so `LITEAPI_SANDBOX_KEY` alone changes nothing. With the keys, Business prices are
+labelled TEST DATA, and the demo seed makes the companies, people, budgets and policy but no trips, so the
+preview calls no supplier when it starts. Before anything is built, the run stops
 when either secret is set to anything but a test key (a Duffel token not starting with `duffel_test_`, a
 LiteAPI key not starting with `sand_`); the message names the secret, never its value. The preview's
 `ADMIN_EMAILS` is always the demo address `platform.admin@tripelyx-demo.example`, so no real address is in

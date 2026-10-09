@@ -9,7 +9,9 @@
 //   (https://duffel.com/docs/api/overview/test-your-integration): PVD-RAI no offers, LHR-STN a new price on GET,
 //   LGW-LHR offer no longer available, STN-LHR timeout, LHR-DXB a connection, BTS-MRU no bags, DXB-AMS one stop
 //   inside the segment; live_mode false everywhere; the ratelimit headers (ratelimit-reset is an HTTP-date);
-//   GET /air/airlines against suppliers/airlines.js;
+//   GET /air/airlines against suppliers/airlines.js; every offer in US dollars (the Duffel account's currency is
+//   chosen at sign-up and Business keeps USD fares only, so the run fails on any other, in test mode, before
+//   the account is activated or topped up);
 // - LiteAPI: rates for the 10 Business cities and New Alamein (sandbox true on every answer, USD, stars, taxes,
 //   RFN/NRFN); Cairo sorted by price with limit 40 against limit 200; at most 3 prebooks of a fresh rate in all
 //   (Cairo, Dubai, London; each locks a room briefly, L-VAL; held at the fetch, per send, so an adapter's second
@@ -492,6 +494,26 @@ async function collect({ token, apiKey, fetch: baseFetch, sleep, clock, timing =
   return { report: JSON.parse(JSON.stringify(report)), trace: { duffelSends: [...o.sends.duffel], liteSends: [...o.sends.liteapi], prebookCalls: o.liteapi.prebookCalls, reusedPrebookCalls: o.liteapi.reusedPrebookCalls } };
 }
 
+/**
+ * Why the Duffel account's currency is wrong, or null when there were offers and every one is in US dollars.
+ * Duffel fixes an account's currency at sign-up (it is the currency of the Balance, the fares and the fees) and
+ * Business keeps USD fares only, so a test offer in any other currency, or with none, means the account was
+ * opened in the wrong currency. Counts and three-letter currency codes only.
+ * @param {{ offers: number, currencies: Record<string, number> }} raw the report's duffel.raw
+ * @returns {string|null}
+ */
+function duffelCurrencyProblem(raw) {
+  const offers = raw && Number.isInteger(raw.offers) ? raw.offers : 0;
+  const counts = (raw && raw.currencies) || {};
+  const usd = counts.USD || 0;
+  if (offers > 0 && usd === offers) return null;
+  if (offers === 0) return 'Duffel answered with no offers, so its account currency (USD) could not be checked.';
+  const others = Object.keys(counts).filter(code => code !== 'USD').sort().map(code => `${code} ${counts[code]}`);
+  const unnamed = offers - Object.values(counts).reduce((a, n) => a + n, 0);
+  if (unnamed > 0) others.push(`no currency ${unnamed}`);
+  return `${offers - usd} of ${offers} Duffel test offers are not in USD (${others.join(', ')}). The Duffel account's currency is chosen at sign-up and must be US dollars (USD).`;
+}
+
 /** Every value in the report is a count, a boolean, null, a median, or a short lower-case code: nothing else. */
 function onlyCounts(value, where = 'report') {
   if (value === null || typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value))) return [];
@@ -528,9 +550,15 @@ test('guard: runs only with SUPPLIER_SANDBOX=1 and both keys, and refuses any ke
  * The fixtures the dry run answers with. `prebook` is the answer to a fresh offer's prebook (the old offerId,
  * offer_PLACEHOLDER_lp1001_std, is always refused with 4040).
  */
-function dryRunFetch(keys, prebook = null) {
+function dryRunFetch(keys, prebook = null, { usdOnly = false } = {}) {
   // The CAI-LHR fixture moved to the route and date each offer request asks for, so every case has offers.
-  const asAsked = (body, call) => {
+  // usdOnly: every offer in US dollars, as an account opened in USD answers.
+  const inUsd = body => {
+    if (usdOnly) for (const o of body.data.offers) Object.assign(o, { total_currency: 'USD', base_currency: 'USD', tax_currency: 'USD' });
+    return body;
+  };
+  const asAsked = (body, call) => inUsd(movedToAsked(body, call));
+  const movedToAsked = (body, call) => {
     const want = call.body.data.slices[0];
     const shift = (Date.parse(want.departure_date) - Date.parse('2026-11-12')) / 86400000;
     const moved = JSON.parse(JSON.stringify(body).replace(/2026-11-1([2-4])/g, (m, d) => new Date(Date.parse(`2026-11-1${d}`) + shift * 86400000).toISOString().slice(0, 10)));
@@ -583,6 +611,35 @@ test('dry run on the fixtures: the harness paces its calls and reports counts an
   assert.equal(report.liteapi.reused.refused, true, 'the old offerId case reads the error code');
   assert.ok(report.liteapi.raw.excludedCurrencies.AED > 0, 'the AED fee is counted');
   assert.ok(report.duffel.raw.resetSeen > 0 && report.duffel.raw.resetHttpDate === report.duffel.raw.resetSeen);
+  // The CAI-LHR fixture holds one offer in pounds: the currency check names it, by code and count only.
+  assert.ok(report.duffel.raw.currencies.GBP > 0 && report.duffel.raw.currencies.USD > 0);
+  const problem = duffelCurrencyProblem(report.duffel.raw);
+  assert.match(problem, /^\d+ of \d+ Duffel test offers are not in USD \(GBP \d+\)\. The Duffel account's currency is chosen at sign-up and must be US dollars \(USD\)\.$/);
+  assert.equal(problem.split(' ')[0], String(report.duffel.raw.currencies.GBP));
+});
+
+test('dry run with every Duffel offer in US dollars: the currency check passes', async () => {
+  const keys = testKeys();
+  const ff = dryRunFetch(keys, null, { usdOnly: true });
+  let t = Date.parse('2026-10-09T09:00:00.000Z');
+  const clock = () => t;
+  const sleep = async ms => { t += Math.max(0, ms); };
+  const { report } = await collect({ token: keys.token, apiKey: keys.apiKey, fetch: ff.fetch, sleep, clock, timing: { sleep, mono: clock } });
+  ff.assertClean();
+  assert.deepEqual(onlyCounts(report), []);
+  assert.ok(report.duffel.raw.offers > 0);
+  assert.deepEqual(report.duffel.raw.currencies, { USD: report.duffel.raw.offers });
+  assert.equal(duffelCurrencyProblem(report.duffel.raw), null);
+});
+
+test('the Duffel currency check: null only when there were offers and all are in USD', () => {
+  assert.equal(duffelCurrencyProblem({ offers: 3, currencies: { USD: 3 } }), null);
+  assert.equal(duffelCurrencyProblem({ offers: 1, currencies: { USD: 1 } }), null);
+  assert.match(duffelCurrencyProblem({ offers: 0, currencies: {} }), /no offers, so its account currency \(USD\) could not be checked/);
+  assert.match(duffelCurrencyProblem(null), /no offers/);
+  assert.match(duffelCurrencyProblem({ offers: 4, currencies: { EUR: 4 } }), /^4 of 4 Duffel test offers are not in USD \(EUR 4\)\./);
+  assert.match(duffelCurrencyProblem({ offers: 5, currencies: { USD: 2, GBP: 1, AED: 1 } }), /^3 of 5 .* \(AED 1, GBP 1, no currency 1\)\./);
+  assert.match(duffelCurrencyProblem({ offers: 2, currencies: { USD: 1 } }), /^1 of 2 .* \(no currency 1\)\./, 'an offer with no currency is not a USD offer');
 });
 
 test('dry run: a sandbox that refuses every prebook (2001) still gets at most 3 fresh prebooks, plus the one old offerId', async () => {
@@ -622,6 +679,7 @@ test('contract: the Duffel and LiteAPI sandboxes answer as the adapters expect',
   const d = report.duffel, l = report.liteapi, s = d.scenarios;
   assert.equal(d.latchedOff, false, 'Duffel answered in test mode');
   assert.equal(d.liveModeAllFalse, true, 'live_mode false on every answer');
+  assert.equal(duffelCurrencyProblem(d.raw), null, 'every Duffel test offer is in USD, the account currency chosen at sign-up');
   assert.ok(Object.values(d.routes).some(r => r.offers > 0), 'our routes have offers');
   assert.equal(s.pvd_rai_none.offers, 0, 'PVD-RAI: no offers');
   assert.equal(s.lhr_stn_price_change.changed, true, 'LHR-STN: the GET shows a new price');
@@ -641,4 +699,4 @@ test('contract: the Duffel and LiteAPI sandboxes answer as the adapters expect',
   assert.equal(l.reused.refused, true, 'an old offerId is refused with 4040 or 2001');
 });
 
-module.exports = { guard, collect, onlyCounts };
+module.exports = { guard, collect, onlyCounts, duffelCurrencyProblem };

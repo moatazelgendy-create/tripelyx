@@ -1,7 +1,9 @@
 // scripts/business-demo.js (plan §L Stage 3 step 3): the seed the private preview's boot hook awaits, and the
 // development-only command. The seed goes through the BusinessService, fills only the in-memory store outside
 // production, uses the preview password when there is one (and never logs it), and leaves requests in every
-// state with the two test scenarios captioned wherever they show. The command refuses anything but
+// state with the two test scenarios captioned wherever they show. On any price source but demo (the
+// preview on supplier test keys, or no supplier) it seeds the companies, people, budgets and policy, makes no
+// trips and calls no supplier, and says why in the log. The command refuses anything but
 // APP_ENV=development on the in-memory store, and serves the demo (and the production preview) over http.
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -12,6 +14,7 @@ const { spawn } = require('node:child_process');
 const { startApp, FIXED_NOW, quietLog } = require('./helpers');
 const { mutableClock, storeSnapshot } = require('./business-helpers');
 const flows = require('./business-e2e-flows');
+const { SANDBOX_ENV, blockSupplierHosts } = require('./supplier-fetch');
 const demo = require('../scripts/business-demo');
 
 const ADMIN = 'ops@tripelyx.example';
@@ -153,6 +156,8 @@ test('seed: Demo Company (preview) with every role, departments, budgets, the po
   assert.deepEqual([byName.Sales.amountCents, byName.Engineering.amountCents], [1500000, 3000000]);
   const policy = await svc.getPolicy(owner, 'standard');
   assert.equal(policy.version, 2);
+  assert.deepEqual((await svc.policyHistory(owner, 'standard')).versions.filter(v => v.version === 2).map(v => v.note),
+    ['Demo policy: Premium economy on Cairo to London, and Sahara Wings (ZS) blocked.']);
   assert.deepEqual(policy.rules.flights.blockedCarriers, ['ZS']);
   assert.deepEqual(policy.rules.flights.routeOverrides.map(o => [o.from, o.to, o.bothWays, o.maxCabin]), [['CAI', 'LHR', true, 'premium']]);
   const org = await app.store.getRecord('biz_org', orgId);
@@ -208,6 +213,7 @@ test('seed: Demo Company (preview) with every role, departments, budgets, the po
   // The log says "Test scenario" (the wrapped hotel and each scenario with its page), names every demo account
   // and its roles (who to sign in as), and never the password.
   assert.ok(lines.some(l => /Test scenario: one demo hotel room/.test(l)), lines.join('\n'));
+  assert.ok(lines.every(l => !l.includes('No trip requests were seeded')), 'demo prices: the trips are seeded');
   for (const x of result.scenarios) assert.ok(lines.some(l => l.includes(x.purpose) && l.includes(`/business/o/${orgId}/trips/${x.id}`)), x.purpose);
   assert.deepEqual(result.scenarios.map(x => x.purpose).sort(), ['Test scenario: the approval window ran out', 'Test scenario: the hotel price changed before sending']);
   for (const a of result.accounts) {
@@ -420,6 +426,120 @@ test('seed refuses a store that is not the in-memory one, production, Business o
   t.after(staging.close);
   const r = await demo.seed({ ...staging, config: staging.config, log, now: staging.ctx.now });
   assert.equal(r.companies.length, 2);
+});
+
+/**
+ * A Business app on `env` whose suppliers fetch only through a spy that records each URL and answers nothing
+ * (and the supplier hosts blocked for the global fetch as well), seeded as the preview hook seeds it.
+ */
+async function seededOn(env, t) {
+  const blocked = blockSupplierHosts();
+  t.after(() => blocked.restore());
+  const calls = [];
+  const businessFetch = async url => { calls.push(String(url)); throw new Error('no supplier answers in this test'); };
+  const clock = mutableClock(FIXED_NOW);
+  const app = await startApp({ ...env, ADMIN_EMAILS: ADMIN }, { now: clock.now, businessFetch });
+  t.after(app.close);
+  const { lines, log } = recordingLog();
+  const result = await demo.seed({ ...app, config: app.config, log, now: app.ctx.now, env: {} });
+  return { app, result, lines, calls, blocked };
+}
+
+/** What every source seeds: both companies, every person and role, the budgets and the approval window. */
+async function assertPeopleAndBudgets(app, result) {
+  assert.deepEqual(result.companies.map(c => c.name), [demo.DEMO_COMPANY, demo.SECOND_COMPANY]);
+  const [orgId, org2Id] = result.companies.map(c => c.id);
+  for (const id of [orgId, org2Id]) assert.equal((await app.store.getRecord('biz_org', id)).status, 'active');
+  const members = await membersOf(app, orgId, demo.PEOPLE[0].email);
+  assert.deepEqual(members.filter(m => m.status === 'active').map(m => m.role).sort(), EXPECTED_ROLES);
+  assert.deepEqual(result.accounts.map(a => a.email), [ADMIN, ...demo.PEOPLE.map(p => p.email), demo.SECOND_OWNER.email]);
+  const owner = { org: { id: orgId }, user: await app.store.getRecord('user', await userId(app, demo.PEOPLE[0].email)) };
+  const byName = Object.fromEntries((await app.business.listBudgets(owner, '2026-Q4')).map(b => [b.department.name, b.amountCents]));
+  assert.deepEqual([byName.Sales, byName.Engineering], [1500000, 3000000], 'the budgets for the quarter');
+  assert.equal((await app.store.getRecord('biz_org', orgId)).settings.approvalHours, 168, 'approvers get 7 days');
+  return { orgId, org2Id, owner };
+}
+
+test('seed on the suppliers\' test systems (the preview with test keys): companies, people, budgets and policy, no trips, no supplier call, and the log says why', { timeout: 60000 }, async t => {
+  const { app, result, lines, calls, blocked } = await seededOn(SANDBOX_ENV, t);
+  assert.equal(app.business.inventory.source, 'sandbox', 'Business prices come from the suppliers\' test systems');
+  assert.equal(app.business.inventory.hotelsConnected, true);
+  assert.deepEqual(calls, [], 'the seed called no supplier');
+  assert.equal(blocked.count(), 0);
+  const { orgId, org2Id, owner } = await assertPeopleAndBudgets(app, result);
+
+  // The policy: the Cairo to London route exception (the supplier inventory has both airports); ZS is the demo
+  // airline, not one the suppliers list, so it is not blocked.
+  assert.ok(!app.business.inventory.carriers().some(c => c.code === 'ZS'));
+  const policy = await app.business.getPolicy(owner, 'standard');
+  assert.equal(policy.version, 2);
+  assert.deepEqual(policy.rules.flights.blockedCarriers, []);
+  assert.deepEqual(policy.rules.flights.routeOverrides.map(o => [o.from, o.to, o.bothWays, o.maxCabin]), [['CAI', 'LHR', true, 'premium']]);
+  const history = await app.business.policyHistory(owner, 'standard');
+  assert.deepEqual(history.versions.filter(v => v.version === 2).map(v => v.note), ['Demo policy: Premium economy on Cairo to London.'], 'its note names only what it holds');
+
+  // No trips, no scenarios, nothing wrapped.
+  assert.deepEqual(await requestsOf(app, orgId), []);
+  assert.deepEqual(await requestsOf(app, org2Id), []);
+  assert.deepEqual([result.requests, result.scenarios], [[], []]);
+  assert.ok(lines.every(l => !/Test scenario/.test(l)), 'no test scenario in the log');
+  // The log says why, once, and still names who to sign in as.
+  const why = lines.filter(l => l.includes('No trip requests were seeded'));
+  assert.deepEqual(why, [`info [demo] ${demo.NO_TRIPS.sandbox} The companies, people, budgets and policy are ready: sign in as an employee to search for a trip.`]);
+  assert.ok(lines.some(l => l.includes(`${demo.DEMO_COMPANY} (${demo.PEOPLE.length} people, 0 trip requests)`)), lines.join('\n'));
+  for (const a of result.accounts) assert.ok(lines.some(l => l.includes(a.email)), `the log names ${a.email}`);
+  for (const key of [SANDBOX_ENV.DUFFEL_ACCESS_TOKEN, SANDBOX_ENV.LITEAPI_API_KEY]) assert.ok(lines.every(l => !l.includes(key)), 'no key in the log');
+
+  // The spy is the path the suppliers fetch on: an employee's own search after the seed reaches it.
+  const eli = { org: { id: orgId }, user: await app.store.getRecord('user', await userId(app, demo.PEOPLE.find(p => p.key === 'eli').email)) };
+  const depart = '2026-11-02';
+  await app.business.searchTrip(eli, { from: 'CAI', to: 'LHR', depart, return: '2026-11-06', hotel: '1', cabin: 'economy' }).catch(() => null);
+  assert.ok(calls.length > 0, 'a search calls the supplier through the same fetch the seed never used');
+});
+
+test('seed with no supplier connected (a supplier setting refused): no trips, no route or airline the inventory does not list, and the log says why', { timeout: 60000 }, async t => {
+  const { app, result, lines, calls } = await seededOn({ ...SANDBOX_ENV, BUSINESS_ALLOW_SUPPLIER_TEST: 'false' }, t);
+  assert.equal(app.business.inventory.status, 'none');
+  assert.equal(app.business.inventory.source, null);
+  assert.deepEqual(calls, []);
+  const { orgId, owner } = await assertPeopleAndBudgets(app, result);
+  const policy = await app.business.getPolicy(owner, 'standard');
+  assert.equal(policy.version, 1, 'no new policy version: the inventory lists no airports and no airlines');
+  assert.deepEqual([policy.rules.flights.blockedCarriers, policy.rules.flights.routeOverrides], [[], []]);
+  assert.deepEqual(await requestsOf(app, orgId), []);
+  assert.deepEqual(lines.filter(l => l.includes('No trip requests were seeded')),
+    [`info [demo] ${demo.NO_TRIPS.none} The companies, people, budgets and policy are ready: sign in as an employee to search for a trip.`]);
+});
+
+test('the preview boot hook on supplier test keys, with the settings the preview workflow writes: seeded, and no supplier call at boot', {
+  skip: !fs.existsSync(HOOK) && 'the preview boot hook (server/lib/previewSeed.js) is not in this tree yet', timeout: 60000,
+}, async t => {
+  const { loadConfig } = require('../server/config');
+  const { createApp } = require('../server/app');
+  const { runPreviewSeed } = require(HOOK);
+  const blocked = blockSupplierHosts();
+  t.after(() => blocked.restore());
+  const env = {
+    APP_ENV: 'staging', PORT: '4100', TRUST_PROXY: 'true', HTTPS_ONLY: 'true', DATABASE_URL: 'memory', PAYMENT_MODE: 'test',
+    ALLOW_DEMO_INVENTORY: 'true', ENABLE_TRIPS: 'true', ENABLE_BUSINESS: 'true', ADMIN_EMAILS: demo.DEMO_ADMIN_EMAIL, PREVIEW_SEED: 'business',
+    PREVIEW_PASSWORD: SECRET,
+    BUSINESS_FLIGHT_SUPPLIER: 'duffel', DUFFEL_ACCESS_TOKEN: SANDBOX_ENV.DUFFEL_ACCESS_TOKEN, BUSINESS_ALLOW_SUPPLIER_TEST: 'true',
+    BUSINESS_HOTEL_SUPPLIER: 'liteapi', LITEAPI_API_KEY: SANDBOX_ENV.LITEAPI_API_KEY,
+  };
+  const calls = [];
+  const config = loadConfig(env);
+  const built = await createApp(config, { log: quietLog, businessFetch: async url => { calls.push(String(url)); throw new Error('no supplier call at boot'); } });
+  t.after(() => built.store.close && built.store.close());
+  assert.equal(built.business.inventory.source, 'sandbox');
+  const { lines, log } = recordingLog();
+  const r = await runPreviewSeed(config, built, { log });
+  assert.equal(r.seeded, true, lines.join('\n'));
+  assert.deepEqual(calls, [], 'no supplier call at boot');
+  assert.equal(blocked.count(), 0);
+  assert.equal((await built.store.listRecords('biz_request', { limit: 10 })).length, 0);
+  assert.ok(lines.some(l => l.includes(demo.NO_TRIPS.sandbox)), lines.join('\n'));
+  assert.ok(lines.some(l => l.includes(demo.DEMO_ADMIN_EMAIL)), 'the demo platform admin');
+  for (const piece of piecesOf(SECRET)) assert.ok(lines.every(l => !l.includes(piece)), `no log line holds "${piece}"`);
 });
 
 test('priceStep moves one room on one stay only, and passes everything else through', async () => {
