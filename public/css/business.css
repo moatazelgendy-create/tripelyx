@@ -81,7 +81,7 @@
 .bz-ribbons { display: grid; gap: 8px; margin-bottom: 20px; }
 .bz-ribbon { display: flex; gap: 10px; align-items: flex-start; margin: 0; padding: 10px 14px; border-radius: var(--radius-sm); font-size: 14.5px; line-height: 1.45; }
 .bz-ribbon .icon { width: 17px; height: 17px; flex: none; margin-top: 2px; }
-.bz-ribbon-demo { background: #fff4d6; color: #6b4a00; border: 1px solid #f4e2b0; }
+.bz-ribbon-demo, .bz-ribbon-note { background: #fff4d6; color: #6b4a00; border: 1px solid #f4e2b0; }
 .bz-ribbon-pending { background: var(--blue-50); color: #0f3d73; border: 1px solid #d3e5fa; }
 .bz-ribbon-supplier { background: #eef1f5; color: #2b3b52; border: 1px solid #dde3ea; }
 .bz-alert { margin-bottom: 18px; font-size: 15px; }

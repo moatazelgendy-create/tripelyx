@@ -18,7 +18,10 @@ const mk = require('../server/views/business/marketing');
 
 const now = () => new Date(FIXED_NOW);
 const ON = { ENABLE_BUSINESS: 'true' };
+// www's settings: demo inventory for /book and the trip planner, none for Business (BUSINESS_DEMO_INVENTORY unset).
 const LIVE = { APP_ENV: 'staging', ENABLE_TRIPS: 'true', ALLOW_DEMO_INVENTORY: 'true', PAYMENT_MODE: 'test', DATABASE_URL: 'memory', PUBLIC_BASE_URL: 'https://www.tripelyx.com', ...ON };
+// The preview's: the same, with Business demo inventory turned on (.github/workflows/preview.yml).
+const PREVIEW = { ...LIVE, BUSINESS_DEMO_INVENTORY: 'true' };
 const CORPORATE_NAV = [['/', 'Home'], ['/brands', 'Our Brands'], ['/technology', 'Technology'], ['/business', 'Business'], ['/partners', 'Partners'], ['/about', 'About'], ['/contact', 'Contact']];
 const CORPORATE_FOOTER = [['/brands', 'Our Brands'], ['/technology', 'Technology'], ['/partners', 'Partners'], ['/about', 'About'], ['/contact', 'Contact']];
 const COMPANY_SIZES = ['1-10 people', '11-50 people', '51-200 people', '201-1,000 people', 'More than 1,000 people'];
@@ -129,10 +132,10 @@ function assertStructure(page) {
 }
 
 test('/business, with Business on, is a corporate page with the homepage sections in order and the company form', async t => {
-  const app = await startApp(LIVE, { store: new MemoryStore(), now });
+  const app = await startApp(PREVIEW, { store: new MemoryStore(), now });
   t.after(app.close);
   assert.ok(app.ctx.trips && app.ctx.business, 'trips and Business run');
-  assert.equal(app.ctx.business.inventory.status, 'demo', 'demo inventory is allowed here');
+  assert.equal(app.ctx.business.inventory.status, 'demo', 'the preview turns Business demo inventory on');
   const page = await get(app, '/business');
   assertCorporateBusiness(page);
   assertStructure(page.text);
@@ -198,6 +201,20 @@ test('/business, with Business on, is a corporate page with the homepage section
     assert.equal(res.status, 201, body.name);
   }
   assert.deepEqual((await app.store.listPartnerLeads()).map(l => [l.type, l.company]).sort(), [['1-10 people', 'North Pier'], ['51-200 people', 'Blue Door Logistics']]);
+});
+
+test('/business with www\'s settings: no supplier and no Business demo, so the page says so and never says demo', async t => {
+  const app = await startApp(LIVE, { store: new MemoryStore(), now });
+  t.after(app.close);
+  assert.equal(app.ctx.business.inventory.status, 'none', 'ALLOW_DEMO_INVENTORY alone never gives Business demo inventory');
+  const page = await get(app, '/business');
+  assertCorporateBusiness(page);
+  assertStructure(page.text);
+  const main = mainOf(page.text);
+  assert.ok(textOf(sectionOf(main, 'bz-hero')).includes(mk.NOTES.none));
+  assert.deepEqual(listItems(sectionOf(main, 'bz-today'), 'In the preview'), mk.PREVIEW_NOW_NO_SUPPLIER);
+  assert.ok(!textOf(main).includes(mk.SAVINGS_DEMO));
+  assert.doesNotMatch(textOf(page.text), /demo/i);
 });
 
 test('/business renders with Travel by Budget off when Business is on, and is the 404 page whenever Business is off', async t => {

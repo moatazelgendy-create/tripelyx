@@ -23,12 +23,12 @@ const now = () => NOW;
 const PRESSURE = /\b(hurry|limited|selling out|last chance|act now|almost gone|don[’']t miss|only \d+ left|ending soon|book now|still available|prices? (?:will|may) (?:rise|go up)|countdown|typically|usually|predict|(?<!(?:can[’']t be|cannot be|never|not) )guarantee[ds]?\b|identical)\b/i;
 const RAW = Object.freeze({ from: 'CAI', to: 'LHR', depart: '2026-11-12', return: '2026-11-16', hotel: '1', cabin: 'economy' });
 
-const demoInventory = () => createBusinessInventory({ allowDemoInventory: true }, { registry: { get: () => null } });
+const demoInventory = () => createBusinessInventory({ business: { demoInventory: true } });
 const demoComposer = () => new TripComposer({ inventory: demoInventory(), now });
 /** A composer over contract-shaped overrides of the real demo providers (counters in .calls). */
 function overrideComposer({ flights = new BusinessDemoFlights(), hotels = new BusinessDemoHotels() } = {}) {
   const f = overrideProvider(flights), h = overrideProvider(hotels);
-  const inventory = createBusinessInventory({ allowDemoInventory: false }, { registry: { get: () => null }, overrides: { flights: f, hotels: h } });
+  const inventory = createBusinessInventory({ business: { demoInventory: false } }, { overrides: { flights: f, hotels: h } });
   return { composer: new TripComposer({ inventory, now }), flights: f, hotels: h, inventory };
 }
 const parse = (raw, today = TODAY) => demoComposer().parseQuery(raw, { today });
@@ -124,7 +124,7 @@ test('parseTripQuery: departure from today (the company\'s date) to 330 days ahe
   assert.throws(() => parseTripQuery(RAW, { today: '9 Oct', airports: [] }), /today/);
   assert.throws(() => parseTripQuery(RAW, { today: TODAY, airports: [] }), e => Boolean(e.details.from && e.details.to), 'no airports, no search');
   // With no supplier there is no airport list to check against: "Supplier not connected yet", not field errors.
-  const none = new TripComposer({ inventory: createBusinessInventory({ allowDemoInventory: false }, { registry: { get: () => null } }), now });
+  const none = new TripComposer({ inventory: createBusinessInventory({ business: { demoInventory: false } }), now });
   for (const raw of [RAW, {}]) {
     assert.throws(() => none.parseQuery(raw, { today: TODAY }), e => e.code === 'no_supplier' && e.status === 503 && /^Supplier not connected yet\./.test(e.message));
   }
@@ -637,7 +637,7 @@ test('variants: an unavailable pick has no variants; a one-way pick without a ho
 // No supplier, no writes, latency
 
 test('no supplier: search, price, variants and recheck answer 503 "Supplier not connected yet"', async () => {
-  const composer = new TripComposer({ inventory: createBusinessInventory({ allowDemoInventory: false }, { registry: { get: () => null } }), now });
+  const composer = new TripComposer({ inventory: createBusinessInventory({ business: { demoInventory: false } }), now });
   const q = parse(RAW);
   const sel = { out: 'f.flt_ZM1_2026-11-12_economy|LIGHT', back: 'f.flt_ZM2_2026-11-16_economy|LIGHT', hotel: null };
   for (const call of [() => composer.search(q), () => composer.price(sel, q), () => composer.variants(q, sel, { datesFlexible: true }), () => composer.recheck({ selection: sel, query: q, rows: {} })]) {

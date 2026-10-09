@@ -16,7 +16,8 @@
 // and "Supplier not connected yet" on search pages (searchPage: true) when no supplier is connected.
 // With real suppliers (real-suppliers design §2.3) the first ribbon says where prices come from: supplier test
 // data ("Preview with supplier test data: …", marked bz-ribbon-test) or live prices; the pending ribbon then
-// offers "a trip with supplier test data".
+// offers "a trip with supplier test data". With no demo inventory (live prices or none) the first ribbon is
+// bz-ribbon-note, styled as the demo one, so no page there carries the word demo even in a class name.
 const { html, raw } = require('../../lib/html');
 const { sprite, icon } = require('../icons');
 const { logo } = require('../layout');
@@ -50,8 +51,8 @@ const inventoryStatus = ctx => (ctx.business && ctx.business.inventory && ctx.bu
 function firstRibbon(status) {
   if (status === 'demo') return { text: DEMO_RIBBON, cls: 'bz-ribbon bz-ribbon-demo' };
   if (status === 'sandbox') return { text: SANDBOX_RIBBON, cls: 'bz-ribbon bz-ribbon-demo bz-ribbon-test', tag: true };
-  if (status === 'live') return { text: LIVE_RIBBON, cls: 'bz-ribbon bz-ribbon-demo' };
-  return { text: PREVIEW_RIBBON, cls: 'bz-ribbon bz-ribbon-demo' };
+  if (status === 'live') return { text: LIVE_RIBBON, cls: 'bz-ribbon bz-ribbon-note' };
+  return { text: PREVIEW_RIBBON, cls: 'bz-ribbon bz-ribbon-note' };
 }
 
 function ribbons(ctx, shell, { searchPage }) {

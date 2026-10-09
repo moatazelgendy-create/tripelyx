@@ -45,7 +45,7 @@ const LIMITS_NOTES = Object.freeze({
 });
 // Without demo data (a supplier, or none in production) there is no demo data to point at.
 const COUNTRIES_DONE_PLAIN = 'Every country in the list already has its own limits.';
-const HOTEL_CLASS_HINT_PLAIN = 'Hotel class, from 1-star to 5-star.';
+const HOTEL_CLASS_HINT_PLAIN = 'Hotel class, from 1 to 5 stars.';
 const HOTEL_CLASS_HINTS = Object.freeze({
   demo: HOTEL_CLASS_HINT,
   sandbox: 'Hotel class as the supplier gives it. A hotel with no star rating from the supplier is outside the policy when a highest class is set.',

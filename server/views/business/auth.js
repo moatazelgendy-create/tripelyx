@@ -10,7 +10,7 @@ const { icon } = require('../icons');
 const { layout } = require('../layout');
 const { errorBox } = require('./parts');
 const { zoneLabel } = require('./format');
-const { COMPANY_SIZES, TIMEZONES, DEFAULT_TIMEZONE, BUSINESS_EMAIL } = require('../../business/constants');
+const { COMPANY_SIZES, TIMEZONES, DEFAULT_TIMEZONE, BUSINESS_EMAIL, SIGNUP_ACK, signupAck } = require('../../business/constants');
 
 /** Where the public pages point. */
 const START = '/business/start';
@@ -23,9 +23,8 @@ const ZONE_HINT = 'We show times, like when a request expires, in this time zone
 const EYEBROW = 'Tripelyx Business · Preview';
 const START_LEAD = 'Set up your travel policy, budgets and team. Tripelyx confirms each new company before teammates can join.';
 const START_LEAD_SELF_SERVE = 'Set up your travel policy, budgets and team.';
-const ACK_TEXT = "I understand this is a preview with demo data, and I won't enter real employee travel plans yet.";
-/** The same consent with no demo inventory (production): there is no demo data to name. */
-const ACK_TEXT_PLAIN = "I understand this is a preview, and I won't enter real employee travel plans yet.";
+/** The consent box with demo inventory; every status's box and its error are constants.SIGNUP_ACK. */
+const ACK_TEXT = SIGNUP_ACK.demo.box;
 const CURRENCY_TEXT = 'US dollars (USD). More currencies later.';
 const EMAIL_TAKEN = 'An account with this email already exists. Sign in to add your company to it.';
 const ACCOUNT_READY = "Your account is ready, but creating the company didn't work. Try again.";
@@ -216,7 +215,7 @@ function startView(ctx, { user = null, values = {}, accountErrors = {}, companyE
       </div>
     </fieldset>`}
     ${companyFields(values, companyErrors)}
-    ${checkField({ id: 'bz-ack', name: 'ack', label: ctx && ctx.business && ctx.business.inventory && ctx.business.inventory.status === 'demo' ? ACK_TEXT : ACK_TEXT_PLAIN, checked: values.ack === '1', error: companyErrors.ack, required: true })}
+    ${checkField({ id: 'bz-ack', name: 'ack', label: signupAck(ctx && ctx.business && ctx.business.inventory ? ctx.business.inventory.status : null).box, checked: values.ack === '1', error: companyErrors.ack, required: true })}
     <div class="bz-inline"><button class="btn btn-navy bz-btn" type="submit">Create workspace</button></div>
   </form>`;
   const title = atCap ? AT_CAP_TITLE : START_TITLE;

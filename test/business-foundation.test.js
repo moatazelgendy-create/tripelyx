@@ -164,7 +164,7 @@ test('constants: the corporate kinds, tiers, statuses and the advisor-era names 
   assert.deepEqual({ ...KINDS }, {
     org: 'biz_org', member: 'biz_member', userIndex: 'biz_user_index', invite: 'biz_invite', inviteEmail: 'biz_invite_email',
     department: 'biz_department', policy: 'biz_policy', policyVersion: 'biz_policy_version', budget: 'biz_budget',
-    request: 'biz_request', reqLink: 'biz_req_link', audit: 'biz_audit',
+    request: 'biz_request', reqLink: 'biz_req_link', audit: 'biz_audit', house: 'biz_house',
   });
   assert.deepEqual([...constants.TIERS], ['standard', 'director', 'executive']);
   assert.deepEqual([...constants.REQUEST_STATUSES], ['draft', 'pending', 'approved', 'denied', 'cancelled', 'expired']);
@@ -178,7 +178,8 @@ test('constants: the corporate kinds, tiers, statuses and the advisor-era names 
   for (const tz of constants.TIMEZONES) assert.doesNotThrow(() => new Intl.DateTimeFormat('en-US', { timeZone: tz }), tz);
   assert.deepEqual([...constants.AUDIT_GROUPS], ['org', 'member', 'department', 'policy', 'budget', 'request', 'reports']);
   for (const [group, actions] of Object.entries(constants.AUDIT_ACTIONS)) for (const a of actions) assert.ok(a.startsWith(`${group}.`), a);
-  assert.equal(Object.values(constants.AUDIT_ACTIONS).flat().length, 29, 'the §C7 table plus request.repriced');
+  assert.equal(Object.values(constants.AUDIT_ACTIONS).flat().length, 30, 'the §C7 table plus request.repriced and org.house_created');
+  assert.ok(constants.AUDIT_ACTIONS.org.includes('org.house_created'), "Tripelyx's own company is audited (go-live design §3.8)");
   assert.ok(constants.AUDIT_ACTIONS.request.includes('request.repriced'), 'a re-priced draft on submit is audited (D7)');
   assert.deepEqual([...constants.REQ_LINK_ROLES], ['traveler', 'approver', 'pool', 'decider']);
   for (const gone of ['STAGES', 'STAGE_LABELS', 'AUTO_LOCKED', 'MAX_OPTIONS', 'OPTION_KEYS', 'MAX_SHARES', 'RESPONSE_KINDS', 'WRONG_REASONS', 'REMINDER_KINDS', 'SHARE_KINDS', 'DEFAULT_COLORS']) {
@@ -1236,23 +1237,24 @@ test('interfaces: every Stage 0 Business module loads with its frozen exports, a
   await assert.rejects(composer.search({}), e => e.code === 'no_supplier' && e.status === 503);
 });
 
-test('interfaces: createBusinessInventory picks overrides, live, demo or none, and never loads demo data without demo inventory', () => {
+test('interfaces: createBusinessInventory picks overrides, demo or none, never the registry, and never loads demo data without demo inventory', () => {
   const demoRegistry = { get: () => ({ isDemo: true }) };
-  const none = createBusinessInventory({ allowDemoInventory: false }, { registry: demoRegistry });
+  const none = createBusinessInventory({ allowDemoInventory: true, business: { demoInventory: false } }, { registry: demoRegistry });
   assert.equal(none.status, 'none');
   assert.equal(none.flights, null);
   assert.equal(none.hotels, null);
-  const demo = createBusinessInventory({ allowDemoInventory: true }, { registry: demoRegistry });
+  const demo = createBusinessInventory({ business: { demoInventory: true } }, { registry: demoRegistry });
   assert.equal(demo.status, 'demo');
   assert.equal(demo.flights.constructor.name, 'BusinessDemoFlights');
   assert.equal(demo.hotels.constructor.name, 'BusinessDemoHotels');
   assert.equal(demo.flights.isDemo, true);
+  // A real pair in the shared registry is never taken over (go-live design §3.2): Business reads only its own suppliers.
   const live = { isDemo: false };
-  const real = createBusinessInventory({ allowDemoInventory: true }, { registry: { get: () => live } });
-  assert.equal(real.status, 'live');
-  assert.equal(real.flights, live);
+  const real = createBusinessInventory({ allowDemoInventory: true, business: { demoInventory: false } }, { registry: { get: () => live } });
+  assert.equal(real.status, 'none');
+  assert.equal(real.flights, null);
   const f = {}, h = {};
-  const over = createBusinessInventory({ allowDemoInventory: false }, { registry: demoRegistry, overrides: { flights: f, hotels: h } });
+  const over = createBusinessInventory({ business: { demoInventory: false } }, { registry: demoRegistry, overrides: { flights: f, hotels: h } });
   assert.equal(over.status, 'demo');
   assert.equal(over.flights, f);
   assert.equal(over.hotels, h);
@@ -1264,7 +1266,7 @@ test('interfaces: the service facade carries exactly the frozen method list, one
   assert.deepEqual([...SERVICE_METHODS], [
     'createCompany', 'listCompaniesFor', 'getOrg', 'membership', 'listMembers', 'invite', 'inviteByToken', 'acceptInvite', 'revokeInvite',
     'updateMember', 'removeMember', 'saveDepartment', 'listDepartments', 'saveSettings', 'exportCompany', 'listAudit', 'platformListOrgs',
-    'platformSetStatus', 'getPolicy', 'savePolicy', 'policyHistory', 'listBudgets', 'setBudget', 'searchTrip', 'createRequest', 'getRequest',
+    'platformSetStatus', 'platformCreateHouseCompany', 'getPolicy', 'savePolicy', 'policyHistory', 'listBudgets', 'setBudget', 'searchTrip', 'createRequest', 'getRequest',
     'listRequests', 'swap', 'submit', 'cancel', 'decide', 'message', 'inbox', 'inboxCount', 'liveCheck', 'dashboard', 'exportCsv',
   ]);
   assert.ok(Object.isFrozen(SERVICE_METHODS));
@@ -1273,7 +1275,7 @@ test('interfaces: the service facade carries exactly the frozen method list, one
     assert.equal(typeof BusinessService.prototype[name], 'function', name);
     owners[METHOD_MODULE[name]] = (owners[METHOD_MODULE[name]] || 0) + 1;
   }
-  assert.deepEqual(owners, { team: 18, policies: 3, budgets: 2, requests: 12, reports: 1, csv: 1 });
+  assert.deepEqual(owners, { team: 19, policies: 3, budgets: 2, requests: 12, reports: 1, csv: 1 });
   assert.equal(METHOD_MODULE.inboxCount, 'requests');
   assert.equal(METHOD_MODULE.platformSetStatus, 'team');
 
@@ -1304,7 +1306,7 @@ test('interfaces: Business routers, the ROUTES table shape and the Business form
   assert.equal(businessRoutes.MOUNT, '/business');
   assert.equal(businessPlatform.MOUNT, '/admin/business');
   assert.deepEqual(businessRoutes.ROUTES, ['public', 'traveler', 'admin'].flatMap(file => require(`../server/routes/business/${file}`).ROUTES));
-  assert.deepEqual(businessPlatform.ROUTES.map(r => `${r.method} ${r.path}`), ['GET /', 'POST /:orgId/status']);
+  assert.deepEqual(businessPlatform.ROUTES.map(r => `${r.method} ${r.path}`), ['GET /', 'POST /:orgId/status', 'POST /house']);
   for (const file of ['public', 'traveler', 'admin']) {
     const mod = require(`../server/routes/business/${file}`);
     assert.deepEqual(Object.keys(mod).sort(), ['ROUTES', 'router'], file);
@@ -1741,7 +1743,7 @@ test('interfaces: fakeInventory providers refuse provider-contract queries; over
   await assert.rejects(hotels.book({}), e => e.code === 'not_supported');
   assert.throws(() => hotels.setPrice(offer.id, optionId, 1.5), RangeError);
   // Through the documented seam.
-  const seam = createBusinessInventory({ allowDemoInventory: false }, { registry: { get: () => null }, overrides: { flights, hotels } });
+  const seam = createBusinessInventory({ business: { demoInventory: false } }, { overrides: { flights, hotels } });
   assert.equal(seam.status, 'demo');
   assert.equal(seam.flights, flights);
   assert.equal(seam.hotels, hotels);

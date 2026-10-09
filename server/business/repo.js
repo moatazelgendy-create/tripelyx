@@ -12,7 +12,7 @@
 //   memory store and Postgres hold the same thing.
 const crypto = require('node:crypto');
 const { AppError } = require('../lib/errors');
-const { KINDS, LIST_LIMIT } = require('./constants');
+const { KINDS, LIST_LIMIT, HOUSE_ID } = require('./constants');
 const { jsonProblem } = require('../booking/MemoryStore');
 
 /** An owner scope: org_, usr_ or mbr_ followed by 16 base64url characters (lib/ids.id() or memberScope()). */
@@ -30,8 +30,8 @@ const BOUNDED_LIST = 200;
 /** The most rows one page() returns. */
 const PAGE_MAX = 200;
 
-/** Kinds that are written once and never changed or deleted (§C3). */
-const INSERT_ONLY = Object.freeze([KINDS.audit, KINDS.reqLink, KINDS.policyVersion]);
+/** Kinds that are written once and never changed or deleted (§C3), and the house company's pointer (go-live §3.8). */
+const INSERT_ONLY = Object.freeze([KINDS.audit, KINDS.reqLink, KINDS.policyVersion, KINDS.house]);
 /** Kinds that are never deleted: a removed member keeps a record with status 'removed' (§C3). */
 const NEVER_DELETED = Object.freeze([...INSERT_ONLY, KINDS.member, KINDS.org]);
 
@@ -226,6 +226,17 @@ class Repo {
       this.log.warn(`[business] Repo.listOrgs reached its limit of ${limit}; older companies are missing.`);
     }
     return rows;
+  }
+
+  /**
+   * The id of Tripelyx's own company (go-live design §3.8): what its biz_house record (id HOUSE_ID, inserted
+   * once, in the commit that made the company) names, or null while there is none. The one read of
+   * biz_house. For the platform methods; the caller checks the platform admin first.
+   * @returns {Promise<string|null>}
+   */
+  async houseOrgId() {
+    const d = await this.store.getRecord(KINDS.house, HOUSE_ID);
+    return d && typeof d.orgId === 'string' && ORG_ID_RE.test(d.orgId) ? d.orgId : null;
   }
 
   /**

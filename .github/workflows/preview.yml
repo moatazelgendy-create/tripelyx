@@ -189,8 +189,10 @@ jobs:
 
           # The container's settings, written by jq from the environment (no value on a command line).
           # APP_ENV=staging with DATABASE_URL=memory is the throwaway demo config.js allows; production refuses
-          # it, and refuses PREVIEW_PASSWORD and PREVIEW_SEED. ALLOW_DEMO_INVENTORY=true is Business's demo
-          # inventory switch. The demo seed makes ADMIN_EMAILS (always the demo address, never a real one) the
+          # it, and refuses PREVIEW_PASSWORD and PREVIEW_SEED. ALLOW_DEMO_INVENTORY=true keeps /book, the trip
+          # planner and the agent on their demo inventory, as on www; BUSINESS_DEMO_INVENTORY=true gives Business
+          # its own demo flights and hotels when no supplier key is set (www keeps it off, so Business there says
+          # "Supplier not connected yet"). The demo seed makes ADMIN_EMAILS (always the demo address, never a real one) the
           # preview's platform admin. The supplier settings are added only when their secrets are set (an empty
           # key would switch Business to "Supplier not connected yet"): DUFFEL_TEST_TOKEN turns on Duffel's test
           # system for flights (BUSINESS_ALLOW_SUPPLIER_TEST, since staging keeps supplier test data off by
@@ -209,6 +211,7 @@ jobs:
                 ALLOW_DEMO_INVENTORY: "true",
                 ENABLE_TRIPS: "true",
                 ENABLE_BUSINESS: "true",
+                BUSINESS_DEMO_INVENTORY: "true",
                 ADMIN_EMAILS: "platform.admin@tripelyx-demo.example",
                 PREVIEW_PASSWORD: env.PREVIEW_PASSWORD,
                 PREVIEW_SEED: "business"

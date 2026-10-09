@@ -4,6 +4,44 @@
 /** The owner's confirmed business address (CONTACT_EMAIL is not set on AWS). */
 const BUSINESS_EMAIL = 'go@tripelyx.com';
 
+/**
+ * Tripelyx's own company (go-live design §3.8): the confirmed legal entity name, never typed. Only a platform
+ * admin's "Create Tripelyx Inc" on /admin/business makes it (team.platformCreateHouseCompany); public sign-up
+ * and every rename still refuse any company name that says Tripelyx.
+ */
+const HOUSE_COMPANY_NAME = 'Tripelyx Inc';
+/** The one biz_house record's id: inserted once, with the house company, so there is only ever one. */
+const HOUSE_ID = 'v1';
+/** Why the house company's name can't be changed in its settings (the settings page and saveSettings). */
+const HOUSE_NAME_FIXED = "This company's name is fixed.";
+
+/**
+ * The sign-up consent box and its error, by the Business inventory's status (go-live design §3.4). The sign-up
+ * page (views/business/auth.js), the route's own check (routes/business/public.js) and createCompany all read
+ * this one pair, so the box and its error always agree. 'none' (www today: no supplier, no demo) and 'live'
+ * name what isn't open; demo and supplier test data keep the preview's own wording.
+ */
+const SIGNUP_ACK = Object.freeze({
+  demo: Object.freeze({
+    box: "I understand this is a preview with demo data, and I won't enter real employee travel plans yet.",
+    error: "Tick this box to confirm you won't enter real employee travel plans yet.",
+  }),
+  sandbox: Object.freeze({
+    box: "I understand this is a preview, and I won't enter real employee travel plans yet.",
+    error: "Tick this box to confirm you won't enter real employee travel plans yet.",
+  }),
+  live: Object.freeze({
+    box: "I understand booking isn't open in Tripelyx Business yet.",
+    error: "Tick this box to confirm you've read this.",
+  }),
+  none: Object.freeze({
+    box: "I understand trip search and booking aren't open in Tripelyx Business yet.",
+    error: "Tick this box to confirm you've read this.",
+  }),
+});
+/** The consent pair for an inventory status ('none' for anything else, including no inventory). */
+const signupAck = status => (typeof status === 'string' && Object.hasOwn(SIGNUP_ACK, status) ? SIGNUP_ACK[status] : SIGNUP_ACK.none);
+
 /** Company statuses: pending until a platform admin confirms it; suspended shuts the workspace. */
 const ORG_STATUSES = Object.freeze(['pending', 'active', 'suspended']);
 
@@ -43,6 +81,8 @@ const KINDS = Object.freeze({
   request: 'biz_request',
   reqLink: 'biz_req_link',
   audit: 'biz_audit',
+  // Which company is Tripelyx's own (HOUSE_ID only, insert-only; owner and orgId the house company).
+  house: 'biz_house',
 });
 
 /** Id prefixes for `lib/ids.id(prefix)`: org_, dep_, btr_, aud_, inv_ (invite publicId). */
@@ -102,7 +142,7 @@ const CURRENCY = 'USD';
  * the re-priced draft instead of submitting (every change carries its audit entry, D7).
  */
 const AUDIT_ACTIONS = Object.freeze({
-  org: Object.freeze(['org.created', 'org.confirmed', 'org.suspended', 'org.reactivated', 'org.settings_changed', 'org.exported']),
+  org: Object.freeze(['org.created', 'org.house_created', 'org.confirmed', 'org.suspended', 'org.reactivated', 'org.settings_changed', 'org.exported']),
   member: Object.freeze(['member.invited', 'member.invite_revoked', 'member.joined', 'member.updated', 'member.role_changed', 'member.removed']),
   department: Object.freeze(['department.created', 'department.renamed', 'department.archived']),
   policy: Object.freeze(['policy.published']),
@@ -117,7 +157,7 @@ const AUDIT_ACTIONS = Object.freeze({
 const AUDIT_GROUPS = Object.freeze(Object.keys(AUDIT_ACTIONS));
 
 module.exports = {
-  BUSINESS_EMAIL, ORG_STATUSES, MEMBER_STATUSES, LIST_LIMIT, PAGE_SIZE, MEMBER_CAP, SCAN_CAP, DEPARTMENT_CAP, COMPANY_SIZES,
+  BUSINESS_EMAIL, HOUSE_COMPANY_NAME, HOUSE_ID, HOUSE_NAME_FIXED, SIGNUP_ACK, signupAck, ORG_STATUSES, MEMBER_STATUSES, LIST_LIMIT, PAGE_SIZE, MEMBER_CAP, SCAN_CAP, DEPARTMENT_CAP, COMPANY_SIZES,
   GENERAL_DEPARTMENT, KINDS, ID_PREFIX,
   TIERS, TIER_LABELS, REQUEST_STATUSES, REASON_CATEGORIES, REASON_CATEGORY_LABELS, CABINS, CABIN_RANK, CABIN_LABELS,
   REQ_LINK_ROLES, OUT_OF_POLICY_MODES, BUDGET_PERIODS, APPROVAL_HOURS_RANGE, REASON_MIN_CHARS, DEFAULT_TIMEZONE,

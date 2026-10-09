@@ -67,7 +67,7 @@ test('routes: ROUTES lists every public, admin and platform route, and each Expr
     'POST /o/:orgId/people/:userId', 'POST /o/:orgId/people/:userId/remove', 'POST /o/:orgId/departments', 'GET /o/:orgId/reports', 'POST /o/:orgId/reports/export',
     'GET /o/:orgId/activity', 'GET /o/:orgId/settings', 'POST /o/:orgId/settings', 'POST /o/:orgId/settings/export',
   ]);
-  assert.deepEqual(businessPlatform.ROUTES.map(key), ['GET /', 'POST /:orgId/status']);
+  assert.deepEqual(businessPlatform.ROUTES.map(key), ['GET /', 'POST /:orgId/status', 'POST /house']);
   assert.deepEqual(ROUTERS.public.ROUTES.find(r => key(r) === 'POST /signin').limiter, ['bizAuthIp', 'bizAuthAccount']);
   for (const r of [...ROUTERS.public.ROUTES, ...ROUTERS.admin.ROUTES, ...businessPlatform.ROUTES]) {
     assert.ok(Object.isFrozen(r), key(r));

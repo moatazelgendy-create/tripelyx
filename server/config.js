@@ -207,6 +207,11 @@ function loadConfig(env = process.env) {
     // What writes the notes next to cheaper alternatives. Only the rule-based explainer exists ('rules'):
     // no AI model is connected, and anything else fails at boot.
     explainer: oneOf(env.BUSINESS_EXPLAINER || 'rules', ['rules'], 'BUSINESS_EXPLAINER'),
+    // Business's own demo flights and hotels (go-live design §3.2). On by default only in development; staging
+    // (www) and production leave it off unless BUSINESS_DEMO_INVENTORY=true (the private preview), and even then
+    // only where demo inventory is allowed at all. Never throws: anything but a true value is off.
+    // ALLOW_DEMO_INVENTORY keeps meaning only what it means for /book, the trip planner and the agent.
+    demoInventory: allowDemoInventory && bool(env.BUSINESS_DEMO_INVENTORY, appEnv === 'development'),
   };
   // The real suppliers (Duffel flights, LiteAPI hotels; design §1.3). Non-enumerable like the keys inside it,
   // so the business block reads, compares and logs exactly as before for everyone who doesn't ask for it.

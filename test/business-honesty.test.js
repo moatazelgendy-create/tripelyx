@@ -554,7 +554,7 @@ for (const production of [false, true]) {
         assert.equal(ex.status, 200, `${C.word} export`);
         const data = JSON.parse(ex.text);
         assert.equal(data.org.id, C.id);
-        assert.match(data.note, /nothing was booked or charged/);
+        assert.match(data.note, /nothing was booked or charged/i);
         if (production) {
           assert.doesNotMatch(ex.text, /\bdemo\b/i, `${C.word} export says nothing about demo data`);
           assert.doesNotMatch(ex.text, /test data|sandbox|supplier/i, `${C.word} export says nothing about supplier prices or test data`);

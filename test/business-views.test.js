@@ -741,9 +741,9 @@ test('shell: the user menu names the member and role, links personal trips only 
 test('shell: the ribbons say what runs here (demo, pending company, no supplier on search pages)', () => {
   const ribbons = s => [...s.matchAll(/<p class="bz-ribbon bz-ribbon-(\w+)" role="note"><svg[\s\S]*?<\/svg><span>([\s\S]*?)<\/span><\/p>/g)].map(m => [m[1], textOf(m[2])]);
   assert.deepEqual(ribbons(String(shellView(ctxFor(), shellFor('owner'), { body: '', searchPage: true }))), [['demo', parts.DEMO_RIBBON]]);
-  assert.deepEqual(ribbons(String(shellView(ctxFor({ status: 'none' }), shellFor('owner'), { body: '' }))), [['demo', PREVIEW_RIBBON]], 'no demo data: no demo-data claim');
+  assert.deepEqual(ribbons(String(shellView(ctxFor({ status: 'none' }), shellFor('owner'), { body: '' }))), [['note', PREVIEW_RIBBON]], 'no demo data: no demo-data claim');
   assert.deepEqual(ribbons(String(shellView(ctxFor({ status: 'none' }), shellFor('owner'), { body: '', searchPage: true }))),
-    [['demo', PREVIEW_RIBBON], ['supplier', `${parts.NO_SUPPLIER.title} ${parts.NO_SUPPLIER.text}`]]);
+    [['note', PREVIEW_RIBBON], ['supplier', `${parts.NO_SUPPLIER.title} ${parts.NO_SUPPLIER.text}`]]);
   const pendingOrg = { ...ORG, name: 'Blue & Co', status: 'pending' };
   const pending = String(shellView(ctxFor(), shellFor('owner', { org: pendingOrg }), { body: '' }));
   assert.deepEqual(ribbons(pending), [['demo', parts.DEMO_RIBBON], ['pending', pendingRibbon('Blue & Co', { demo: true })]]);
@@ -759,9 +759,9 @@ test('shell: the ribbons say what runs here (demo, pending company, no supplier 
   }
   // A live inventory (round 1b, never today) is not called demo data either: its ribbon says the prices are
   // live and can change until booked (real-suppliers design §2.3).
-  assert.deepEqual(ribbons(String(shellView(ctxFor({ status: 'live' }), shellFor('owner'), { body: '', searchPage: true }))), [['demo', parts.LIVE_RIBBON]]);
+  assert.deepEqual(ribbons(String(shellView(ctxFor({ status: 'live' }), shellFor('owner'), { body: '', searchPage: true }))), [['note', parts.LIVE_RIBBON]]);
   // No Business context at all reads as "no supplier".
-  assert.deepEqual(ribbons(String(shellView({ ...ctxFor(), business: null }, shellFor('owner'), { body: '' }))), [['demo', PREVIEW_RIBBON]]);
+  assert.deepEqual(ribbons(String(shellView({ ...ctxFor(), business: null }, shellFor('owner'), { body: '' }))), [['note', PREVIEW_RIBBON]]);
 
   const msgs = String(shellView(ctxFor(), shellFor('owner'), { body: html`<h1>X</h1>`, notice: 'Policy saved.', error: 'Someone changed this.' }));
   assert.ok(msgs.indexOf('role="status"') < msgs.indexOf('role="alert"') && msgs.indexOf('role="alert"') < msgs.indexOf('<h1>X</h1>'));

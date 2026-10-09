@@ -4,8 +4,9 @@
 // app's 404. It never shows requests, policies, budgets, member lists or audit contents, and a platform
 // admin gets nothing inside a company from it (memberGate answers them 404 on /business/o/...).
 //
-//   GET  /                platform  -          → platformListOrgs (pending first; company enquiries)
+//   GET  /                platform  -          → platformListOrgs (pending first; company enquiries; Tripelyx's own company)
 //   POST /:orgId/status   platform  bizWrite   → platformSetStatus (status=active|suspended, note, rev) → 303 /admin/business?ok=…
+//   POST /house           platform  bizWrite   → platformCreateHouseCompany ("Create Tripelyx Inc") → 303 /admin/business?ok=house|house_exists
 //
 // Mounted from TABLE by routes/business/table.mountTable: a POST runs bizWrite → sameOrigin → the form
 // parser → the platform gate → the handler. The gate sends no-store and noindex on every answer.
@@ -14,6 +15,7 @@ const { privateHeaders, sendNotFound } = require('../business/http');
 const { assertRoutes } = require('./business/index');
 const { send, clientError, routesOf, mountTable } = require('./business/table');
 const { platformView } = require('../views/business/platform');
+const { HOUSE_COMPANY_NAME } = require('../business/constants');
 
 /** Where app.js mounts this router; ROUTES paths are relative to it. */
 const MOUNT = '/admin/business';
@@ -21,6 +23,7 @@ const MOUNT = '/admin/business';
 const TABLE = [
   { method: 'GET', path: '/', perm: null, own: false, limiter: [], who: 'platform', handler: 'listPage' },
   { method: 'POST', path: '/:orgId/status', perm: null, own: false, limiter: ['bizWrite'], who: 'platform', handler: 'statusPost' },
+  { method: 'POST', path: '/house', perm: null, own: false, limiter: ['bizWrite'], who: 'platform', handler: 'housePost' },
 ];
 
 /** This router's routes (types.RouteEntry, who 'platform'). */
@@ -30,6 +33,8 @@ const ROUTES = assertRoutes(routesOf(TABLE), { mount: MOUNT });
 const NOTICES = Object.freeze({
   active: name => `Done. ${name} is active, and its people can join by invite.`,
   suspended: name => `Done. ${name} is paused. Its members see that Tripelyx paused it.`,
+  house: () => `Done. ${HOUSE_COMPANY_NAME} is active, and you're its Owner.`,
+  house_exists: () => `${HOUSE_COMPANY_NAME} already exists, so nothing new was made.`,
 });
 /** A lost compare-and-set (a double click, or a form loaded before another change): the page shows the latest. */
 const STALE = 'Someone changed this while you were looking. Here is the latest version.';
@@ -107,6 +112,18 @@ function router(ctx, deps) {
           error: e.message,
           form: e.status === 422 ? { orgId, note: one(b.note), errors: e.details || {} } : null,
         });
+      }
+    },
+
+    /** "Create Tripelyx Inc": a second press (or two at once) makes nothing and lands on the same page. */
+    async housePost(req, res) {
+      try {
+        const r = await svc.platformCreateHouseCompany({ user: req.user });
+        return res.redirect(303, `${MOUNT}?ok=${r.created ? 'house' : 'house_exists'}`);
+      } catch (e) {
+        if (!clientError(e)) throw e;
+        if (e.status === 404) return sendNotFound(ctx, res);
+        return render(req, res, { status: e.status, error: e.message });
       }
     },
   };

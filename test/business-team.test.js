@@ -8,7 +8,7 @@ const express = require('express');
 const { startApp, FIXED_NOW } = require('./helpers');
 const { seedUser, seedOrg, seedMember, seedBudget, mutableClock, storeSnapshot, noInline } = require('./business-helpers');
 const { fakePolicy } = require('./business-fakes');
-const { KINDS, TIERS, AUDIT_GROUPS } = require('../server/business/constants');
+const { KINDS, TIERS, AUDIT_GROUPS, HOUSE_COMPANY_NAME, HOUSE_ID, HOUSE_NAME_FIXED } = require('../server/business/constants');
 const { COMPANY_FORM } = require('../server/business/team');
 const { BusinessService } = require('../server/business/service');
 const { Repo } = require('../server/business/repo');
@@ -911,8 +911,9 @@ test('platform: only platform admins list and change companies; pending first, c
   const row = view.orgs.find(o => o.id === twin.id);
   assert.deepEqual(row, {
     id: twin.id, name: 'ACME, Inc.', status: 'pending', size: '11-50 people', at: FIXED_NOW, creatorEmail: 'copy@example.com', memberCount: 1,
-    timezone: 'Africa/Cairo', similarNames: ['Acme Inc'], statusNote: null, statusAt: null, previousName: null, rev: 0,
+    timezone: 'Africa/Cairo', similarNames: ['Acme Inc'], statusNote: null, statusAt: null, previousName: null, house: false, rev: 0,
   });
+  assert.equal(view.house, null, "no Tripelyx company until a platform admin makes it");
   assert.deepEqual(view.orgs.find(o => o.id === third.id).similarNames, []);
   assert.deepEqual(view.leads.map(l => l.name), ['Lead A']);
 
@@ -945,6 +946,128 @@ test('platform: only platform admins list and change companies; pending first, c
   // A platform admin gets nothing inside a company from isAdmin.
   await rejectsWith(svc.getOrg({ org: { id: acme.id }, member: { role: 'owner' }, user: admin.user }), 404, 'not_found');
   await rejectsWith(svc.listMembers({ org: { id: acme.id }, user: admin.user }), 404, 'not_found');
+});
+
+// ---------------------------------------------------------------------------------------------------
+// Tripelyx's own company (go-live design §3.8)
+
+/** Every spelling sign-up refuses (the createCompany test above), and the house name itself. */
+const TRIPELYX_SPELLINGS = Object.freeze(['Tripelyx Travel', 'my TRIPELYX', 'Ｔｒｉｐｅｌｙｘ', 'Trip\u200belyx Tours', 'Trip elyx', 'trip-elyx partners', 'Trípelyx', 'T.R.I.P.E.L.Y.X', HOUSE_COMPANY_NAME]);
+
+test("house company: only a platform admin makes Tripelyx Inc, once, active and owned by them; its name never changes; sign-up and renames still refuse Tripelyx", async t => {
+  const { app, svc, repo, admin, company, audits } = await setup();
+  t.after(app.close);
+  const olivia = await seedUser(app, { name: 'Olivia Owner', email: 'olivia@acme.example' });
+  const listedNotGranted = await seedUser(app, { name: 'Lee Listed', email: 'lee@example.com' });
+
+  // Anyone but a platform admin (an isAdmin flag on an ordinary account included) gets 404 and writes nothing.
+  const before = storeSnapshot(app);
+  for (const who of [{ user: { ...olivia.user, isAdmin: false } }, { user: { ...olivia.user, isAdmin: true } }, { user: { ...listedNotGranted.user, isAdmin: true } }, { user: null }, {}, null]) {
+    await rejectsWith(svc.platformCreateHouseCompany(who), 404, 'not_found');
+  }
+  assert.equal(storeSnapshot(app), before, 'refusals write nothing');
+  assert.equal(await repo.houseOrgId(), null);
+
+  const first = await svc.platformCreateHouseCompany(admin);
+  assert.equal(first.created, true);
+  const org = first.org;
+  assert.deepEqual(
+    [org.name, org.status, org.house, org.size, org.timezone, org.ownerIds, org.createdBy, org.memberCount, org.statusBy],
+    [HOUSE_COMPANY_NAME, 'active', true, null, 'Africa/Cairo', [admin.user.id], admin.user.id, 1, null],
+  );
+  // The pointer, in the same commit: one fixed id, insert-only, naming the company.
+  assert.deepEqual(await repo.getIn(KINDS.house, HOUSE_ID, org.id), { orgId: org.id, at: FIXED_NOW, by: admin.user.id });
+  assert.equal(await repo.houseOrgId(), org.id);
+  await assert.rejects(repo.cas(KINDS.house, HOUSE_ID, null, d => { d.orgId = 'org_AAAAAAAAAAAAAAAA'; }), /insert-only/);
+  await assert.rejects(repo.del(KINDS.house, HOUSE_ID), /never deleted/);
+  // Everything createCompany makes, through the same commit: the Owner in General, three v1 policies, the index.
+  const owner = await repo.getIn(KINDS.member, `${org.id}.${admin.user.id}`, org.id);
+  assert.deepEqual([owner.role, owner.status, owner.tier, owner.email], ['owner', 'active', 'standard', 'ops@example.com']);
+  assert.equal(recordsOf(app, KINDS.policy).filter(p => p.orgId === org.id).length, TIERS.length);
+  assert.equal(recordsOf(app, KINDS.department).filter(d => d.orgId === org.id).length, 1);
+  assert.deepEqual((await repo.list(KINDS.userIndex, admin.user.id)).map(x => x.orgIds), [[org.id]]);
+  const log = await audits(org.id);
+  assert.deepEqual(log.map(e => [e.action, e.actor, e.summary]), [
+    ['org.house_created', { platformAdmin: admin.user.id, name: 'Tripelyx' }, 'Tripelyx created Tripelyx Inc, its own company, with Pat Platform as its Owner'],
+  ]);
+
+  // A second press makes nothing and answers the company already there.
+  const snap = storeSnapshot(app);
+  const again = await svc.platformCreateHouseCompany(admin);
+  assert.deepEqual([again.created, again.org.id], [false, org.id]);
+  assert.equal(storeSnapshot(app), snap, 'a second press writes nothing');
+
+  // The platform page shows it, by name and id.
+  const view = await svc.platformListOrgs(admin);
+  assert.deepEqual(view.house, { id: org.id, name: HOUSE_COMPANY_NAME, status: 'active' });
+  assert.deepEqual(view.orgs.map(o => [o.name, o.house]), [[HOUSE_COMPANY_NAME, true]]);
+
+  // Its name never changes; everything else in its settings does.
+  const houseOwner = { org: { id: org.id }, user: admin.user };
+  const cur = await svc.getOrg(houseOwner);
+  assert.equal(cur.house, true);
+  for (const name of ['Acme Inc', 'Tripelyx Travel', 'tripelyx inc', ' ']) {
+    const err = await svc.saveSettings(houseOwner, { name, rev: cur.rev }).catch(x => x);
+    assert.deepEqual([err.status, err.code, err.details], [422, 'invalid_settings', { name: HOUSE_NAME_FIXED }], name);
+  }
+  const saved = await svc.saveSettings(houseOwner, { name: HOUSE_COMPANY_NAME, timezone: 'Europe/London', rev: cur.rev });
+  assert.deepEqual([saved.name, saved.status, saved.timezone], [HOUSE_COMPANY_NAME, 'active', 'Europe/London']);
+
+  // Sign-up and every other company's rename still refuse each spelling, the house name included.
+  const acme = await company(olivia, { name: 'Acme Inc' });
+  for (const name of TRIPELYX_SPELLINGS) {
+    await assert.rejects(svc.createCompany({ user: olivia.user }, { ...FORM, name }),
+      e => e.status === 422 && e.code === 'invalid_company' && e.details.name === "Choose your own company's name.", `sign-up ${name}`);
+    const o = await svc.getOrg(acme.owner);
+    await assert.rejects(svc.saveSettings(acme.owner, { name, rev: o.rev }),
+      e => e.status === 422 && e.code === 'invalid_settings' && e.details.name === "Choose your own company's name.", `rename ${name}`);
+  }
+  assert.equal(recordsOf(app, KINDS.org).filter(o => o.house === true).length, 1);
+  assert.equal(recordsOf(app, KINDS.org).filter(o => /tripelyx/i.test(o.name)).length, 1, 'only the house company says Tripelyx');
+});
+
+test('house company: two presses at once (one admin twice, or two admins) make exactly one', async t => {
+  for (const twoAdmins of [false, true]) {
+    const { app, svc, admin, audits } = await setup({ env: { ADMIN_EMAILS: 'ops@example.com,ops2@example.com' } });
+    t.after(app.close);
+    let other = admin;
+    if (twoAdmins) {
+      const sam = await seedUser(app, { name: 'Sam Staff', email: 'ops2@example.com' });
+      await app.accounts.grantPlatformAdmin(sam.user.id, { by: 'test' });
+      other = { user: { ...sam.user, isAdmin: true } };
+    }
+    // A real race: both presses read "none" before either commits (the first two reads wait for each other),
+    // and the commits that lose are counted.
+    const readHouse = svc.repo.houseOrgId.bind(svc.repo);
+    let reads = 0, release;
+    const bothRead = new Promise(resolve => { release = resolve; });
+    svc.repo.houseOrgId = async () => {
+      const v = await readHouse();
+      reads += 1;
+      if (reads === 2) release();
+      if (reads <= 2) await bothRead;
+      return v;
+    };
+    const orig = app.store.commit.bind(app.store);
+    let lost = 0;
+    app.store.commit = async spec => {
+      const res = await orig(spec);
+      if (!res.ok) lost += res.reason === 'duplicate' ? 1 : 100;
+      return res;
+    };
+    const results = await Promise.all([svc.platformCreateHouseCompany(admin), svc.platformCreateHouseCompany(other)]);
+    app.store.commit = orig;
+    delete svc.repo.houseOrgId;
+    assert.equal(reads, 3, 'two reads before the commits, then the loser reads again and finds the winner');
+    assert.deepEqual(results.map(r => r.created).sort(), [false, true], `twoAdmins=${twoAdmins}`);
+    assert.equal(results[0].org.id, results[1].org.id);
+    assert.equal(lost, 1, 'the second press lost at the commit (the biz_house id was taken) and made nothing');
+    const orgs = recordsOf(app, KINDS.org);
+    assert.equal(orgs.length, 1, 'one company');
+    assert.equal(recordsOf(app, KINDS.house).length, 1, 'one pointer');
+    assert.equal(recordsOf(app, KINDS.member).length, 1, 'one member');
+    assert.deepEqual((await audits(orgs[0].id)).map(e => e.action), ['org.house_created']);
+  }
 });
 
 // ---------------------------------------------------------------------------------------------------

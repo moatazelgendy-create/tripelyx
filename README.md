@@ -186,8 +186,9 @@ Company travel workspaces under `/business`: a company signs up, sets its travel
 budgets, invites its people, and its travelers plan work trips that are checked against the policy as they
 search and go to their manager when they need approval. Finance sees reports and a CSV. Nothing is booked
 or charged: an approved trip is approved to book, and booking is not open yet. No emails are sent; invites
-are copy links. Outside production every flight, hotel and price is demo data, labelled as such on every
-page; production has no supplier yet, so trip planning says "Supplier not connected yet" while sign-up,
+are copy links. In local development and on the private preview every flight, hotel and price is demo
+data (`BUSINESS_DEMO_INVENTORY`), labelled as such on every page. www.tripelyx.com and production have no
+supplier yet and no Business demo data, so trip planning says "Supplier not connected yet" while sign-up,
 people, policies, budgets and approvals still work.
 
 | Route | What it is |
@@ -197,7 +198,7 @@ people, policies, budgets and approvals still work.
 | `/business/invite/:token` | An invite link: sign up or sign in, then join the company |
 | `/business/app` | Your companies (straight to the company when there is one; the switcher is in the header) |
 | `/business/o/:orgId/...` | The workspace: home, trips, approvals, policies, people, budgets, reports, activity, settings, as the member's role allows |
-| `/admin/business` | Platform admins only: every company, and confirming a new one |
+| `/admin/business` | Platform admins only: every company, confirming a new one, and creating Tripelyx's own company |
 
 ### Switches
 
@@ -212,7 +213,8 @@ Every setting is in `.env.example` with its default.
 | `BUSINESS_APPROVAL_HOURS` | `24` | Hours a request waits for a decision before it expires, for new companies (each company picks 4 to 168 in Settings). |
 | `BUSINESS_WRITE_LIMIT`, `BUSINESS_COMPUTE_LIMIT`, `BUSINESS_AUTH_LIMIT` | `300`, `30`, `20` | Business's own rate limits: writes per user per 10 minutes, searches and decisions per user per minute, sign-up and sign-in attempts per IP per 10 minutes. |
 | `BUSINESS_EXPLAINER` | `rules` | What writes the notes beside cheaper alternatives. Only `rules` exists: rule-based, and no trip data leaves Tripelyx. |
-| `ALLOW_DEMO_INVENTORY` | `true` outside production | Business's demo flights and hotels need it. Without it (production), there is no supplier. |
+| `BUSINESS_DEMO_INVENTORY` | `true` in development only | Business's own demo flights and hotels (fictional carriers, demo prices), for local work and the private preview. Off on www (`APP_ENV=staging`) and in production, where Business says "Supplier not connected yet" until a real supplier is connected. It needs `ALLOW_DEMO_INVENTORY` as well, and a configured supplier always comes first. |
+| `ALLOW_DEMO_INVENTORY` | `true` outside production | The demo inventory of `/book`, the trip planner and the agent. It no longer gives Business anything on its own: Business never uses the providers `/book` runs on. |
 
 ### Platform admins
 
@@ -238,6 +240,17 @@ active `platform_admin` record for that email. Adding an address to `ADMIN_EMAIL
   On AWS, run it as a one-off task of the admin task definition (family `tripelyx-<env>-admin`, container
   `admin`, never the site's own task definition) and read its output in the task's log stream; see
   [One-off admin tasks](#one-off-admin-tasks).
+
+#### Tripelyx's own company
+
+Sign-up and every rename refuse a company name that says "Tripelyx", in any spelling. Tripelyx's own company
+is made once, by a platform admin, with the **Create Tripelyx Inc** button in the "Tripelyx's own company"
+panel at `/admin/business` (with Business on). The name is fixed (`HOUSE_COMPANY_NAME` in
+`server/business/constants.js`, the confirmed legal entity) and never typed. The admin who presses it becomes
+its Owner, and it is active straight away. The same commit writes a `biz_house` record with the fixed id `v1`
+(insert-only), so a second press, or two at once, makes nothing. After that the panel shows the company's
+name and its company id (`org_…`), and the company's settings show the name without a field to change it.
+The activity log records it as `org.house_created`, by "Tripelyx".
 
 ### The demo
 

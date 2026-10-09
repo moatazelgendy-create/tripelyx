@@ -88,7 +88,7 @@ test('Tripelyx Business: off in every APP_ENV unless ENABLE_BUSINESS=true, never
   const c = loadConfig({});
   assert.deepEqual(c.business, {
     enabled: false, selfServe: false, inviteDays: 7, maxOrgsPerUser: 3, approvalHours: 24, writeLimit: 300,
-    computeLimit: 30, authLimit: 20, explainer: 'rules',
+    computeLimit: 30, authLimit: 20, explainer: 'rules', demoInventory: true,
   });
   assert.equal(loadConfig({ BUSINESS_SELF_SERVE: 'true' }).business.selfServe, true);
   assert.equal(loadConfig({ BUSINESS_INVITE_DAYS: '14' }).business.inviteDays, 14);
@@ -97,6 +97,31 @@ test('Tripelyx Business: off in every APP_ENV unless ENABLE_BUSINESS=true, never
   assert.ok(!('business' in c.flags));
   const pub = JSON.stringify(publicConfig(c));
   assert.ok(!('business' in publicConfig(c)) && !/business|selfServe|approvalHours|explainer/i.test(pub), 'publicConfig has no business settings');
+});
+
+test('BUSINESS_DEMO_INVENTORY: Business demo inventory by default only in development, never where demo inventory is refused, never a throw', () => {
+  const db = { DATABASE_URL: 'postgres://u:p@h/db' };
+  assert.equal(loadConfig({}).business.demoInventory, true, 'development');
+  assert.equal(loadConfig({ APP_ENV: 'staging', ...db }).business.demoInventory, false, 'staging');
+  // www: staging with ALLOW_DEMO_INVENTORY=true for /book, the trip planner and the agent, and Business on.
+  const www = loadConfig({ APP_ENV: 'staging', DATABASE_URL: 'memory', ALLOW_DEMO_INVENTORY: 'true', ENABLE_TRIPS: 'true', ENABLE_BUSINESS: 'true' });
+  assert.equal(www.allowDemoInventory, true, 'ALLOW_DEMO_INVENTORY keeps its meaning for /book');
+  assert.equal(www.business.demoInventory, false, 'www: no Business demo inventory');
+  assert.equal(loadConfig({ APP_ENV: 'production', ...db }).business.demoInventory, false, 'production');
+  // The private preview turns it on.
+  assert.equal(loadConfig({ APP_ENV: 'staging', DATABASE_URL: 'memory', ALLOW_DEMO_INVENTORY: 'true', BUSINESS_DEMO_INVENTORY: 'true' }).business.demoInventory, true);
+  assert.equal(loadConfig({ BUSINESS_DEMO_INVENTORY: 'false' }).business.demoInventory, false, 'off in development on purpose');
+  assert.equal(loadConfig({ BUSINESS_DEMO_INVENTORY: '' }).business.demoInventory, true, 'empty: the default');
+  // Only where demo inventory is allowed at all.
+  assert.equal(loadConfig({ ALLOW_DEMO_INVENTORY: 'false', BUSINESS_DEMO_INVENTORY: 'true' }).business.demoInventory, false);
+  assert.equal(loadConfig({ APP_ENV: 'production', BUSINESS_DEMO_INVENTORY: 'true', ...db }).business.demoInventory, false);
+  // Never throws: anything that is not a true value is off.
+  for (const odd of ['maybe', 'TRUE ', '2', 'null']) {
+    assert.doesNotThrow(() => loadConfig({ APP_ENV: 'staging', ...db, BUSINESS_DEMO_INVENTORY: odd }), odd);
+    assert.equal(loadConfig({ APP_ENV: 'staging', ...db, BUSINESS_DEMO_INVENTORY: odd }).business.demoInventory, false, odd);
+  }
+  assert.equal(loadConfig({ APP_ENV: 'staging', ...db, BUSINESS_DEMO_INVENTORY: 'yes' }).business.demoInventory, true, 'the same true words as every switch');
+  assert.ok(!/demoInventory/.test(JSON.stringify(publicConfig(www))), 'not public');
 });
 
 test('Tripelyx Business numbers must be whole numbers of 1 or more', () => {
