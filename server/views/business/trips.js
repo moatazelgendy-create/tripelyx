@@ -4,7 +4,8 @@
 // and the search link that plans a trip again.
 //
 // Amounts: each total is its own demo container (parts.demoPrice) that says "Demo price · Priced at …" in the
-// company's time zone, so no amount on these pages stands without its demo label.
+// company's time zone, so no amount on these pages stands without its demo label (or, for a request priced by
+// a supplier's test system, "Supplier test data, not a real price" with the TEST DATA tag).
 const { html } = require('../../lib/html');
 const { icon } = require('../icons');
 const f = require('./format');
@@ -52,8 +53,11 @@ function searchQuery(q) {
   return s.toString();
 }
 
-/** A row's total with its demo label (one demo container per amount). */
-const totalCell = (row, timeZone) => p.demoPrice(row.totalCents, { pricedAt: row.pricedAt, timeZone });
+/**
+ * A row's total with its price label (one container per amount): the request's own source (RequestRow.source,
+ * real-suppliers design §2.3), so a supplier test data total says so; an old row without one reads as demo.
+ */
+const totalCell = (row, timeZone) => p.demoPrice(row.totalCents, { pricedAt: row.pricedAt, timeZone, source: f.isSource(row.source) ? row.source : 'demo' });
 
 /** The trip cell of a list: route (a link to the request), dates, and the hotel city when there is one. */
 function tripCell(base, map, row) {
@@ -74,7 +78,7 @@ function tripTable({ base, map, rows, timeZone, caption, traveler = false, empty
     caption, columns, empty,
     rows: (rows || []).map(r => [
       ...(traveler ? [r.travelerName] : []),
-      tripCell(base, map, r), totalCell(r, timeZone), p.statusPill(r.status), p.policyBadge(r.policyStatus),
+      tripCell(base, map, r), totalCell(r, timeZone), p.statusPill(r.status, { source: r.source }), p.policyBadge(r.policyStatus),
     ]),
   });
 }

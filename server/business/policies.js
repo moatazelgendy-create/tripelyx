@@ -18,6 +18,7 @@ const { can } = require('./roles');
 const { loadActor, need, who, auditInsert, notFound } = require('./actor');
 const { text } = require('./validate');
 const { DEFAULT_POLICIES } = require('./policy/defaults');
+const { isSource } = require('./source');
 
 /** Versions per history page. */
 const HISTORY_PAGE = 10;
@@ -41,6 +42,16 @@ async function readPolicy(repo, orgId, tier) {
 
 /** Unique, in first-seen order. */
 const unique = list => [...new Set(list.filter(x => typeof x === 'string' && x))];
+
+/**
+ * Where the inventory's prices come from (types.BusinessInventory.source; the frozen fakes carry none, so it
+ * is read from the status), or null with no supplier.
+ */
+function inventorySource(inventory) {
+  if (!inventory || inventory.status === 'none') return null;
+  if (isSource(inventory.source)) return inventory.source;
+  return isSource(inventory.status) ? inventory.status : null;
+}
 
 /**
  * The editor's choices and the codes normalizePolicy checks against: the inventory's airports and carriers,
@@ -98,7 +109,10 @@ const methods = {
       version: p.version,
       rules: p.rules,
       description: this.policy.describe(p.rules, {
-        tier: t, version: p.version, orgName: a.org.name, carriers: carrierNames(this.inventory), demo: !!this.inventory && this.inventory.status === 'demo',
+        // The searches' fares are named for where the prices come from: "the demo fares", "the test fares"
+        // (supplier test data), "the fares" (live prices, or no supplier).
+        tier: t, version: p.version, orgName: a.org.name, carriers: carrierNames(this.inventory),
+        demo: !!this.inventory && this.inventory.status === 'demo', source: inventorySource(this.inventory),
       }),
       updatedAt: p.updatedAt,
       updatedBy: p.updatedBy,

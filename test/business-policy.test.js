@@ -757,3 +757,99 @@ test('createPolicyEngine: all 17 methods delegate to the real modules', () => {
   assert.equal(engine.resolveApprover({ userId: 'a', orgId: 'o' }, {}).rule, null);
   assert.deepEqual(engine.formFromPolicy(defaultPolicy('standard')), schema.formFromPolicy(defaultPolicy('standard')));
 });
+
+// ---------------------------------------------------------------------------------------------------------
+// Supplier test data (real-suppliers design §7.1 B items, §8.3): rows in the flt_t./htl_t. namespace. The demo
+// texts above are unchanged; these say where the prices came from and never turn an unknown into a fact.
+
+test('supplier rows: an unrated hotel under a star limit needs approval; a blocked seller in a codeshare is caught', () => {
+  const { sandboxRow } = require('./business-sandbox');
+  const r = defaultPolicy('standard');
+  r.hotels.countryCaps = [];
+  r.hotels.defaultNightlyCents = null;
+  // stars 0 from a supplier is "no star rating": it can't be shown to be inside "up to 4 stars".
+  const unrated = evaluateComponent(sandboxRow(hotel({ stars: 0 })), ctx(r));
+  assert.equal(unrated.status, 'out');
+  assert.deepEqual(pick(unrated, 'hotel.stars'), [{ rule: 'hotel.stars', limit: 4, actual: 0, severity: 'approval', component: 'hotel' }]);
+  assert.equal(unrated.violations[0].text, 'This hotel has no star rating from the supplier, so it needs approval under your up to 4 stars rule.');
+  assert.equal(evaluateComponent(sandboxRow(hotel({ stars: 4 })), ctx(r)).status, 'within', 'a rated hotel inside the limit');
+  assert.deepEqual(pick(evaluateComponent(sandboxRow(hotel({ stars: 4.5 })), ctx(r)), 'hotel.stars').map(v => v.actual), [4.5], 'a half star over the limit');
+  r.hotels.maxStars = null;
+  assert.deepEqual(rules(evaluateComponent(sandboxRow(hotel({ stars: 0 })), ctx(r))), [], 'no star limit, nothing to approve');
+
+  // A codeshare: Sahara Wings (blocked) sells the ticket, Mediterra Airways flies it. row.carrier is the seller.
+  const f = fixedRules(9999999);
+  f.flights.blockedCarriers = ['ZS'];
+  const codeshare = sandboxRow(flight({ carrier: 'ZS', segmentCarriers: ['ZM'] }));
+  codeshare.segments[0].flightNumber = 'ZS101';
+  assert.equal(codeshare.segments[0].carrier.code, 'ZM', 'flown by Mediterra Airways');
+  const sold = evaluateComponent(codeshare, ctx(f));
+  assert.equal(sold.status, 'blocked');
+  assert.deepEqual(pick(sold, 'flight.carrier'), [{ rule: 'flight.carrier', limit: 'ZS', actual: 'ZS', severity: 'block', component: 'out' }]);
+  // And the other way: a blocked airline that only flies it.
+  f.flights.blockedCarriers = ['ZM'];
+  assert.deepEqual(pick(evaluateComponent(codeshare, ctx(f)), 'flight.carrier').map(v => v.limit), ['ZM']);
+});
+
+test('supplier rows: the texts name the test fares, the supplier\'s data, and a refund the airline does not confirm', () => {
+  const { sandboxRow } = require('./business-sandbox');
+  const { TERMS } = require('../server/business/source');
+  const r = defaultPolicy('standard');
+  r.flights.shortHaul.minAdvanceDays = 0;
+  const bench = { benchmarks: { out: { medianCents: 59335, sampleSize: 5, excluded: [] } } };
+  const over = evaluateComponent(sandboxRow(flight({ totalCents: 79800 })), ctx(r, { ...bench, priceSource: 'sandbox' }));
+  assert.equal(over.violations[0].text, 'Over your $712.02 limit by $85.98 (median of these test fares plus 20%).');
+  const few = evaluateComponent(sandboxRow(flight({ totalCents: 61000 })), ctx(r));
+  assert.equal(few.violations[0].text, 'Over your $600 limit by $10 (your set limit, as this search has too few test fares to compare).', 'the row\'s own source without ctx.priceSource');
+  assert.equal(evaluateComponent(flight({ totalCents: 79800 }), ctx(r, bench)).violations[0].text,
+    'Over your $712.02 limit by $85.98 (median of these demo fares plus 20%).', 'demo unchanged');
+  // Unavailable, by source.
+  const gone = evaluateComponent(sandboxRow(flight({ available: false })), ctx(fixedRules(100)));
+  assert.equal(gone.violations.find(v => v.rule === 'inventory.unavailable').text, "Not available in the supplier's test data.");
+  const goneHotel = evaluateComponent(sandboxRow(hotel({ available: false })), ctx(defaultPolicy('standard')));
+  assert.equal(goneHotel.violations.find(v => v.rule === 'inventory.unavailable').text, "Not available in the supplier's test data.");
+  // A refund the airline doesn't state: never "refunds nothing".
+  const req = fixedRules(9999999);
+  req.flights.shortHaul.refundableOnly = true;
+  const unknown = sandboxRow(flight({ fare: 'LIGHT', fareOverride: { name: 'Economy Light', terms: TERMS.fare({ refund: null, change: { allowed: false }, bags: { checked: 0, carryOn: 1 } }) } }));
+  const u = evaluateComponent(unknown, ctx(req));
+  assert.deepEqual(pick(u, 'flight.refundable').map(v => v.severity), ['approval']);
+  assert.equal(u.violations[0].text, "Your policy asks for a fare that refunds at least part of the price, and Tripelyx can't confirm that for Economy Light.");
+  const notAllowed = sandboxRow(flight({ fare: 'LIGHT', fareOverride: { name: 'Economy Light', terms: TERMS.fare({ refund: { allowed: false }, change: null, bags: null }) } }));
+  assert.equal(evaluateComponent(notAllowed, ctx(req)).violations[0].text, 'Your policy asks for a fare that refunds at least part of the price. Economy Light refunds nothing.', 'the airline said no refunds');
+  // A refund fee in another currency is not confirmed either (never converted).
+  const gbp = sandboxRow(flight({ fare: 'LIGHT', fareOverride: { name: 'Economy Light', terms: TERMS.fare({ refund: { allowed: true, penaltyAmount: '40.00', penaltyCurrency: 'GBP' }, change: null, bags: null }) } }));
+  assert.match(evaluateComponent(gbp, ctx(req)).violations[0].text, /can't confirm that for Economy Light\.$/);
+  for (const e of [over, few, gone, goneHotel, u]) for (const v of e.violations) assert.ok(!/—/.test(v.text) && !PRESSURE.test(v.text), v.text);
+});
+
+test('describe and the limits bar on supplier test data: "the test fares", and the 40 lowest-priced test hotels', () => {
+  const { sandboxRow } = require('./business-sandbox');
+  const r = defaultPolicy('standard');
+  const opts = { tier: 'standard', version: 3, orgName: 'Acme Inc', carriers: {} };
+  const demo = describeMod.describe(r, opts);
+  const sandbox = describeMod.describe(r, { ...opts, source: 'sandbox' });
+  assert.equal(sandbox.lines[0], "Flights under 6 hours: Economy, with fares up to the median of the test fares in your search plus 20% (or $600 if there aren't enough fares to compare), at most 1 stop.");
+  assert.deepEqual(sandbox.lines.slice(2), demo.lines.slice(2), 'only the fares wording changes');
+  assert.ok(describeMod.describe(r, { ...opts, source: 'live' }).lines.every(line => !/demo|test fares/i.test(line)));
+  assert.deepEqual(describeMod.describe(r, { ...opts, source: 'demo' }).lines, demo.lines, 'demo unchanged');
+
+  const median = { medianCents: 59335, sampleSize: 5, excluded: [] };
+  const hotels = n => Array.from({ length: n }, (_, i) => sandboxRow(hotel({ n: i + 1, nightlyCents: 20000 + i * 100 })));
+  const search = rows => ({
+    query: fx.query(), pricedAt: fx.PRICED_AT, status: 'sandbox',
+    legs: {
+      out: { rows: [sandboxRow(flight())], benchmark: median, truncated: false },
+      back: { rows: [sandboxRow(flight({ leg: 'back' }))], benchmark: median, truncated: false },
+      hotel: { rows, benchmark: { incl_taxes: { medianCents: 26400, sampleSize: 3, excluded: [] }, excl_taxes: { medianCents: 23000, sampleSize: 3, excluded: [] } }, truncated: false },
+    },
+  });
+  const bar = describeMod.limitsBar(r, ctx(r, { priceSource: 'sandbox' }), search(hotels(3)));
+  assert.equal(bar.items[0].suffix, 'each way (median of these test fares plus 20%)');
+  assert.equal(bar.items.find(i => i.key === 'hotel.priceToBeat').suffix, 'a night (the lower of your limit and the middle test rate of this search)');
+  const forty = describeMod.limitsBar(r, ctx(r, { priceSource: 'sandbox' }), search(hotels(40)));
+  assert.equal(forty.items.find(i => i.key === 'hotel.priceToBeat').suffix, 'a night (the lower of your limit and the middle rate of the 40 lowest-priced test hotels in this search)');
+  const demoBar = describeMod.limitsBar(r, ctx(r), search(hotels(40)));
+  assert.equal(demoBar.items[0].suffix, 'each way (median of these demo fares plus 20%)', 'no priceSource: demo wording');
+  assert.equal(demoBar.items.find(i => i.key === 'hotel.priceToBeat').suffix, 'a night (the lower of your limit and the middle rate of this search)');
+});

@@ -53,6 +53,16 @@
 //   none (the pick is within now) keeps the earlier one.
 // - A re-priced draft (submit or approve finding a new price) keeps the convention of evaluateTrip: totalCents
 //   is the sum of the components that still price, and an unavailable component evaluates as blocked.
+//
+// Real suppliers, round 1 (real-suppliers design §2.2, §2.4, §5.1):
+// - Every draft (create, swap, re-price) stores `source`, the least real of its rows' price sources
+//   (source.leastReal of sourceOf), and `demo` = source !== 'live'. Requests stored before carry no source and
+//   read as demo through source.requestSource. RequestRow carries that `source` for the lists' labels.
+// - Price checks say how far they may go with a real supplier: 'peek' on page views (getRequest, liveCheck:
+//   never a search), 'confirm' at submit, 'final' at decide. A supplier failure at submit or decide
+//   (503 supplier_unavailable, 429 supplier_busy) leaves the request untouched; getRequest turns the
+//   source.LIVE_ERROR_CODES into RequestView.liveError, so the approver's page always opens.
+// - EvalCtx.priceSource is the search's rows' source (else the inventory's): only the policy texts read it.
 
 const { AppError } = require('../lib/errors');
 const { id: newId } = require('../lib/ids');
@@ -67,6 +77,7 @@ const { text } = require('./validate');
 const { memberScope, USER_ID_RE } = require('./repo');
 const { periodKey, periodLabel, committedCents, PERIOD_KEY_RE } = require('./budgets');
 const { ROW_KEY_RE } = require('./dto');
+const { sourceOf, leastReal, requestSource, isSource, LIVE_ERROR_CODES } = require('./source');
 
 /** Purpose length on POST /trips. */
 const PURPOSE_CHARS = Object.freeze([3, 140]);
@@ -223,7 +234,30 @@ function carrierNames(inventory) {
   return Object.fromEntries(inventory.carriers().map(c => [c.code, c.name]));
 }
 
-/** The EvalCtx of one company, tier policy and search (benchmarks from that search). */
+/**
+ * Where the inventory's prices come from (types.BusinessInventory.source). The frozen fakes carry no source:
+ * then status 'demo' reads as 'demo', 'sandbox' as 'sandbox', 'live' as 'live', and 'none' (or no inventory) as null.
+ */
+function inventorySource(inventory) {
+  if (!inventory || inventory.status === 'none') return null;
+  if (isSource(inventory.source)) return inventory.source;
+  return isSource(inventory.status) ? inventory.status : null;
+}
+
+/** The least real source of some rows (source.leastReal of each row's sourceOf), or null when there are none. */
+const rowsSource = rows => leastReal((rows || []).filter(Boolean).map(r => sourceOf(r)));
+
+/** The least real source of a search's rows, every leg. */
+function searchedSource(searched) {
+  const legs = (searched && searched.legs) || {};
+  return rowsSource([legs.out, legs.back, legs.hotel].flatMap(leg => (leg && Array.isArray(leg.rows) ? leg.rows : [])));
+}
+
+/**
+ * The EvalCtx of one company, tier policy and search (benchmarks from that search). priceSource: the
+ * search's rows (else the inventory's), so the policy texts say "test fares" for supplier test data; demo
+ * texts are unchanged.
+ */
 function evalCtx(svc, org, policy, searched, now) {
   const legs = (searched && searched.legs) || {};
   const benchmarks = {};
@@ -233,6 +267,7 @@ function evalCtx(svc, org, policy, searched, now) {
   return {
     rules: policy.rules, policy: { tier: policy.tier, version: policy.version }, outOfPolicy: org.settings.outOfPolicy,
     today: tz.localDate(org.timezone, now), benchmarks, carriers: carrierNames(svc.inventory), orgName: org.name,
+    priceSource: searchedSource(searched) || inventorySource(svc.inventory) || 'demo',
   };
 }
 
@@ -336,7 +371,10 @@ async function draftFields(svc, a, { tier, departmentId, requestId, query, selec
   const alts = ev.status === 'within'
     ? { alternatives: [], alternativesTruncated: false, cheapestWithin: null, explanation: null }
     : await alternativesFor(svc, { ctx, budget, query, selection, rows, totalCents, evaluation: ev, searched });
-  return { query, selection, rows, pricedAt, totalCents, evaluation: { ...ev, evaluatedAt: nowIso }, ...alts };
+  // Where these rows' prices came from (Request.source), so the request says so for as long as it lives;
+  // request.demo is "not a real price" (true for demo and supplier test data).
+  const source = rowsSource(COMPONENTS.map(c => rows[c])) || 'demo';
+  return { query, selection, rows, pricedAt, totalCents, evaluation: { ...ev, evaluatedAt: nowIso }, ...alts, source, demo: source !== 'live' };
 }
 
 /** The cheapest option inside policy the traveler saw: a new draft that found none keeps the earlier one. */
@@ -415,6 +453,8 @@ function requestRow(r, status) {
     from: r.query.from, to: r.query.to, departDate: r.query.departDate, returnDate: r.query.returnDate ?? null,
     hotelCity: r.rows && r.rows.hotel ? r.rows.hotel.city : null, totalCents: r.totalCents, currency: r.currency || CURRENCY,
     pricedAt: r.pricedAt, status, policyStatus: r.evaluation ? r.evaluation.status : 'within', at: r.at,
+    // Additive (real suppliers): where the total's prices came from, for the list's label.
+    source: requestSource(r),
   };
 }
 /** A row of the approvals inbox. */
@@ -507,12 +547,16 @@ function legView(svc, leg, ctx, benchmark) {
     || (departKey(x.row) < departKey(y.row) ? -1 : departKey(x.row) > departKey(y.row) ? 1 : 0)
     || (x.row.offerId < y.row.offerId ? -1 : x.row.offerId > y.row.offerId ? 1 : 0)
     || (x.row.key < y.row.key ? -1 : x.row.key > y.row.key ? 1 : 0));
-  return {
+  const view = {
     rows,
     outsideCount: rows.filter(r => r.evaluation.status !== 'within').length,
     truncated: !!(leg && leg.truncated),
     benchmark: benchmark || { medianCents: null, sampleSize: 0, excluded: [] },
   };
+  // Real suppliers only: what the search left out (the per-cause notices) and a hotel supplier's failure.
+  if (leg && leg.skipped && typeof leg.skipped === 'object') view.skipped = leg.skipped;
+  if (leg && leg.error) view.error = leg.error;
+  return view;
 }
 
 /** The inbox cursor: '<tab>.<offset>', a positive multiple of the page size (404 for anything else). */
@@ -645,7 +689,7 @@ const methods = {
       ...fields, currency: CURRENCY, originalTotalCents: fields.totalCents,
       reason: null, approval: null, submittedAt: null, expiresAt: null, budget: null, returned: null, messages: [],
       history: [{ at: nowIso, by: me, action: 'drafted', from: null, to: 'draft', note: '' }],
-      booking: { status: 'not_open' }, demo: true,
+      booking: { status: 'not_open' },
     };
     const docs = await this.repo.commit({
       inserts: [
@@ -662,8 +706,10 @@ const methods = {
   /**
    * A request page. Visible to the traveler, and to members whose request.view.team/all or approval role
    * reaches it (roles.allowed with { own: 'request' }, pooled when the member holds a pool link). Deciders
-   * on a pending request also get `live` (composer.recheck, no write) and `comparison`
-   * (alternatives.compareTrips against cheapestWithin). Writes nothing.
+   * on a pending request also get `live` (composer.recheck with check 'peek', no write) and `comparison`
+   * (alternatives.compareTrips against cheapestWithin). When the check cannot answer (supplier_unavailable,
+   * supplier_busy, live_check_skipped, unsupported_currency) the page still opens: live is null and
+   * `liveError` names the code (null otherwise). Writes nothing.
    * @param {import('./types').MemberActor} actor
    * @param {string} rid btr_…
    * @returns {Promise<import('./types').RequestView>}
@@ -708,12 +754,17 @@ const methods = {
       budget = await budgetPreview(this, a.org, r.departmentId, r.budget.periodKey, r.id);
     }
 
-    let live = null, comparison = null;
+    let live = null, comparison = null, liveError = null;
     if (deciding && this.composer) {
+      // A page view never searches a real supplier ('peek'): when the check can't answer (the supplier is
+      // down, the company's hourly limit is used up, it would need a search, a row in another currency) the
+      // page still opens and says so (liveError). No supplier at all (503 no_supplier) leaves live null.
       try {
-        live = await this.composer.recheck(r);
+        live = await this.composer.recheck(r, { check: 'peek' });
       } catch (e) {
-        if (!(e instanceof AppError) || e.status !== 503) throw e;
+        if (!(e instanceof AppError)) throw e;
+        if (LIVE_ERROR_CODES.includes(e.code)) liveError = e.code;
+        else if (e.status !== 503) throw e;
       }
       if (r.cheapestWithin) comparison = this.alternatives.compareTrips({ rows: r.rows, totalCents: r.totalCents }, r.cheapestWithin);
     }
@@ -723,7 +774,7 @@ const methods = {
       const current = await tierPolicy(this.repo, a.org.id, r.tier);
       if (current.version !== r.evaluation.policy.version) policyChanged = { from: r.evaluation.policy.version, to: current.version };
     }
-    return { request: r, status, self, can, approver, budget, live, comparison, policyChanged, timezone: a.org.timezone };
+    return { request: r, status, self, can, approver, budget, live, liveError, comparison, policyChanged, timezone: a.org.timezone };
   },
 
   /**
@@ -865,7 +916,7 @@ const methods = {
       if (revOf(r) !== rev) throw race();
       const base = { now: nowIso, actor: me, member: a.member, org: a.org };
       const target = { kind: KINDS.request, id: r.id };
-      const rc = await this.composer.recheck(r);
+      const rc = await this.composer.recheck(r, { check: 'confirm' });
 
       if (rc.status !== 'same') {
         const draft = await repricedDraft(this, a, r, rc, nowIso);
@@ -1075,7 +1126,7 @@ const methods = {
         return { request: docs[key], outcome: 'denied' };
       }
 
-      const rc = await this.composer.recheck(r);
+      const rc = await this.composer.recheck(r, { check: 'final' });
       if (rc.status !== 'same') {
         const draft = await repricedDraft(this, a, r, rc, nowIso);
         const event = { type: 'approve', note, ackOverBudget: ack, budget: null, draft };
@@ -1234,7 +1285,7 @@ const methods = {
 
   /**
    * The approver's live price check on its own (GET; the request page embeds the same result).
-   * composer.recheck(request); writes nothing.
+   * composer.recheck(request, { check: 'peek' }): never a supplier search; writes nothing.
    * @param {import('./types').MemberActor} actor
    * @param {string} rid
    * @returns {Promise<import('./types').RecheckResult>}
@@ -1247,7 +1298,7 @@ const methods = {
     if (this.policy.effectiveStatus(r, this.repo.iso(), a.org.timezone) !== 'pending' || deciderRole(a, r) === null) {
       throw forbidden(a.member.role, a.org.name);
     }
-    return this.composer.recheck(r);
+    return this.composer.recheck(r, { check: 'peek' });
   },
 };
 

@@ -6,7 +6,9 @@
 //   recent activity. Finance: the budget table and a Reports link.
 // In the demo preview every amount is demo-labelled; with no supplier (production) the company's own limits
 // and budgets are plain amounts, never "Demo price". A share with nothing submitted says "No requests yet",
-// never 0%.
+// never 0%. With real suppliers (real-suppliers design §2.3) the containers say where the prices came from:
+// the budgets and activity boxes add many requests up, so they carry the least real source of the requests
+// the page counts (dash.priceSource, else the inventory's): "Includes supplier test data".
 const { html } = require('../../lib/html');
 const { icon } = require('../icons');
 const { LABELS, can } = require('../../business/roles');
@@ -30,7 +32,7 @@ function section(id, title, body, { iconName = null, action = null, cls = '' } =
  * it is one demo container (what trips commit is priced from demo data); in production it is the company's
  * own figures.
  */
-function budgetTable(rows, { label, timeZone, demo }) {
+function budgetTable(rows, { label, timeZone, demo, source = 'demo' }) {
   const cell = c => (c === null || c === undefined ? 'No budget set' : p.amount(c));
   const table = p.dataTable({
     caption: `Budgets for ${label}`,
@@ -43,7 +45,7 @@ function budgetTable(rows, { label, timeZone, demo }) {
     empty: `No budgets for ${label}. Without a budget, trips are checked against the policy only.`,
   });
   const body = html`${table}<p class="bz-muted">Committed is what approved trips hold. Spent shows once real bookings exist.</p>`;
-  return demo ? p.demoBox(body, { pricedAt: null, timeZone, cls: 'bz-budgets-box' }) : html`<div class="bz-budgets-box">${body}</div>`;
+  return demo ? p.demoBox(body, { pricedAt: null, timeZone, cls: 'bz-budgets-box', source, totals: true }) : html`<div class="bz-budgets-box">${body}</div>`;
 }
 
 /**
@@ -55,7 +57,12 @@ function homeView(ctx, { org, member, dash, inventoryStatus }) {
   const timeZone = f.safeZone(org.timezone);
   const map = places(ctx);
   const role = member.role;
-  const demo = inventoryStatus === 'demo';
+  // `demo`: amounts are priced from searches here (demo data or a supplier), so each sits in a labelled container.
+  const inv = f.inventorySource(ctx.business && ctx.business.inventory) || (f.isSource(inventoryStatus) ? inventoryStatus : null);
+  const demo = inventoryStatus === 'demo' || inv === 'sandbox' || inv === 'live';
+  const sandbox = inv === 'sandbox' && inventoryStatus !== 'demo';
+  // What the totals (budgets, activity) add up: the counted requests' least real source, else the inventory's.
+  const totals = dash.priceSource || inv || 'demo';
   const blocks = [];
 
   if (dash.checklist) {
@@ -64,7 +71,8 @@ function homeView(ctx, { org, member, dash, inventoryStatus }) {
       { text: 'Review your policy', done: c.policyReviewed, href: `${base}/policies` },
       { text: 'Add departments and budgets', done: c.departments, href: `${base}/budgets` },
       { text: 'Invite your team', done: c.invited, href: `${base}/people` },
-      ...(demo ? [{ text: 'Try a demo trip', done: c.demoTrip, href: `${base}/trips/new` }] : []),
+      ...(inventoryStatus === 'demo' ? [{ text: 'Try a demo trip', done: c.demoTrip, href: `${base}/trips/new` }] : []),
+      ...(sandbox ? [{ text: 'Try a trip with supplier test data', done: c.demoTrip, href: `${base}/trips/new` }] : []),
     ];
     if (items.some(i => !i.done)) blocks.push(section('bz-h-setup', `Set up ${org.name}`, p.checklist(items), { iconName: 'flag' }));
   }
@@ -99,7 +107,7 @@ function homeView(ctx, { org, member, dash, inventoryStatus }) {
   }
 
   if (dash.budgets) {
-    blocks.push(section('bz-h-budgets', `Budgets, ${dash.periodLabel}`, budgetTable(dash.budgets, { label: dash.periodLabel, timeZone, demo }), {
+    blocks.push(section('bz-h-budgets', `Budgets, ${dash.periodLabel}`, budgetTable(dash.budgets, { label: dash.periodLabel, timeZone, demo, source: totals }), {
       iconName: 'wallet', action: { href: `${base}/budgets`, label: 'All budgets' },
     }));
     if (role === 'finance' && can(role, 'reports.view') && !tiles.length) {
@@ -117,7 +125,7 @@ function homeView(ctx, { org, member, dash, inventoryStatus }) {
   if (can(role, 'trip.request')) {
     blocks.push(section('bz-h-plan', 'Plan a work trip', inventoryStatus === 'none'
       ? p.supplierPanel({ level: 3 })
-      : html`<div class="bz-card bz-plan"><p>Search ${demo ? 'demo ' : ''}flights and hotels with your policy shown on every option. Out-of-policy picks come with cheaper options before you ask for approval.</p>
+      : html`<div class="bz-card bz-plan"><p>${sandbox ? "Search flights and hotels from our suppliers' test systems, with" : `Search ${inventoryStatus === 'demo' ? 'demo ' : ''}flights and hotels with`} your policy shown on every option. Out-of-policy picks come with cheaper options before you ask for approval.</p>
         <p><a class="btn btn-navy bz-btn" href="${base}/trips/new">${icon('plane')}<span>Plan a work trip</span></a></p></div>`, { iconName: 'plane' }));
   }
 
@@ -131,9 +139,9 @@ function homeView(ctx, { org, member, dash, inventoryStatus }) {
   const lines = pol.lines.slice(0, 5);
   const money = lines.some(l => MONEY.test(l));
   // The same line /policy uses says why a limit sits beside "Demo price" in the preview.
-  const polBody = html`<p class="bz-muted">${pol.sub}</p><ul class="bz-policy-lines">${lines.map(l => html`<li>${icon('check')}<span>${l}</span></li>`)}</ul>${money ? html`<p class="bz-muted">${demo ? 'Limits are in US dollars. In this preview, the fares and rates they are checked against are demo prices.' : 'Limits are in US dollars.'}</p>` : ''}`;
+  const polBody = html`<p class="bz-muted">${pol.sub}</p><ul class="bz-policy-lines">${lines.map(l => html`<li>${icon('check')}<span>${l}</span></li>`)}</ul>${money ? html`<p class="bz-muted">${demo ? p.limitsNote(inventoryStatus === 'demo' ? 'demo' : inv) : 'Limits are in US dollars.'}</p>` : ''}`;
   blocks.push(section('bz-h-policy', 'Your policy at a glance',
-    money && demo ? p.demoBox(polBody, { pricedAt: null, timeZone, cls: 'bz-card bz-policy' }) : html`<div class="bz-card bz-policy">${polBody}</div>`,
+    money && demo ? p.demoBox(polBody, { pricedAt: null, timeZone, cls: 'bz-card bz-policy', source: inventoryStatus === 'demo' ? 'demo' : inv }) : html`<div class="bz-card bz-policy">${polBody}</div>`,
     { iconName: 'shield', action: { href: `${base}/policy`, label: 'Your whole policy' } }));
 
   if (dash.recent) {
@@ -141,7 +149,7 @@ function homeView(ctx, { org, member, dash, inventoryStatus }) {
     const list = dash.recent.length
       ? html`<ol class="bz-timeline">${dash.recent.map(e => html`<li><span class="bz-timeline-when">${f.whenIn(timeZone, e.at, { now, zone: true })}</span>${e.summary}</li>`)}</ol>`
       : html`<p class="bz-muted">Nothing here yet.</p>`;
-    blocks.push(section('bz-h-recent', 'Recent activity', demo && dash.recent.some(e => MONEY.test(e.summary || '')) ? p.demoBox(list, { pricedAt: null, timeZone, cls: 'bz-card' }) : html`<div class="bz-card">${list}</div>`, {
+    blocks.push(section('bz-h-recent', 'Recent activity', demo && dash.recent.some(e => MONEY.test(e.summary || '')) ? p.demoBox(list, { pricedAt: null, timeZone, cls: 'bz-card', source: totals, totals: true }) : html`<div class="bz-card">${list}</div>`, {
       iconName: 'clock', action: can(role, 'audit.view') ? { href: `${base}/activity`, label: 'All activity' } : null,
     }));
   }

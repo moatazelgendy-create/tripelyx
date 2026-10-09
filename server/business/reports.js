@@ -2,8 +2,12 @@
 // method that pages the records (bounded by constants.SCAN_CAP, then `truncated`: "Based on the 5,000 most
 // recent requests"). BusinessService methods (service.js assigns `methods` onto its prototype).
 //
-// - Every money tile is calculated on demo prices (the view says so). Coming soon tiles (COMING_SOON) never
-//   show a number and never $0. Empty periods say "No requests yet", never $0.
+// - Every money tile is calculated on the requests' own prices, and says where they came from: ReportTiles
+//   and DashboardView carry `priceSource` (additive), the least real source of the requests they count
+//   (source.leastReal of source.requestSource: "Demo prices", "Includes supplier test data", "Supplier
+//   prices" only when every counted request is live), null when they count none (the view then names the
+//   inventory's). Coming soon tiles (COMING_SOON) never show a number and never $0. Empty periods say
+//   "No requests yet", never $0.
 // - Statuses are effective statuses (this.policy.effectiveStatus with the org's time zone); nothing is
 //   written by a report.
 // - A request belongs to the period of its departure date (budgets.periodKey(query.departDate, period)).
@@ -14,6 +18,7 @@ const roles = require('./roles');
 const { loadActor, need, notFound } = require('./actor');
 const { periodKey, periodLabel, currentPeriodKey, PERIOD_KEY_RE } = require('./budgets');
 const { HOME_ROWS } = require('./requests');
+const { leastReal, requestSource } = require('./source');
 
 /** Tiles for what phase 1 cannot measure yet. Never a number, never $0. */
 const COMING_SOON = Object.freeze([
@@ -128,6 +133,8 @@ function reportTiles(input) {
       || String(x.name).localeCompare(String(y.name), 'en') || (x.userId < y.userId ? -1 : 1)),
     comingSoon: COMING_SOON.map(t => ({ key: t.key, label: t.label })),
     truncated: truncated === true,
+    // Additive (real suppliers): where the counted requests' prices came from; null when none is counted.
+    priceSource: leastReal(requests.map(requestSource)),
   };
 }
 
@@ -247,11 +254,17 @@ const methods = {
     const reports = view === 'reports'
       ? reportTiles({ requests: inPeriod, budgets: budgets || [], nowIso, timezone: a.org.timezone, truncated: scanned.truncated, effectiveStatus: this.policy.effectiveStatus })
       : null;
+    // Additive (real suppliers): where the prices of the requests this page counts came from (the period's
+    // company requests the tiles and budgets count, and the rows it lists); null when it counts none.
+    const priceSource = leastReal([
+      ...inPeriod.map(requestSource),
+      ...[...myTrips, ...(teamTrips || []), ...(waiting ? waiting.rows : [])].map(r => r.source),
+    ]);
     return {
       role, periodKey: key, periodLabel: periodLabel(key), checklist: checklistView, waiting, myTrips, teamTrips, policy, pendingCompany,
       outOfPolicyShare: reportsView ? outOfPolicyShare(inPeriod) : null,
       topReasons: reportsView ? topReasons(inPeriod.filter(r => r.submittedAt)) : null,
-      recent, budgets, reports,
+      recent, budgets, reports, priceSource,
     };
   },
 };

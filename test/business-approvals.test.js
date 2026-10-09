@@ -642,3 +642,100 @@ test('a decider\'s view of a pending request counts against the compute limit (i
   assert.equal(last.headers.get('cache-control'), 'no-store');
   assert.match(String(last.headers.get('x-robots-tag')), /noindex/);
 });
+
+// ---------------------------------------------------------------------------------------------------------
+// Supplier test data (real-suppliers design §2.4, §5.1, §7.1 B items): the app's demo providers moved into the
+// flt_t./htl_t. namespace (test/business-sandbox.js useSandbox), and a composer that fails on demand as a real
+// supplier would. The approver's page always opens; a decision never goes through without a price check, and
+// an outage or the company's supplier limit never sends the trip back or changes it.
+
+const sandbox = require('./business-sandbox');
+const { PRICE_CHECK_COPY, SUPPLIER_ERRORS } = require('../server/business/source');
+
+test('supplier test data: the approver reads the request when the check can\'t run, and decide answers 429 or 503 on the page with the request unchanged', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const { B, c } = w;
+  const sb = sandbox.useSandbox(w.app);
+  const spy = sandbox.instrument(sb.composer);
+  const rid = await pendingTrip(w);
+  assert.deepEqual(spy.checks('recheck'), ['confirm'], 'submit');
+
+  // A page view peeks (never a supplier search) and every amount on it is test data.
+  let res = await c.dana.get(`${B}/trips/${rid}`);
+  assert.equal(res.status, 200);
+  let main = mainOf(res.text);
+  sandbox.assertSourceMoney(main, 'sandbox', { label: 'approver page', min: 3 });
+  assert.deepEqual(spy.checks('recheck'), ['confirm', 'peek']);
+  assert.match(textOf(main), /Price checked again at 12:00 PM today: unchanged\./);
+
+  // The company's supplier limit is used up: the page opens and says the price is checked when they approve.
+  spy.fail('recheck', 'supplier_busy');
+  res = await c.dana.get(`${B}/trips/${rid}`);
+  assert.equal(res.status, 200);
+  main = mainOf(res.text);
+  assert.ok(textOf(main).includes(PRICE_CHECK_COPY.failed), textOf(main).slice(0, 300));
+  sandbox.assertSourceMoney(main, 'sandbox', { label: 'approver page, busy' });
+  const before = storeSnapshot(w.app);
+  res = await c.dana.post(`${B}/trips/${rid}/decide`, { action: 'approve', note: '', rev: revOf(main, 'decide') });
+  assert.equal(res.status, 429);
+  main = mainOf(res.text);
+  assert.ok(textOf(main).includes(SUPPLIER_ERRORS.supplier_busy.message), textOf(main).slice(0, 300));
+  assert.equal(storeSnapshot(w.app), before, 'nothing written');
+  assert.equal((await stored(w, rid)).status, 'pending');
+
+  // The supplier is down: 503, "nothing changed".
+  spy.fail('recheck', 'supplier_unavailable');
+  res = await c.dana.get(`${B}/trips/${rid}`);
+  assert.ok(textOf(mainOf(res.text)).includes(PRICE_CHECK_COPY.failed));
+  res = await c.dana.post(`${B}/trips/${rid}/decide`, { action: 'approve', note: '', rev: revOf(mainOf(res.text), 'decide') });
+  assert.equal(res.status, 503);
+  assert.ok(textOf(mainOf(res.text)).includes(PRICE_CHECK_COPY.unchanged));
+  assert.equal(storeSnapshot(w.app), before, 'nothing written');
+
+  // A peek that would need a supplier search.
+  spy.fail('recheck', 'live_check_skipped');
+  res = await c.dana.get(`${B}/trips/${rid}`);
+  assert.equal(res.status, 200);
+  assert.ok(textOf(mainOf(res.text)).includes(PRICE_CHECK_COPY.skipped));
+  assert.ok(!textOf(mainOf(res.text)).includes(PRICE_CHECK_COPY.failed));
+
+  // Back up: the decision checks the price at the final level, and the trip is approved on test data.
+  spy.heal();
+  res = await c.dana.get(`${B}/trips/${rid}`);
+  res = await c.dana.post(`${B}/trips/${rid}/decide`, { action: 'approve', note: '', rev: revOf(mainOf(res.text), 'decide') });
+  assert.equal(res.status, 303);
+  assert.equal(spy.checks('recheck').at(-1), 'final');
+  res = await c.sam.get(`${B}/trips/${rid}`);
+  main = mainOf(res.text);
+  assert.ok(textOf(main).includes('Approved (test data). Nothing was booked.'));
+  sandbox.assertSourceMoney(main, 'sandbox', { label: 'approved' });
+
+  // The inbox: the decided row says test data.
+  res = await c.dana.get(`${B}/approvals?tab=decided`);
+  assert.equal(res.status, 200);
+  main = mainOf(res.text);
+  sandbox.assertSourceMoney(main, 'sandbox', { label: 'inbox', min: 1 });
+  assert.ok(textOf(main).includes('Approved (test data)'));
+});
+
+test('supplier test data: a supplier failure at submit leaves the draft as it was, with the reason kept on the page', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const { B, c } = w;
+  const sb = sandbox.useSandbox(w.app);
+  const spy = sandbox.instrument(sb.composer);
+  const rid = await createDraft(w, await businessForm(w));
+  const page = await c.sam.get(`${B}/trips/${rid}`);
+  const before = storeSnapshot(w.app);
+  for (const [code, status, text] of [['supplier_unavailable', 503, PRICE_CHECK_COPY.unchanged], ['supplier_busy', 429, SUPPLIER_ERRORS.supplier_busy.message]]) {
+    spy.fail('recheck', code);
+    const res = await c.sam.post(`${B}/trips/${rid}/submit`, { rev: revOf(mainOf(page.text), 'submit'), reason: REASON, category: 'client_meeting' });
+    assert.equal(res.status, status, code);
+    const main = mainOf(res.text);
+    assert.ok(textOf(main).includes(text), `${code}: ${textOf(main).slice(0, 300)}`);
+    assert.ok(main.includes(REASON), `${code}: the reason typed is kept`);
+    assert.equal(storeSnapshot(w.app), before, `${code}: nothing written`);
+  }
+  assert.equal((await stored(w, rid)).status, 'draft');
+});

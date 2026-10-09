@@ -931,3 +931,75 @@ test('every admin page: no inline style or script, no em dash, every amount labe
   const people = await c.get(`${w.o}/people`);
   assert.match(people.text, /aria-current="page"[^>]*>[\s\S]{0,200}People/);
 });
+
+// ---------------------------------------------------------------------------------------------------------
+// Supplier test data (real-suppliers design §2.3, §7.1 B items): the app's demo providers moved into the
+// flt_t./htl_t. namespace (test/business-sandbox.js useSandbox). Tiles that add requests up say "Includes
+// supplier test data"; the CSV says each row's source; platform admins see what companies search and a
+// supplier setting that needs attention.
+
+const sandbox = require('./business-sandbox');
+const { LIMITS_NOTES } = require('../server/views/business/policies');
+
+test('supplier test data on the admin pages: budgets, reports, home and policies say so; the CSV names each row\'s source; the platform page names a supplier problem', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const sb = sandbox.useSandbox(w.app);
+  const { approved, pending } = await trips(w);
+  assert.deepEqual([approved.source, pending.source], ['sandbox', 'sandbox']);
+  const fin = w.c(w.fay);
+  const own = w.c(w.owner);
+
+  // Budgets: the committed and awaiting amounts come from supplier test data.
+  let res = await fin.get(`${w.o}/budgets`);
+  assert.equal(res.status, 200);
+  let main = mainOf(res.text);
+  sandbox.assertSourceMoney(main, 'sandbox', { label: 'budgets', min: 1 });
+  assert.ok(textOf(main).includes('Includes supplier test data'));
+  noInline('budgets (sandbox)', res.text);
+
+  // Reports: the money note, the list, and the CSV note beside Download CSV.
+  res = await fin.get(`${w.o}/reports?period=2026-Q4`);
+  assert.equal(res.status, 200);
+  main = mainOf(res.text);
+  sandbox.assertSourceMoney(main, 'sandbox', { label: 'reports', min: 1 });
+  assert.ok(textOf(main).includes('Money here includes supplier test data, not real fares. Nothing is charged.'));
+  const action = `${w.o}/reports/export`;
+  const csv = await postPairs(fin, action, formOf(res.text, action));
+  assert.equal(csv.status, 200);
+  const rows = csv.text.replace(/^﻿/, '').trim().split(/\r?\n/).slice(1).filter(l => /^"?(Supplier|Demo)/.test(l));
+  assert.equal(rows.length, 2, 'both requests');
+  for (const l of rows) assert.match(l, /^"?Supplier test data"?,/);
+
+  // The company home and the policies page.
+  res = await own.get(w.o);
+  assert.equal(res.status, 200);
+  sandbox.assertSourceMoney(mainOf(res.text), 'sandbox', { label: 'home' });
+  res = await own.get(`${w.o}/policies`);
+  assert.equal(res.status, 200);
+  main = mainOf(res.text);
+  assert.ok(textOf(main).includes(LIMITS_NOTES.sandbox), 'the limits are checked against supplier test data');
+  sandbox.assertSourceMoney(main, 'sandbox', { label: 'policies', min: 0 });
+
+  // The owner's setup checklist offers a trip on supplier test data.
+  res = await own.get(`${w.o}/welcome`);
+  assert.equal(res.status, 200);
+  assert.ok(textOf(res.text).includes(require('../server/views/business/welcome').TRY_TRIP.sandbox));
+  assert.doesNotMatch(textOf(res.text), /demo trip/i);
+
+  // The platform page: what companies search, then a supplier setting that switched them off.
+  const ops = client(w.app.base, w.ops.cookie);
+  res = await ops.get('/admin/business');
+  assert.equal(res.status, 200);
+  assert.ok(textOf(res.text).includes("Companies search the suppliers' test systems. Prices are supplier test data, not real fares, and are labelled TEST DATA."));
+  sb.inventory.status = 'none';
+  sb.inventory.source = null;
+  sb.inventory.problem = 'LITEAPI_API_KEY is a production key, and BUSINESS_HOTEL_SUPPLIER=liteapi_sandbox allows sandbox keys only.';
+  res = await ops.get('/admin/business');
+  const text = textOf(res.text);
+  assert.ok(text.includes('A supplier setting needs attention: LITEAPI_API_KEY is a production key, and BUSINESS_HOTEL_SUPPLIER=liteapi_sandbox allows sandbox keys only. Companies see "Supplier not connected yet" until this is fixed.'), text.slice(0, 400));
+  // The problem is for platform admins only: a company's pages never show it.
+  res = await own.get(w.o);
+  assert.doesNotMatch(textOf(res.text), /LITEAPI_API_KEY|needs attention/);
+  sb.restore();
+});

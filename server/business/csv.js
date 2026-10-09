@@ -10,6 +10,9 @@
 // - Never a supplier cost, net rate, commission, markup, provider name or `internal` field.
 // - When the 5,000-request scan (constants.SCAN_CAP) is hit, a last note row says so (the filters run on the
 //   same 5,000 requests, so the note promises nothing more).
+// - price_source says where each row's amounts came from (real-suppliers design §2.3), from the request's
+//   source (source.requestSource: a request stored before real suppliers reads as demo): 'Demo price',
+//   'Supplier test data' or 'Supplier price'. PRICE_SOURCE stays the demo one.
 
 const { AppError } = require('../lib/errors');
 const tz = require('./tz');
@@ -18,15 +21,18 @@ const { loadActor, need, who, auditInsert } = require('./actor');
 const { USER_ID_RE } = require('./repo');
 const { periodKey, periodLabel, currentPeriodKey, PERIOD_KEY_RE } = require('./budgets');
 const { savedBySwitching } = require('./reports');
+const { requestSource } = require('./source');
 
-/** The columns, in order. price_source is always 'Demo price'; currency always 'USD'. */
+/** The columns, in order. price_source is per row (PRICE_SOURCES); currency always 'USD'. */
 const CSV_COLUMNS = Object.freeze([
   'price_source', 'request_id', 'created_local', 'traveler', 'department', 'from', 'to', 'depart_date', 'return_date',
   'hotel_city', 'nights', 'status', 'approval_mode', 'approver', 'decided_local', 'policy_status', 'policy_reasons',
   'total_usd', 'cheapest_in_policy_usd', 'saved_by_switching_usd', 'currency',
 ]);
-/** The first cell of every data row. */
+/** The first cell of a demo row. */
 const PRICE_SOURCE = 'Demo price';
+/** The first cell of every data row, by the request's price source. */
+const PRICE_SOURCES = Object.freeze({ demo: PRICE_SOURCE, sandbox: 'Supplier test data', live: 'Supplier price' });
 /** The byte-order mark the file starts with. */
 const BOM = '﻿';
 
@@ -69,7 +75,7 @@ function requestRow(request, ctx) {
   const hotel = r.rows && r.rows.hotel ? r.rows.hotel : null;
   const violations = r.evaluation && Array.isArray(r.evaluation.violations) ? r.evaluation.violations : [];
   return [
-    PRICE_SOURCE,
+    PRICE_SOURCES[requestSource(r)] || PRICE_SOURCE,
     r.id,
     localTime(timezone, r.at),
     r.travelerName,

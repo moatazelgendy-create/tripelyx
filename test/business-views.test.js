@@ -757,8 +757,9 @@ test('shell: the ribbons say what runs here (demo, pending company, no supplier 
     assert.deepEqual(r.find(x => x[0] === 'pending'), ['pending', pendingRibbon('Blue & Co')], status);
     assert.doesNotMatch(r.map(x => x[1]).join(' '), /demo trip|demo data/, `${status}: no demo claim in any ribbon`);
   }
-  // A live inventory (never today) is not called demo data either.
-  assert.deepEqual(ribbons(String(shellView(ctxFor({ status: 'live' }), shellFor('owner'), { body: '', searchPage: true }))), [['demo', PREVIEW_RIBBON]]);
+  // A live inventory (round 1b, never today) is not called demo data either: its ribbon says the prices are
+  // live and can change until booked (real-suppliers design §2.3).
+  assert.deepEqual(ribbons(String(shellView(ctxFor({ status: 'live' }), shellFor('owner'), { body: '', searchPage: true }))), [['demo', parts.LIVE_RIBBON]]);
   // No Business context at all reads as "no supplier".
   assert.deepEqual(ribbons(String(shellView({ ...ctxFor(), business: null }, shellFor('owner'), { body: '' }))), [['demo', PREVIEW_RIBBON]]);
 
@@ -983,4 +984,139 @@ test('business.js: copy link, the character count, the out-of-policy toggle and 
   dom0.menu.open = true;
   dom.docListeners.keydown[0]({ key: 'Escape' });
   assert.equal(dom0.menu.open, false, 'Escape closes the phone menu too');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// Supplier test data (real-suppliers design §2.3, §7.1 B items): the same parts over rows in the flt_t./htl_t.
+// namespace. Every amount sits in a data-price-source="sandbox" container with the dashed test outline and the
+// TEST DATA tag; nothing says "Demo price"; demo output is the default, byte for byte.
+
+const sandbox = require('./business-sandbox');
+const fx = require('./fixtures/business-rows');
+const { TERMS } = require('../server/business/source');
+
+/** searchRows() in the sandbox namespace. */
+function sandboxSearchRows() {
+  const { flights, hotels } = searchRows();
+  const move = list => list.map(r => ({ ...r, row: sandbox.sandboxRow(r.row) }));
+  const f2 = move(flights), h2 = move(hotels);
+  const offers = rows => [...new Set(rows.map(r => r.row.offerId))].map(id => rows.filter(r => r.row.offerId === id));
+  return { flights: f2, hotels: h2, flightGroups: offers(f2), hotelGroups: offers(h2) };
+}
+
+test('the source rule on supplier test data: every amount sits in a sandbox container with TEST DATA, never "Demo price"; demo is the default', () => {
+  const { flightGroups, hotelGroups, flights } = sandboxSearchRows();
+  const alts = sampleAlts(flights);
+  const pick = flights.find(r => r.row.key.endsWith('_1|FLEX'));
+  const opts = { pricedAt: PRICED, timeZone: TZ, source: 'sandbox' };
+  const pieces = {
+    demoPrice: parts.demoPrice(84200, opts),
+    demoBox: parts.demoBox(html`<p>Total ${parts.amount(84200)}</p>`, opts),
+    totals: parts.demoBox(html`<p>Spent ${parts.amount(84200)}</p>`, { ...opts, totals: true }),
+    linesTable: parts.linesTable(pick.row.lines, { ...opts, kind: 'fare' }),
+    limitsBar: parts.limitsBar(LIMITS, opts),
+    flightCards: html`${flightGroups.map(g => parts.rowCard(g, { timeZone: TZ, input: { name: 'out', checked: g[0].row.key } }))}`,
+    hotelCards: html`${hotelGroups.map(g => parts.rowCard(g, { timeZone: TZ, input: { name: 'hotelKey' }, priceToBeatCents: 30000 }))}`,
+    staticCard: parts.rowCard(pick, { timeZone: TZ }),
+    altCard: parts.altCard(alts[0], { timeZone: TZ, action: '/swap', rev: 2 }),
+    alternativesPanel: parts.alternativesPanel({ alternatives: alts, cheapestWithin: alts[1], truncated: true }, { timeZone: TZ, action: '/swap', rev: 2 }),
+    violations: parts.violationList([{ rule: 'flight.cap', component: 'out', severity: 'approval', text: 'Over your $500 limit by $86 (median of these test fares plus 20%).' }], opts),
+    verdict: parts.verdict('out', 'Over your trip limit by $86.', opts),
+  };
+  for (const [name, markup] of Object.entries(pieces)) {
+    assert.ok(sandbox.assertSourceMoney(markup, 'sandbox', { label: name }) > 0 || /\$\d/.test(textOf(markup)), `${name} prints an amount`);
+    assertNoInline(markup, name);
+  }
+  sandbox.assertSourceMoney(html`${Object.values(pieces)}`, 'sandbox', { label: 'all', min: 10 });
+  // The labels name what the amount is.
+  assert.ok(String(pieces.demoPrice).includes('Supplier test data, not a real price · Checked at 3:42 PM, Fri 9 Oct (Cairo time)'));
+  assert.ok(String(pieces.flightCards).includes('Supplier test data, not a real fare · Checked at 3:42 PM, Fri 9 Oct (Cairo time)'));
+  assert.ok(String(pieces.hotelCards).includes('Supplier test data, not a real room rate · Checked at'));
+  assert.ok(String(pieces.totals).includes('Includes supplier test data'));
+  assert.match(String(pieces.demoPrice), /^<span class="bz-demo-price bz-price-test" data-price-source="sandbox"><span class="bz-money">\$842<\/span> <span class="bz-price-note"><span class="bz-test-tag">TEST DATA<\/span> Supplier test data/);
+  assert.match(String(pieces.limitsBar), /<span class="bz-chip-demo bz-chip-test">Test data<\/span>/);
+  assert.doesNotMatch(String(pieces.limitsBar), /Demo price/);
+  assert.ok(String(pieces.altCard).includes('vs your pick (test data)</p>'));
+  assert.ok(String(pieces.alternativesPanel).includes(parts.ALT_SUBS.sandbox));
+
+  // Demo is the default, byte for byte, and an unknown source reads as demo (a mistake only looks less real).
+  const d = { pricedAt: PRICED, timeZone: TZ };
+  const demo = searchRows();
+  const same = (a, b, name) => assert.equal(String(a), String(b), name);
+  same(parts.demoPrice(84200, d), parts.demoPrice(84200, { ...d, source: 'demo' }), 'demoPrice');
+  same(parts.demoBox('x', d), parts.demoBox('x', { ...d, source: 'demo', totals: true }), 'demoBox: demo totals keep "Demo price"');
+  same(parts.limitsBar(LIMITS, d), parts.limitsBar(LIMITS, { ...d, source: 'demo' }), 'limitsBar');
+  same(parts.demoPrice(84200, d), parts.demoPrice(84200, { ...d, source: 'made-up' }), 'an unknown source is demo');
+  same(parts.priceNote(PRICED, TZ), html`<p class="bz-price-note">${icon('info')}<span>${NOTE}</span></p>`, 'the demo note');
+  assertDemoMoney(html`${demo.flightGroups.map(g => parts.rowCard(g, { timeZone: TZ }))}`, { label: 'demo cards' });
+});
+
+test('supplier rows read as the supplier gave them: stops in, operated by, no "0 kg", no star rating, half stars, paid at the hotel', () => {
+  const ev = row => ({ row, evaluation: { status: 'within', violations: [] } });
+  // A connection, and a codeshare: ZS101 sold by Sahara Wings, flown by Mediterra Airways.
+  const stop = sandbox.sandboxRow(fx.flight({ stops: 1, via: 'IST', fareOverride: { cabinKg: 0, checkedKg: 0, checkedBags: 1, terms: TERMS.fare({ refund: { allowed: false }, change: null, bags: { checked: 1, carryOn: 1 } }) } }));
+  const card = String(parts.rowCard([ev(stop)], { timeZone: TZ }));
+  assert.match(textOf(card), /1 stop in Istanbul ·/);
+  assert.doesNotMatch(textOf(card), /\b0 kg\b/);
+  assert.match(textOf(card), /1 checked bag(?! \()/, 'the count without a weight');
+  assert.ok(textOf(card).includes(TERMS.changesUnknown), 'the airline\'s unknown, as NEEDS VERIFICATION');
+  assert.match(textOf(String(parts.rowCard([ev(fx.flight({ stops: 1, via: 'IST' }))], { timeZone: TZ }))), /1 stop via Istanbul ·/, 'demo wording unchanged');
+  const share = sandbox.sandboxRow(fx.flight({ carrier: 'ZS', segmentCarriers: ['ZM'] }));
+  share.segments[0].flightNumber = 'ZS101';
+  share.flightNumbers = ['ZS101'];
+  assert.match(String(parts.rowCard([ev(share)], { timeZone: TZ })), /<p class="bz-row-meta">ZS101 operated by Mediterra Airways<\/p>/);
+  assert.doesNotMatch(String(parts.rowCard([ev(fx.flight({ carrier: 'ZS', segmentCarriers: ['ZM'] }))], { timeZone: TZ })), /operated by/, 'demo rows never');
+  // Bags the airline doesn't state are left to its terms, never "No checked bag".
+  const unknownBags = sandbox.sandboxRow(fx.flight({ fareOverride: { cabinKg: 0, checkedKg: 0, checkedBags: 0, terms: TERMS.fare({ refund: null, change: null, bags: null }) } }));
+  assert.doesNotMatch(textOf(String(parts.rowCard([ev(unknownBags)], { timeZone: TZ }))), /No checked bag|0 kg/);
+
+  // Hotels: no star rating, half stars, and a fee paid at the hotel split out of the total.
+  const unrated = sandbox.sandboxRow(fx.hotel({ stars: 0 }));
+  assert.match(textOf(String(parts.rowCard([ev(unrated)], { timeZone: TZ }))), new RegExp(`${parts.NO_STARS} · City centre, London`));
+  assert.match(textOf(String(parts.rowCard([ev(sandbox.sandboxRow(fx.hotel({ stars: 4.5 })))], { timeZone: TZ }))), /4\.5-star · City centre/);
+  const base = sandbox.sandboxRow(fx.hotel());
+  const fee = { label: 'Resort fee, paid at the hotel', kind: 'fee', cents: 4000 };
+  const withFee = { ...base, lines: [...base.lines, fee], totalCents: base.totalCents + 4000 };
+  const hotelCard = String(parts.rowCard([ev(withFee)], { timeZone: TZ, lines: true }));
+  assert.ok(textOf(hotelCard).includes(`You pay ${f.money(base.totalCents)} when booked and $40 at the hotel.`), textOf(hotelCard).slice(0, 400));
+  sandbox.assertSourceMoney(hotelCard, 'sandbox', { label: 'hotel with a fee' });
+  const table = String(parts.linesTable(withFee.lines, { pricedAt: PRICED, timeZone: TZ, source: 'sandbox', kind: 'room', row: withFee }));
+  assert.ok(textOf(table).includes(`You pay ${f.money(base.totalCents)} when booked and $40 at the hotel.`));
+  assert.equal(String(parts.paidAtHotel(fx.hotel())), '', 'demo rows never');
+  assert.equal(String(parts.paidAtHotel(base)), '', 'no fee, no split');
+  // Not available, in the supplier's words.
+  const gone = sandbox.sandboxRow(fx.hotel({ available: false }));
+  assert.ok(textOf(String(parts.rowCard([ev(gone)], { timeZone: TZ }))).includes("Not available in the supplier's test data"));
+});
+
+test('shell, results notes and the platform page on supplier test data', () => {
+  // The ribbon: TEST DATA, the dashed test class, and the sandbox text; the pending ribbon offers a test-data trip.
+  const s = String(shellView(ctxFor({ status: 'sandbox' }), shellFor('owner'), { body: '', searchPage: true }));
+  assert.match(s, new RegExp(`<p class="bz-ribbon bz-ribbon-demo bz-ribbon-test" role="note"><svg[\\s\\S]*?</svg><span class="bz-test-tag">TEST DATA</span><span>${parts.SANDBOX_RIBBON.replace(/'/g, '&#39;')}</span></p>`));
+  assert.doesNotMatch(textOf(s), /demo data|Demo price/);
+  const pendingOrg = { ...ORG, name: 'Blue & Co', status: 'pending' };
+  assert.ok(textOf(String(shellView(ctxFor({ status: 'sandbox' }), shellFor('owner', { org: pendingOrg }), { body: '' }))).includes('try a trip with supplier test data now'));
+
+  // What a supplier search left out, in words.
+  const { skippedNotes } = require('../server/views/business/results');
+  assert.deepEqual(skippedNotes({ otherCurrency: 3, currencies: ['GBP'] }, { kind: 'flight', empty: true }),
+    ['This supplier priced every fare in GBP. Tripelyx Business shows US dollar prices only for now, so none can be shown.']);
+  assert.deepEqual(skippedNotes({ otherCurrency: 1, currencies: ['GBP', 'EUR'], mixedCabin: 2 }, { kind: 'flight', empty: false }),
+    ['1 fare priced in another currency is not shown.', 'Fares that mix cabins are not shown yet.']);
+  assert.deepEqual(skippedNotes({ otherCurrency: 2, feeOtherCurrency: 1, noHotelData: 4, mixedCabin: 9 }, { kind: 'hotel', empty: false }),
+    ['2 rates priced in another currency are not shown.', 'Some rates have fees paid at the hotel in another currency and are not shown yet.', 'Hotels with no name from the supplier are not shown.']);
+  assert.deepEqual(skippedNotes(undefined, { kind: 'flight', empty: true }), []);
+  assert.deepEqual(skippedNotes({ otherCurrency: -1, currencies: ['<b>'] }, { kind: 'flight', empty: true }), [], 'nonsense counts say nothing');
+
+  // The platform page: the supplier state and a problem sentence, only for a configured supplier.
+  const { supplierSection, SUPPLIER_STATES, SUPPLIER_OFF } = require('../server/views/business/platform');
+  const section = inventory => String(supplierSection({ business: { inventory } }));
+  assert.equal(section({ status: 'demo' }), '', 'demo: nothing');
+  assert.equal(section({ status: 'none', problem: null }), '', 'no supplier and no problem: nothing');
+  const sb = section({ status: 'sandbox', source: 'sandbox', hotelsConnected: false, problem: null });
+  assert.ok(textOf(sb).includes(SUPPLIER_STATES.sandbox) && textOf(sb).includes('Hotels are not connected'));
+  const bad = section({ status: 'none', source: null, problem: 'DUFFEL_ACCESS_TOKEN is a live key, and BUSINESS_FLIGHT_SUPPLIER=duffel_test allows test keys only.' });
+  assert.ok(textOf(bad).includes(`A supplier setting needs attention: DUFFEL_ACCESS_TOKEN is a live key, and BUSINESS_FLIGHT_SUPPLIER=duffel_test allows test keys only. ${SUPPLIER_OFF}`));
+  assert.match(bad, /role="status"/);
+  assert.ok(section({ status: 'sandbox', source: 'sandbox', problem: '<script>' }).includes('&lt;script&gt;'), 'escaped');
 });
