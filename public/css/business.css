@@ -222,6 +222,110 @@ div.bz-opt-label { cursor: default; padding-top: 0; }
 .bz-alt-note .icon { width: 15px; height: 15px; flex: none; margin-top: 3px; color: var(--blue-500); }
 .bz-alt-form .btn { width: 100%; }
 
+/* ---------- Trips, requests and approvals (home, policy, trip form, results, request page, lists) ---------- */
+.bz-block-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 16px; margin-bottom: 10px; }
+.bz-app .bz-block-title { display: flex; align-items: center; gap: 8px; font-size: 19px; margin: 0; }
+.bz-block-title .icon { width: 19px; height: 19px; flex: none; color: var(--blue-500); }
+.bz-block-link { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; color: var(--blue-600); font-size: 14.5px; font-weight: 600; text-decoration: none; }
+.bz-block-link .icon { width: 15px; height: 15px; }
+.bz-block-link:hover { text-decoration: underline; }
+.bz-home-block + .bz-home-block { margin-top: 28px; }
+.bz-muted { color: var(--muted); font-size: 14px; line-height: 1.5; }
+.bz-note { display: flex; gap: 8px; align-items: flex-start; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--sky-50); color: var(--text); font-size: 14.5px; line-height: 1.5; }
+.bz-note .icon { width: 16px; height: 16px; flex: none; margin-top: 3px; color: var(--blue-500); }
+.bz-plan > * + * { margin-top: 12px; }
+.bz-policy-lines { display: grid; gap: 8px; margin: 10px 0; }
+.bz-policy-lines li { display: flex; gap: 10px; align-items: flex-start; line-height: 1.5; color: var(--text); overflow-wrap: anywhere; }
+.bz-policy-lines .icon { width: 16px; height: 16px; flex: none; margin-top: 4px; color: var(--success); }
+.bz-policy > * + * { margin-top: 10px; }
+.bz-tile-none { font-size: 17px; color: var(--muted); }
+.bz-top-reasons { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; font-size: 14.5px; }
+.bz-home-block .bz-tiles { grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); }
+.bz-top-reasons li { display: flex; justify-content: space-between; gap: 12px; color: var(--text); }
+.bz-top-reasons b { color: var(--ink); }
+
+/* Lists of trips */
+.bz-cell-link { font-weight: 600; color: var(--navy-800); }
+.bz-cell-sub { display: block; margin-top: 2px; font-size: 13.5px; color: var(--muted); }
+.bz-table .bz-demo-price .bz-price-note { display: block; margin-top: 2px; font-size: 12px; white-space: normal; }
+.bz-filters { display: grid; gap: 12px; }
+.bz-filter-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr)); gap: 12px 16px; }
+.bz-filter-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+
+/* The trip form */
+.bz-search-fields { display: grid; gap: 14px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.bz-search-fields[disabled] { opacity: .6; }
+.bz-search-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 210px), 1fr)); gap: 14px 16px; }
+.bz-nights { max-width: 360px; }
+.bz-search-who { display: flex; gap: 8px; align-items: flex-start; color: var(--muted); font-size: 14.5px; }
+.bz-search-who .icon { width: 16px; height: 16px; flex: none; margin-top: 3px; color: var(--blue-500); }
+
+/* Results */
+.bz-leg + .bz-leg { margin-top: 32px; }
+.bz-leg-head { margin-bottom: 12px; }
+.bz-leg-sub { margin-top: 2px; color: var(--muted); font-size: 15px; }
+.bz-leg-note { display: flex; gap: 8px; align-items: flex-start; margin: 8px 0; color: var(--text); font-size: 14.5px; }
+.bz-leg-note .icon { width: 16px; height: 16px; flex: none; margin-top: 3px; color: var(--warning); }
+.bz-leg > .bz-card + .bz-outside, .bz-leg > .bz-outside + .bz-card { margin-top: 16px; }
+.bz-nohotel { margin-top: 12px; padding: 10px 14px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; }
+.bz-purpose { margin-top: 32px; }
+.bz-purpose > * + * { margin-top: 12px; }
+.bz-purpose .field { max-width: 640px; }
+.bz-purpose-note { color: var(--muted); font-size: 14px; }
+
+/* A request */
+.bz-status { display: flex; gap: 12px; align-items: flex-start; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--radius); background: #fff; color: var(--ink); line-height: 1.5; }
+.bz-status > .icon { width: 20px; height: 20px; flex: none; margin-top: 2px; }
+.bz-status > div { min-width: 0; }
+.bz-status > div > * + * { margin-top: 8px; }
+.bz-status-pending { border-color: #f4e2b0; background: #fffaeb; }
+.bz-status-pending > .icon { color: var(--warning); }
+.bz-status-approved { border-color: #c9ebdc; background: #f3fbf7; }
+.bz-status-approved > .icon { color: var(--success); }
+.bz-status-denied { border-color: #f6cfc9; background: #fdf3f1; }
+.bz-status-denied > .icon { color: var(--danger); }
+.bz-status-cancelled, .bz-status-expired { border-color: #dde3ea; background: #f5f7fa; }
+.bz-status-cancelled > .icon, .bz-status-expired > .icon { color: var(--muted); }
+.bz-quote { margin: 0; padding: 8px 12px; border-left: 3px solid #c9d6e6; background: var(--bg-soft); color: var(--text); overflow-wrap: anywhere; }
+.bz-returned > div > * + * { margin-top: 6px; }
+.bz-returned-box .bz-alert { margin-bottom: 0; }
+.bz-policy-check > * + * { margin-top: 10px; }
+.bz-trip-parts > h2 { margin-bottom: 12px; }
+.bz-trip-parts > .bz-card + .bz-total { margin-top: 16px; }
+.bz-app .bz-total-title { font-size: 17px; margin: 0 0 4px; }
+.bz-unavailable { color: var(--muted); font-weight: 600; }
+.bz-saved { display: flex; gap: 8px; align-items: center; margin-top: 10px; color: #0c5e43; font-weight: 600; }
+.bz-saved .icon { width: 16px; height: 16px; flex: none; }
+.bz-saved .bz-money { color: #0c5e43; }
+.bz-total-note { margin-top: 8px; color: var(--muted); font-size: 13.5px; }
+.bz-budget > * + * { margin-top: 10px; }
+.bz-decide > * + * { margin-top: 18px; }
+.bz-decide .bz-budget { background: var(--bg-soft); box-shadow: none; }
+.bz-live p { display: flex; gap: 8px; align-items: flex-start; color: var(--ink); font-weight: 600; }
+.bz-live .icon { width: 17px; height: 17px; flex: none; margin-top: 3px; color: var(--blue-500); }
+.bz-compare > * + *, .bz-reason-block > * + * { margin-top: 8px; }
+.bz-compare-delta { color: #0c5e43; font-weight: 600; }
+.bz-compare-delta .bz-money { color: #0c5e43; }
+.bz-submit > * + * { margin-top: 12px; }
+.bz-goes { display: flex; gap: 8px; align-items: center; color: var(--ink); font-weight: 600; }
+.bz-goes .icon { width: 17px; height: 17px; flex: none; color: var(--blue-500); }
+.bz-choices.is-invalid .bz-choice { color: var(--danger); }
+.bz-cancel { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.bz-messages > * + *, .bz-history > * + * { margin-top: 12px; }
+.bz-msg p + p { margin-top: 2px; }
+:where(.bz-thread) { margin: 0; padding: 0; list-style: none; }
+.bz-facts { padding-top: 6px; padding-bottom: 6px; }
+.bz-nowrap { white-space: nowrap; }
+
+@media (max-width: 640px) {
+  .bz-block-title { font-size: 18px; }
+  .bz-home-block + .bz-home-block { margin-top: 24px; }
+  .bz-status { padding: 12px 14px; }
+  .bz-filter-actions .btn, .bz-cancel form, .bz-cancel .btn { flex: 1 1 100%; width: 100%; }
+  .bz-table .bz-demo-price { text-align: right; }
+  .bz-nights { max-width: none; }
+}
+
 /* ---------- Supplier panel and Coming soon ---------- */
 .bz-supplier { background: #eef1f5; border-color: #dde3ea; box-shadow: none; }
 .bz-app .bz-supplier-title { display: flex; align-items: center; gap: 8px; font-size: 18px; margin-bottom: 6px; }
