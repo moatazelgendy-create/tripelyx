@@ -7,7 +7,9 @@
 //   bizAuthIp       authLimit (20) per 10 minutes per IP: /business/start, /business/signin, invite accept and join.
 //   bizAuthAccount  10 per 15 minutes per email address, for sign-in. Keyed on sha256(lower(email)), so it needs
 //                   the parsed form: it runs after `form` (IP limiter → sameOrigin → form → email limiter), the
-//                   one documented exception to "limiter first". Successful sign-ins do not count.
+//                   one documented exception to "limiter first". Successful sign-ins do not count. app.js builds it
+//                   once (createAccountLimiter) and mounts the same instance on the consumer POST /signin, which
+//                   signs in to the same accounts: each address has one budget across both sign-in pages.
 //   bizWrite        writeLimit (300) per 10 minutes per signed-in user: workspace writes.
 //   bizCompute      computeLimit (30) per minute per signed-in user: search, create, swap, decide.
 const crypto = require('node:crypto');
@@ -48,23 +50,41 @@ function accountKey(req) {
   return `acct:${crypto.createHash('sha256').update(email).digest('hex').slice(0, 16)}`;
 }
 
+/** A limiter with the Business defaults (draft-7 headers, the app's error handler for a 429). */
+function makeLimiter(windowMs, limit, keyGenerator, { logger, ...extra } = {}) {
+  const usable = logger && typeof logger.warn === 'function' && typeof logger.error === 'function';
+  return rateLimit({
+    windowMs, limit, keyGenerator, handler: limited, standardHeaders: 'draft-7', legacyHeaders: false, ...(usable ? { logger } : {}), ...extra,
+  });
+}
+
+/**
+ * The per-address sign-in limiter (bizAuthAccount): ACCOUNT_LIMIT failed sign-ins per 15 minutes per email
+ * address; successful sign-ins do not count. Mount it after the form parser. Build it once per app and use the
+ * same instance on every route that signs in with a password, so an address has one budget.
+ * @param {{ logger?: { warn: Function, error: Function } }} [opts]
+ * @returns {Function}
+ */
+function createAccountLimiter({ logger } = {}) {
+  return makeLimiter(15 * MINUTE, ACCOUNT_LIMIT, accountKey, { logger, skipSuccessfulRequests: true });
+}
+
 /**
  * Build the four Business limiters. Call once per app (at createApp), never inside a request.
  * @param {{ authLimit: number, writeLimit: number, computeLimit: number }} biz config.business
- * @param {{ logger?: { warn: Function, error: Function } }} [opts] where express-rate-limit reports misconfiguration
+ * @param {{ logger?: { warn: Function, error: Function }, account?: Function }} [opts] logger: where
+ *   express-rate-limit reports misconfiguration; account: the app's shared per-address sign-in limiter
+ *   (createAccountLimiter), used as bizAuthAccount (a new one when not given)
  * @returns {{ bizAuthIp: Function, bizAuthAccount: Function, bizWrite: Function, bizCompute: Function }}
  */
-function createBusinessLimits(biz, { logger } = {}) {
-  const usable = logger && typeof logger.warn === 'function' && typeof logger.error === 'function';
-  const make = (windowMs, limit, keyGenerator, extra = {}) => rateLimit({
-    windowMs, limit, keyGenerator, handler: limited, standardHeaders: 'draft-7', legacyHeaders: false, ...(usable ? { logger } : {}), ...extra,
-  });
+function createBusinessLimits(biz, { logger, account } = {}) {
+  const make = (windowMs, limit, keyGenerator) => makeLimiter(windowMs, limit, keyGenerator, { logger });
   return {
     bizAuthIp: make(10 * MINUTE, biz.authLimit, ipKey),
-    bizAuthAccount: make(15 * MINUTE, ACCOUNT_LIMIT, accountKey, { skipSuccessfulRequests: true }),
+    bizAuthAccount: account || createAccountLimiter({ logger }),
     bizWrite: make(10 * MINUTE, biz.writeLimit, userKey),
     bizCompute: make(MINUTE, biz.computeLimit, userKey),
   };
 }
 
-module.exports = { createBusinessLimits, RATE_LIMITED, ACCOUNT_LIMIT, userKey, ipKey, accountKey };
+module.exports = { createBusinessLimits, createAccountLimiter, RATE_LIMITED, ACCOUNT_LIMIT, userKey, ipKey, accountKey };

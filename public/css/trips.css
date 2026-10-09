@@ -1601,16 +1601,17 @@ a.tb-mem-chip:hover, a.tb-mem-chip:focus-visible { border-color: var(--blue-500)
 }
 
 /* Tripelyx Business on (.site-header-biz, only when Business runs): the trip header with Business as its sixth
-   item stays on one line from 1025px. A long account name is cut with an ellipsis, and between 1025 and 1200px
-   the gaps tighten and the links drop to 14px so the menu and the account area fit (measured at every 5px with a
-   signed-out visitor, a long name and an admin). With Business off nothing here applies. */
-.site-header-biz .header-name { display: inline-block; max-width: 9ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+   item stays on one line from 1025px. Between 1025 and 1200px the gaps tighten, the links drop to 14px and a long
+   account name is cut with an ellipsis, so the menu and the account area fit (measured at every 5px with a
+   signed-out visitor, a long name and an admin). From 1200px the name shows in full, as it does with Business
+   off. With Business off nothing here applies. */
 .site-header-biz.site-header-trips .main-nav a { white-space: nowrap; }
 @media (min-width: 1025px) and (max-width: 1199.98px) {
   .site-header-biz.site-header-trips .header-inner { gap: 16px; }
   .site-header-biz.site-header-trips .main-nav ul { gap: 18px; }
   .site-header-biz.site-header-trips .header-account { gap: 10px; }
   .site-header-biz.site-header-trips .main-nav a { font-size: 14px; }
+  .site-header-biz .header-name { display: inline-block; max-width: 9ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
   /* as at 1024px and below: with a long name the Admin link would push the account button out of the header */
   .site-header-biz .header-account .header-admin { display: none; }
 }

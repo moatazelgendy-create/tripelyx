@@ -95,3 +95,144 @@ test('PostgresStore keeps the Business store contract: insert-only, compare-and-
     await store.close();
   }
 });
+
+// ---------------------------------------------------------------------------------------------------------
+// init(): the first boot of this code on a database made by main (go-live §3.9). The index this code adds is
+// built with CREATE INDEX CONCURRENTLY, outside the schema transaction, so the task still serving the site
+// keeps writing during the build; and inits that start together (a web task and an admin task) all succeed.
+const crypto = require('node:crypto');
+const { Pool, Client } = require('pg');
+
+const NEW_INDEX = 'tx_records_kind_user_created_idx';
+const NEW_INDEX_DEF = `CREATE INDEX ${NEW_INDEX} ON %s.tx_records USING btree (kind, user_id, created_at DESC, id DESC)`;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+test('init sends the new index on its own, as CREATE INDEX CONCURRENTLY, never inside the schema statements', async () => {
+  // A stand-in pool that records every statement: no database needed.
+  const store = new PostgresStore({ connectionString: 'postgres://nobody@127.0.0.1:1/none', ssl: false });
+  await store.pool.end();
+  const sent = [];
+  const query = async sql => {
+    sent.push(String(sql));
+    return /pg_try_advisory_lock/.test(sql) ? { rows: [{ locked: true }], rowCount: 1 } : { rows: [], rowCount: 0 };
+  };
+  store.pool = { connect: async () => ({ query, release() {} }), query, end: async () => {} };
+  await store.init();
+  const builds = sent.filter(q => q.includes(NEW_INDEX) && /CREATE\s+(UNIQUE\s+)?INDEX/i.test(q));
+  assert.deepEqual(builds, [`CREATE INDEX CONCURRENTLY ${NEW_INDEX} ON tx_records (kind, user_id, created_at DESC, id DESC)`]);
+});
+
+/** A schema of its own in the test database (dropped after the test), and connection strings into it. */
+async function freshSchema(t) {
+  const schema = `init_${crypto.randomBytes(6).toString('hex')}`;
+  const admin = new Pool({ connectionString: url });
+  await admin.query(`CREATE SCHEMA ${schema}`);
+  t.after(async () => {
+    await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+    await admin.end();
+  });
+  const own = app => {
+    const u = new URL(url);
+    u.searchParams.set('options', `-c search_path=${schema}`);
+    if (app) u.searchParams.set('application_name', app);
+    return u.toString();
+  };
+  return { schema, admin, own };
+}
+
+/** Tables as main's code leaves them (everything but the new index), with `rows` records and one booking. */
+async function mainEra(db, rows) {
+  const s = new PostgresStore({ connectionString: db.own(), ssl: false });
+  try {
+    await s.init();
+    await s.pool.query(`DROP INDEX ${NEW_INDEX}`);
+    await s.pool.query(`INSERT INTO tx_records (kind, id, user_id, data) SELECT 'k' || (g % 5), 'id' || g, 'u' || (g % 100), jsonb_build_object('g', g) FROM generate_series(1, $1::int) g`, [rows]);
+    await s.createBooking({ id: 'bk_1', ref: 'DEMO-BK1', vertical: 'trips', status: 'confirmed', demo: true, traveler: { email: 'a@b.co' }, total: 100, currency: 'USD', history: [] });
+  } finally {
+    await s.close();
+  }
+}
+
+/** The new index in this schema: [{ def, valid }] (empty when there is none). */
+async function newIndex(db) {
+  const { rows } = await db.admin.query(
+    `SELECT pg_get_indexdef(i.indexrelid) AS def, i.indisvalid AS valid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+     JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relname = $1 AND n.nspname = $2`, [NEW_INDEX, db.schema]);
+  return rows;
+}
+
+test('first boot on a database made by main: writes to tx_records and tx_bookings go on while the new index is built', { skip: !url && 'TEST_DATABASE_URL not set' }, async t => {
+  const db = await freshSchema(t);
+  await mainEra(db, 2000);
+  // An older transaction that holds a snapshot and no lock on either table: a concurrent build waits for it to
+  // end before it finishes, which leaves time to write while the build runs.
+  const holder = new Client({ connectionString: db.own() });
+  await holder.connect();
+  await holder.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
+  await holder.query('SELECT 1');
+  const app = `init_${db.schema}`;
+  const store = new PostgresStore({ connectionString: db.own(app), ssl: false });
+  const writer = new Client({ connectionString: db.own() });
+  await writer.connect();
+  let settled = false;
+  const init = store.init().finally(() => { settled = true; });
+  try {
+    let building = null;
+    for (let i = 0; i < 800 && !settled && !building; i += 1) {
+      const { rows } = await db.admin.query(
+        `SELECT p.command, a.wait_event_type FROM pg_stat_activity a JOIN pg_stat_progress_create_index p ON p.pid = a.pid
+         WHERE a.application_name = $1 AND a.wait_event_type = 'Lock'`, [app]);
+      building = rows[0] || null;
+      if (!building) await sleep(25);
+    }
+    assert.ok(building && !settled, 'init was still building the index, waiting for the older transaction (a build inside the schema transaction never waits for it)');
+    assert.equal(building.command, 'CREATE INDEX CONCURRENTLY');
+    // During the build init holds no lock on either table that blocks a write (ShareUpdateExclusiveLock does not).
+    const { rows: locks } = await db.admin.query(
+      `SELECT c.relname, l.mode FROM pg_locks l JOIN pg_class c ON c.oid = l.relation JOIN pg_stat_activity a ON a.pid = l.pid
+       WHERE a.application_name = $1 AND l.granted AND c.relname IN ('tx_records', 'tx_bookings') ORDER BY 1, 2`, [app]);
+    assert.deepEqual(locks.map(l => `${l.relname} ${l.mode}`), ['tx_records ShareUpdateExclusiveLock']);
+    await writer.query("SET lock_timeout = '5s'");
+    assert.equal((await writer.query("INSERT INTO tx_records (kind, id, user_id, data) VALUES ('event', 'during_build', NULL, '{}')")).rowCount, 1);
+    assert.equal((await writer.query("UPDATE tx_bookings SET updated_at = now() WHERE id = 'bk_1'")).rowCount, 1);
+    assert.equal(settled, false, 'the writes went through while the build was still running');
+  } finally {
+    await holder.query('COMMIT');
+    await holder.end();
+    await writer.end();
+    await init.catch(() => {});
+    await store.close();
+  }
+  await init;
+  assert.deepEqual(await newIndex(db), [{ def: NEW_INDEX_DEF.replace('%s', db.schema), valid: true }]);
+});
+
+test('first boots at the same moment on a database made by main: every init succeeds and the index is built once', { skip: !url && 'TEST_DATABASE_URL not set' }, async t => {
+  const db = await freshSchema(t);
+  await mainEra(db, 20000);
+  const stores = [1, 2, 3, 4].map(() => new PostgresStore({ connectionString: db.own(), ssl: false }));
+  try {
+    await Promise.all(stores.map(s => s.pool.query('SELECT 1')));
+    const results = await Promise.allSettled(stores.map(s => s.init()));
+    assert.deepEqual(results.map(r => (r.status === 'fulfilled' ? 'ok' : `${r.reason.code} ${r.reason.message}`)), ['ok', 'ok', 'ok', 'ok']);
+  } finally {
+    await Promise.all(stores.map(s => s.close()));
+  }
+  assert.deepEqual(await newIndex(db), [{ def: NEW_INDEX_DEF.replace('%s', db.schema), valid: true }]);
+});
+
+test('init replaces an invalid index left by a build that stopped halfway', { skip: !url && 'TEST_DATABASE_URL not set' }, async t => {
+  const db = await freshSchema(t);
+  await mainEra(db, 50);
+  // A concurrent build that fails (here on a uniqueness violation) leaves an invalid index under the name.
+  const s = new PostgresStore({ connectionString: db.own(), ssl: false });
+  try {
+    await assert.rejects(s.pool.query(`CREATE UNIQUE INDEX CONCURRENTLY ${NEW_INDEX} ON tx_records (kind)`), { code: '23505' });
+    const [left] = await newIndex(db);
+    assert.equal(left.valid, false);
+    await s.init();
+  } finally {
+    await s.close();
+  }
+  assert.deepEqual(await newIndex(db), [{ def: NEW_INDEX_DEF.replace('%s', db.schema), valid: true }]);
+});

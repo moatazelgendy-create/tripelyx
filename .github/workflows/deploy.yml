@@ -15,8 +15,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Only the deploy job may ask GitHub for an OIDC token (to sign in to AWS as the deploy role); the test job,
+# which installs and runs every dependency, cannot.
 permissions:
-  id-token: write
   contents: read
 
 concurrency:
@@ -45,6 +46,9 @@ jobs:
   deploy:
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
     steps:
       # First, before the build: CloudFormation allows exactly 'true' and 'false', so a value like "True "
       # would fail the change set and block every later deploy. Unset or empty means false (Business off).

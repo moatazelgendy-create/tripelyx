@@ -11,11 +11,12 @@ const { startApp, quietLog, FIXED_NOW, fixedNow } = require('./helpers');
 const { seedUser, seedOrg, client, mutableClock, PASSWORD } = require('./business-helpers');
 const { loadConfig } = require('../server/config');
 const { MemoryStore, PostgresStore } = require('../server/booking');
-const { Accounts, PLATFORM_ADMIN, ADMIN_SEED_BEFORE, ADMIN_SEED, ADMIN_SEED_ID, maskEmail, seedPending } = require('../server/accounts');
+const { Accounts, PLATFORM_ADMIN, ADMIN_SEED_BEFORE, ADMIN_SEED, ADMIN_SEED_ID, maskEmail, seedPending, quoteName } = require('../server/accounts');
 const { localPath, validatePartnerLead } = require('../server/lib/validate');
 const { Repo } = require('../server/business/repo');
 const { KINDS } = require('../server/business/constants');
 const cli = require('../scripts/platform-admin');
+const { ACCOUNT_LIMIT } = require('../server/business/limits');
 
 const pgUrl = process.env.TEST_DATABASE_URL;
 const sfx = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -172,8 +173,8 @@ test('D1: accounts created before the cutoff are grandfathered at boot exactly o
 
   const first = await boot();
   assert.deepEqual(first.admin, [
-    ['info', `[admin] platform admin: Ops Person (o***@example.com, ${ops.id}), account created 2026-09-01`],
-    ['info', `[admin] platform admin: Edge Case (e***@example.com, ${edge.id}), account created 2026-10-07`],
+    ['info', `[admin] platform admin: ${ops.id} (o***@example.com), account created 2026-09-01, name "Ops Person"`],
+    ['info', `[admin] platform admin: ${edge.id} (e***@example.com), account created 2026-10-07, name "Edge Case"`],
     ['warn', '[admin] ADMIN_EMAILS entry with no admin record: l***@example.com'],
     ['warn', '[admin] ADMIN_EMAILS entry with no admin record: n***@example.com'],
   ]);
@@ -256,7 +257,7 @@ test('D1: an old account whose address joins ADMIN_EMAILS after the first boot i
   const { owner, squat, both } = await lateListing(store);
   const { app, admin } = await bootOn(t, store, { ...both, ENABLE_BUSINESS: 'true' });
   assert.deepEqual(admin, [
-    ['info', `[admin] platform admin: Sam Owner (${maskEmail(owner.email)}, ${owner.id}), account created 2026-05-01`],
+    ['info', `[admin] platform admin: ${owner.id} (${maskEmail(owner.email)}), account created 2026-05-01, name "Sam Owner"`],
     ['warn', `[admin] ADMIN_EMAILS entry with no admin record: ${maskEmail(squat.email)}`],
   ]);
   const squatCookie = await storedSession(store, squat);
@@ -292,13 +293,13 @@ test('D1: revoking an account with no record before the first boot keeps the see
   assert.equal(await seedPending(store, ops), true);
   const before = await runCli(['list'], { store, env });
   assert.deepEqual(before.out.slice(1), [
-    '  ops@example.com: Ops Person <ops@example.com>, account created 2026-06-01. Not an admin yet, but created before 2026-10-08, so the next boot grants it (revoke it to stop that).',
-    '  boss@example.com: Dana Boss <boss@example.com>, account created 2026-06-01. Not an admin yet, but created before 2026-10-08, so the next boot grants it (revoke it to stop that).',
+    `  ops@example.com: <ops@example.com>, account created 2026-06-01, id ${ops.id}, name "Ops Person". Not an admin yet, but created before 2026-10-08, so the next boot grants it (revoke it to stop that).`,
+    `  boss@example.com: <boss@example.com>, account created 2026-06-01, id ${boss.id}, name "Dana Boss". Not an admin yet, but created before 2026-10-08, so the next boot grants it (revoke it to stop that).`,
   ]);
   const later = () => new Date('2026-10-10T12:00:00.000Z');
   const revoked = await runCli(['revoke', '--email', 'ops@example.com'], { store, env, now: later });
   assert.equal(revoked.code, cli.EXIT.ok);
-  assert.deepEqual(revoked.out, ['No platform admin record for Ops Person <ops@example.com>, account created 2026-06-01. Recorded it as revoked, so no boot can grant it.']);
+  assert.deepEqual(revoked.out, [`No platform admin record for <ops@example.com>, account created 2026-06-01, id ${ops.id}, name "Ops Person". Recorded it as revoked, so no boot can grant it.`]);
   assert.deepEqual(await store.getRecord(PLATFORM_ADMIN, ops.id), {
     userId: ops.id, email: 'ops@example.com', grantedAt: '2026-10-10T12:00:00.000Z', grantedBy: 'cli', revokedAt: '2026-10-10T12:00:00.000Z',
     note: 'Revoked before any grant, so the boot seed never grants it', rev: 0,
@@ -475,6 +476,53 @@ test('D10: /signin and /signup send off-site and malformed next values to /my-tr
 });
 
 // =============================================================================================================
+// Sign-in limits: one budget of failed attempts per email address, whichever sign-in page they come through
+
+/** A client whose every request comes from a new address (TRUST_PROXY on), so no per-IP limit ever counts. */
+function freshIps(base) {
+  const web = client(base);
+  let n = 0;
+  const from = () => { n += 1; return { headers: { 'x-forwarded-for': `203.0.${Math.floor(n / 250)}.${(n % 250) + 1}` } }; };
+  return { signin: (path, email, password) => web.post(path, { email, password }, from()) };
+}
+
+test('sign-in limits: the consumer /signin has the per-address limit too (Business off): 10 failures, then refused for every spelling of that address', async t => {
+  const app = await startApp({ TRUST_PROXY: 'true' });
+  t.after(app.close);
+  const carol = await seedUser(app, { name: 'Carol Chen', email: `carol.${sfx()}@example.com` });
+  const sam = await seedUser(app, { name: 'Sam Lee', email: `sam.${sfx()}@example.com` });
+  const web = freshIps(app.base);
+  for (let i = 0; i < ACCOUNT_LIMIT; i += 1) assert.equal((await web.signin('/signin', carol.user.email, 'wrong password!')).status, 401, `attempt ${i + 1}`);
+  for (const spelling of [carol.user.email, ` ${carol.user.email.toUpperCase()} `, `${carol.user.email}\x01`]) {
+    const over = await web.signin('/signin', spelling, PASSWORD);
+    assert.equal(over.status, 429, JSON.stringify(spelling));
+    assert.doesNotMatch(String(over.headers.get('set-cookie') || ''), /txs=/, 'no session');
+  }
+  assert.equal((await web.signin('/signin', sam.user.email, PASSWORD)).status, 303, 'another address keeps its own budget');
+  // Successful sign-ins never count against an address.
+  for (let i = 0; i < ACCOUNT_LIMIT + 2; i += 1) assert.equal((await web.signin('/signin', sam.user.email, PASSWORD)).status, 303);
+});
+
+test('sign-in limits: /signin and /business/signin share one budget per address, so neither page gets past the other\'s limit', async t => {
+  const app = await startApp({ ENABLE_BUSINESS: 'true', TRUST_PROXY: 'true', ADMIN_EMAILS: 'ops@example.com' });
+  t.after(app.close);
+  const ops = await seedUser(app, { name: 'Ops Person', email: 'ops@example.com' });
+  await app.accounts.grantPlatformAdmin(ops.user.id, { by: 'test' });
+  const dana = await seedUser(app, { name: 'Dana Lee', email: `dana.${sfx()}@example.com` });
+  const web = freshIps(app.base);
+  // Ten failures on the Business page, then the consumer page refuses the right password too, with no session.
+  for (let i = 0; i < ACCOUNT_LIMIT; i += 1) assert.equal((await web.signin('/business/signin', 'ops@example.com', 'wrong password!')).status, 401, `attempt ${i + 1}`);
+  assert.equal((await web.signin('/business/signin', 'ops@example.com', PASSWORD)).status, 429);
+  const consumer = await web.signin('/signin', 'ops@example.com', PASSWORD);
+  assert.equal(consumer.status, 429, 'the platform admin\'s address is not open on the consumer page');
+  assert.doesNotMatch(String(consumer.headers.get('set-cookie') || ''), /txs=/);
+  // And the other way round: failures on the consumer page count on the Business page.
+  for (let i = 0; i < ACCOUNT_LIMIT; i += 1) assert.equal((await web.signin('/signin', dana.user.email, 'wrong password!')).status, 401, `attempt ${i + 1}`);
+  assert.equal((await web.signin('/business/signin', dana.user.email, PASSWORD)).status, 429);
+  assert.equal((await web.signin('/signin', dana.user.email, PASSWORD)).status, 429);
+});
+
+// =============================================================================================================
 // I4: sessions and sessionsValidAfter
 
 test('I4: sessions record issuedAt; signing an account out everywhere ends every earlier session, and only those', async t => {
@@ -568,8 +616,8 @@ test('platform-admin CLI: list, grant (refusing an address outside ADMIN_EMAILS)
   assert.deepEqual(listed.err, []);
   assert.deepEqual(listed.out, [
     'ADMIN_EMAILS lists 3 addresses.',
-    `  ops@example.com: Ops Person <ops@example.com>, account created 2026-10-09. Not an admin: no record (grant it to give access).`,
-    `  boss@example.com: Dana Boss <boss@example.com>, account created 2026-10-01. Platform admin since 2026-10-09 (legacy-email-match).`,
+    `  ops@example.com: <ops@example.com>, account created 2026-10-09, id ${ops.id}, name "Ops Person". Not an admin: no record (grant it to give access).`,
+    `  boss@example.com: <boss@example.com>, account created 2026-10-01, id ${boss.id}, name "Dana Boss". Platform admin since 2026-10-09 (legacy-email-match).`,
     '  new@example.com: no account with this email yet.',
   ]);
 
@@ -584,23 +632,23 @@ test('platform-admin CLI: list, grant (refusing an address outside ADMIN_EMAILS)
 
   const granted = await runCli(['grant', '--email=OPS@Example.com '], { store, env });
   assert.equal(granted.code, cli.EXIT.ok);
-  assert.deepEqual(granted.out, ['Granted platform admin: Ops Person <ops@example.com>, account created 2026-10-09.']);
+  assert.deepEqual(granted.out, [`Granted platform admin: <ops@example.com>, account created 2026-10-09, id ${ops.id}, name "Ops Person".`]);
   const rec = await store.getRecord(PLATFORM_ADMIN, ops.id);
   assert.deepEqual(rec, { userId: ops.id, email: 'ops@example.com', grantedAt: FIXED_NOW, grantedBy: 'cli', revokedAt: null, note: 'scripts/platform-admin.js grant', rev: 0 });
   const accounts = accountsAt(store, FIXED_NOW, env);
   assert.equal(await accounts.isPlatformAdmin(ops), true);
   const again = await runCli(['grant', '--email', 'ops@example.com'], { store, env });
-  assert.deepEqual(again.out, ['Already a platform admin: Ops Person <ops@example.com>, account created 2026-10-09. Nothing changed.']);
+  assert.deepEqual(again.out, [`Already a platform admin: <ops@example.com>, account created 2026-10-09, id ${ops.id}, name "Ops Person". Nothing changed.`]);
   assert.deepEqual(await store.getRecord(PLATFORM_ADMIN, ops.id), rec);
 
   // revoke keeps the record with revokedAt; a second revoke changes nothing.
   const later = () => new Date('2026-10-10T12:00:00.000Z');
   const revoked = await runCli(['revoke', '--email', 'ops@example.com'], { store, env, now: later });
   assert.equal(revoked.code, cli.EXIT.ok);
-  assert.deepEqual(revoked.out, ['Revoked platform admin: Ops Person <ops@example.com>, account created 2026-10-09.']);
+  assert.deepEqual(revoked.out, [`Revoked platform admin: <ops@example.com>, account created 2026-10-09, id ${ops.id}, name "Ops Person".`]);
   assert.equal((await store.getRecord(PLATFORM_ADMIN, ops.id)).revokedAt, '2026-10-10T12:00:00.000Z');
   assert.equal(await accounts.isPlatformAdmin(ops), false);
-  assert.deepEqual((await runCli(['revoke', '--email', 'ops@example.com'], { store, env })).out, ['Already revoked on 2026-10-10: Ops Person <ops@example.com>, account created 2026-10-09.']);
+  assert.deepEqual((await runCli(['revoke', '--email', 'ops@example.com'], { store, env })).out, [`Already revoked on 2026-10-10: <ops@example.com>, account created 2026-10-09, id ${ops.id}, name "Ops Person".`]);
   assert.match((await runCli(['list'], { store, env })).out[1], /Not an admin: revoked on 2026-10-10\.$/);
   // Granting again after a revoke works (by compare-and-set).
   assert.equal((await runCli(['grant', '--email', 'ops@example.com'], { store, env })).code, cli.EXIT.ok);
@@ -613,7 +661,7 @@ test('platform-admin CLI: list, grant (refusing an address outside ADMIN_EMAILS)
   const out = await runCli(['revoke', '--email', 'boss@example.com', '--sign-out'], { store, env, now: later });
   assert.equal(out.code, cli.EXIT.ok);
   assert.deepEqual(out.out, [
-    'Revoked platform admin: Dana Boss <boss@example.com>, account created 2026-10-01.',
+    `Revoked platform admin: <boss@example.com>, account created 2026-10-01, id ${boss.id}, name "Dana Boss".`,
     'Signed out everywhere: every session issued before 2026-10-10T12:00:00.000Z has ended.',
   ]);
   assert.equal(await accounts.userFromRequest(asReq(cookie)), null);
@@ -624,15 +672,48 @@ test('platform-admin CLI: list, grant (refusing an address outside ADMIN_EMAILS)
   const fromList = await runCli(['list'], { store, env: unlistedEnv });
   assert.deepEqual(fromList.out.slice(-2), [
     'Records for addresses no longer in ADMIN_EMAILS (they give no access):',
-    '  ops@example.com: Ops Person <ops@example.com>, account created 2026-10-09. Granted on 2026-10-09 (cli).',
+    `  ops@example.com: <ops@example.com>, account created 2026-10-09, id ${ops.id}, name "Ops Person". Granted on 2026-10-09 (cli).`,
   ]);
   assert.equal((await runCli(['revoke', '--email', 'ops@example.com'], { store, env: unlistedEnv })).code, cli.EXIT.ok);
   assert.ok((await store.getRecord(PLATFORM_ADMIN, ops.id)).revokedAt);
   const nobody = await runCli(['revoke', '--email', 'nobody@example.com'], { store, env });
   assert.equal(nobody.code, cli.EXIT.refused);
   assert.match(nobody.err.join('\n'), /no account uses nobody@example\.com/);
-  assert.deepEqual((await runCli(['revoke', '--email', 'eve@example.com'], { store, env })).out, ['No platform admin record for Eve Outsider <eve@example.com>, account created 2026-10-01. Recorded it as revoked, so no boot can grant it.']);
+  assert.deepEqual((await runCli(['revoke', '--email', 'eve@example.com'], { store, env })).out, [`No platform admin record for <eve@example.com>, account created 2026-10-01, id ${eve.id}, name "Eve Outsider". Recorded it as revoked, so no boot can grant it.`]);
   assert.equal((await store.getRecord(PLATFORM_ADMIN, eve.id)).revokedAt, FIXED_NOW);
+});
+
+test('platform-admin CLI and the boot log: the real date and id come before the account\'s own name, which is quoted and escaped', async () => {
+  // A name is whatever the account typed at sign-up. One that imitates the fixed fields must not read as them in
+  // the line the owner checks before a grant ("that's me").
+  const store = new MemoryStore();
+  const fake = 'Moataz <spoof@example.com>, account created 2025-02-11. Platform admin since 2025-02-11 (legacy-email-match).';
+  const spoof = await accountsAt(store, FIXED_NOW).register({ name: fake, email: 'spoof@example.com', password: PASSWORD });
+  const stored = (await store.getRecord('user', spoof.id)).name;
+  assert.equal(stored, fake.slice(0, 80), 'stored as typed, cut to 80 characters');
+  const env = { ADMIN_EMAILS: 'spoof@example.com,tricky@example.com' };
+  const listed = await runCli(['list'], { store, env });
+  const line = listed.out[1];
+  assert.equal(line, `  spoof@example.com: <spoof@example.com>, account created 2026-10-09, id ${spoof.id}, name ${JSON.stringify(stored)}. Not an admin: no record (grant it to give access).`);
+  assert.ok(line.indexOf('account created 2026-10-09') < line.indexOf('2025-02-11'), 'the real creation date is the first date on the line');
+  assert.ok(line.indexOf(`id ${spoof.id}`) < line.indexOf('name "'), 'and the id comes before the name');
+
+  // Characters that would break the line or hide and reorder text in a terminal or log viewer are escaped.
+  const tricky = await accountsAt(store, FIXED_NOW).register({ name: 'A\u202eB\u2028C\u200bD\u0085E"F\\G\u2066H\ufeffI', email: 'tricky@example.com', password: PASSWORD });
+  const escaped = String.raw`"A\u202eB\u2028C\u200bD\u0085E\"F\\G\u2066H\ufeffI"`;
+  assert.equal(quoteName((await store.getRecord('user', tricky.id)).name), escaped);
+  const granted = await runCli(['grant', '--email', 'tricky@example.com'], { store, env });
+  assert.deepEqual(granted.out, [`Granted platform admin: <tricky@example.com>, account created 2026-10-09, id ${tricky.id}, name ${escaped}.`]);
+  assert.doesNotMatch(granted.out[0], /[\u0080-\u009f\u2028\u2029\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/);
+
+  // The boot log line has the same order: id, masked email and date, then the quoted name.
+  await accountsAt(store, FIXED_NOW, env).grantPlatformAdmin(spoof.id, { by: 'test' });
+  const lines = [];
+  await accountsAt(store, FIXED_NOW, env).seedPlatformAdmins({ log: { info: m => lines.push(String(m)), warn: m => lines.push(String(m)) } });
+  assert.deepEqual(lines, [
+    `[admin] platform admin: ${spoof.id} (s***@example.com), account created 2026-10-09, name ${JSON.stringify(stored)}`,
+    `[admin] platform admin: ${tricky.id} (t***@example.com), account created 2026-10-09, name ${escaped}`,
+  ]);
 });
 
 test('platform-admin CLI: the container image carries the script and everything it requires (the documented ECS run-task)', () => {

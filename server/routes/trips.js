@@ -38,7 +38,7 @@ function requireUser(req, res, next) {
   res.redirect(303, `/signin?next=${encodeURIComponent(req.originalUrl)}`);
 }
 
-function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
+function tripsRouter(ctx, { writeLimiter, computeLimiter, accountLimiter }) {
   const compute = computeLimiter || ((req, res, next) => next());
   const { tripService: svc, accounts, config } = ctx;
   const r = express.Router();
@@ -417,7 +417,9 @@ function tripsRouter(ctx, { writeLimiter, computeLimiter }) {
   r.get('/signup', (req, res) => send(res, authView(ctx, { mode: 'signup', next: str(req.query.next, 300) })));
   // Where to go after signing in or up: a same-site path only (lib/validate localPath, D10), else My Trips.
   const safeNext = n => localPath(n, '/my-trips');
-  r.post('/signin', writeLimiter, sameOrigin, form, async (req, res, next) => {
+  // accountLimiter (business/limits.js) keys on the parsed email, so it runs after the form: failed sign-ins per
+  // address, shared with /business/signin. A failure answers 4xx below, so it counts; a success does not.
+  r.post('/signin', writeLimiter, sameOrigin, form, accountLimiter, async (req, res, next) => {
     try {
       const u = await accounts.authenticate(req.body);
       await accounts.createSession(res, u);

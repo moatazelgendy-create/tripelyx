@@ -54,7 +54,6 @@ CREATE TABLE IF NOT EXISTS tx_records (
 );
 CREATE INDEX IF NOT EXISTS tx_records_kind_user_idx ON tx_records (kind, user_id);
 CREATE INDEX IF NOT EXISTS tx_records_kind_created_idx ON tx_records (kind, created_at DESC);
-CREATE INDEX IF NOT EXISTS tx_records_kind_user_created_idx ON tx_records (kind, user_id, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS tx_bookings_user_idx ON tx_bookings ((data->>'userId'));
 CREATE TABLE IF NOT EXISTS tx_partner_leads (
   id TEXT PRIMARY KEY,
@@ -63,6 +62,49 @@ CREATE TABLE IF NOT EXISTS tx_partner_leads (
 );
 `;
 
+/**
+ * Indexes added after tables already hold live data. Each is built with CREATE INDEX CONCURRENTLY, on its own
+ * after SCHEMA (CONCURRENTLY cannot run in a transaction), so the tables stay writable during the build: SCHEMA
+ * runs as one implicit transaction, and a plain CREATE INDEX there would hold its lock on the table, blocking
+ * every insert and update from the task still serving the site, until the whole build is done.
+ */
+const LATE_INDEXES = Object.freeze([
+  { name: 'tx_records_kind_user_created_idx', create: 'CREATE INDEX CONCURRENTLY tx_records_kind_user_created_idx ON tx_records (kind, user_id, created_at DESC, id DESC)' },
+]);
+/**
+ * The session-level advisory lock init() holds while it runs SCHEMA and builds LATE_INDEXES, so inits that start
+ * together (a web task and an admin task) run one after another: the later ones find the index built. Without it,
+ * two first builds of one index both find no index and the second fails with 23505 on pg_class.
+ */
+const SCHEMA_LOCK = 727274001;
+const SCHEMA_LOCK_POLL_MS = 50;
+
+/**
+ * Take SCHEMA_LOCK on this client's session. It is polled with pg_try_advisory_lock, never waited for inside
+ * pg_advisory_lock: a session waiting in a statement keeps a snapshot, and the concurrent index build of the
+ * session holding the lock waits for every older snapshot to end, so the two would wait for each other.
+ */
+async function lockSchema(client) {
+  for (;;) {
+    const { rows } = await client.query('SELECT pg_try_advisory_lock($1) AS locked', [SCHEMA_LOCK]);
+    if (rows[0] && rows[0].locked) return;
+    await new Promise(resolve => setTimeout(resolve, SCHEMA_LOCK_POLL_MS));
+  }
+}
+
+/**
+ * Build each LATE_INDEXES index that is missing. An invalid one (what a concurrent build that stopped halfway
+ * leaves) is dropped and built again; holding SCHEMA_LOCK, no other init can be building it.
+ */
+async function buildLateIndexes(client) {
+  for (const { name, create } of LATE_INDEXES) {
+    const { rows } = await client.query('SELECT i.indisvalid AS valid FROM pg_index i WHERE i.indexrelid = to_regclass($1)', [name]);
+    if (rows[0] && rows[0].valid) continue;
+    if (rows[0]) await client.query(`DROP INDEX CONCURRENTLY IF EXISTS ${name}`);
+    await client.query(create);
+  }
+}
+
 class PostgresStore {
   constructor({ connectionString, ssl, caFile = null }) {
     this.kind = 'postgres';
@@ -70,7 +112,20 @@ class PostgresStore {
     this.pool = new Pool({ connectionString, ssl: tls, max: 10 });
   }
 
-  async init() { await this.pool.query(SCHEMA); }
+  async init() {
+    const client = await this.pool.connect();
+    try {
+      await lockSchema(client);
+      await client.query(SCHEMA);
+      await buildLateIndexes(client);
+      await client.query('SELECT pg_advisory_unlock($1)', [SCHEMA_LOCK]);
+    } catch (e) {
+      // Closing this connection ends its session, which releases SCHEMA_LOCK (and stops a build halfway).
+      client.release(e);
+      throw e;
+    }
+    client.release();
+  }
   async close() { await this.pool.end(); }
 
   async saveQuote(q) {

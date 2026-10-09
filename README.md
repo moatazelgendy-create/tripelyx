@@ -426,9 +426,12 @@ every vertical is off by default. "Staging" here names the live site, so keep th
 `deploy.yml` (a static test pins it) and never point another experiment at that stack.
 
 Staging runs demo inventory with `PAYMENT_MODE=test`, so it is safe to share. A staging stack
-costs roughly USD 40 to 50 a month (load balancer, a small database, one small container). If a
-first deploy fails, delete the `tripelyx-staging` stack in CloudFormation before running it again
-(turn off the database's deletion protection first: RDS console, **Modify**).
+costs roughly USD 40 to 50 a month (load balancer, a small database, one small container). If the
+very first creation of a stack fails (its status is `ROLLBACK_COMPLETE` or `ROLLBACK_FAILED` and it never
+reached `CREATE_COMPLETE`), delete that stack in CloudFormation before running the deploy again (turn
+off the database's deletion protection first: RDS console, **Modify**). This never applies to the
+existing www stack: a failed update there rolls itself back (`UPDATE_ROLLBACK_COMPLETE`) and the next
+deploy simply runs again.
 
 #### Repository settings the deploy reads
 

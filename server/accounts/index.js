@@ -85,10 +85,10 @@ class Accounts {
    * revoked. An account that is not on the list is never seeded, even one created before the cutoff whose
    * address is added to ADMIN_EMAILS later: it needs scripts/platform-admin.js grant. Idempotent, and safe
    * when several servers boot at once (both writes are insert-only).
-   * Logs "[admin] platform admin: <name> (o***@example.com, <user id>), account created <date>" for every
-   * listed account that is a platform admin (the name is the account's own choice; the masked email and id
-   * say which account it is), and "[admin] ADMIN_EMAILS entry with no admin record: o***@example.com" for
-   * the rest.
+   * Logs "[admin] platform admin: <user id> (o***@example.com), account created <date>, name "<name>"" for
+   * every listed account that is a platform admin (the id, masked email and date say which account it is; the
+   * name, the account's own choice, comes last, quoted and escaped by quoteName), and "[admin] ADMIN_EMAILS
+   * entry with no admin record: o***@example.com" for the rest.
    * @param {{ log?: { info?: Function, warn?: Function } }} [opts]
    * @returns {Promise<{ granted: string[], missing: string[] }>} user ids granted now, and masked emails with no record
    */
@@ -110,7 +110,7 @@ class Accounts {
         record = await this.store.getRecord(PLATFORM_ADMIN, user.id);
       }
       if (user && activeAdminRecord(record, user)) {
-        info(`[admin] platform admin: ${user.name} (${maskEmail(user.email)}, ${user.id}), account created ${String(user.createdAt).slice(0, 10)}`);
+        info(`[admin] platform admin: ${user.id} (${maskEmail(user.email)}), account created ${String(user.createdAt).slice(0, 10)}, name ${quoteName(user.name)}`);
       } else {
         missing.push(maskEmail(email));
         warn(`[admin] ADMIN_EMAILS entry with no admin record: ${maskEmail(email)}`);
@@ -363,6 +363,18 @@ function sessionCurrent(session, user) {
 }
 
 /**
+ * A name (the account's own choice, typed at sign-up) as it goes into a log or CLI line: in double quotes, with
+ * JSON's escapes plus every character that could end the line or hide or reorder text in a terminal or log
+ * viewer (DEL and C1 controls, soft hyphen, line and paragraph separators, bidirectional and zero-width marks)
+ * written as \uXXXX. So a name can never read as the fixed fields printed before it.
+ * @param {string} name
+ * @returns {string}
+ */
+function quoteName(name) {
+  return JSON.stringify(String(name ?? '')).replace(/[\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+}
+
+/**
  * An email as the logs show it: the first character, then "***@" and the domain ("o***@example.com").
  * @param {string} email
  * @returns {string}
@@ -394,6 +406,6 @@ function visitorId(req, res, config) {
 }
 
 module.exports = {
-  Accounts, visitorId, hashPassword, verifyPassword, maskEmail, seedPending,
+  Accounts, visitorId, hashPassword, verifyPassword, maskEmail, quoteName, seedPending,
   SESSION_COOKIE, PLATFORM_ADMIN, GRANTED_BY, ADMIN_SEED_BEFORE, ADMIN_SEED, ADMIN_SEED_ID,
 };

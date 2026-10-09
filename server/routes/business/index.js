@@ -33,12 +33,14 @@ const WHO = Object.freeze(['anyone', 'user', 'member', 'platform']);
 /**
  * Build what every Business router needs, once per app (never inside a request).
  * @param {{ config: object, log?: object }} ctx the app context
+ * @param {{ signinAccount?: Function }} [opts] the app's per-address sign-in limiter (limits.createAccountLimiter),
+ *   shared with the consumer POST /signin; a new one when not given
  * @returns {import('../../business/types').RouterDeps}
  */
-function createRouterDeps(ctx) {
+function createRouterDeps(ctx, { signinAccount } = {}) {
   const log = ctx.log || console;
   return Object.freeze({
-    limits: createBusinessLimits(ctx.config.business, { logger: log }),
+    limits: createBusinessLimits(ctx.config.business, { logger: log, account: signinAccount }),
     sameOrigin,
     form: express.urlencoded(FORM_OPTIONS),
     log,

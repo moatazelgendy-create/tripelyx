@@ -335,6 +335,16 @@ test('the README says how the policy is applied, how a deliberate migration over
   assert.match(readme, /A variable of that name must never hold real addresses\./);
 });
 
+test('the README says to delete a stack only when its very first creation failed, never the www stack after a failed update', () => {
+  // www.tripelyx.com is tripelyx-staging: a reader handling a failed deploy of new code there must not delete it.
+  const para = readme.slice(readme.indexOf('Staging runs demo inventory'), readme.indexOf('#### Repository settings the deploy reads')).replace(/\s+/g, ' ');
+  assert.ok(para.length > 1);
+  assert.match(para, /If the very first creation of a stack fails \(its status is `ROLLBACK_COMPLETE` or `ROLLBACK_FAILED` and it never reached `CREATE_COMPLETE`\), delete that stack in CloudFormation before running the deploy again/);
+  assert.match(para, /This never applies to the existing www stack: a failed update there rolls itself back \(`UPDATE_ROLLBACK_COMPLETE`\) and the next deploy simply runs again\./);
+  const sentences = code(readme).replace(/\s+/g, ' ').split(/(?<=\.) /);
+  assert.deepEqual(sentences.filter(s => /\bdelete\b/i.test(s) && /tripelyx-staging/.test(s)), [], 'no sentence tells the reader to delete the www stack');
+});
+
 test('the platform-admin script tells operators to use the admin task definition, never the site\'s', () => {
   const source = read('scripts/platform-admin.js');
   const usage = source.slice(0, source.indexOf("require('../server/config')"));
@@ -371,6 +381,33 @@ test('the deploy keeps the staging default, Business off by default, and the Adm
   const overrides = deploy.slice(deploy.indexOf('--parameter-overrides'));
   assert.deepEqual([...overrides.matchAll(/^\s+([A-Za-z]+)=/gm)].map(m => m[1]), ['AppEnv', 'ImageUri', 'CertificateArn', 'AdminEmails', 'EnableBusiness', 'PublicBaseUrl']);
   assert.equal(paramDefault('ProtectDatabase'), 'true');
+});
+
+test('only the deploy job can get an OIDC token for the deploy role; the test job (npm ci, npm test) cannot', () => {
+  // A token from the test job would carry the same subject (this repo's main) that tripelyx-github-deploy trusts.
+  assert.deepEqual(block(workflow, 'permissions', 0), ['permissions:', '  contents: read'], 'the workflow default is read-only');
+  const jobs = block(workflow, 'jobs', 0);
+  const job = name => {
+    const at = jobs.indexOf(`  ${name}:`);
+    assert.ok(at >= 0, `the ${name} job is there`);
+    const out = [];
+    for (const l of jobs.slice(at + 1)) {
+      if (/^ {2}\S/.test(l)) break;
+      out.push(l);
+    }
+    return out;
+  };
+  assert.deepEqual(jobs.filter(l => /^ {2}\S/.test(l)).map(l => l.trim()), ['test:', 'deploy:']);
+  const deploy = job('deploy');
+  const at = deploy.indexOf('    permissions:');
+  assert.ok(at >= 0, 'the deploy job sets its own permissions');
+  assert.deepEqual(deploy.slice(at, at + 3), ['    permissions:', '      id-token: write', '      contents: read']);
+  assert.ok(!/^ {6}\S/.test(deploy[at + 3] || ''), 'and nothing more');
+  assert.ok(deploy.indexOf('    needs: test') >= 0 && deploy.indexOf('    needs: test') < at && at < deploy.indexOf('    steps:'));
+  assert.doesNotMatch(job('test').join('\n'), /permissions|id-token/, 'the test job keeps the read-only default');
+  assert.equal((code(workflow).match(/id-token/g) || []).length, 1, 'id-token: write is granted once, to the deploy job');
+  assert.doesNotMatch(code(workflow), /write-all|permissions: write/);
+  assert.doesNotMatch(code(workflow), /^ {4}environment:/m, 'no GitHub environment (it would change the OIDC subject)');
 });
 
 test('the switch step comes first, before the build and before any AWS sign-in', () => {

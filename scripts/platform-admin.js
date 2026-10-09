@@ -15,7 +15,8 @@
 // - revoke: sets revokedAt on the record (the record stays, for the history). An account with no record gets
 //   a revoked one, so the boot seed can never grant it. With --sign-out it also signs the account out
 //   everywhere (sessionsValidAfter, I4). It works for any address, listed or not.
-// Every command prints the account's name and creation date, so you can see it is the right account.
+// Every command prints the account's email, creation date and id, then its name (quoted, as the account typed
+// it), so you can see it is the right account.
 //
 // It refuses to run on the in-memory store, where it would change nothing the site can see. On AWS, run it
 // as a one-off task of the admin task definition (family tripelyx-<env>-admin, container "admin"), never
@@ -28,7 +29,7 @@
 // and read its output in the log group /tripelyx/<env>, stream admin/admin/<task id>.
 const { loadConfig } = require('../server/config');
 const { createStore } = require('../server/booking');
-const { Accounts, PLATFORM_ADMIN, ADMIN_SEED_BEFORE, seedPending } = require('../server/accounts');
+const { Accounts, PLATFORM_ADMIN, ADMIN_SEED_BEFORE, seedPending, quoteName } = require('../server/accounts');
 const { str } = require('../server/lib/validate');
 
 const USAGE = [
@@ -42,7 +43,9 @@ const USAGE = [
 const EXIT = Object.freeze({ ok: 0, refused: 1, usage: 2 });
 
 const day = iso => (typeof iso === 'string' && iso ? iso.slice(0, 10) : 'unknown date');
-const describe = user => `${user.name} <${user.email}>, account created ${day(user.createdAt)}`;
+// The fixed fields first (email, creation date, id), then the name: the account's own choice, quoted and escaped
+// (quoteName), so a name can never pass for a date or a state on the line read before a grant.
+const describe = user => `<${user.email}>, account created ${day(user.createdAt)}, id ${user.id}, name ${quoteName(user.name)}`;
 
 /**
  * Read the command line: a command, then --email <e> (or --email=<e>) and --sign-out.

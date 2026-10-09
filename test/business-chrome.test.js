@@ -176,7 +176,9 @@ test('the header CSS Business needs applies only under .site-header-biz, and nev
   const rules = block => block.split('\n').map(l => l.trim()).filter(l => l.includes('{') && !l.startsWith('@media'));
   const trips = css('trips.css');
   const site = css('site.css');
-  assert.match(trips, /^\.site-header-biz \.header-name \{ display: inline-block; max-width: 9ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;/m);
+  // A signed-in visitor's first name is cut only between 1025 and 1200px, where the header is tight; from 1200px
+  // it shows in full, as it does with Business off (no rule outside that band styles .header-name).
+  assert.doesNotMatch(trips, /^\.site-header-biz \.header-name/m, 'no width cap on the name at every desktop width');
   assert.match(trips, /^\.site-header-biz\.site-header-trips \.main-nav a \{ white-space: nowrap; \}$/m);
   const tripBand = band(trips, '@media (min-width: 1025px) and (max-width: 1199.98px)');
   assert.deepEqual(rules(tripBand), [
@@ -184,8 +186,12 @@ test('the header CSS Business needs applies only under .site-header-biz, and nev
     '.site-header-biz.site-header-trips .main-nav ul { gap: 18px; }',
     '.site-header-biz.site-header-trips .header-account { gap: 10px; }',
     '.site-header-biz.site-header-trips .main-nav a { font-size: 14px; }',
+    '.site-header-biz .header-name { display: inline-block; max-width: 9ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }',
     '.site-header-biz .header-account .header-admin { display: none; }',
   ]);
+  const nameRules = trips.split('\n').filter(l => l.includes('header-name'));
+  assert.equal(nameRules.length, 1, 'the one .header-name rule is the band\'s');
+  assert.ok(tripBand.includes(nameRules[0].trim()));
   assert.match(site, /^body:not\(\.corp\) \.site-header-biz:not\(\.site-header-trips\) \.main-nav a \{ white-space: nowrap; \}$/m);
   const bookBand = band(site, '@media (min-width: 1025px) and (max-width: 1279.98px)');
   assert.deepEqual(rules(bookBand), [
