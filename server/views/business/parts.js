@@ -30,6 +30,13 @@
 // stated (never printed), stops name their airports ("1 stop in Doha"), a flight sold by one airline and
 // flown by another says "operated by", and a hotel's fee lines are paid at the hotel ("You pay $X when
 // booked and $Y at the hotel" on live prices; "Of this total, $Y is paid at the hotel." on test data).
+//
+// Live prices (go-live design §5.6): every amount says "US dollars, from the airline · Priced at 3:42 PM, Fri
+// 9 Oct (Cairo time) · Can change until booked" (a hotel's "from the hotel supplier"), in a container marked
+// data-price-source="live", with no TEST DATA tag. The parts take `{ kind }` (format.PRICE_KINDS) to say who
+// priced the amount; rowCard and altCard work it out from their own rows (format.priceKind), and a caller
+// that labels a trip's amounts passes format.requestKind or format.priceKind of the trip's rows. No supplier
+// is ever named.
 const crypto = require('node:crypto');
 const { html, raw } = require('../../lib/html');
 const { icon } = require('../icons');
@@ -87,11 +94,11 @@ const keyId = (prefix, key) => `${prefix}-${crypto.createHash('sha256').update(S
  * for supplier test data.
  * @param {string|null} pricedAt
  * @param {string} timeZone the company's
- * @param {{ inline?: boolean, source?: import('../../business/types').PriceSource, kind?: 'fare'|'room'|'price', totals?: boolean }} [opts]
+ * @param {{ inline?: boolean, source?: import('../../business/types').PriceSource, kind?: string, totals?: boolean, limits?: boolean }} [opts]
  *   inline: a <span> for use inside a sentence; totals: the container adds many requests up (budgets, reports,
  *   home), so a supplier source says format.SOURCE_TOTALS ("Includes supplier test data"); limits: the container
  *   holds the company's own policy limits, so a supplier source says what they are checked against
- *   (LIMITS_CHECKED), never "not a real price"; demo is unchanged
+ *   (LIMITS_CHECKED), never "not a real price"; demo is unchanged; kind: who priced the amount (format.PRICE_KINDS)
  */
 function priceNote(pricedAt, timeZone, { inline = false, source = 'demo', kind = 'price', totals = false, limits = false } = {}) {
   const text = limits && known(source) !== 'demo' ? LIMITS_CHECKED[known(source)]
@@ -112,7 +119,7 @@ function priceNote(pricedAt, timeZone, { inline = false, source = 'demo', kind =
  * No amount (null or undefined, e.g. a budget's remaining with no budget set) prints nothing at all, so it can
  * never read as a "$0" price; anything else that is not whole cents throws a TypeError.
  * @param {number|null} cents
- * @param {{ pricedAt: string|null, timeZone: string, source?: import('../../business/types').PriceSource, kind?: 'fare'|'room'|'price' }} opts
+ * @param {{ pricedAt: string|null, timeZone: string, source?: import('../../business/types').PriceSource, kind?: string }} opts
  */
 function demoPrice(cents, { pricedAt, timeZone, source = 'demo', kind = 'price' }) {
   if (cents === null || cents === undefined) return '';
@@ -126,8 +133,8 @@ const BOX_TAGS = Object.freeze(['div', 'section', 'article', 'aside']);
  * Wrap money-bearing markup in a price container that ends with its label.
  * @param {*} body markup from html``
  * @param {{ pricedAt: string|null, timeZone: string, tag?: 'div'|'section'|'article'|'aside', cls?: string, label?: string,
- *   source?: import('../../business/types').PriceSource, kind?: 'fare'|'room'|'price', totals?: boolean }} opts
- *   label: an aria-label for a section or aside; totals: see priceNote
+ *   source?: import('../../business/types').PriceSource, kind?: string, totals?: boolean, limits?: boolean }} opts
+ *   label: an aria-label for a section or aside; totals, limits, kind: see priceNote
  */
 function demoBox(body, { pricedAt, timeZone, tag = 'div', cls = '', label = '', source = 'demo', kind = 'price', totals = false, limits = false }) {
   const t = BOX_TAGS.includes(tag) ? tag : 'div';
@@ -139,8 +146,8 @@ function demoBox(body, { pricedAt, timeZone, tag = 'div', cls = '', label = '', 
 const DEMO_RIBBON = 'Preview: flights, hotels and prices are demo data. Nothing is booked or charged. No emails are sent.';
 /** The ribbon while flights and hotels come from the suppliers' test systems (real-suppliers design §2.3). */
 const SANDBOX_RIBBON = "Preview with supplier test data: flights and hotels come from our suppliers' test systems. Prices are not real fares. Nothing is booked or charged.";
-/** The ribbon with live supplier prices (round 1b). */
-const LIVE_RIBBON = "Prices are live from airlines and hotels and can change until booked. Booking isn't open in Tripelyx yet: nothing is booked or charged.";
+/** The ribbon with live supplier prices (go-live design §5.6). */
+const LIVE_RIBBON = "Prices are live from our airline and hotel suppliers and can change until booked. Booking isn't open in Tripelyx yet: nothing is booked or charged.";
 
 function demoBanner() {
   return html`<p class="bz-ribbon bz-ribbon-demo" role="note">${icon('info')}<span>${DEMO_RIBBON}</span></p>`;
@@ -155,13 +162,28 @@ const NO_SUPPLIER = Object.freeze({
 
 /**
  * The empty "your trips" list (the Trips page and home): how to start one, or, with no supplier, when search
- * turns on instead of asking for a trip nobody can plan yet.
+ * turns on instead of asking for a trip nobody can plan yet; with live prices and a company Tripelyx has not
+ * confirmed yet, when its search opens (go-live design §5.5).
  */
 const NO_TRIPS = Object.freeze({
   title: 'No work trips yet.',
   text: "Plan one and you'll see your policy as you search.",
   textNoSupplier: 'Trip search turns on when Tripelyx connects airlines and hotels.',
+  textWaiting: f.SEARCH_AFTER_CONFIRM,
 });
+
+/**
+ * Where search would be, while live search waits for Tripelyx to confirm the company (go-live design §5.5): the
+ * trip form shows this instead of the "Supplier not connected yet" panel.
+ */
+const AWAITING_CONFIRMATION = Object.freeze({ title: 'Waiting for confirmation', text: f.SEARCH_AFTER_CONFIRM });
+
+function confirmPanel({ level = 2 } = {}) {
+  return html`<section class="bz-card bz-supplier" aria-labelledby="bz-confirm-title">
+    ${heading(level, html` class="bz-supplier-title" id="bz-confirm-title"`, html`${icon('clock')}<span>${AWAITING_CONFIRMATION.title}</span>`)}
+    <p>${AWAITING_CONFIRMATION.text}</p>
+  </section>`;
+}
 
 function supplierPanel({ level = 2 } = {}) {
   return html`<section class="bz-card bz-supplier" aria-labelledby="bz-supplier-title">
@@ -195,7 +217,7 @@ function paidAtHotel(row) {
  * without whole cents throws a TypeError: a total that left it out would not be the total charged.
  * @param {import('../../business/types').RowLine[]} lines
  * @param {{ pricedAt?: string|null, timeZone?: string, inDemo?: boolean, totalLabel?: string,
- *   source?: import('../../business/types').PriceSource, kind?: 'fare'|'room'|'price', row?: object|null }} [opts]
+ *   source?: import('../../business/types').PriceSource, kind?: string, row?: object|null }} [opts]
  *   inDemo: the caller's price container already labels it (no container of its own); row: the supplier
  *   hotel row the lines belong to, for the paid-at-the-hotel split
  */
@@ -298,13 +320,13 @@ const CURRENCY_RE = /[$€£¥]|\bUSD\b/;
 /**
  * The reasons a row or trip is outside policy (Violation.text, written by the policy engine).
  * @param {import('../../business/types').Violation[]} violations
- * @param {{ collapse?: boolean, pricedAt?: string|null, timeZone?: string, inDemo?: boolean, source?: string }} [opts]
+ * @param {{ collapse?: boolean, pricedAt?: string|null, timeZone?: string, inDemo?: boolean, source?: string, kind?: string }} [opts]
  *   collapse: the first reason, then "+N more" in a <details> (§E4). Texts can hold amounts ("Over your $712
  *   limit by $86"), so a list with an amount gets its own demo container, unless inDemo says the caller's
  *   container already labels it. That container says when the amounts were priced, so it needs pricedAt:
  *   without one a list with an amount throws a TypeError (a reason without amounts needs no time).
  */
-function violationList(violations, { collapse = false, pricedAt, timeZone = 'UTC', inDemo = false, source = 'demo' } = {}) {
+function violationList(violations, { collapse = false, pricedAt, timeZone = 'UTC', inDemo = false, source = 'demo', kind = 'price' } = {}) {
   const list = Array.isArray(violations) ? violations : [];
   if (!list.length) return '';
   const item = v => html`<li class="bz-reason${v.severity === 'block' ? ' is-block' : ''}">${icon(v.severity === 'block' ? 'lock' : 'alert')}<span>${v.text}</span></li>`;
@@ -314,7 +336,7 @@ function violationList(violations, { collapse = false, pricedAt, timeZone = 'UTC
   const hasMoney = list.some(v => CURRENCY_RE.test(String(v.text || '')));
   if (inDemo || !hasMoney) return body;
   if (!pricedAt) throw new TypeError('[business] violationList: a reason with an amount needs pricedAt (or inDemo inside a priced demo container)');
-  return demoBox(body, { pricedAt, timeZone, cls: 'bz-reasons-box', source });
+  return demoBox(body, { pricedAt, timeZone, cls: 'bz-reasons-box', source, kind });
 }
 
 /** Why a policy limit sits beside a price label: what the limits are checked against here, by price source. */
@@ -348,18 +370,20 @@ const LIMIT_CHIPS = Object.freeze({ demo: 'Demo price', sandbox: 'Test data', li
  * amount worked out from the search (fromSearch: a median cap, the Price to Beat) gets the chip; a
  * limit the company set is its own amount, not a supplier price.
  * @param {import('../../business/types').LimitsBar} bar
- * @param {{ pricedAt: string|null, timeZone: string, level?: number, source?: import('../../business/types').PriceSource }} opts
+ * @param {{ pricedAt: string|null, timeZone: string, level?: number, source?: import('../../business/types').PriceSource, kind?: string }} opts
+ *   kind: who priced the search the bar's amounts come from (format.priceKind of its rows)
  */
-function limitsBar(bar, { pricedAt, timeZone, level = 2, source = 'demo' }) {
+function limitsBar(bar, { pricedAt, timeZone, level = 2, source = 'demo', kind = 'price' }) {
   if (!bar || !Array.isArray(bar.items)) return '';
   const s = known(source);
-  const chip = s === 'demo' ? 'bz-chip-demo' : 'bz-chip-demo bz-chip-test';
+  // Only supplier test data gets the dashed test chip; a live price's chip is plain (go-live design §5.6).
+  const chip = s === 'sandbox' ? 'bz-chip-demo bz-chip-test' : 'bz-chip-demo';
   return html`<section class="${boxClass('bz-limits', s)}" data-price-source="${s}" aria-labelledby="bz-limits-title">
     ${heading(level, html` class="bz-limits-title" id="bz-limits-title"`, html`${icon('shield')}<span>${bar.heading}</span>`)}
     <ul class="bz-limits-list">
       ${bar.items.map(it => html`<li data-limit="${it.key}"><span>${it.text}</span>${it.cents === null || it.cents === undefined ? '' : html` <span class="bz-limit-amount">${amount(it.cents)}${s === 'demo' || fromSearch(it) ? html`<span class="${chip}">${LIMIT_CHIPS[s]}</span>` : ''}</span>`}${it.suffix ? html` <span>${it.suffix}</span>` : ''}</li>`)}
     </ul>
-    ${priceNote(pricedAt, timeZone, { source: s })}
+    ${priceNote(pricedAt, timeZone, { source: s, kind })}
   </section>`;
 }
 
@@ -527,6 +551,7 @@ function altCard(alt, { timeZone, pricedAt = null, action = null, rev = null, pi
   const ev = alt.evaluation || { status: null, violations: [] };
   const give = (alt.giveUps || []).filter(Boolean);
   const source = tripSource(alt.rows);
+  const kind = f.liveKind(source, f.tripRows(alt.rows));
   return html`<article class="${boxClass(`bz-card bz-alt${pinned ? ' is-pinned' : ''}`, source)}" data-price-source="${source}">
     ${pinned && alt.label !== CHEAPEST_WITHIN_LABEL ? html`<p class="bz-alt-pin">${icon('shield')}<span>${PIN_BADGE}</span></p>` : ''}
     ${heading(level, html` class="bz-alt-title"`, alt.label)}
@@ -540,7 +565,7 @@ function altCard(alt, { timeZone, pricedAt = null, action = null, rev = null, pi
       ${rev === null || rev === undefined ? '' : html`<input type="hidden" name="rev" value="${String(rev)}">`}
       <button class="btn btn-navy bz-btn" type="submit">Use this option</button>
     </form>` : ''}
-    ${priceNote(at, timeZone, { source })}
+    ${priceNote(at, timeZone, { source, kind })}
   </article>`;
 }
 
@@ -675,14 +700,14 @@ function checklist(items) {
  * says the caller's container already labels it.
  * @param {'within'|'out'|'blocked'} status
  * @param {*} text text or markup from html``
- * @param {{ pricedAt?: string|null, timeZone?: string, inDemo?: boolean }} [opts]
+ * @param {{ pricedAt?: string|null, timeZone?: string, inDemo?: boolean, source?: string, kind?: string }} [opts]
  */
-function verdict(status, text, { pricedAt = null, timeZone = 'UTC', inDemo = false, source = 'demo' } = {}) {
+function verdict(status, text, { pricedAt = null, timeZone = 'UTC', inDemo = false, source = 'demo', kind = 'price' } = {}) {
   const tone = BADGES[status] ? status : 'out';
   const box = html`<div class="bz-verdict bz-verdict-${tone}">${policyBadge(status)}<p class="bz-verdict-text">${text}</p></div>`;
   if (inDemo || !CURRENCY_RE.test(String(text))) return box;
   if (!pricedAt) throw new TypeError('[business] verdict: a verdict with an amount needs pricedAt (or inDemo inside a priced demo container)');
-  return demoBox(box, { pricedAt, timeZone, cls: 'bz-verdict-box', source });
+  return demoBox(box, { pricedAt, timeZone, cls: 'bz-verdict-box', source, kind });
 }
 
 /**
@@ -751,4 +776,6 @@ module.exports = {
   UNAVAILABLE,
   // Price sources (real-suppliers design §2.3)
   SANDBOX_RIBBON, LIVE_RIBBON, APPROVED_PILLS, ALT_SUBS, LIMIT_CHIPS, LIMITS_NOTES, LIMITS_CHECKED, limitsNote, fromSearch, NO_STARS, UNAVAILABLE_BY_SOURCE, unavailableText, paidAtHotel, tripSource,
+  // Live prices (go-live design §5.5, §5.6)
+  AWAITING_CONFIRMATION, confirmPanel,
 };

@@ -16,6 +16,12 @@
 // test-data trip says "Approved (test data). Nothing was booked."; and an approver whose live price check
 // could not run (view.liveError) is told the price is checked again when they approve.
 //
+// Live prices (go-live design §5.6): every amount says "US dollars, from the airline · Priced at … · Can change
+// until booked" (who priced it from the trip's own rows: format.requestKind), the approved banner says
+// "Approved. Booking in Tripelyx isn't open yet, so this fare is not held and can change.", a trip inside the
+// policy is "approved" (never "approved to book"), and a draft or waiting trip's total says it is checked again
+// before it is approved.
+//
 // What the page never does: blame the company policy for an option that is gone from the demo data (that is
 // said as availability, with a way to plan the trip again); offer a form that can only fail (a draft whose
 // departure date has passed shows how to plan it again instead); let the traveler write to "your approver"
@@ -42,6 +48,8 @@ const GONE = Object.freeze({
 const goneWords = source => GONE[source] || GONE.demo;
 
 const COMPONENTS = Object.freeze(['out', 'back', 'hotel']);
+/** Who priced a request's amounts, for its labels: from its own rows on live prices, 'price' otherwise. */
+const labelKind = (r, source) => f.liveKind(source, f.tripRows(r && r.rows));
 const firstName = name => String(name || '').split(' ')[0] || String(name || '');
 /** "Denied by Dana Lee: too expensive." without a doubled stop. */
 const sentence = s => (/[.!?]$/.test(s) ? s : `${s}.`);
@@ -150,7 +158,7 @@ function returnedBanner(r, { self, timeZone, pick = false, source = 'demo' }) {
       : `${LEAD} Review it and send it again. The fare or room terms changed. The price is the same.`;
   }
   const body = html`<div class="alert alert-warning bz-alert bz-returned" role="note">${icon('alert')}<div><p>${text}</p>${priced ? html`<p class="bz-returned-price">Was ${p.amount(ret.fromCents)}, now ${p.amount(ret.toCents)}.</p>` : ''}</div></div>`;
-  return priced ? p.demoBox(body, { pricedAt: r.pricedAt, timeZone, cls: 'bz-returned-box', source }) : body;
+  return priced ? p.demoBox(body, { pricedAt: r.pricedAt, timeZone, cls: 'bz-returned-box', source, kind: labelKind(r, source) }) : body;
 }
 
 const PART_LABELS = Object.freeze({ out: 'Outbound flight', back: 'Return flight', hotel: 'Hotel' });
@@ -186,12 +194,23 @@ function goneOnly(ev) {
 /** An option gone from the demo data (or the supplier's), said as which part it is. */
 const goneText = (v, source = 'demo') => (v.rule === 'inventory.unavailable' && PART_LABELS[v.component] ? { ...v, text: `${PART_LABELS[v.component]}: ${goneWords(source)}.` } : v);
 
+/**
+ * The verdict of the traveler's own draft inside the policy, by the request's source: on live prices booking is
+ * not open, so confirming approves it, never "approved to book".
+ */
+const WITHIN_DRAFT = Object.freeze({
+  demo: "Every part of this trip is inside your policy. Confirm and it's approved to book.",
+  sandbox: "Every part of this trip is inside your policy. Confirm and it's approved to book.",
+  live: "Every part of this trip is inside your policy. Confirm and it's approved.",
+});
+
 /** The policy verdict and its reasons. `again` is the "Plan this trip again" link, for a draft that has no way forward here. */
 function policyBlock(r, view, { org, timeZone, pick = false, again = '', source = 'demo' }) {
   const ev = r.evaluation || { status: 'within', violations: [] };
   const n = (ev.violations || []).length;
   const first = firstName(r.travelerName);
-  const reasons = p.violationList(namedViolations(forViewer(ev.violations, view, first).map(v => goneText(v, source))), { pricedAt: r.pricedAt, timeZone, source });
+  const kind = labelKind(r, source);
+  const reasons = p.violationList(namedViolations(forViewer(ev.violations, view, first).map(v => goneText(v, source))), { pricedAt: r.pricedAt, timeZone, source, kind });
   const changed = view.policyChanged ? html`<p class="bz-note">${icon('info')}<span>Policy updated since this request (v${String(view.policyChanged.from)} → v${String(view.policyChanged.to)}). It was checked against v${String(view.policyChanged.from)}.</span></p>` : '';
   if (goneOnly(ev)) {
     // Availability, not policy: no "Blocked by policy" badge, and the way forward that really exists.
@@ -204,13 +223,13 @@ function policyBlock(r, view, { org, timeZone, pick = false, again = '', source 
     </section>`;
   }
   let text;
-  if (ev.status === 'within') text = view.status === 'draft' && view.self ? "Every part of this trip is inside your policy. Confirm and it's approved to book." : 'Every part of this trip is inside the policy.';
+  if (ev.status === 'within') text = view.status === 'draft' && view.self ? (WITHIN_DRAFT[source] || WITHIN_DRAFT.demo) : 'Every part of this trip is inside the policy.';
   else if (ev.status === 'out') text = `Out of policy: ${f.plural(n, 'reason')}`;
   else if (view.status === 'draft' && !view.self) text = `This trip can't be requested under ${org.name}'s policy.`;
   else if (view.status === 'draft') text = pick ? `This trip can't be requested under ${org.name}'s policy. Pick one of the options below.` : `This trip can't be requested under ${org.name}'s policy. Plan it again with options marked Within Policy.`;
   else text = 'Blocked by policy.';
   return html`<section class="bz-policy-check" aria-label="Policy check">
-    ${p.verdict(ev.status, text, { source })}
+    ${p.verdict(ev.status, text, { source, kind })}
     ${reasons}
     ${ev.status === 'blocked' ? again : ''}
     ${changed}
@@ -283,6 +302,17 @@ function statusBanner(ctx, r, view, { member, base, timeZone, expiredSaid = fals
   }
 }
 
+/**
+ * The note under the trip total. Live prices: nothing is charged while booking is not open, so it says what the
+ * total is, and a draft or waiting trip adds that the price is checked again before it is approved (the submit
+ * and the decision both check it).
+ */
+function totalNote(view, source) {
+  if (source !== 'live') return 'The total is everything charged for these options: each fee and tax is under Price details.';
+  const note = 'The total is the whole price of these options, with every fee and tax: each one is under Price details.';
+  return view.status === 'draft' || view.status === 'pending' ? `${note} It is checked again before it is approved.` : note;
+}
+
 /** The trip's parts and its total, with every price line one tap away. */
 function tripParts(r, view, { timeZone, map, source = 'demo' }) {
   const evals = (r.evaluation && r.evaluation.components) || {};
@@ -312,11 +342,11 @@ function tripParts(r, view, { timeZone, map, source = 'demo' }) {
     <div class="bz-line bz-line-total"><dt>${missing ? 'Total without the missing option' : 'Trip total'}</dt><dd>${p.amount(r.totalCents)}</dd></div>
   </dl>
   ${saved > 0 ? html`<p class="bz-saved">${icon('check')}<span>Saved ${p.amount(saved)} by switching to cheaper options.</span></p>` : ''}
-  <p class="bz-total-note">The total is everything charged for these options: each fee and tax is under Price details.</p>`;
+  <p class="bz-total-note">${totalNote(view, source)}</p>`;
   return html`<section class="bz-trip-parts" aria-labelledby="bz-parts-title">
     <h2 id="bz-parts-title">The trip</h2>
     ${cards}
-    ${p.demoBox(html`<h3 class="bz-total-title">Trip total</h3>${lines}`, { pricedAt: r.pricedAt, timeZone, tag: 'section', cls: 'bz-card bz-total', label: 'Trip total', source })}
+    ${p.demoBox(html`<h3 class="bz-total-title">Trip total</h3>${lines}`, { pricedAt: r.pricedAt, timeZone, tag: 'section', cls: 'bz-card bz-total', label: 'Trip total', source, kind: labelKind(r, source) })}
   </section>`;
 }
 
@@ -354,7 +384,7 @@ function budgetBlock(r, view, { org, departmentName, timeZone, deciding, level =
   const money = b && r.departmentId && dept;
   const box = html`${p.heading(level, html` class="bz-block-title"`, html`${icon('wallet')}<span>Budget</span>`)}${body}`;
   return money
-    ? p.demoBox(box, { pricedAt: r.pricedAt, timeZone, tag: 'section', cls: 'bz-card bz-budget', label: 'Budget', source })
+    ? p.demoBox(box, { pricedAt: r.pricedAt, timeZone, tag: 'section', cls: 'bz-card bz-budget', label: 'Budget', source, kind: labelKind(r, source) })
     : html`<section class="bz-card bz-budget" aria-label="Budget">${box}</section>`;
 }
 
@@ -386,19 +416,23 @@ function deciderPanel(ctx, r, view, { base, timeZone, form, failed, refusal, err
     else if (Number.isSafeInteger(live.newTotalCents) && live.newTotalCents !== r.totalCents) check = html`<p>${icon('alert')}<span>Price checked again at ${at}: now ${p.amount(live.newTotalCents)} (was ${p.amount(r.totalCents)}). If you approve, it goes back to ${first} to confirm the new price.</span></p>`;
     else check = html`<p>${icon('alert')}<span>Price checked again at ${at}: the fare or room terms changed. The price is the same. If you approve, it goes back to ${first} to confirm.</span></p>`;
   }
-  const checkBox = p.demoBox(html`<div class="bz-live">${check}</div>`, { pricedAt: live ? live.at : r.pricedAt, timeZone, cls: 'bz-live-box', source });
+  const kind = labelKind(r, source);
+  const checkBox = p.demoBox(html`<div class="bz-live">${check}</div>`, { pricedAt: live ? live.at : r.pricedAt, timeZone, cls: 'bz-live-box', source, kind });
 
   let compare;
   if (view.comparison) {
     const c = view.comparison;
+    // Both trips' amounts: the least real of the request's source and the cheaper trip's rows, and on live
+    // prices whoever priced either trip.
+    const both = f.leastReal([source, r.cheapestWithin ? p.tripSource(r.cheapestWithin.rows) : source]);
     const rows = c.rows.map(x => [x.label, x.a === null || x.a === undefined ? 'None' : x.a, x.b === null || x.b === undefined ? 'None' : x.b]);
     rows.push(['Trip total', p.amount(c.totalCents.a), p.amount(c.totalCents.b)]);
     compare = p.demoBox(html`<h3 class="bz-block-title">Requested vs cheapest option inside policy</h3>
       ${p.dataTable({ caption: 'Requested vs cheapest option inside policy', columns: [{ label: 'Detail' }, { label: 'Requested' }, { label: 'Cheapest inside policy' }], rows })}
       ${c.totalCents.delta < 0 ? html`<p class="bz-compare-delta">The option inside the policy costs ${p.amount(-c.totalCents.delta)} less.</p>` : ''}`, {
       pricedAt: r.cheapestWithin && r.cheapestWithin.rows && r.cheapestWithin.rows.out ? r.cheapestWithin.rows.out.pricedAt : r.pricedAt, timeZone, tag: 'section', cls: 'bz-compare', label: 'Requested vs cheapest option inside policy',
-      // Both trips' amounts: the least real of the request's source and the cheaper trip's rows.
-      source: f.leastReal([source, r.cheapestWithin ? p.tripSource(r.cheapestWithin.rows) : source]),
+      source: both,
+      kind: f.liveKind(both, [...f.tripRows(r.rows), ...f.tripRows(r.cheapestWithin && r.cheapestWithin.rows)]),
     });
   } else {
     // A search in a cabin above the limit fetched no fare in the allowed cabin, so there was nothing to
@@ -426,7 +460,7 @@ function deciderPanel(ctx, r, view, { base, timeZone, form, failed, refusal, err
   const ackErr = ackError ? html`<p class="field-error" id="d-ack-err">${ackError}</p>` : '';
   let ack = '';
   if (showAck && over > 0 && b) {
-    ack = html`<div class="bz-ack">${p.demoBox(html`<div class="bz-choices${ackError ? ' is-invalid' : ''}"><label class="bz-choice" for="d-ack">${ackInput}<span>Approve even though ${b.departmentName} goes ${p.amount(over)} over its ${b.periodLabel} budget.</span></label>${ackErr}</div>`, { pricedAt: r.pricedAt, timeZone, cls: 'bz-ack-box', source })}</div>`;
+    ack = html`<div class="bz-ack">${p.demoBox(html`<div class="bz-choices${ackError ? ' is-invalid' : ''}"><label class="bz-choice" for="d-ack">${ackInput}<span>Approve even though ${b.departmentName} goes ${p.amount(over)} over its ${b.periodLabel} budget.</span></label>${ackErr}</div>`, { pricedAt: r.pricedAt, timeZone, cls: 'bz-ack-box', source, kind })}</div>`;
   } else if (showAck) {
     ack = html`<div class="bz-choices${ackError ? ' is-invalid' : ''}"><label class="bz-choice" for="d-ack">${ackInput}<span>Approve even though it goes over the department's budget.</span></label>${ackErr}</div>`;
   }
@@ -458,7 +492,7 @@ function deciderPanel(ctx, r, view, { base, timeZone, form, failed, refusal, err
 }
 
 /** The traveler's primary action on a draft: Confirm trip, Request Approval, or what to do instead. */
-function submitPanel(r, view, { org, member, base, form, failed, refusal, error, soon = false }) {
+function submitPanel(r, view, { org, member, base, form, failed, refusal, error, soon = false, source = 'demo' }) {
   const ev = r.evaluation || { status: 'within' };
   const action = `${base}/trips/${r.id}/submit`;
   const hours = org.settings && Number.isInteger(org.settings.approvalHours) ? org.settings.approvalHours : 24;
@@ -473,7 +507,7 @@ function submitPanel(r, view, { org, member, base, form, failed, refusal, error,
   if (ev.status === 'within') {
     return html`<section class="bz-card bz-submit" aria-labelledby="bz-submit-title">
       <h2 id="bz-submit-title">Confirm your trip</h2>
-      <p>This trip is inside your policy, so confirming approves it to book. Nothing is booked or charged.</p>
+      <p>${source === 'live' ? "This trip is inside your policy, so confirming approves it. Booking in Tripelyx isn't open yet, so nothing is booked or charged." : 'This trip is inside your policy, so confirming approves it to book. Nothing is booked or charged.'}</p>
       ${revForm(action, r.rev, html`${icon('check')}<span>Confirm trip</span>`, { cls: 'btn btn-navy bz-btn', bar: true })}
     </section>`;
   }
@@ -594,7 +628,7 @@ function historyPanel(ctx, r, { timeZone, member, source = 'demo' }) {
     const who = actorName(h.by, { self: member.userId });
     switch (h.action) {
       case 'drafted': return `${who} planned this trip.`;
-      case 'swapped': return html`${who} switched to a cheaper option${h.note ? `: ${h.note}` : ''}.${Number.isSafeInteger(h.savedCents) && h.savedCents > 0 ? html` Saved ${p.demoPrice(h.savedCents, { pricedAt: h.at, timeZone, source })}` : ''}`;
+      case 'swapped': return html`${who} switched to a cheaper option${h.note ? `: ${h.note}` : ''}.${Number.isSafeInteger(h.savedCents) && h.savedCents > 0 ? html` Saved ${p.demoPrice(h.savedCents, { pricedAt: h.at, timeZone, source, kind: labelKind(r, source) })}` : ''}`;
       case 'repriced': return 'The trip changed before it was sent, so it was updated.';
       case 'submitted': return `${who} asked for approval.`;
       case 'auto_approved': return 'Approved by policy.';
@@ -771,10 +805,10 @@ function requestView(ctx, { org, member, view, departmentName = null, ok = '', e
   ${tripParts(r, view, { timeZone, map, source })}
   ${deciding ? '' : budgetBlock(r, view, { org, departmentName, timeZone, deciding, level: 2, source })}
   ${alts}
-  ${draftSelf && !late ? submitPanel(r, view, { org, member, base, form, failed, refusal, error, soon }) : ''}
+  ${draftSelf && !late ? submitPanel(r, view, { org, member, base, form, failed, refusal, error, soon, source }) : ''}
   ${cancelPanel(r, view, { base, confirm, dest })}
   ${messagesPanel(ctx, r, view, { base, timeZone, form, failed, refusal, error, member, canRequest })}
   ${historyPanel(ctx, r, { timeZone, member, source })}`;
 }
 
-module.exports = { requestView, okText, GONE, APPROVED };
+module.exports = { requestView, okText, GONE, APPROVED, WITHIN_DRAFT, totalNote };

@@ -7,9 +7,12 @@
 // (dash.priceSource, else the workspace's): "Includes supplier test data"; each listed request carries its
 // own source's label, and the CSV's price_source column says it per row. Once any request counted or listed
 // is not demo, the "Requests by status" tile and the status filter say "Approved" (never "Approved to book").
+// With live prices only (go-live design §5.6) a listed total says "US dollars, from the airline · Priced at … ·
+// Can change until booked", and the CSV note names supplier prices only.
 // With no supplier and nothing counted (production) the figures are the company's own, with no price label.
 const { html } = require('../../lib/html');
-const { pageHead, tabs, dataTable, emptyState, amount, budgetBar, demoBox, demoPrice, comingSoon, statusPill, policyBadge, pager } = require('./parts');
+const { pageHead, tabs, dataTable, emptyState, amount, budgetBar, demoBox, comingSoon, statusPill, policyBadge, pager } = require('./parts');
+const { totalCell } = require('./trips');
 const f = require('./format');
 const { shellView } = require('./shell');
 const { selectField } = require('./auth');
@@ -35,6 +38,8 @@ const MONEY_SUBS = Object.freeze({
 const PLAIN_SUB = 'Nothing is charged.';
 /** Beside Download CSV once a request may be priced by a supplier. */
 const CSV_SOURCES = "The CSV's price_source column says where each amount came from: demo prices, supplier test data or supplier prices.";
+/** The same once every amount here is a live supplier price. */
+const CSV_SOURCES_LIVE = "The CSV's price_source column says where each amount came from: supplier prices, in US dollars, as each trip was priced.";
 
 function tile(title, body) {
   return html`<section class="bz-card bz-tile" aria-label="${title}"><h2 class="bz-tile-title">${title}</h2>${body}</section>`;
@@ -118,13 +123,14 @@ function reportsView(ctx, shell, { dash, choices, list, filters = {}, department
       rows: list.rows.map(r => [
         r.travelerName,
         html`<a href="${base}/trips/${r.id}">${route(r)}</a>`,
-        demoPrice(r.totalCents, { pricedAt: r.pricedAt, timeZone: tz, source: f.isSource(r.source) ? r.source : 'demo' }),
+        totalCell(r, tz),
         statusPill(r.status, { source: r.source }),
         policyBadge(r.policyStatus),
       ]),
     })
     : html`<p class="bz-table-empty">No requests match these filters.</p>`;
-  const csvNote = canExport && source && source !== 'demo' ? html`<p class="bz-meta">${CSV_SOURCES}</p>` : '';
+  const allLive = source === 'live' && list.rows.every(r => r.source === 'live');
+  const csvNote = canExport && source && source !== 'demo' ? html`<p class="bz-meta">${allLive ? CSV_SOURCES_LIVE : CSV_SOURCES}</p>` : '';
   const exportForm = canExport ? html`<form class="bz-inline-form" method="post" action="${base}/reports/export">
       <input type="hidden" name="period" value="${dash.periodKey}">
       ${filters.departmentId ? html`<input type="hidden" name="departmentId" value="${filters.departmentId}">` : ''}
@@ -148,4 +154,4 @@ function reportsView(ctx, shell, { dash, choices, list, filters = {}, department
   return shellView(ctx, shell, { title: `Reports for ${label}`, body, notice, error });
 }
 
-module.exports = { reportsView, NO_REQUESTS, COMING_TEXT, MONEY_SUBS, CSV_SOURCES };
+module.exports = { reportsView, NO_REQUESTS, COMING_TEXT, MONEY_SUBS, CSV_SOURCES, CSV_SOURCES_LIVE };
