@@ -911,7 +911,7 @@ test('app: ctx.business and its Repo exist only with Business on, with trips on 
   // The advisor-era client, brand and preview routes and their session bypass are gone: these are the
   // app's ordinary 404 (visitor cookie and session as on any other page).
   const { user, cookie } = await seedUser(app, { name: 'Zebedee Quartermaine' });
-  for (const path of [`/business/p/${tokens.newToken()}`, '/business/brand/x/brand.css', '/business/o/x', '/business/o/x/proposals/p/preview']) {
+  for (const path of [`/business/p/${tokens.newToken()}`, '/business/brand/x/brand.css', '/business/o/x/proposals/p/preview']) {
     const res = await fetch(app.base + path, { redirect: 'manual' });
     assert.equal(res.status, 404, path);
     assert.match(res.headers.get('set-cookie') || '', /^txv=/, `${path}: the visitor cookie as on any page`);
@@ -923,6 +923,14 @@ test('app: ctx.business and its Repo exist only with Business on, with trips on 
   const entry = await fetch(app.base + '/business/app', { redirect: 'manual' });
   assert.equal(entry.status, 303);
   assert.equal(entry.headers.get('location'), `/business/signin?next=${encodeURIComponent('/business/app')}`);
+  // A company workspace URL is a member page (Stage 2B): signed out it asks for the company sign-in; signed in, an
+  // unknown company is the app's ordinary 404.
+  const ws = await fetch(app.base + '/business/o/x', { redirect: 'manual' });
+  assert.equal(ws.status, 303);
+  assert.equal(ws.headers.get('location'), `/business/signin?next=${encodeURIComponent('/business/o/x')}`);
+  const wsIn = await fetch(app.base + '/business/o/x', { headers: { cookie }, redirect: 'manual' });
+  assert.equal(wsIn.status, 404);
+  noInline('/business/o/x', await wsIn.text());
   assert.throws(() => require('../server/routes/businessClient'), /Cannot find module/);
   assert.deepEqual(Object.keys(require('../server/routes/business')).sort(), ['FORM_OPTIONS', 'LIMITERS', 'METHODS', 'MOUNT', 'ROUTES', 'WHO', 'assertRoutes', 'createRouterDeps', 'router']);
 
@@ -1342,8 +1350,11 @@ test('interfaces: with Business on, trips on or off, the service holds its inven
     const page = await fetch(`${app.base}/business`);
     assert.equal(page.status, 200, 'GET /business is the company page');
     assert.match(await page.text(), /<h1/);
-    for (const path of ['/business/o/org_AAAAAAAAAAAAAAAA', '/admin/business']) assert.equal((await fetch(app.base + path)).status, 404, path);
+    for (const path of ['/admin/business']) assert.equal((await fetch(app.base + path)).status, 404, path);
     assert.equal((await fetch(app.base + '/business/app', { redirect: 'manual' })).status, 303, '/business/app asks a signed-out visitor to sign in');
+    const ws = await fetch(app.base + '/business/o/org_AAAAAAAAAAAAAAAA', { redirect: 'manual' });
+    assert.equal(ws.status, 303, 'a workspace page sends a signed-out visitor to the company sign-in');
+    assert.match(ws.headers.get('location'), /^\/business\/signin\?next=/);
   }
 });
 
