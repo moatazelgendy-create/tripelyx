@@ -64,6 +64,18 @@ test('the workflow runs only on the development branch (push or by hand), never 
   assert.doesNotMatch(body, /^ {4}environment:/m, 'no GitHub environment (it would change the OIDC subject)');
 });
 
+test('only the preview job can get an OIDC token; the test job (npm ci, npm test) cannot', () => {
+  assert.deepEqual(topBlock(workflow, 'permissions'), ['permissions:', '  contents: read'], 'the workflow default is read-only');
+  const preview = jobBlock('preview');
+  const at = preview.indexOf('    permissions:');
+  assert.ok(at >= 0, 'the preview job sets its own permissions');
+  assert.deepEqual(preview.slice(at, at + 3), ['    permissions:', '      id-token: write', '      contents: read']);
+  assert.ok(!/^ {6}\S/.test(preview[at + 3] || ''), 'and nothing more');
+  assert.doesNotMatch(jobBlock('test').join('\n'), /permissions|id-token/, 'the test job keeps the read-only default');
+  assert.equal((code(workflow).match(/id-token/g) || []).length, 1, 'id-token: write is granted once, to the preview job');
+  assert.doesNotMatch(code(workflow), /write-all|permissions: write/);
+});
+
 test('the workflow signs in only as the preview role and touches only the preview service, registry and secret', () => {
   const body = code(workflow);
   assert.match(body, /AWS_ROLE_ARN: \$\{\{ vars\.PREVIEW_ROLE_ARN \|\| 'arn:aws:iam::957123506077:role\/tripelyx-github-preview' \}\}/);
@@ -84,29 +96,100 @@ test('the workflow signs in only as the preview role and touches only the previe
   const allowed = new Set(['lightsail get-container-services', 'lightsail create-container-service-deployment', 'lightsail get-container-service-deployments',
     'lightsail get-container-log', 'ecr describe-images', 'secretsmanager get-secret-value']);
   for (const c of calls) assert.ok(allowed.has(c), `aws ${c} is allowed`);
-  assert.deepEqual([...body.matchAll(/permissions:\n((?: {2}.*\n)+)/g)].map(m => m[1]), ['  id-token: write\n  contents: read\n']);
   assert.match(body, /uses: aws-actions\/configure-aws-credentials@v4\n/);
   assert.match(body, /continue-on-error: true\n\s+uses: aws-actions\/configure-aws-credentials@v4/, 'no stack yet: a notice, not a failure');
   assert.match(body, /if: steps\.aws\.outcome != 'success'/);
   assert.match(body, /::notice title=Private preview::/);
 });
 
+/** The workflow's code lines with shell continuations (a trailing backslash) joined into one line each. */
+function logicalLines() {
+  return code(workflow).replace(/[ \t]*\\\n\s*/g, ' ').split('\n').map(l => l.trim()).filter(Boolean);
+}
+
 test('no secret value is written into the workflow, and the password is masked and never printed', () => {
   const body = code(workflow);
   assert.doesNotMatch(workflow, /\b(AKIA|ASIA)[0-9A-Z]{16}\b/);
   assert.deepEqual([...new Set([...workflow.matchAll(/secrets\.([A-Z0-9_]+)/g)].map(m => m[1]))].sort(), ['DUFFEL_TEST_TOKEN', 'LITEAPI_SANDBOX_KEY']);
-  // Each place PREVIEW_PASSWORD gets a value reads it from Secrets Manager or the environment.
-  const sets = [...body.matchAll(/PREVIEW_PASSWORD(=|: )(.*)/g)].map(m => m[2].trim());
-  assert.ok(sets.length >= 2);
-  for (const v of sets) assert.ok(/^\$\(aws secretsmanager get-secret-value /.test(v) || /^env\.PREVIEW_PASSWORD,?$/.test(v), `PREVIEW_PASSWORD comes from AWS, not "${v}"`);
-  const echoes = body.split('\n').filter(l => /\becho\b|>> "\$GITHUB_STEP_SUMMARY"|::notice|::error/.test(l) && /PREVIEW_PASSWORD/.test(l));
-  assert.deepEqual(echoes.map(l => l.trim()), ['echo "::add-mask::${PREVIEW_PASSWORD}"'], 'the only echo of it is the mask');
-  assert.ok(body.indexOf('::add-mask::') < body.indexOf('PREVIEW_PASSWORD: env.PREVIEW_PASSWORD'), 'masked before it is used');
   assert.doesNotMatch(body, /set -x|set -o xtrace|--debug|ACTIONS_STEP_DEBUG/);
-  assert.match(body, /--query 'containerService\.nextDeployment\.version'/, 'the deployment response (which repeats the settings) is not printed');
+  assert.doesNotMatch(body, /\bprintenv\b|\benv\s*(?:\||>|$)|declare -p|export -p|^\s*set\s*$|compgen|\/proc\/[^\s]*environ|toJSON\((?:secrets|env)\)/m, 'nothing dumps the environment');
+  const lines = logicalLines();
+
+  // (c) The password and the supplier keys are named on these lines only, in this order: the step's env
+  // mapping, the read from Secrets Manager, the empty check, the mask, the export for jq, the jq settings
+  // and the unset. Any other line naming one of them (a printf, a curl, a copy into another variable) fails.
+  assert.deepEqual(lines.filter(l => /PREVIEW_PASSWORD|DUFFEL_TEST_TOKEN|LITEAPI_SANDBOX_KEY/.test(l)), [
+    'DUFFEL_TEST_TOKEN: ${{ secrets.DUFFEL_TEST_TOKEN }}',
+    'LITEAPI_SANDBOX_KEY: ${{ secrets.LITEAPI_SANDBOX_KEY }}',
+    'PREVIEW_PASSWORD=$(aws secretsmanager get-secret-value --secret-id "$PASSWORD_SECRET" --query SecretString --output text)',
+    'if [ -z "$PREVIEW_PASSWORD" ] || [ "$PREVIEW_PASSWORD" = "None" ]; then',
+    'echo "::add-mask::${PREVIEW_PASSWORD}"',
+    'export PREVIEW_PASSWORD',
+    'PREVIEW_PASSWORD: env.PREVIEW_PASSWORD,',
+    '+ (if (env.DUFFEL_TEST_TOKEN // "") != "" then { DUFFEL_TEST_TOKEN: env.DUFFEL_TEST_TOKEN } else {} end)',
+    '+ (if (env.LITEAPI_SANDBOX_KEY // "") != "" then { LITEAPI_SANDBOX_KEY: env.LITEAPI_SANDBOX_KEY } else {} end))',
+    'unset PREVIEW_PASSWORD',
+  ]);
+  // The supplier keys reach only the deploy step.
+  const deployStep = body.slice(body.indexOf('- name: Deploy the preview'), body.indexOf('run: |', body.indexOf('- name: Deploy the preview')));
+  assert.match(deployStep, /DUFFEL_TEST_TOKEN: \$\{\{ secrets\.DUFFEL_TEST_TOKEN \}\}\n\s+LITEAPI_SANDBOX_KEY: \$\{\{ secrets\.LITEAPI_SANDBOX_KEY \}\}\n/);
+  assert.equal(lines.filter(l => /secretsmanager get-secret-value/.test(l)).length, 1, 'the password is read once');
+
+  // (b) The settings file holds the password and keys: it is written by jq, handed to Lightsail and deleted,
+  // and nothing else touches it or the folder it is in.
+  assert.deepEqual(lines.filter(l => /\$WORK|\bWORK=|containers\.json/.test(l)), [
+    'WORK="$(mktemp -d)"',
+    "trap 'rm -rf \"$WORK\"' EXIT",
+    `}' > "$WORK/containers.json"`,
+    `}' > "$WORK/endpoint.json"`,
+    'VERSION=$(aws lightsail create-container-service-deployment --service-name "$SERVICE" --containers "file://$WORK/containers.json" --public-endpoint "file://$WORK/endpoint.json" --query \'containerService.nextDeployment.version\' --output text)',
+    'rm -f "$WORK/containers.json"',
+  ]);
+  assert.ok(lines.indexOf('umask 077') >= 0 && lines.indexOf('umask 077') < lines.indexOf('WORK="$(mktemp -d)"'), 'the folder is private to the job');
+
+  // (a) Every AWS CLI call either prints nothing (stdout to /dev/null) or prints only what --query picks, and
+  // each --query is one of these: states, the version, the address and log lines, never the settings
+  // (a Lightsail service or deployment repeats its environment, password and keys included).
+  const awsCalls = lines.filter(l => /\baws [a-z0-9-]+ [a-z0-9-]+/.test(l));
+  assert.ok(awsCalls.length >= 8, `${awsCalls.length} AWS calls`);
+  for (const l of awsCalls) assert.ok(/--query /.test(l) || / >\/dev\/null 2>&1/.test(l), `prints only what it queries: ${l}`);
+  const queries = awsCalls.flatMap(l => [...l.matchAll(/--query (?:'([^']*)'|"((?:[^"\\]|\\.)*)"|(\S+))/g)].map(m => m[1] ?? m[2] ?? m[3]));
+  const ALLOWED_QUERIES = new Set([
+    'containerServices[0].state',
+    'containerServices[0].url',
+    'containerService.nextDeployment.version',
+    'deployments[?version==\\`${VERSION}\\`].state | [0]',
+    'logEvents[-40:].[message]',
+    'SecretString',
+  ]);
+  assert.equal(queries.length, awsCalls.filter(l => /--query /.test(l)).length, 'one --query per call');
+  for (const q of queries) assert.ok(ALLOWED_QUERIES.has(q), `--query ${q} is on the allow-list`);
+  for (const cmd of ['get-container-services', 'get-container-service-deployments', 'create-container-service-deployment', 'get-container-log']) {
+    const calls = awsCalls.filter(l => l.includes(`aws lightsail ${cmd} `));
+    assert.ok(calls.length >= 1, cmd);
+    for (const l of calls) assert.match(l, /--query /, `aws lightsail ${cmd} always has --query`);
+  }
+
   // The summary names the secret, never its value.
   const summary = body.split('\n').filter(l => /GITHUB_STEP_SUMMARY|^\s+echo "/.test(l) && !l.includes('::add-mask::')).join('\n');
   assert.doesNotMatch(summary, /\$\{?PREVIEW_PASSWORD/);
+});
+
+test('the instructions only promise ways GitHub can start this workflow while it lives on the development branch', () => {
+  const readme = read('README.md');
+  const section = readme.slice(readme.indexOf('### Private preview'), readme.indexOf('### Other hosts'));
+  assert.ok(section.length > 500);
+  assert.doesNotMatch(section, /Private preview → Run|run the workflow once|run the workflow again/i);
+  assert.match(section, /\*\*Re-run all jobs\*\*/);
+  assert.match(section, /gh workflow run preview\.yml --ref claude\/travel-by-budget-uv85qf/);
+  assert.match(section, /only shows a \*\*Run workflow\*\* button for\s+workflows that are on the default branch/);
+  const notices = code(workflow).split('\n').filter(l => /MSG="/.test(l));
+  assert.equal(notices.length, 2);
+  for (const n of notices) {
+    assert.match(n, /choose Re-run all jobs \(or push to the branch\)/);
+    assert.doesNotMatch(n, /run this workflow again/);
+  }
+  assert.match(code(workflow), /\n {2}workflow_dispatch:\n/, 'kept: it starts working once the file is on the default branch');
 });
 
 test('the deployment settings boot the app with Business on, the memory store, demo inventory and the gate', () => {
@@ -163,6 +246,13 @@ test('the stack: a micro Lightsail service, a 5-image registry, a generated pass
     `repo:\${GitHubOwner}@\${GitHubOwnerId}/\${GitHubRepo}@\${GitHubRepoId}:ref:refs/heads/${BRANCH}`,
   ]);
   assert.match(body, /StringEquals:\n\s+token\.actions/);
+  assert.match(body, /\n {16}token\.actions\.githubusercontent\.com:job_workflow_ref: !Sub \$\{GitHubOwner\}\/\$\{GitHubRepo\}\/\.github\/workflows\/preview\.yml@refs\/heads\/claude\/travel-by-budget-uv85qf\n/,
+    'only the preview workflow file on the development branch can use the role');
+  const trust = body.slice(body.indexOf('AssumeRolePolicyDocument:'), body.indexOf('Policies:'));
+  assert.deepEqual([...trust.matchAll(/^\s+(token\.actions\.githubusercontent\.com:[a-z_]+):/gm)].map(m => m[1]), [
+    'token.actions.githubusercontent.com:aud', 'token.actions.githubusercontent.com:sub', 'token.actions.githubusercontent.com:job_workflow_ref',
+  ]);
+  assert.equal((trust.match(/StringEquals:/g) || []).length, 1, 'all three in one StringEquals, so all must match');
   assert.doesNotMatch(body, /StringLike|refs\/heads\/main|\bmain\b|:pull_request|:environment:/);
   for (const [name, value] of [['GitHubOwnerId', "'335752477'"], ['GitHubRepoId', "'1405020835'"], ['GitHubOwner', 'moatazelgendy-create'], ['GitHubRepo', 'tripelyx']]) {
     assert.match(body, new RegExp(`  ${name}:\\n\\s+Type: String\\n\\s+Default: ${value}\\n`), name);

@@ -101,6 +101,9 @@ Resources:
                 token.actions.githubusercontent.com:sub:
                   - !Sub repo:${GitHubOwner}/${GitHubRepo}:ref:refs/heads/claude/travel-by-budget-uv85qf
                   - !Sub repo:${GitHubOwner}@${GitHubOwnerId}/${GitHubRepo}@${GitHubRepoId}:ref:refs/heads/claude/travel-by-budget-uv85qf
+                # And only from the preview workflow file on that branch, so no other workflow run on the branch
+                # (CI, or the live site's deploy workflow started there by hand) can use this role.
+                token.actions.githubusercontent.com:job_workflow_ref: !Sub ${GitHubOwner}/${GitHubRepo}/.github/workflows/preview.yml@refs/heads/claude/travel-by-budget-uv85qf
       Policies:
         - PolicyName: deploy-tripelyx-preview
           PolicyDocument:

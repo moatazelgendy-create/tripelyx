@@ -294,10 +294,17 @@ database and DNS are never touched, and Business stays off there.
   preview images in Amazon ECR a few cents of storage.
 - **Updates:** every push to `claude/travel-by-budget-uv85qf` runs the tests, then
   `.github/workflows/preview.yml` builds the image, pushes it to the `tripelyx-preview` registry and
-  deploys it to the `tripelyx-preview` service. You can also run **Actions → Private preview → Run
-  workflow** on that branch. It never runs on `main` and never uses the live site's deploy role; it signs
-  in as `tripelyx-github-preview`, which only that branch can use. The run summary shows the address.
-  Until the stack below exists, the workflow ends with a notice saying so and deploys nothing.
+  deploys it to the `tripelyx-preview` service. It never runs on `main` and never uses the live site's
+  deploy role; it signs in as `tripelyx-github-preview`, which only this workflow on that branch can use.
+  The run summary shows the address. Until the stack below exists, the workflow ends with a notice saying
+  so and deploys nothing.
+- **Running it again without a push:** open the latest **Private preview** run in the Actions tab and
+  choose **Re-run all jobs**. It runs the same commit on the same branch, and reads the password fresh
+  from AWS. GitHub allows re-runs for 30 days after a run; after that, push to the branch, or, from a
+  computer with the GitHub CLI, run `gh workflow run preview.yml --ref claude/travel-by-budget-uv85qf`
+  (this works once the workflow has run at least once). GitHub only shows a **Run workflow** button for
+  workflows that are on the default branch (`main`), so this one has none while it lives on the
+  development branch.
 
 **One-time setup (about 10 minutes, AWS account 957123506077, `us-east-1`).** Create the
 `tripelyx-preview` stack from `infra/preview.yaml`, either in the console (**CloudFormation → Create
@@ -309,9 +316,10 @@ aws cloudformation deploy --region us-east-1 --stack-name tripelyx-preview \
   --template-file infra/preview.yaml --capabilities CAPABILITY_NAMED_IAM
 ```
 
-It uses the GitHub identity provider that `tripelyx-bootstrap` already created. When it finishes, run the
-workflow once (or push to the branch). Optional repository secrets `DUFFEL_TEST_TOKEN` and
-`LITEAPI_SANDBOX_KEY` (supplier test keys) are passed to the preview only when they are set.
+It uses the GitHub identity provider that `tripelyx-bootstrap` already created. When it finishes, open the
+latest **Private preview** run (the one that ended with "not set up yet") and choose **Re-run all jobs**,
+or push to the branch. Optional repository secrets `DUFFEL_TEST_TOKEN` and `LITEAPI_SANDBOX_KEY`
+(supplier test keys) are passed to the preview only when they are set.
 
 **Reading the password:** in the console, open **Secrets Manager → `tripelyx-preview/password` →
 Retrieve secret value**, or:
@@ -321,7 +329,8 @@ aws secretsmanager get-secret-value --region us-east-1 --secret-id tripelyx-prev
   --query SecretString --output text
 ```
 
-To change it, edit that secret's value in the console and run the workflow again.
+To change it, edit that secret's value in the console, then choose **Re-run all jobs** on the latest
+**Private preview** run (or push to the branch).
 
 **Taking it down:** delete the stack. That removes the service, its address, the preview images, the
 password and the role, and the charges stop:

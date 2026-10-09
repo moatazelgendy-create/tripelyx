@@ -223,16 +223,96 @@ test('with PREVIEW_PASSWORD unset (or empty) the app is untouched: same status, 
   }
 });
 
-test('createApp mounts nothing for the preview when it is off', async () => {
+// The app as it was before the preview existed (commit 5a85b46), with the gate off. These pins compare the
+// gate-off app against that, not against itself, so a change on the preview's code path that runs for every
+// request (an extra middleware, a header) fails here even with PREVIEW_PASSWORD unset. If you change
+// server/app.js on purpose, update the pins.
+const ROUTER_AT_5A85B46 = {
+  default: ['helmetMiddleware', '<anonymous>', 'compression', 'serveStatic', 'handle', '<anonymous>', 'router', '<anonymous>',
+    'router', 'router', 'router', 'router', 'router', 'router', '<anonymous>', '<anonymous>'],
+  business: ['helmetMiddleware', '<anonymous>', 'compression', 'serveStatic', 'handle', '<anonymous>', 'router', '<anonymous>',
+    'router', 'router', 'router', 'router', 'router', 'router', 'router', 'router', '<anonymous>', '<anonymous>'],
+};
+// The preview's own settings (.github/workflows/preview.yml) without the password and the seed.
+const PREVIEW_ENV = {
+  APP_ENV: 'staging', DATABASE_URL: 'memory', HTTPS_ONLY: 'true', TRUST_PROXY: 'true', PAYMENT_MODE: 'test',
+  ALLOW_DEMO_INVENTORY: 'true', ENABLE_TRIPS: 'true', ENABLE_BUSINESS: 'true', ADMIN_EMAILS: '',
+};
+
+test('createApp mounts nothing for the preview when it is off: the middleware is as it was before the preview', async () => {
   const { createApp } = require('../server/app');
-  const count = async env => {
+  const names = async env => {
     const { app } = await createApp(loadConfig({ APP_ENV: 'development', ...env }), { log: quietLog });
-    const stack = (app.router || app._router).stack;
-    return { n: stack.length, names: stack.map(l => l.name) };
+    return (app.router || app._router).stack.map(l => l.name);
   };
-  const off = await count({});
-  const on = await count({ PREVIEW_PASSWORD: PASSWORD });
-  assert.equal(on.n, off.n + 1);
-  assert.ok(on.names.includes('previewGate'));
-  assert.ok(!off.names.includes('previewGate'));
+  for (const [label, env, pinned] of [
+    ['defaults', {}, ROUTER_AT_5A85B46.default],
+    ['empty preview settings', { PREVIEW_PASSWORD: '', PREVIEW_SEED: '' }, ROUTER_AT_5A85B46.default],
+    ['Business on', { ENABLE_BUSINESS: 'true' }, ROUTER_AT_5A85B46.business],
+    ['the preview settings without the password', PREVIEW_ENV, ROUTER_AT_5A85B46.business],
+  ]) {
+    assert.deepEqual(await names(env), pinned, `${label}: the same middleware, in the same order, as at 5a85b46`);
+  }
+  // With the password, the gate is the one addition, just before compression.
+  const on = await names({ PREVIEW_PASSWORD: PASSWORD });
+  const expected = [...ROUTER_AT_5A85B46.default];
+  expected.splice(expected.indexOf('compression'), 0, 'previewGate');
+  assert.deepEqual(on, expected);
+  assert.deepEqual(await names({ ...PREVIEW_ENV, PREVIEW_PASSWORD: PASSWORD, PREVIEW_SEED: 'business' }),
+    (() => { const b = [...ROUTER_AT_5A85B46.business]; b.splice(b.indexOf('compression'), 0, 'previewGate'); return b; })());
+});
+
+test('with the gate off, response headers are exactly as they were before the preview', async t => {
+  // A header named with no value is present but changes from request to request (or with the build).
+  const VARIES = ['connection', 'content-length', 'date', 'etag', 'keep-alive'];
+  const csp = "default-src 'self';script-src 'self';style-src 'self';img-src 'self' data:;font-src 'self';connect-src 'self';"
+    + "form-action 'self';frame-ancestors 'none';base-uri 'self';object-src 'none'";
+  const common = https => ({
+    'content-security-policy': https ? `${csp};upgrade-insecure-requests` : csp,
+    'cross-origin-opener-policy': 'same-origin',
+    'cross-origin-resource-policy': 'same-origin',
+    'origin-agent-cluster': '?1',
+    'permissions-policy': 'camera=(), microphone=(), geolocation=(), payment=(self)',
+    'referrer-policy': 'strict-origin-when-cross-origin',
+    ...(https ? { 'strict-transport-security': 'max-age=31536000; includeSubDomains' } : {}),
+    vary: 'Accept-Encoding',
+    'x-content-type-options': 'nosniff',
+    'x-dns-prefetch-control': 'off',
+    'x-download-options': 'noopen',
+    'x-frame-options': 'SAMEORIGIN',
+    'x-permitted-cross-domain-policies': 'none',
+    'x-xss-protection': '0',
+  });
+  const pages = https => ({
+    '/': { status: 200, cookies: ['txv'], headers: { 'cache-control': 'no-cache', 'content-type': 'text/html; charset=utf-8', 'set-cookie': null } },
+    '/healthz': { status: 200, cookies: [], headers: { 'content-type': 'application/json; charset=utf-8' } },
+    '/css/site.css': { status: 200, cookies: [], headers: {
+      'accept-ranges': 'bytes', 'cache-control': https ? 'public, max-age=604800' : 'public, max-age=0', 'content-type': 'text/css; charset=utf-8', 'last-modified': null,
+    } },
+    '/api/config': { status: 200, cookies: [], headers: {
+      'cache-control': 'no-store', 'content-type': 'application/json; charset=utf-8', ratelimit: null, 'ratelimit-policy': '120;w=60',
+    } },
+  });
+  const expectedHeaders = (https, own) => {
+    const all = { ...common(https), ...own };
+    for (const k of VARIES) all[k] = null;
+    return Object.fromEntries(Object.keys(all).sort().map(k => [k, all[k]]));
+  };
+  for (const [label, env, https] of [
+    ['defaults', {}, false],
+    ['empty preview settings', { PREVIEW_PASSWORD: '', PREVIEW_SEED: '' }, false],
+    ['the preview settings without the password', PREVIEW_ENV, true],
+  ]) {
+    const app = await startApp(env);
+    t.after(app.close);
+    for (const [p, want] of Object.entries(pages(https))) {
+      const r = await fetch(app.base + p, { headers: { 'accept-encoding': 'identity', 'x-forwarded-proto': 'https' }, redirect: 'manual' });
+      await r.arrayBuffer();
+      const got = {};
+      for (const [k, v] of r.headers) got[k] = k in want.headers && want.headers[k] === null ? null : VARIES.includes(k) ? null : v;
+      assert.equal(r.status, want.status, `${label} ${p}`);
+      assert.deepEqual(Object.fromEntries(Object.keys(got).sort().map(k => [k, got[k]])), expectedHeaders(https, want.headers), `${label} ${p}: the same headers as at 5a85b46`);
+      assert.deepEqual(r.headers.getSetCookie().map(c => c.split('=')[0]), want.cookies, `${label} ${p}: cookies`);
+    }
+  }
 });
