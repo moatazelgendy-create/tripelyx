@@ -23,7 +23,9 @@
 // before it is approved. With live search off (inventory status 'none': turned off, or a mode mismatch) a trip
 // priced on live prices can't be checked, so nothing is confirmed, sent or approved until it is on again: the
 // traveler's draft and the approver's panel say so (PRICE_CHECK_COPY.searchOff*) instead of offering Confirm,
-// Request Approval or Approve; deny, cancel and messages still work.
+// Request Approval or Approve; deny, cancel and messages still work. A switch to a cheaper option searches again,
+// so the draft's options show with no "Use this option" and their summary says why (searchOffSwap), never that
+// the trip can still be sent for approval.
 //
 // What the page never does: blame the company policy for an option that is gone from the demo data (that is
 // said as availability, with a way to plan the trip again); offer a form that can only fail (a draft whose
@@ -762,7 +764,9 @@ function requestView(ctx, { org, member, view, departmentName = null, ok = '', e
   const goneId = refusal === 'alternative_gone' && form.altId ? form.altId : null;
   const altList = late ? [] : (r.alternatives || []).filter(a => a.id !== goneId);
   const showAlts = view.status === 'draft' && !late && (evStatus === 'out' || (evStatus === 'blocked' && altList.length));
-  const pick = !!view.can.swap && altList.length > 0 && showAlts;
+  // A switch searches again: with live search off there is none to offer (the options still show, with no form).
+  const swappable = !!view.can.swap && !off;
+  const pick = swappable && altList.length > 0 && showAlts;
 
   // A field-level refusal shows at its field; the box at the top says what is wrong and links to it.
   const FIELD = {
@@ -810,9 +814,12 @@ function requestView(ctx, { org, member, view, departmentName = null, ok = '', e
         alternatives: distinctTitles(altList).map(a => (a.evaluation ? { ...a, evaluation: { ...a.evaluation, violations: namedViolations(forViewer(a.evaluation.violations, view, first)) } } : a)),
         cheapestWithin: r.cheapestWithin && altList.some(a => a.id === r.cheapestWithin.id) ? r.cheapestWithin : null,
         truncated: !!r.alternativesTruncated,
-        summary: summaryFor(r.explanation ? r.explanation.summary : '', { canRequest: canRequest || !view.self, hasAlternatives: altList.length > 0 }),
+        // With live search off the traveler can neither switch nor send the trip yet: the summary says so.
+        summary: view.can.swap && off && altList.length
+          ? PRICE_CHECK_COPY.searchOffSwap
+          : summaryFor(r.explanation ? r.explanation.summary : '', { canRequest: (canRequest && !off) || !view.self, hasAlternatives: altList.length > 0 }),
       },
-      { timeZone, action: view.can.swap ? `${base}/trips/${r.id}/swap` : null, rev: r.rev, level: 2, source },
+      { timeZone, action: swappable ? `${base}/trips/${r.id}/swap` : null, rev: r.rev, level: 2, source },
     )
     : '';
   const selfCannotDecide = view.self && view.status === 'pending' && roleCan(member.role, 'approval.decide')

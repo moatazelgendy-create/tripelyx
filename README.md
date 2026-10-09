@@ -556,9 +556,10 @@ not set: Business has no supplier, companies see "Supplier not connected yet" an
   tripelyx-staging/business/duffel-token` shows when it last changed. Nobody runs `get-secret-value` on
   these, from a script, a task or the AWS connector.
 - **Undo:** paste `unset` back the same way (type `unset` at the prompt) and restart the site. Business
-  then shows companies what it showed before the key, and the restarted site turns live search off in the
-  database too, so pasting the same key again later turns nothing on by itself: it needs a passing live
-  check from the last 24 hours and **Turn on live search**.
+  then shows companies what it showed before the key (a company that already has trips priced on live
+  prices sees "Trip search is turned off for now." instead of "Supplier not connected yet"), and the
+  restarted site turns live search off in the database too, so pasting the same key again later turns
+  nothing on by itself: it needs a passing live check from the last 24 hours and **Turn on live search**.
 
 #### Turning Business live search on and off
 
@@ -592,8 +593,11 @@ supplier says where it stands: "Not set", "Test key refused", "Ready to check", 
   into either secret and restart the site (that turns live search off in the database as well, so the same
   key pasted again needs a check and Turn on). Nothing is booked at this stage, so nothing else needs undoing.
 - **While live search is off**, trips already priced on live prices stay readable, and deny, cancel and
-  messages still work, but nothing can be confirmed, sent or approved: their price can't be checked. Those
-  pages say so instead of offering the button.
+  messages still work, but nothing can be confirmed, sent, approved or switched to a cheaper option: their
+  price can't be checked. Those pages say so instead of offering the button. A company with such trips sees
+  "Trip search is turned off for now." on its home page and the trip form (its trips keep their prices),
+  never "Supplier not connected yet"; a company that has priced nothing on live prices sees what it saw
+  before live search.
 
 #### One-off admin tasks
 

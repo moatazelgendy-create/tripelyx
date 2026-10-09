@@ -287,6 +287,9 @@ const PRICE_CHECK_COPY = Object.freeze({
   searchOffConfirm: "Trip search is off right now, so the price can't be checked and this trip can't be confirmed yet.",
   // The traveler's draft over the policy, instead of the Request Approval form.
   searchOffRequest: "Trip search is off right now, so the price can't be checked and this trip can't be sent for approval yet.",
+  // The traveler's draft with cheaper options, as the options' summary: a switch searches again, so the options
+  // show with no "Use this option" (a switch sent anyway is refused with searchOff, the request untouched).
+  searchOffSwap: "Trip search is off right now, so you can't switch to one of these options yet.",
 });
 
 /**

@@ -339,6 +339,7 @@ test('PRICE_CHECK_COPY: the request and results page copy around a price check',
     searchOffDecide: "Trip search is off right now, so the price can't be checked and this trip can't be approved yet. You can still deny it or send a message.",
     searchOffConfirm: "Trip search is off right now, so the price can't be checked and this trip can't be confirmed yet.",
     searchOffRequest: "Trip search is off right now, so the price can't be checked and this trip can't be sent for approval yet.",
+    searchOffSwap: "Trip search is off right now, so you can't switch to one of these options yet.",
   });
   assert.ok(Object.isFrozen(PRICE_CHECK_COPY));
 });

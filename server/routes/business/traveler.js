@@ -39,15 +39,20 @@
 // again) and a company Tripelyx hasn't confirmed ('company_not_confirmed', 409), said the same way.
 // A failure that left search off (inventory status 'none' after it: a mode mismatch turns live search off until
 // a platform admin turns it on again) never says "try again in a few minutes": a search or a new draft gets the
-// trip form with its "Supplier not connected yet" panel alone, and a submit or decide says trip search is off
-// and nothing changed (PRICE_CHECK_COPY.searchOff), as it does for a trip priced on live prices refused with
-// 503 'no_supplier' while live search is off.
+// trip form with its search-off panel alone, and a submit, decide or swap says trip search is off and nothing
+// changed (PRICE_CHECK_COPY.searchOff), as it does for a trip priced on live prices refused with 503
+// 'no_supplier' while live search is off (never "Supplier not connected yet": that trip was priced on them).
+// The search-off panel is "Supplier not connected yet" for a company that has priced nothing on live prices.
+// One that already has trips priced on them is told that trip search is turned off for now and its trips keep
+// their prices (parts.SEARCH_OFF on home and the trip form, NO_TRIPS.textSearchOff where its own list is empty),
+// never that Tripelyx hasn't connected airlines and hotels: one read of its newest request on those pages, and
+// only while search is off (liveTrips).
 const express = require('express');
 const { AppError } = require('../../lib/errors');
 const { PRICE_CHECK_COPY, requestSource } = require('../../business/source');
 const { gates } = require('../../business/http');
 const roles = require('../../business/roles');
-const { TIER_LABELS } = require('../../business/constants');
+const { TIER_LABELS, KINDS } = require('../../business/constants');
 const { periodChoices, currentPeriodKey } = require('../../business/budgets');
 const { LIST_FILTER_FIELDS } = require('../../views/business/trips');
 const { shellView } = require('../../views/business/shell');
@@ -130,6 +135,18 @@ function router(ctx, deps) {
   /** Search is off now (read after a failure: a mode mismatch turns it off during the call). */
   const searchOff = () => inventory().status === 'none';
 
+  /**
+   * Is search off for a company that already has trips priced on live prices? Its pages then say trip search is
+   * turned off for now (parts.SEARCH_OFF), never "Supplier not connected yet". One indexed read, and only while
+   * search is off: the company's newest request (Repo.page, one row). No request is made while search is off, so
+   * the newest one was priced the last time search was on: on live prices once a company has used live search.
+   */
+  async function liveTrips(req) {
+    if (!searchOff() || !svc() || !svc().repo) return false;
+    const { rows } = await svc().repo.page(KINDS.request, req.biz.org.id, { limit: 1 });
+    return rows.length > 0 && requestSource(rows[0]) === 'live';
+  }
+
   /** Answer an AppError with the app's 404 or 403 page; anything else goes to the app's error handler. */
   function refuse(res, next, e) {
     if (isStatus(e, 404)) return g.notFound(res);
@@ -171,7 +188,7 @@ function router(ctx, deps) {
 
   mount('/o/:orgId', 'GET', async (req, res) => {
     const dash = await svc().dashboard(req.biz.actor, { view: 'home' });
-    const body = homeView(ctx, { org: req.biz.org, member: req.biz.member, dash, inventoryStatus: inventory().status });
+    const body = homeView(ctx, { org: req.biz.org, member: req.biz.member, dash, inventoryStatus: inventory().status, liveTrips: await liveTrips(req) });
     await page(req, res, 200, { title: '', body });
   });
 
@@ -189,9 +206,11 @@ function router(ctx, deps) {
     const body = tripNewView(ctx, {
       org: req.biz.org, inventory: inventory(), values, errors, error,
       departmentName: await departmentName(req, m.departmentId), tierLabel: TIER_LABELS[m.tier] || m.tier,
+      liveTrips: await liveTrips(req),
     });
-    // With no supplier the form carries the "Supplier not connected yet" panel itself, so the shell's ribbon
-    // (searchPage) would say it twice.
+    // With no supplier the form carries the "Supplier not connected yet" panel (or, for a company with trips
+    // priced on live prices, the "turned off for now" one) itself, so the shell's ribbon (searchPage) would say
+    // it twice.
     await page(req, res, status, { title: 'Plan a work trip', body, searchPage: false });
   }
 
@@ -291,7 +310,9 @@ function router(ctx, deps) {
       }
       options = { departments, travelers, periods: periodChoices(currentPeriodKey(req.biz.org, ctx.now())) };
     }
-    const body = tripsView(ctx, { org: req.biz.org, member: req.biz.member, scope, scopes, list, filters: applied, options, query: req.query, filterError, filterErrors });
+    // Only an empty list of the member's own trips says when search turns on.
+    const live = scope === 'mine' && !list.rows.length ? await liveTrips(req) : false;
+    const body = tripsView(ctx, { org: req.biz.org, member: req.biz.member, scope, scopes, list, filters: applied, options, query: req.query, filterError, filterErrors, liveTrips: live });
     await page(req, res, filterError ? 422 : 200, { title: 'Trips', body });
   });
 
@@ -371,9 +392,10 @@ function router(ctx, deps) {
         };
         // The price check at submit or decide could not reach the supplier: the request is untouched. With
         // search off now (the check met a mode mismatch, or a trip priced on live prices met search turned
-        // off), trying again in a few minutes can't help.
+        // off), trying again in a few minutes can't help. A swap searches again, so it is refused the same way.
         const checks = failed === 'submit' || failed === 'decide';
-        const off = checks && searchOff() && (e.code === 'supplier_unavailable' || (e.code === 'no_supplier' && requestSource(req.biz.request) === 'live'));
+        const searches = checks || failed === 'swap';
+        const off = searches && searchOff() && (e.code === 'supplier_unavailable' || (e.code === 'no_supplier' && requestSource(req.biz.request) === 'live'));
         const error = off ? PRICE_CHECK_COPY.searchOff : e.code === 'supplier_unavailable' && checks ? PRICE_CHECK_COPY.unchanged : e.message;
         return requestPage(req, res, { status: e.status, error, failed, form, refusal: e.code });
       }
