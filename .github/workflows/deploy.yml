@@ -99,17 +99,25 @@ jobs:
 
       # The tag is the commit, and the repository's tags are immutable (infra/bootstrap.yaml). A rebuild is
       # never byte for byte the same image, so its push would be refused. A second run on the same commit
-      # (the flip, the undo, a re-run) therefore reuses the image this commit already pushed.
+      # (the flip, the undo, a re-run) therefore reuses the image this commit already pushed. The check asks
+      # ECR (ecr:DescribeImages) rather than `docker manifest inspect`, which also downloads the image config
+      # and so needs ecr:GetDownloadUrlForLayer, a pull right the deploy role does not have: there it failed,
+      # read as "no image", rebuilt and had the push refused. Only "image not found" builds; any other error
+      # stops the run before anything is built or pushed.
       - name: Build and push the image
         id: image
         env:
           IMAGE: ${{ steps.ecr.outputs.registry }}/tripelyx:${{ github.sha }}
         run: |
-          if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
+          if err=$(aws ecr describe-images --repository-name tripelyx --image-ids imageTag="$GITHUB_SHA" 2>&1 >/dev/null); then
             echo "The image for this commit is already in ECR; reusing it."
-          else
+          elif [[ "$err" == *ImageNotFoundException* ]]; then
             docker build -t "$IMAGE" .
             docker push "$IMAGE"
+          else
+            echo "$err" >&2
+            echo "::error title=Image check::Could not tell whether this commit's image is already in ECR, so nothing was built or pushed. Run the deploy again; if it fails the same way, the deploy role needs ecr:DescribeImages on the tripelyx repository."
+            exit 1
           fi
           echo "uri=$IMAGE" >> "$GITHUB_OUTPUT"
 

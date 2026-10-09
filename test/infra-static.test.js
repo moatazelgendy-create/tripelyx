@@ -488,41 +488,67 @@ function imageStep(t) {
   fs.writeFileSync(path.join(bin, 'docker'), [
     '#!/usr/bin/env bash',
     'echo "$*" >> "$DOCKER_LOG"',
-    'if [ "$1 $2" = "manifest inspect" ]; then [ "$IMAGE_IN_ECR" = yes ] && { echo \'{"schemaVersion":2}\'; exit 0; }; echo "no such manifest" >&2; exit 1; fi',
     'if [ "$1" = "$FAIL_ON" ]; then echo "$1 failed" >&2; exit 1; fi',
     'exit 0',
+  ].join('\n') + '\n', { mode: 0o755 });
+  // ECR as the deploy role sees it: IMAGE_IN_ECR yes (found), no (ImageNotFoundException) or denied.
+  fs.writeFileSync(path.join(bin, 'aws'), [
+    '#!/usr/bin/env bash',
+    'echo "$*" >> "$AWS_LOG"',
+    'case "$IMAGE_IN_ECR" in',
+    '  yes) echo \'{"imageDetails":[{"imageTags":["x"]}]}\'; exit 0 ;;',
+    '  no) echo "An error occurred (ImageNotFoundException) when calling the DescribeImages operation: The image with imageId {imageTag:\'$GITHUB_SHA\'} does not exist" >&2; exit 254 ;;',
+    '  *) echo "An error occurred (AccessDeniedException) when calling the DescribeImages operation: not authorized" >&2; exit 254 ;;',
+    'esac',
   ].join('\n') + '\n', { mode: 0o755 });
   const file = path.join(dir, 'image.sh');
   fs.writeFileSync(file, runScript(step('Build and push the image')));
   return async env => {
-    const output = path.join(dir, 'output'), log = path.join(dir, 'docker.log');
+    const output = path.join(dir, 'output'), log = path.join(dir, 'docker.log'), awsLog = path.join(dir, 'aws.log');
     fs.writeFileSync(output, '');
     fs.writeFileSync(log, '');
+    fs.writeFileSync(awsLog, '');
     const r = await run('bash', ['-e', file], shellEnv({
-      PATH: `${bin}:${process.env.PATH}`, GITHUB_OUTPUT: output, DOCKER_LOG: log, IMAGE: IMG, IMAGE_IN_ECR: 'no', FAIL_ON: '', ...env,
+      PATH: `${bin}:${process.env.PATH}`, GITHUB_OUTPUT: output, DOCKER_LOG: log, AWS_LOG: awsLog, IMAGE: IMG, GITHUB_SHA: SHA, IMAGE_IN_ECR: 'no', FAIL_ON: '', ...env,
     }));
-    return { ...r, output: fs.readFileSync(output, 'utf8'), docker: fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean) };
+    const lines = f => fs.readFileSync(f, 'utf8').trim().split('\n').filter(Boolean);
+    return { ...r, output: fs.readFileSync(output, 'utf8'), docker: lines(log), aws: lines(awsLog) };
   };
 }
-const IMG = '123456789012.dkr.ecr.us-east-1.amazonaws.com/tripelyx:0123456789abcdef0123456789abcdef01234567';
+const SHA = '0123456789abcdef0123456789abcdef01234567';
+const IMG = `123456789012.dkr.ecr.us-east-1.amazonaws.com/tripelyx:${SHA}`;
+const DESCRIBE = `ecr describe-images --repository-name tripelyx --image-ids imageTag=${SHA}`;
 
 test('the image step: a first run builds and pushes; a second run on the same commit (flip, undo, re-run) reuses the image', { skip: !hasBash && 'bash is not installed' }, async t => {
   const s = step('Build and push the image').lines.join('\n');
   assert.match(s, /\n {10}IMAGE: \$\{\{ steps\.ecr\.outputs\.registry \}\}\/tripelyx:\$\{\{ github\.sha \}\}\n/, 'one tag per commit');
   assert.match(read('infra/bootstrap.yaml'), /\n {6}ImageTagMutability: IMMUTABLE\n/, 'why: the repository refuses a second push of a tag');
-  assert.match(read('infra/bootstrap.yaml'), /- ecr:BatchGetImage\n/, 'the deploy role can read a manifest');
+  assert.match(read('infra/bootstrap.yaml'), /- ecr:DescribeImages\n/, 'the deploy role can ask ECR which tags exist');
+  assert.doesNotMatch(read('infra/bootstrap.yaml'), /ecr:GetDownloadUrlForLayer/, 'why not docker manifest inspect: it downloads the image config, a pull right the deploy role lacks');
+  assert.doesNotMatch(s, /manifest inspect/);
   const image = imageStep(t);
 
   let r = await image({ IMAGE_IN_ECR: 'no' });
   assert.equal(r.code, 0, r.stderr);
-  assert.deepEqual(r.docker, [`manifest inspect ${IMG}`, `build -t ${IMG} .`, `push ${IMG}`]);
+  assert.deepEqual(r.aws, [DESCRIBE]);
+  assert.deepEqual(r.docker, [`build -t ${IMG} .`, `push ${IMG}`]);
+  assert.equal(r.stdout, '', 'the not-found message is not printed');
   assert.equal(r.output, `uri=${IMG}\n`);
 
   r = await image({ IMAGE_IN_ECR: 'yes' });
   assert.equal(r.code, 0, r.stderr);
-  assert.deepEqual(r.docker, [`manifest inspect ${IMG}`], 'no rebuild and no push of a tag that already exists');
-  assert.equal(r.stdout, 'The image for this commit is already in ECR; reusing it.\n', 'the manifest itself is not printed');
+  assert.deepEqual(r.aws, [DESCRIBE]);
+  assert.deepEqual(r.docker, [], 'no rebuild and no push of a tag that already exists');
+  assert.equal(r.stdout, 'The image for this commit is already in ECR; reusing it.\n', 'the image details are not printed');
   assert.equal(r.output, `uri=${IMG}\n`, 'the same ImageUri, so only the environment changes');
+
+  // 10-09: a check the role could not complete read as "no image", rebuilt, and the push was refused.
+  r = await image({ IMAGE_IN_ECR: 'denied' });
+  assert.notEqual(r.code, 0, 'a check that cannot answer stops the run');
+  assert.deepEqual(r.docker, [], 'nothing built or pushed');
+  assert.equal(r.output, '', 'no image passed on');
+  assert.match(r.stdout, /^::error title=Image check::Could not tell whether this commit's image is already in ECR, so nothing was built or pushed\./);
+  assert.match(r.stderr, /AccessDeniedException/, 'the AWS error is shown');
 
   for (const failOn of ['build', 'push']) {
     r = await image({ IMAGE_IN_ECR: 'no', FAIL_ON: failOn });
@@ -538,7 +564,7 @@ test('the page check reads the stack URL, calls no AWS write, and the deploy job
   assert.match(script, /sed -E 's\/\\\?v=\[0-9a-z\]\+\/\/g'/, 'the ?v= asset versions are removed before hashing');
   assert.doesNotMatch(workflow, /elb\.amazonaws\.com|\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/, 'no load balancer address or IP is written down');
   const calls = [...code(workflow).matchAll(/\baws ([a-z0-9-]+) ([a-z0-9-]+)/g)].map(m => `${m[1]} ${m[2]}`);
-  assert.deepEqual([...new Set(calls)].sort(), ['cloudformation deploy', 'cloudformation describe-stacks', 'sts get-caller-identity']);
+  assert.deepEqual([...new Set(calls)].sort(), ['cloudformation deploy', 'cloudformation describe-stacks', 'ecr describe-images', 'sts get-caller-identity']);
   assert.match(step('Page hashes after the deploy, and checks').lines.join('\n'), /\n {8}run: bash "\$RUNNER_TEMP\/page-check\.sh" after\n?$/);
   assert.doesNotMatch(code(workflow), /continue-on-error|if: always\(\)|rollback|revert|delete-stack|cancel-update/i, 'it reports and never undoes');
   assert.doesNotMatch(code(workflow), /set -x|printenv|toJSON\(secrets\)|cat "\$body"|cat \$body/);
