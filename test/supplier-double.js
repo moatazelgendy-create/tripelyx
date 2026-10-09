@@ -25,8 +25,9 @@
 // live_mode true and every LiteAPI rates answer sandbox false, as they do for live keys (D-ORQ, D-OFF, L-RATES);
 // state.mode = 'test' makes them answer as test systems again (a mode mismatch). In live mode the double also
 // answers the platform admin's live check: CAI to DXB (the CAI to LHR offers flown on to Dubai, the arrival
-// times moved to Dubai's clock) and hotels in Dubai; and the fixture airline's name is "Example Air", so no
-// supplier name reaches a page.
+// times moved to Dubai's clock) and hotels in Dubai; the fixture airline's name is "Example Air", so no
+// supplier name reaches a page; and a search in another cabin gets the same flights sold in that cabin (each
+// segment's cabin_class and its marketing name), so the business cabin's results have fares too.
 const { currentCompany } = require('../server/business/scope');
 
 const OFFER_REQUESTS = 'https://api.duffel.com/air/offer_requests';
@@ -84,6 +85,19 @@ function renameCarriers(o) {
   const rename = c => { if (c && typeof c.name === 'string' && /duffel/i.test(c.name)) c.name = 'Example Air'; };
   rename(o.owner);
   for (const slice of o.slices) for (const seg of slice.segments) { rename(seg.marketing_carrier); rename(seg.operating_carrier); }
+  return o;
+}
+/** The offer sold in another cabin: every segment's passengers fly in it (live mode). */
+const CABIN_NAMES = Object.freeze({ premium_economy: 'Premium Economy', business: 'Business', first: 'First' });
+function inCabin(o, cabin) {
+  for (const slice of o.slices) {
+    for (const seg of slice.segments) {
+      for (const p of seg.passengers || []) {
+        p.cabin_class = cabin;
+        p.cabin_class_marketing_name = CABIN_NAMES[cabin] || p.cabin_class_marketing_name;
+      }
+    }
+  }
   return o;
 }
 const fareKey = o => `${o.slices[0].segments.map(s => s.marketing_carrier.iata_code + s.marketing_carrier_flight_number).join('-')}|${o.slices[0].fare_brand_name}`;
@@ -145,6 +159,7 @@ function supplierDouble(clock, { live = false } = {}) {
       o.expires_at = expires;
       if (dubai) toDubai(o);
       if (live) renameCarriers(o);
+      if (live && call.body.data.cabin_class !== 'economy') inCabin(o, call.body.data.cabin_class);
       for (const slice of o.slices) {
         for (const seg of slice.segments) {
           seg.departing_at = shiftLocal(seg.departing_at, days);

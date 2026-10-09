@@ -5,6 +5,10 @@
 // - the answers: live_mode true and sandbox false are live; false, true or a missing flag is a mode mismatch;
 // - the platform admin's Suppliers panel end to end: check, turn on, search, request, submit, decide (no prebook),
 //   turn off;
+// - the live labels end to end (go-live design §5.6): the suppliers' own rows reach the results (both cabins), the
+//   request as draft, waiting and approved, the inbox, the decision page, the trip lists, homes, budgets, reports,
+//   the CSV and the company export, each amount labelled "US dollars, from the airline · Priced at … · Can change
+//   until booked" (or the hotel supplier, or both), with no demo, test, preview or supplier words;
 // - a mode mismatch turns the stored switch off: every task follows within 30 seconds, a restart keeps it off, and
 //   only a new passing check turns it on again;
 // - test prefixes are refused on a live stack;
@@ -13,7 +17,8 @@
 // - a company Tripelyx hasn't confirmed makes no supplier call;
 // - the switch turns on only after a passing check for the keys in place, in the last 24 hours, at most 3 an hour;
 // - the 80% notice;
-// - www with both secrets holding "unset" is Business as before (status 'none'), and the consumer pages are the same;
+// - www with both secrets holding "unset" is Business as before (status 'none'), and the consumer pages are the same
+//   (every Business page in every role against 49a9ccb's own answers: test/business-unset-sweep.test.js);
 // - no key, no piece of one and no key print in any page or log line.
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -37,6 +42,9 @@ const { withCompany, currentScope } = require('../server/business/scope');
 const { SEARCH_CLOSED } = require('../server/business/source');
 const { KINDS, SUPPLIER_CAPS } = require('../server/business/constants');
 const { LIVE_RIBBON, NO_SUPPLIER, AWAITING_CONFIRMATION } = require('../server/views/business/parts');
+const { APPROVED } = require('../server/views/business/request');
+const { SOURCE_TOTALS } = require('../server/views/business/format');
+const { linksOf } = require('./business-world');
 const { id: newId } = require('../server/lib/ids');
 
 const ROOT = path.join(__dirname, '..');
@@ -535,6 +543,165 @@ test('end to end on the supplier double: check, turn on, search, request, submit
     ['suppliers.live_on', 'Turned live search on', true],
     ['suppliers.live_off', 'Turned live search off', true],
   ]);
+  assertClean(w);
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// The live labels end to end (go-live design §5.6, §8 rows E and F): with the switch on and the supplier double
+// answering as live systems, the suppliers' own rows reach every page a company sees with the live labels.
+
+/** Words that never sit on a live page (go-live design §5.6; test/business-live-labels.test.js). */
+const NOT_LIVE = /Demo price|demo data|demo trip|\bdemo prices\b|TEST DATA|test data|not a real|\bpreview\b|approved to book|real bookings|Duffel|LiteAPI/i;
+/** "Priced at" in Acme's zone: FIXED_NOW (9:00 AM UTC) is 12:00 PM in Cairo. */
+const PRICED = 'Priced at 12:00 PM, Fri 9 Oct (Cairo time) · Can change until booked';
+
+/**
+ * A live page: 200, every amount in a live container that says who priced it and that it can change, no demo,
+ * test, preview or supplier words, no em dash, and (in a workspace) the live ribbon.
+ */
+function assertLivePage(label, res, { min = 0 } = {}) {
+  assert.equal(res.status, 200, `${label}: ${res.status} ${textMain(res.text).slice(0, 200)}`);
+  const n = assertSourceMoney(mainOf(res.text), 'live', { label, min });
+  const text = textOf(res.text);
+  const bad = text.match(NOT_LIVE);
+  assert.equal(bad, null, `${label}: "${bad && text.slice(Math.max(0, bad.index - 80), bad.index + 80)}"`);
+  assert.ok(!text.includes('—'), `${label}: no em dash`);
+  assert.ok(text.includes(LIVE_RIBBON), `${label}: the live ribbon`);
+  return n;
+}
+
+/** Every page `who` reaches from `start` under the company, except searches (each is a supplier call). */
+async function walk(who, start, onPage) {
+  const seen = new Set();
+  const queue = [...start];
+  while (queue.length && seen.size < 200) {
+    const url = queue.shift();
+    if (seen.has(url)) continue;
+    seen.add(url);
+    const res = await who.get(url);
+    onPage(url, res);
+    if (res.status !== 200) continue;
+    for (const h of linksOf(res.text)) {
+      if (h.startsWith('/business/o/') && !h.includes('/trips/search') && !h.includes('/export') && !seen.has(h)) queue.push(h);
+    }
+  }
+  return seen;
+}
+
+test('live labels end to end: the suppliers\' own rows reach the results, request, approval and trip pages with the live labels', { timeout: 120000 }, async t => {
+  const w = await world();
+  t.after(w.close);
+  const co = await company(w, 'Acme Inc');
+  const admin = await platformAdmin(w);
+  await goLive(w, admin);
+
+  // The trip form is open: fields on, a Search button, no panel in the way.
+  let res = await co.c.sam.get(`${co.B}/trips/new`);
+  assertLivePage('trip form', res);
+  assert.match(res.text, /<fieldset class="bz-search-fields">/);
+  assert.match(mainOf(res.text), /type="submit">.*Search/);
+
+  // Results, economy and business cabin: every fare "from the airline", every room "from the hotel supplier".
+  for (const cabin of ['economy', 'business']) {
+    res = await co.c.sam.get(`${co.B}/trips/search?${qs({ ...Q, cabin })}`);
+    const n = assertLivePage(`results (${cabin})`, res, { min: 4 });
+    const main = textMain(res.text);
+    assert.ok(main.includes(`US dollars, from the airline · ${PRICED}`), `${cabin}: a fare's label: ${main.slice(0, 300)}`);
+    assert.ok(main.includes(`US dollars, from the hotel supplier · ${PRICED}`), `${cabin}: a room's label`);
+    const outs = radioKeys(res.text, 'out');
+    assert.ok(outs.length > 0 && outs.every(k => k.startsWith('f.flt_l.')), `${cabin}: the suppliers' own live rows`);
+    assert.ok(n >= outs.length, `${cabin}: ${n} amounts for ${outs.length} fares`);
+  }
+
+  // A draft over the policy (the Flexible fare), then sent: "from the airline and the hotel supplier".
+  const rid = await createDraft(co, formFor(FLEX, LODGE));
+  const tripAt = `${co.B}/trips/${rid}`;
+  res = await co.c.sam.get(tripAt);
+  assertLivePage('draft', res, { min: 1 });
+  let main = textMain(res.text);
+  assert.ok(main.includes(`US dollars, from the airline and the hotel supplier · ${PRICED}`), main.slice(0, 600));
+  assert.ok(main.includes('It is checked again before it is approved.'), 'a draft is checked again before approval');
+  res = await co.c.sam.post(`${tripAt}/submit`, { rev: revOf(mainOf(res.text), 'submit'), reason: REASON, category: 'client_meeting' });
+  assert.equal(res.location, `${tripAt}?ok=submitted`);
+  res = await co.c.sam.get(res.location);
+  assertLivePage('waiting (traveler)', res, { min: 1 });
+  assert.ok(textMain(res.text).includes('It is checked again before it is approved.'));
+
+  // Dana's inbox and her decision page.
+  res = await co.c.dana.get(`${co.B}/approvals`);
+  assertLivePage('approvals inbox', res, { min: 1 });
+  assert.ok(textMain(res.text).includes('US dollars, from the airline and the hotel supplier'), textMain(res.text).slice(0, 600));
+  res = await co.c.dana.get(tripAt);
+  assertLivePage('decision page', res, { min: 1 });
+  main = textMain(res.text);
+  assert.ok(main.includes('Your decision'));
+  assert.ok(main.includes('It is checked again before it is approved.'));
+  res = await co.c.dana.post(`${tripAt}/decide`, { action: 'approve', note: '', rev: revOf(mainOf(res.text), 'decide') });
+  assert.equal(res.location, `${tripAt}?ok=approved`, textMain(res.text).slice(0, 300));
+
+  // Approved: the live banner, still the live labels, nothing checked again.
+  res = await co.c.sam.get(tripAt);
+  assertLivePage('approved', res, { min: 1 });
+  main = textMain(res.text);
+  assert.ok(main.includes(textOf(String(APPROVED.live))), main.slice(0, 400));
+  assert.doesNotMatch(main, /checked again before it is approved/);
+
+  // A second trip whose fare moved while it waited: the final check sends it back, and both sides read the new
+  // price with the live labels.
+  const rid2 = await createDraft(co, { ...formFor(FLEX, LODGE), purpose: 'Client follow-up in London' });
+  const trip2 = `${co.B}/trips/${rid2}`;
+  res = await co.c.sam.get(trip2);
+  res = await co.c.sam.post(`${trip2}/submit`, { rev: revOf(mainOf(res.text), 'submit'), reason: REASON, category: 'client_meeting' });
+  assert.equal(res.location, `${trip2}?ok=submitted`);
+  w.state.fares.set('ZZ1234|Flexible', { addCents: 1150 });
+  res = await co.c.dana.get(trip2);
+  assertLivePage('decision page, fare moved', res, { min: 1 });
+  res = await co.c.dana.post(`${trip2}/decide`, { action: 'approve', note: '', rev: revOf(mainOf(res.text), 'decide') });
+  assert.equal(res.location, `${trip2}?ok=returned`, textMain(res.text).slice(0, 300));
+  w.state.fares.delete('ZZ1234|Flexible');
+  res = await co.c.dana.get(res.location);
+  assertLivePage('returned (approver)', res, { min: 1 });
+  assert.ok(textMain(res.text).includes('The price changed while this was waiting, so it went back to Sam. Nothing was approved.'));
+  assert.match(textMain(res.text), /Was \$[\d,.]+ ?, now \$[\d,.]+ ?\./);
+  res = await co.c.sam.get(trip2);
+  assertLivePage('returned (traveler)', res, { min: 1 });
+  assert.ok(textMain(res.text).includes(`US dollars, from the airline and the hotel supplier · ${PRICED}`));
+
+  // The trip lists, homes, decided tab, budgets and reports, and every other page each person reaches.
+  const pages = { sam: [co.B, `${co.B}/trips`], dana: [co.B, `${co.B}/trips?scope=team`, `${co.B}/approvals?tab=decided`], owner: [co.B, `${co.B}/trips?scope=all`, `${co.B}/budgets`, `${co.B}/reports`, `${co.B}/activity`] };
+  let amounts = 0, walked = 0;
+  for (const [who, start] of Object.entries(pages)) {
+    const seen = await walk(co.c[who], [...start, tripAt], (url, page) => {
+      if (page.status === 200 && /^<!doctype html>/i.test(page.text)) amounts += assertLivePage(`${who} ${url}`, page);
+      else assert.ok(page.status < 500, `${who} ${url}: ${page.status}`);
+    });
+    assert.ok(seen.size >= start.length, `${who}: ${seen.size} pages`);
+    walked += seen.size;
+  }
+  // The trip as a list row, where each of them sees it.
+  for (const [who, u] of [['sam', co.B], ['sam', `${co.B}/trips`], ['dana', `${co.B}/trips?scope=team`], ['dana', `${co.B}/approvals?tab=decided`], ['owner', `${co.B}/trips?scope=all`]]) {
+    const page = textMain((await co.c[who].get(u)).text);
+    assert.ok(page.includes('US dollars, from the airline and the hotel supplier'), `${who} ${u}: the trip's label: ${page.slice(0, 300)}`);
+  }
+  t.diagnostic(`${walked} pages walked, ${amounts} live amounts`);
+  assert.ok(walked > 30 && amounts > 10, `${walked} pages walked, ${amounts} live amounts`);
+  const reports = textMain((await co.c.owner.get(`${co.B}/reports`)).text);
+  assert.ok(reports.includes(SOURCE_TOTALS.live), reports.slice(0, 400));
+  // The CSV: every row says Supplier price.
+  const csv = await co.c.owner.post(`${co.B}/reports/export`, {});
+  assert.equal(csv.status, 200, csv.text.slice(0, 200));
+  const rows = csv.text.replace(/^\uFEFF/, '').split('\r\n').slice(1).filter(Boolean);
+  assert.ok(rows.length >= 1 && rows.every(l => l.startsWith('Supplier price,')), rows.slice(0, 2).join('\n'));
+  // The company export: the note names supplier prices, every request says Supplier price.
+  const exp = await co.c.owner.post(`${co.B}/settings/export`, {});
+  assert.equal(exp.status, 200, exp.text.slice(0, 200));
+  const exported = JSON.parse(exp.text);
+  assert.equal(exported.note, 'Tripelyx Business export. Amounts are whole US cents from supplier prices, as each request was priced. Nothing was booked or charged. Questions: go@tripelyx.com.');
+  assert.ok(exported.requests.length >= 1 && exported.requests.every(r => r.price_source === 'Supplier price'));
+  // (Each stored row keeps its "demo": false field, dto.assertRow's mark of a supplier row; no demo words.)
+  const words = exp.text.replace(/"demo": ?false/g, '');
+  const m = words.match(/duffel|liteapi|\boff_|demo/i);
+  assert.equal(m, null, `no supplier name, supplier offer id or demo word in the export: ${m && words.slice(m.index - 120, m.index + 60)}`);
   assertClean(w);
 });
 
