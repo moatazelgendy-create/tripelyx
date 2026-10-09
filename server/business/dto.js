@@ -15,8 +15,18 @@
 //   both: lines = the quote's lines ({ label, kind, cents }), totalCents = their sum, pricedAt from the caller.
 // An option with no quote (unavailable) has available:false, lines [], totalCents null (and, for a hotel,
 // nightlyCents and nightlyInclCents null): no price is ever shown for it.
+//
+// Real suppliers (real-suppliers design §2.2, §3.2, §3.4, §8.6):
+// - `demo` comes from offer.demo (true for demo and supplier test data, false only for a live price), and
+//   assertRow requires row.demo === (source.sourceOf(row) !== 'live'): the offer id's namespace decides.
+// - A flight's `carrier` is the airline selling the fare (offer.details.owner) when the offer names one, and
+//   `via` lists every stop in travel order (offer.details.via: connections and stops inside a segment) when it
+//   gives them; demo offers have neither, so demo rows are unchanged.
+// - Supplier hotel rows: a line of kind 'fee' is always paid at the hotel, and it is counted in totalCents, so a
+//   policy cap sees the whole cost of the stay.
 
 const { CABIN_LABELS } = require('./constants');
+const { sourceOf } = require('./source');
 
 /** A row key in a form or a Selection: 'f.flt_…|LIGHT' or 'h.htl_…|STU-SEA'. */
 const ROW_KEY_RE = /^[fh]\.(flt|htl)_[A-Za-z0-9_.-]{1,160}\|[A-Za-z0-9_-]{1,40}$/;
@@ -113,7 +123,8 @@ function assertRow(row) {
   const nullable = new Set(row.available === false ? (kind === 'hotel' ? ['totalCents', 'nightlyCents', 'nightlyInclCents'] : ['totalCents']) : []);
   const problems = shapeProblems(row, schema, '', nullable, []);
   if (typeof row.available !== 'boolean') problems.push('available is not true or false');
-  if (row.demo !== true) problems.push('demo is not true');
+  const demo = sourceOf(row) !== 'live';
+  if (row.demo !== demo) problems.push(`demo is not ${demo}`);
   if (typeof row.key !== 'string' || !ROW_KEY_RE.test(row.key) || row.key !== rowKey(kind, row.offerId, row.optionId)) problems.push('key does not match the offer and option');
   if (kind === 'flight' && row.leg !== 'out' && row.leg !== 'back') problems.push('leg is not out or back');
   if (Array.isArray(row.lines)) {
@@ -165,13 +176,15 @@ function flightRow(offer, option, quote, { leg, pricedAt }) {
   const lines = priced ? rowLines(quote) : [];
   const elapsed = Number.isInteger(d.elapsedMinutes) ? d.elapsedMinutes
     : Math.round((Date.parse(`${last.arriveLocal}:00Z`) - Date.parse(`${first.departLocal}:00Z`)) / 60000);
+  const owner = d.owner && typeof d.owner.code === 'string' && typeof d.owner.name === 'string' ? d.owner : first.carrier;
+  const via = Array.isArray(d.via) ? d.via : segs.slice(0, -1).map(s => s.to);
   return {
     key: rowKey('flight', offer.id, option.id), kind: 'flight', leg, offerId: offer.id, optionId: option.id,
-    carrier: { code: first.carrier.code, name: first.carrier.name },
+    carrier: { code: owner.code, name: owner.name },
     flightNumbers: segs.map(s => s.flightNumber),
     segments: segs,
     stops: Number.isInteger(d.stops) ? d.stops : segs.length - 1,
-    via: segs.slice(0, -1).map(s => ({ code: s.to.code, city: s.to.city })),
+    via: via.map(s => ({ code: s.code, city: s.city })),
     flyingMinutes: segs.reduce((n, s) => n + s.durationMinutes, 0),
     elapsedMinutes: elapsed,
     cabin,
@@ -190,7 +203,7 @@ function flightRow(offer, option, quote, { leg, pricedAt }) {
     totalCents: priced ? sumCents(lines) : null,
     currency: priced ? quote.currency : option.price.currency,
     available: priced,
-    demo: true,
+    demo: offer.demo === true,
     pricedAt,
   };
 }
@@ -240,7 +253,7 @@ function hotelRow(offer, option, quote, { pricedAt, checkIn = null, checkOut = n
     },
     amenities: (d.amenities || []).slice(0, 4).map(String),
     available: priced,
-    demo: true,
+    demo: offer.demo === true,
     pricedAt,
   };
 }
