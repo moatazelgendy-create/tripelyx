@@ -387,33 +387,45 @@ first deploy fails, delete the `tripelyx-staging` stack in CloudFormation before
   trims and lowercases it; any value but `true` or `false` stops the run before the build with
   "ENABLE_BUSINESS must be true or false (lowercase).", so a typo never reaches CloudFormation (which
   allows exactly those two and would block every later deploy).
-- `ADMIN_EMAILS`: read from the repository **secret** of that name, or else from the variable. The
-  repository is public and so are its run logs; a secret is masked in them.
+- `ADMIN_EMAILS`: a repository **secret**, never a variable. The repository is public and so are its run
+  logs; a secret is masked in them, a variable prints in clear. The workflow still reads
+  `secrets.ADMIN_EMAILS || vars.ADMIN_EMAILS`, but when only the variable is set the first step stops the
+  run before anything prints it ("ADMIN_EMAILS is set as a repository variable..."): move the addresses to
+  the secret and delete the variable. A variable of that name must never hold real addresses.
 - `PUBLIC_BASE_URL` (default `https://www.tripelyx.com`), `APP_ENV`, `CERTIFICATE_ARN`, `AWS_ROLE_ARN`,
   `AWS_REGION` as above.
 
 Every deploy also prints, before and after "Deploy the stack", the status code and sha256 of `/`, `/book`
 and `/ai-travel-agent` (with the `?v=` asset versions removed), read through the stack's own `SiteUrl`
 output, and "same" or "changed". After the deploy it opens `/healthz` and, with Business on, `/business`
-and a Business 404. It only reports: the run turns red when `/healthz` does not answer 200 or a Business
-page shows demo wording or the environment banner, and it never undoes anything. It prints status codes
-and hashes only.
+and a Business 404. A page that answers anything but 200, or another status than before the deploy, gets
+a "Page status" warning. It only reports: the run turns red when `/healthz` does not answer 200 or a
+Business page shows demo wording or the environment banner, and it never undoes anything. It prints status
+codes and hashes only.
+
+A second run on the same commit (the flip, the undo, **Re-run jobs**) reuses the image that commit already
+pushed to ECR instead of building it again: the repository's image tags are immutable, so a rebuild under
+the same tag would be refused.
 
 #### Tripelyx Business on www: dark deploy, flip, undo
 
-1. **Dark deploy.** Merge with `ENABLE_BUSINESS` unset, so Business is off. Add the secret `ADMIN_EMAILS`
+1. **Stack policy first.** After the change set preview and before the merge, apply the stack policy
+   ([Protecting the database](#protecting-the-database)). The dark deploy is the first update
+   CloudFormation makes to the database, so it already runs with the database protected against an
+   unexpected replacement. The policy allows in-place changes, so it does not stop that deploy.
+2. **Dark deploy.** Merge with `ENABLE_BUSINESS` unset, so Business is off. Add the secret `ADMIN_EMAILS`
    in the same sitting, never earlier: until this code runs, the site's `/admin` check is the email alone
    (see [Platform admins](#platform-admins)). The page hashes of
-   `/`, `/book` and `/ai-travel-agent` should read "same". Then run `list` on the admin task
-   ([One-off admin tasks](#one-off-admin-tasks)) and apply the stack policy
-   ([Protecting the database](#protecting-the-database)).
-2. **The flip.** Add the repository variable `ENABLE_BUSINESS` = `true` (lowercase), then run
+   `/`, `/book` and `/ai-travel-agent` should read "same", with no "Page status" warning. Then run `list`
+   on the admin task ([One-off admin tasks](#one-off-admin-tasks)).
+3. **The flip.** Add the repository variable `ENABLE_BUSINESS` = `true` (lowercase), then run
    **Actions → Deploy to AWS → Run workflow**. A variable reaches the site only with a deploy. Only the
    container's environment changes; the check step then also opens `/business` and a Business 404. The
-   three pages above now differ by the approved "Business" header item and trip footer link only.
-3. **Undo.** Set `ENABLE_BUSINESS` to `false` and run the deploy again. Company data stays in the
+   three pages above now differ by the approved "Business" header item and trip footer link only, so
+   they read "changed"; a "Page status" warning means a page answered something other than 200.
+4. **Undo.** Set `ENABLE_BUSINESS` to `false` and run the deploy again. Company data stays in the
    database. A failed deploy rolls itself back (ECS circuit breaker, then CloudFormation).
-4. **Never undo with a git revert.** A revert would bring back the older email-only `/admin` check while
+5. **Never undo with a git revert.** A revert would bring back the older email-only `/admin` check while
    `ADMIN_EMAILS` is set, and turn the database's deletion protection off. If code ever has to be
    reverted, keep the accounts code, `ProtectDatabase`, the admin task definition and every secret
    resource, and remove `ADMIN_EMAILS` first.
@@ -428,7 +440,8 @@ and hashes only.
 - **The stack policy** `infra/www-stack-policy.json` denies `Update:Replace` and `Update:Delete` on the
   `Database` resource and allows every other update. With it in place, a deploy whose change set would
   replace or remove the database fails and rolls back, and the database stays as it is. The deploy role
-  cannot set it: it is applied once after the dark deploy, by whoever runs the go-live (with the owner's
+  cannot set it: it is applied once after the change set preview and before the merge that brings this
+  code (so the dark deploy already runs under it), by whoever runs the go-live (with the owner's
   approval), and again each time the file changes (later stages add their secrets to the deny list):
 
   ```bash

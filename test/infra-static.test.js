@@ -322,6 +322,27 @@ test('the README says how the policy is applied, how a deliberate migration over
   assert.match(readme, /\*\*Undo\.\*\* Set `ENABLE_BUSINESS` to `false` and run the deploy again/);
   assert.match(readme, /\*\*Never undo with a git revert\.\*\*/);
   assert.match(readme, /\*\*www\.tripelyx\.com is the `tripelyx-staging` stack\*\*/);
+  // The policy goes on before the merge, so the dark deploy (the first update CloudFormation ever makes
+  // to the database) already runs under it.
+  const steps = ['**Stack policy first.**', '**Dark deploy.**', '**The flip.**', '**Undo.**', '**Never undo with a git revert.**'];
+  const at = steps.map(x => readme.indexOf(x));
+  assert.ok(at.every((n, i) => n > 0 && (i === 0 || n > at[i - 1])), 'the runbook steps, in this order');
+  assert.match(readme, /1\. \*\*Stack policy first\.\*\* After the change set preview and before the merge, apply the stack policy/);
+  assert.match(readme, /applied once after the change set preview and before the merge that brings this\s+code \(so the dark deploy already runs under it\)/);
+  assert.doesNotMatch(readme, /after the dark deploy[^.]*stack policy|stack policy[^.]*after the dark deploy|applied once after the dark deploy/i);
+  // ADMIN_EMAILS belongs in a secret.
+  assert.match(readme, /`ADMIN_EMAILS`: a repository \*\*secret\*\*, never a variable\./);
+  assert.match(readme, /A variable of that name must never hold real addresses\./);
+});
+
+test('the platform-admin script tells operators to use the admin task definition, never the site\'s', () => {
+  const source = read('scripts/platform-admin.js');
+  const usage = source.slice(0, source.indexOf("require('../server/config')"));
+  assert.doesNotMatch(usage, /"name":"web"|app's task definition|<app task definition>/);
+  assert.match(usage, /--task-definition tripelyx-<env>-admin /);
+  assert.match(usage, /'\{"containerOverrides":\[\{"name":"admin","command":\["node","scripts\/platform-admin\.js","list"\]\}\]\}'/);
+  assert.match(usage, /"One-off admin tasks" in README\.md/);
+  assert.match(readme, /^#### One-off admin tasks$/m, 'the section it points at');
 });
 
 // ---------- .github/workflows/deploy.yml ----------
@@ -338,7 +359,13 @@ test('the deploy keeps the staging default, Business off by default, and the Adm
   assert.match(deploy, /\n {14}AdminEmails="\$\{ADMIN_EMAILS\}" \\\n/);
   assert.match(deploy, /\n {14}EnableBusiness="\$\{ENABLE_BUSINESS\}" \\\n/);
   assert.deepEqual([...new Set([...workflow.matchAll(/secrets\.([A-Z0-9_]+)/g)].map(m => m[1]))], ['ADMIN_EMAILS'], 'the only secret the deploy reads');
-  assert.equal([...workflow.matchAll(/vars\.ADMIN_EMAILS/g)].length, 1, 'read once, into the step env, never into a script');
+  // The variable is read twice: into the guard, where it becomes the text true or false, and into the
+  // deploy step's env (which the guard has stopped whenever only the variable is set). Never into a script.
+  assert.deepEqual([...workflow.matchAll(/^.*vars\.ADMIN_EMAILS.*$/gm)].map(m => m[0].trim()), [
+    "ADMIN_EMAILS_ONLY_IN_VARIABLE: ${{ secrets.ADMIN_EMAILS == '' && vars.ADMIN_EMAILS != '' }}",
+    'ADMIN_EMAILS: ${{ secrets.ADMIN_EMAILS || vars.ADMIN_EMAILS }}',
+  ]);
+  assert.deepEqual([...workflow.matchAll(/\$\{\{[^}]*ADMIN_EMAILS[^}]*\}\}/g)].length, 2, 'nowhere else');
   // The parameters a deploy sets. AllowDemoInventory, PaymentMode, EnableTrips and ProtectDatabase are not
   // passed, so the stack keeps its own values: demo inventory for /book, test payments, the database protected.
   const overrides = deploy.slice(deploy.indexOf('--parameter-overrides'));
@@ -355,8 +382,14 @@ test('the switch step comes first, before the build and before any AWS sign-in',
   ]);
   const s = step('Check the switches').lines.join('\n');
   assert.match(s, /\n {8}id: switches\n/);
-  assert.match(s, /\n {8}env:\n {10}ENABLE_BUSINESS: \$\{\{ vars\.ENABLE_BUSINESS \|\| 'false' \}\}\n {8}run: \|\n/);
+  const env = s.slice(s.indexOf('\n        env:\n'), s.indexOf('\n        run: |\n'));
+  assert.deepEqual(code(env).split('\n').filter(Boolean), [
+    '        env:',
+    "          ENABLE_BUSINESS: ${{ vars.ENABLE_BUSINESS || 'false' }}",
+    "          ADMIN_EMAILS_ONLY_IN_VARIABLE: ${{ secrets.ADMIN_EMAILS == '' && vars.ADMIN_EMAILS != '' }}",
+  ], 'the guard is an expression that evaluates to true or false, so the address never reaches the run log');
   assert.match(s, /\n {10}normalise ENABLE_BUSINESS false 'true or false' true false\n/);
+  assert.match(s, /\n {10}if \[ "\$ADMIN_EMAILS_ONLY_IN_VARIABLE" = true \]; then\n/);
 });
 
 test('the switch step trims and lowercases ENABLE_BUSINESS, defaults to false, and stops on anything else, naming the variable', { skip: !hasBash && 'bash is not installed' }, async () => {
@@ -383,6 +416,82 @@ test('the switch step trims and lowercases ENABLE_BUSINESS, defaults to false, a
     assert.equal(fs.readFileSync(out, 'utf8'), '', 'nothing passed on');
   }
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('the switch step stops the run when ADMIN_EMAILS is only a variable, which would print in clear', { skip: !hasBash && 'bash is not installed' }, async () => {
+  const script = runScript(step('Check the switches'));
+  const dir = tmp();
+  const file = path.join(dir, 'switches.sh');
+  fs.writeFileSync(file, script);
+  // GitHub hands the step the guard's value: the text true or false (or nothing, run by hand).
+  for (const [i, guard] of ['false', '', undefined].entries()) {
+    const out = path.join(dir, `ok-${i}`);
+    fs.writeFileSync(out, '');
+    const env = { ENABLE_BUSINESS: 'false', GITHUB_OUTPUT: out };
+    if (guard !== undefined) env.ADMIN_EMAILS_ONLY_IN_VARIABLE = guard;
+    const r = await run('bash', ['-e', file], shellEnv(env));
+    assert.equal(r.code, 0, `${JSON.stringify(guard)}: ${r.stdout}`);
+    assert.equal(r.stdout, 'ENABLE_BUSINESS is false.\n');
+  }
+  const out = path.join(dir, 'variable-only');
+  fs.writeFileSync(out, '');
+  const r = await run('bash', ['-e', file], shellEnv({ ENABLE_BUSINESS: 'true', ADMIN_EMAILS_ONLY_IN_VARIABLE: 'true', ADMIN_EMAILS: 'owner@example.com', GITHUB_OUTPUT: out }));
+  assert.equal(r.code, 1, 'red, before the build and before any step prints the address');
+  assert.equal(r.stdout, 'ENABLE_BUSINESS is true.\n::error title=ADMIN_EMAILS::ADMIN_EMAILS is set as a repository variable, which prints in the public run log. Move it to a repository secret of that name (Settings, Secrets and variables, Actions, Secrets), delete the variable, then run the deploy again.\n');
+  assert.doesNotMatch(r.stdout + r.stderr, /owner@example\.com/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// The image step, run under bash (with -e, as GitHub runs it) with a stand-in docker.
+function imageStep(t) {
+  const dir = tmp();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const bin = path.join(dir, 'bin');
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, 'docker'), [
+    '#!/usr/bin/env bash',
+    'echo "$*" >> "$DOCKER_LOG"',
+    'if [ "$1 $2" = "manifest inspect" ]; then [ "$IMAGE_IN_ECR" = yes ] && { echo \'{"schemaVersion":2}\'; exit 0; }; echo "no such manifest" >&2; exit 1; fi',
+    'if [ "$1" = "$FAIL_ON" ]; then echo "$1 failed" >&2; exit 1; fi',
+    'exit 0',
+  ].join('\n') + '\n', { mode: 0o755 });
+  const file = path.join(dir, 'image.sh');
+  fs.writeFileSync(file, runScript(step('Build and push the image')));
+  return async env => {
+    const output = path.join(dir, 'output'), log = path.join(dir, 'docker.log');
+    fs.writeFileSync(output, '');
+    fs.writeFileSync(log, '');
+    const r = await run('bash', ['-e', file], shellEnv({
+      PATH: `${bin}:${process.env.PATH}`, GITHUB_OUTPUT: output, DOCKER_LOG: log, IMAGE: IMG, IMAGE_IN_ECR: 'no', FAIL_ON: '', ...env,
+    }));
+    return { ...r, output: fs.readFileSync(output, 'utf8'), docker: fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean) };
+  };
+}
+const IMG = '123456789012.dkr.ecr.us-east-1.amazonaws.com/tripelyx:0123456789abcdef0123456789abcdef01234567';
+
+test('the image step: a first run builds and pushes; a second run on the same commit (flip, undo, re-run) reuses the image', { skip: !hasBash && 'bash is not installed' }, async t => {
+  const s = step('Build and push the image').lines.join('\n');
+  assert.match(s, /\n {10}IMAGE: \$\{\{ steps\.ecr\.outputs\.registry \}\}\/tripelyx:\$\{\{ github\.sha \}\}\n/, 'one tag per commit');
+  assert.match(read('infra/bootstrap.yaml'), /\n {6}ImageTagMutability: IMMUTABLE\n/, 'why: the repository refuses a second push of a tag');
+  assert.match(read('infra/bootstrap.yaml'), /- ecr:BatchGetImage\n/, 'the deploy role can read a manifest');
+  const image = imageStep(t);
+
+  let r = await image({ IMAGE_IN_ECR: 'no' });
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(r.docker, [`manifest inspect ${IMG}`, `build -t ${IMG} .`, `push ${IMG}`]);
+  assert.equal(r.output, `uri=${IMG}\n`);
+
+  r = await image({ IMAGE_IN_ECR: 'yes' });
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(r.docker, [`manifest inspect ${IMG}`], 'no rebuild and no push of a tag that already exists');
+  assert.equal(r.stdout, 'The image for this commit is already in ECR; reusing it.\n', 'the manifest itself is not printed');
+  assert.equal(r.output, `uri=${IMG}\n`, 'the same ImageUri, so only the environment changes');
+
+  for (const failOn of ['build', 'push']) {
+    r = await image({ IMAGE_IN_ECR: 'no', FAIL_ON: failOn });
+    assert.notEqual(r.code, 0, `a failed ${failOn} stops the run`);
+    assert.equal(r.output, '', 'no image passed on');
+  }
 });
 
 test('the page check reads the stack URL, calls no AWS write, and the deploy job changes nothing but the stack it deploys', () => {
@@ -452,7 +561,8 @@ test('the page check: hashes before and after, "same" despite a new ?v=, "change
   assert.deepEqual(lines(r.stdout), [`/: 200 sha256 ${sha(page('home'))}`, `/book: 200 sha256 ${sha(page('book'))}`, `/ai-travel-agent: 200 sha256 ${sha(page('agent'))}`]);
   assert.equal(r.stderr, '');
 
-  // A new boot: every ?v= differs. /book really changed and now fails; /ai-travel-agent is gone. Report only.
+  // A new boot: every ?v= differs. /book really changed and now fails; /ai-travel-agent is gone. Report
+  // only, but a status regression gets a warning of its own, so it never reads like a harmless "changed".
   pages['/'] = [200, page('home', 'zz9x1')];
   pages['/book'] = [500, page('book has changed', 'zz9x1')];
   delete pages['/ai-travel-agent'];
@@ -462,13 +572,16 @@ test('the page check: hashes before and after, "same" despite a new ?v=, "change
   assert.deepEqual(lines(r.stdout), [
     `/: 200 sha256 ${sha(page('home'))}, same`,
     `/book: 500 sha256 ${sha(page('book has changed'))}, changed`,
+    '::warning title=Page status::/book answered 500, before the deploy 200.',
     `/ai-travel-agent: 404 sha256 ${sha256(notFound)}, changed`,
+    '::warning title=Page status::/ai-travel-agent answered 404, before the deploy 200.',
     '/healthz: 200',
     'Business is off: no Business page checked.',
   ]);
   const summary = fs.readFileSync(pc.summary, 'utf8');
   assert.match(summary, /^### Pages before the deploy\n- \/: 200 sha256 [0-9a-f]{64}\n/);
   assert.match(summary, /### Pages after the deploy\n- \/: 200 sha256 [0-9a-f]{64}, same\n/);
+  assert.match(summary, /\n- \/book: 500 sha256 [0-9a-f]{64}, changed\n- Warning: \/book answered 500, before the deploy 200\.\n/, 'next to the hash in the run summary');
   assert.doesNotMatch(summary, /PAGE-TEXT-MARKER|127\.0\.0\.1/);
 
   pages['/healthz'] = [503, 'down'];
@@ -476,9 +589,28 @@ test('the page check: hashes before and after, "same" despite a new ?v=, "change
   assert.equal(r.code, 1, 'red: /healthz is not 200');
   assert.ok(lines(r.stdout).includes('::error title=Health check::/healthz answered 503, not 200.'));
 
+  // The flip: all three pages change (the Business header item) but answer 200 as before: no warning.
+  // A page that was failing before and answers 200 now is noted too (the status is not the one from before).
+  Object.assign(pages, { '/healthz': [200, '{"ok":true}'], '/': [200, page('home with Business')], '/book': [200, page('book with Business')], '/ai-travel-agent': [200, page('agent with Business')] });
+  r = await pc.run('after', { AWS_SITE_URL: url });
+  assert.equal(r.code, 0);
+  assert.deepEqual(lines(r.stdout).slice(0, 3).map(l => l.replace(/ sha256 [0-9a-f]{64}/, '')), ['/: 200, changed', '/book: 200, changed', '/ai-travel-agent: 200, changed']);
+  assert.doesNotMatch(r.stdout, /::warning/);
+  fs.writeFileSync(path.join(pc.dir, 'page-hashes-before.txt'), `/ 000 ${'0'.repeat(64)}\n/book 503 ${'0'.repeat(64)}\n`);
+  r = await pc.run('after', { AWS_SITE_URL: url });
+  assert.equal(r.code, 0);
+  assert.deepEqual(lines(r.stdout).filter(l => l.startsWith('::')), [
+    '::warning title=Page status::/ answered 200, before the deploy 000.',
+    '::warning title=Page status::/book answered 200, before the deploy 503.',
+  ], 'no hash from before and 200 now: nothing to compare, no warning');
+  // No hash from before and not 200 now.
+  delete pages['/ai-travel-agent'];
+  r = await pc.run('after', { AWS_SITE_URL: url });
+  assert.ok(lines(r.stdout).includes('::warning title=Page status::/ai-travel-agent answered 404, before the deploy unknown.'));
+
   // Only the stack's output is asked for; nothing else is called.
   const asked = fs.readFileSync(pc.awsLog, 'utf8').trim().split('\n');
-  assert.equal(asked.length, 3);
+  assert.equal(asked.length, 6);
   for (const a of asked) assert.equal(a, "cloudformation describe-stacks --stack-name tripelyx-staging --query Stacks[0].Outputs[?OutputKey=='SiteUrl'].OutputValue --output text");
 });
 

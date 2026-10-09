@@ -5,7 +5,8 @@
 # Optional variables: APP_ENV (default staging) and CERTIFICATE_ARN (HTTPS on your own domain).
 # ENABLE_BUSINESS (default false) turns Tripelyx Business on; it is trimmed and lowercased first, and any
 # value but true or false stops the run before the build. ADMIN_EMAILS is read from the repository secret
-# of that name (masked in the run logs), or else from the variable.
+# of that name (masked in the run logs); a run with only a variable of that name stops before the build,
+# because a variable would print in clear.
 # An AWS account ID and role name are identifiers, not secrets: the role only trusts this repo's main.
 name: Deploy to AWS
 
@@ -51,6 +52,8 @@ jobs:
         id: switches
         env:
           ENABLE_BUSINESS: ${{ vars.ENABLE_BUSINESS || 'false' }}
+          # The text true or false, never the address: a variable is not masked in the public run log.
+          ADMIN_EMAILS_ONLY_IN_VARIABLE: ${{ secrets.ADMIN_EMAILS == '' && vars.ADMIN_EMAILS != '' }}
         run: |
           # normalise NAME DEFAULT ALLOWED_TEXT ALLOWED...: trims and lowercases the variable NAME, uses DEFAULT
           # when it is empty, passes the result on as a step output, and stops the run, naming NAME, when the
@@ -74,6 +77,11 @@ jobs:
             exit 1
           }
           normalise ENABLE_BUSINESS false 'true or false' true false
+          # "Deploy the stack" would print a variable's value in clear in its env block, so stop here first.
+          if [ "$ADMIN_EMAILS_ONLY_IN_VARIABLE" = true ]; then
+            echo "::error title=ADMIN_EMAILS::ADMIN_EMAILS is set as a repository variable, which prints in the public run log. Move it to a repository secret of that name (Settings, Secrets and variables, Actions, Secrets), delete the variable, then run the deploy again."
+            exit 1
+          fi
 
       - uses: actions/checkout@v4
 
@@ -85,13 +93,20 @@ jobs:
       - id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      # The tag is the commit, and the repository's tags are immutable (infra/bootstrap.yaml). A rebuild is
+      # never byte for byte the same image, so its push would be refused. A second run on the same commit
+      # (the flip, the undo, a re-run) therefore reuses the image this commit already pushed.
       - name: Build and push the image
         id: image
         env:
           IMAGE: ${{ steps.ecr.outputs.registry }}/tripelyx:${{ github.sha }}
         run: |
-          docker build -t "$IMAGE" .
-          docker push "$IMAGE"
+          if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
+            echo "The image for this commit is already in ECR; reusing it."
+          else
+            docker build -t "$IMAGE" .
+            docker push "$IMAGE"
+          fi
           echo "uri=$IMAGE" >> "$GITHUB_OUTPUT"
 
       # Report only, before and after the deploy: the status code and sha256 of /, /book and /ai-travel-agent
@@ -146,6 +161,13 @@ jobs:
               elif [ "$was" = "$code $sum" ]; then note=same
               else note=changed; fi
               report "$p: $code sha256 $sum, $note"
+              # A status that is not 200, or not the one from before, gets a warning (never red), so it
+              # stands out from a hash change, which the flip itself brings.
+              before="${was%% *}"
+              if [ "$code" != 200 ] || { [ -n "$before" ] && [ "$code" != "$before" ]; }; then
+                echo "::warning title=Page status::${p} answered ${code}, before the deploy ${before:-unknown}."
+                echo "- Warning: ${p} answered ${code}, before the deploy ${before:-unknown}." >> "$GITHUB_STEP_SUMMARY"
+              fi
             fi
           done
           if [ "$phase" = before ]; then exit 0; fi
@@ -173,7 +195,8 @@ jobs:
 
       - name: Deploy the stack
         env:
-          # The repository secret ADMIN_EMAILS (masked in the run logs) wins; the variable is the fallback.
+          # The repository secret ADMIN_EMAILS (masked in the run logs) wins. "Check the switches" has already
+          # stopped any run where only the variable is set, so a variable's value never reaches this env block.
           ADMIN_EMAILS: ${{ secrets.ADMIN_EMAILS || vars.ADMIN_EMAILS }}
           ENABLE_BUSINESS: ${{ steps.switches.outputs.enable_business }}
         run: |
