@@ -2,7 +2,12 @@
 // tiles (requests by status, out-of-policy share, top reasons, committed vs budget, saved by switching to
 // cheaper options), the Coming soon tiles (never a number, never $0), requests by traveler, the filtered
 // request list, and Download CSV (POST /reports/export with the same filters, reports.export). An empty period
-// says "No requests yet", never $0. Every amount sits in a demo container (§F6).
+// says "No requests yet", never $0. Every amount sits in a demo container (§F6). With real suppliers
+// (real-suppliers design §2.3) the tiles are labelled with the least real source of the requests they count
+// (dash.priceSource, else the workspace's): "Includes supplier test data"; each listed request carries its
+// own source's label, and the CSV's price_source column says it per row. Once any request counted or listed
+// is not demo, the "Requests by status" tile and the status filter say "Approved" (never "Approved to book").
+// With no supplier and nothing counted (production) the figures are the company's own, with no price label.
 const { html } = require('../../lib/html');
 const { pageHead, tabs, dataTable, emptyState, amount, budgetBar, demoBox, demoPrice, comingSoon, statusPill, policyBadge, pager } = require('./parts');
 const f = require('./format');
@@ -13,11 +18,23 @@ const { periodLabel } = require('../../business/budgets');
 const { SCAN_CAP } = require('../../business/constants');
 
 const NO_REQUESTS = 'No requests yet';
+/** The approved status once supplier prices are counted (booking isn't open for them: design §2.3). */
+const APPROVED = 'Approved';
 const COMING_TEXT = Object.freeze({
   spend: 'Shows once trips are booked through Tripelyx.',
   invoices: 'Shows once booking and billing are live.',
 });
 const STATUS_ORDER = Object.freeze(['pending', 'approved', 'past', 'denied', 'cancelled', 'expired', 'draft']);
+/** The page's sub-heading, by the least real source of its amounts. */
+const MONEY_SUBS = Object.freeze({
+  demo: 'Money here is calculated on demo prices. Nothing is charged.',
+  sandbox: 'Money here includes supplier test data, not real fares. Nothing is charged.',
+  live: 'Money here is calculated on supplier prices. Nothing is booked or charged.',
+});
+/** The sub-heading with no supplier and nothing counted (production): the company's own figures. */
+const PLAIN_SUB = 'Nothing is charged.';
+/** Beside Download CSV once a request may be priced by a supplier. */
+const CSV_SOURCES = "The CSV's price_source column says where each amount came from: demo prices, supplier test data or supplier prices.";
 
 function tile(title, body) {
   return html`<section class="bz-card bz-tile" aria-label="${title}"><h2 class="bz-tile-title">${title}</h2>${body}</section>`;
@@ -37,9 +54,18 @@ function reportsView(ctx, shell, { dash, choices, list, filters = {}, department
   const t = dash.reports;
   const label = dash.periodLabel;
   const total = Object.values(t.byStatus).reduce((s, n) => s + n, 0);
-  const statusLabel = s => (PILLS.request[s] ? PILLS.request[s][0] : s);
   const share = t.outOfPolicyShare;
   const budgets = (t.committedVsBudget || []).filter(b => b.budgetId);
+  // What the tiles add up: the period's requests' least real source, else the workspace's (demo as before);
+  // null with no supplier and nothing counted (production), when the amounts are the company's own.
+  const source = f.isSource(dash.priceSource) ? dash.priceSource : f.ctxSource(ctx);
+  // Nothing priced by a supplier can be booked yet: once any is counted or listed, "Approved", not "Approved to book".
+  const supplier = (source !== null && source !== 'demo') || list.rows.some(r => f.isSource(r.source) && r.source !== 'demo');
+  const statusLabel = s => (s === 'approved' && supplier ? APPROVED : PILLS.request[s] ? PILLS.request[s][0] : s);
+  const box = { pricedAt: null, timeZone: tz, source, totals: true };
+  /** A price container labelled with the source, or a plain one with no source (the company's own figures). */
+  const priced = (body, opts) => (source ? demoBox(body, opts)
+    : opts.tag === 'section' ? html`<section aria-label="${opts.label}">${body}</section>` : html`<div>${body}</div>`);
   const tiles = html`<div class="bz-tiles">
     ${tile('Requests by status', total
     ? html`<ul class="bz-lines-text">${STATUS_ORDER.filter(s => t.byStatus[s]).map(s => html`<li>${statusLabel(s)}: <b>${String(t.byStatus[s])}</b></li>`)}</ul>`
@@ -54,23 +80,23 @@ function reportsView(ctx, shell, { dash, choices, list, filters = {}, department
     ? html`<p>${NO_REQUESTS}</p>`
     : budgets.length
       // Both parts of the bar named: committed (approved while the budget was set) and awaiting approval.
-      ? demoBox(html`<ul class="bz-lines-text">${budgets.map(b => html`<li><span class="bz-budget-name">${b.department.name}</span>${amount(b.committedCents)} committed and ${amount(b.awaitingCents)} awaiting approval, of ${amount(b.amountCents)}${budgetBar(b)}</li>`)}</ul>
-        <p class="bz-meta">Committed counts trips approved while their department had a budget for ${label}.</p>`, { pricedAt: null, timeZone: tz })
+      ? priced(html`<ul class="bz-lines-text">${budgets.map(b => html`<li><span class="bz-budget-name">${b.department.name}</span>${amount(b.committedCents)} committed and ${amount(b.awaitingCents)} awaiting approval, of ${amount(b.amountCents)}${budgetBar(b)}</li>`)}</ul>
+        <p class="bz-meta">Committed counts trips approved while their department had a budget for ${label}.</p>`, box)
       : html`<p>No budgets set for ${label}.</p>`)}
     ${tile('Saved by switching to cheaper options', !total
     ? html`<p>${NO_REQUESTS}</p>`
     : t.savedBySwitchingCents > 0
-      ? demoBox(html`<p class="bz-tile-value">${amount(t.savedBySwitchingCents)}</p><p class="bz-meta">On approved trips where the traveler picked a cheaper option.</p>`, { pricedAt: null, timeZone: tz })
+      ? priced(html`<p class="bz-tile-value">${amount(t.savedBySwitchingCents)}</p><p class="bz-meta">On approved trips where the traveler picked a cheaper option.</p>`, box)
       : html`<p>Nothing saved by switching yet.</p>`)}
   </div>
   <div class="bz-tiles">${t.comingSoon.map(c => comingSoon(c.label, COMING_TEXT[c.key] || '', { level: 2 }))}</div>`;
   const travelers = t.byTraveler.length
-    ? demoBox(html`${dataTable({
+    ? priced(html`${dataTable({
       caption: `Requests by traveler, ${label}`, captionVisible: false,
       columns: [{ label: 'Traveler' }, { label: 'Requests', num: true }, { label: 'Approved', num: true }],
       rows: t.byTraveler.map(x => [x.name, String(x.requests), amount(x.committedCents)]),
     })}
-    <p class="bz-meta">Approved: the total of each traveler's approved trips departing in ${label}, whether or not a budget counts them.</p>`, { pricedAt: null, timeZone: tz, tag: 'section', label: 'Requests by traveler' })
+    <p class="bz-meta">Approved: the total of each traveler's approved trips departing in ${label}, whether or not a budget counts them.</p>`, { ...box, tag: 'section', label: 'Requests by traveler' })
     : '';
   const statusOptions = [['', 'Any status'], ...STATUS_ORDER.map(s => [s, statusLabel(s)])];
   const depOptions = [['', 'Every department'], ...departments.map(d => [d.id, d.archivedAt ? `${d.name} (archived)` : d.name])];
@@ -92,12 +118,13 @@ function reportsView(ctx, shell, { dash, choices, list, filters = {}, department
       rows: list.rows.map(r => [
         r.travelerName,
         html`<a href="${base}/trips/${r.id}">${route(r)}</a>`,
-        demoPrice(r.totalCents, { pricedAt: r.pricedAt, timeZone: tz }),
-        statusPill(r.status),
+        demoPrice(r.totalCents, { pricedAt: r.pricedAt, timeZone: tz, source: f.isSource(r.source) ? r.source : 'demo' }),
+        statusPill(r.status, { source: r.source }),
         policyBadge(r.policyStatus),
       ]),
     })
     : html`<p class="bz-table-empty">No requests match these filters.</p>`;
+  const csvNote = canExport && source && source !== 'demo' ? html`<p class="bz-meta">${CSV_SOURCES}</p>` : '';
   const exportForm = canExport ? html`<form class="bz-inline-form" method="post" action="${base}/reports/export">
       <input type="hidden" name="period" value="${dash.periodKey}">
       ${filters.departmentId ? html`<input type="hidden" name="departmentId" value="${filters.departmentId}">` : ''}
@@ -105,10 +132,9 @@ function reportsView(ctx, shell, { dash, choices, list, filters = {}, department
       ${filters.travelerId ? html`<input type="hidden" name="travelerId" value="${filters.travelerId}">` : ''}
       <button class="btn btn-navy bz-btn" type="submit">Download CSV</button>
     </form>` : '';
-  // Demo prices only with demo inventory; with none (production) the figures are the company's own budgets.
-  const demo = Boolean(ctx.business && ctx.business.inventory && ctx.business.inventory.status === 'demo');
-  const sub = demo ? 'Money here is calculated on demo prices. Nothing is charged.' : 'Nothing is charged.';
-  const body = html`${pageHead({ title: `Reports for ${label}`, sub, actions: exportForm })}
+  // With no supplier and nothing counted (production) the figures are the company's own budgets: no price words.
+  const sub = source ? MONEY_SUBS[source] || MONEY_SUBS.demo : PLAIN_SUB;
+  const body = html`${pageHead({ title: `Reports for ${label}`, sub, actions: exportForm })}${csvNote}
     ${tabs(choices.map(k => ({ href: `${base}/reports?period=${encodeURIComponent(k)}`, label: periodLabel(k), current: k === dash.periodKey })), { label: 'Report period' })}
     ${t.truncated ? html`<p class="bz-meta">Based on the ${SCAN_CAP.toLocaleString('en-US')} most recent requests.</p>` : ''}
     ${total ? '' : emptyState({ title: `No requests in ${label} yet.`, text: 'Tiles fill in as your team plans trips.', iconName: 'chart' })}
@@ -122,4 +148,4 @@ function reportsView(ctx, shell, { dash, choices, list, filters = {}, department
   return shellView(ctx, shell, { title: `Reports for ${label}`, body, notice, error });
 }
 
-module.exports = { reportsView, NO_REQUESTS, COMING_TEXT };
+module.exports = { reportsView, NO_REQUESTS, COMING_TEXT, MONEY_SUBS, CSV_SOURCES };

@@ -1,0 +1,18 @@
+{
+  "_source": "https://duffel.com/docs/api/overview/errors: airline_internal \"returns 502 for general internal errors and 504 when caused by timeouts\".",
+  "_status": 504,
+  "meta": {
+    "status": 504,
+    "request_id": "FZW0H3HdJwKk5HMAAKxD"
+  },
+  "errors": [
+    {
+      "type": "airline_error",
+      "code": "airline_internal",
+      "title": "Airline internal error",
+      "message": "The airline responded with a timeout error",
+      "documentation_url": "https://duffel.com/docs/api/overview/errors",
+      "source": null
+    }
+  ]
+}

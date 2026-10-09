@@ -642,3 +642,178 @@ test('a decider\'s view of a pending request counts against the compute limit (i
   assert.equal(last.headers.get('cache-control'), 'no-store');
   assert.match(String(last.headers.get('x-robots-tag')), /noindex/);
 });
+
+// ---------------------------------------------------------------------------------------------------------
+// Supplier test data (real-suppliers design §2.4, §5.1, §7.1 B items): the app's demo providers moved into the
+// flt_t./htl_t. namespace (test/business-sandbox.js useSandbox), and a composer that fails on demand as a real
+// supplier would. The approver's page always opens; a decision never goes through without a price check, and
+// an outage or the company's supplier limit never sends the trip back or changes it.
+
+const sandbox = require('./business-sandbox');
+const { PRICE_CHECK_COPY, SUPPLIER_ERRORS } = require('../server/business/source');
+
+test('supplier test data: the approver reads the request when the check can\'t run, and decide answers 429 or 503 on the page with the request unchanged', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const { B, c } = w;
+  const sb = sandbox.useSandbox(w.app);
+  const spy = sandbox.instrument(sb.composer);
+  const rid = await pendingTrip(w);
+  assert.deepEqual(spy.checks('recheck'), ['confirm'], 'submit');
+
+  // A page view peeks (never a supplier search) and every amount on it is test data.
+  let res = await c.dana.get(`${B}/trips/${rid}`);
+  assert.equal(res.status, 200);
+  let main = mainOf(res.text);
+  sandbox.assertSourceMoney(main, 'sandbox', { label: 'approver page', min: 3 });
+  assert.deepEqual(spy.checks('recheck'), ['confirm', 'peek']);
+  assert.match(textOf(main), /Price checked again at 12:00 PM today: unchanged\./);
+
+  // The company's supplier limit is used up: the page opens and says the price is checked when they approve.
+  spy.fail('recheck', 'supplier_busy');
+  res = await c.dana.get(`${B}/trips/${rid}`);
+  assert.equal(res.status, 200);
+  main = mainOf(res.text);
+  assert.ok(textOf(main).includes(PRICE_CHECK_COPY.failed), textOf(main).slice(0, 300));
+  sandbox.assertSourceMoney(main, 'sandbox', { label: 'approver page, busy' });
+  const before = storeSnapshot(w.app);
+  res = await c.dana.post(`${B}/trips/${rid}/decide`, { action: 'approve', note: '', rev: revOf(main, 'decide') });
+  assert.equal(res.status, 429);
+  main = mainOf(res.text);
+  assert.ok(textOf(main).includes(SUPPLIER_ERRORS.supplier_busy.message), textOf(main).slice(0, 300));
+  assert.equal(storeSnapshot(w.app), before, 'nothing written');
+  assert.equal((await stored(w, rid)).status, 'pending');
+
+  // The supplier is down: 503, "nothing changed".
+  spy.fail('recheck', 'supplier_unavailable');
+  res = await c.dana.get(`${B}/trips/${rid}`);
+  assert.ok(textOf(mainOf(res.text)).includes(PRICE_CHECK_COPY.failed));
+  res = await c.dana.post(`${B}/trips/${rid}/decide`, { action: 'approve', note: '', rev: revOf(mainOf(res.text), 'decide') });
+  assert.equal(res.status, 503);
+  assert.ok(textOf(mainOf(res.text)).includes(PRICE_CHECK_COPY.unchanged));
+  assert.equal(storeSnapshot(w.app), before, 'nothing written');
+
+  // A peek that would need a supplier search.
+  spy.fail('recheck', 'live_check_skipped');
+  res = await c.dana.get(`${B}/trips/${rid}`);
+  assert.equal(res.status, 200);
+  assert.ok(textOf(mainOf(res.text)).includes(PRICE_CHECK_COPY.skipped));
+  assert.ok(!textOf(mainOf(res.text)).includes(PRICE_CHECK_COPY.failed));
+
+  // Back up: the decision checks the price at the final level, and the trip is approved on test data.
+  spy.heal();
+  res = await c.dana.get(`${B}/trips/${rid}`);
+  res = await c.dana.post(`${B}/trips/${rid}/decide`, { action: 'approve', note: '', rev: revOf(mainOf(res.text), 'decide') });
+  assert.equal(res.status, 303);
+  assert.equal(spy.checks('recheck').at(-1), 'final');
+  res = await c.sam.get(`${B}/trips/${rid}`);
+  main = mainOf(res.text);
+  assert.ok(textOf(main).includes('Approved (test data). Nothing was booked.'));
+  sandbox.assertSourceMoney(main, 'sandbox', { label: 'approved' });
+
+  // The inbox: the decided row says test data.
+  res = await c.dana.get(`${B}/approvals?tab=decided`);
+  assert.equal(res.status, 200);
+  main = mainOf(res.text);
+  sandbox.assertSourceMoney(main, 'sandbox', { label: 'inbox', min: 1 });
+  assert.ok(textOf(main).includes('Approved (test data)'));
+});
+
+test('supplier test data: a supplier failure at submit leaves the draft as it was, with the reason kept on the page', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const { B, c } = w;
+  const sb = sandbox.useSandbox(w.app);
+  const spy = sandbox.instrument(sb.composer);
+  const rid = await createDraft(w, await businessForm(w));
+  const page = await c.sam.get(`${B}/trips/${rid}`);
+  const before = storeSnapshot(w.app);
+  for (const [code, status, text] of [['supplier_unavailable', 503, PRICE_CHECK_COPY.unchanged], ['supplier_busy', 429, SUPPLIER_ERRORS.supplier_busy.message]]) {
+    spy.fail('recheck', code);
+    const res = await c.sam.post(`${B}/trips/${rid}/submit`, { rev: revOf(mainOf(page.text), 'submit'), reason: REASON, category: 'client_meeting' });
+    assert.equal(res.status, status, code);
+    const main = mainOf(res.text);
+    assert.ok(textOf(main).includes(text), `${code}: ${textOf(main).slice(0, 300)}`);
+    assert.ok(main.includes(REASON), `${code}: the reason typed is kept`);
+    assert.equal(storeSnapshot(w.app), before, `${code}: nothing written`);
+  }
+  assert.equal((await stored(w, rid)).status, 'draft');
+});
+
+/** Make a sandbox provider lose one offer (getOffer answers null for it), as a supplier's offer that expired or went. */
+function vanish(t, provider, offerId) {
+  const real = provider.getOffer;
+  provider.getOffer = async function getOffer(id, pq) { return id === offerId ? null : real.call(this, id, pq); };
+  t.after(() => { provider.getOffer = real; });
+  return () => { provider.getOffer = real; };
+}
+
+test('supplier test data: a picked option that is gone sends the trip back at decide and re-prices it at submit (why unavailable), never a 422', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const { B, c } = w;
+  const sb = sandbox.useSandbox(w.app);
+
+  // Decide: the hotel picked is no longer in the supplier's answer.
+  const rid = await pendingTrip(w);
+  const hotelOffer = (await stored(w, rid)).rows.hotel.offerId;
+  assert.match(hotelOffer, /^htl_t\./);
+  const back = vanish(t, sb.inventory.hotels, hotelOffer);
+  let res = await c.dana.get(`${B}/trips/${rid}`);
+  assert.equal(res.status, 200);
+  assert.match(textOf(mainOf(res.text)), /an option is no longer in the supplier's test data\. Approving sends it back to Sam/);
+  res = await c.dana.post(`${B}/trips/${rid}/decide`, { action: 'approve', note: '', rev: revOf(mainOf(res.text), 'decide') });
+  assert.equal(res.status, 303, textOf(mainOf(res.text)).slice(0, 400));
+  assert.equal(res.location, `${B}/trips/${rid}?ok=returned`);
+  let r = await stored(w, rid);
+  assert.equal(r.status, 'draft');
+  assert.equal(r.returned.why, 'unavailable');
+  assert.equal(r.returned.toCents, null);
+  assert.equal(r.source, 'sandbox');
+  assert.equal(r.rows.hotel.available, false);
+  assert.deepEqual(r.alternatives, [], 'no alternatives for a trip with a part that is gone');
+  res = await c.sam.get(`${B}/trips/${rid}`);
+  assert.equal(res.status, 200);
+  sandbox.assertSourceMoney(mainOf(res.text), 'sandbox', { label: 'returned, an option gone' });
+  back();
+
+  // Submit: the same at the traveler's price check.
+  const rid2 = await createDraft(w, await businessForm(w));
+  vanish(t, sb.inventory.hotels, (await stored(w, rid2)).rows.hotel.offerId);
+  const page = await c.sam.get(`${B}/trips/${rid2}`);
+  res = await c.sam.post(`${B}/trips/${rid2}/submit`, { rev: revOf(page.text, 'submit'), reason: REASON, category: 'client_meeting' });
+  assert.equal(res.status, 303, textOf(mainOf(res.text)).slice(0, 400));
+  assert.equal(res.location, `${B}/trips/${rid2}?ok=repriced`);
+  r = await stored(w, rid2);
+  assert.equal(r.status, 'draft');
+  assert.equal(r.returned.why, 'unavailable');
+  assert.equal(r.reason.text, REASON, 'the reason typed is kept');
+});
+
+test('supplier test data: the service sends back an old demo request decided after the switch, and a trip whose hotels were switched off', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  // A demo request, pending when the workspace moved to supplier test data (design §2.2).
+  const rid = await pendingTrip(w);
+  assert.equal((await stored(w, rid)).source, 'demo');
+  const sb = sandbox.useSandbox(w.app);
+  let r = await stored(w, rid);
+  let out = await w.svc.decide(w.as(w.dana), rid, { action: 'approve', note: '', rev: r.rev });
+  assert.equal(out.outcome, 'returned');
+  assert.equal(out.request.returned.why, 'unavailable', 'a demo option is never priced from the supplier');
+  assert.equal(out.request.status, 'draft');
+
+  // Hotels switched off by a supplier problem (design §1.3): a sandbox trip with a hotel goes back too.
+  const rid2 = await pendingTrip(w);
+  const rid3 = await createDraft(w, await businessForm(w));
+  sb.inventory.hotels = null;
+  sb.inventory.hotelsConnected = false;
+  r = await stored(w, rid2);
+  out = await w.svc.decide(w.as(w.dana), rid2, { action: 'approve', note: '', rev: r.rev });
+  assert.equal(out.outcome, 'returned');
+  assert.equal(out.request.returned.why, 'unavailable');
+  r = await stored(w, rid3);
+  const sent = await w.svc.submit(w.as(w.sam), rid3, { rev: r.rev, reason: REASON });
+  assert.equal(sent.outcome, 'repriced');
+  assert.equal(sent.request.returned.why, 'unavailable');
+});

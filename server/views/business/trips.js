@@ -4,7 +4,9 @@
 // and the search link that plans a trip again.
 //
 // Amounts: each total is its own demo container (parts.demoPrice) that says "Demo price · Priced at …" in the
-// company's time zone, so no amount on these pages stands without its demo label.
+// company's time zone, so no amount on these pages stands without its demo label (or, for a request priced by
+// a supplier's test system, "Supplier test data, not a real price" with the TEST DATA tag). The status filter
+// says "Approved", not "Approved to book", once the workspace or a listed request is on supplier prices.
 const { html } = require('../../lib/html');
 const { icon } = require('../icons');
 const f = require('./format');
@@ -52,8 +54,11 @@ function searchQuery(q) {
   return s.toString();
 }
 
-/** A row's total with its demo label (one demo container per amount). */
-const totalCell = (row, timeZone) => p.demoPrice(row.totalCents, { pricedAt: row.pricedAt, timeZone });
+/**
+ * A row's total with its price label (one container per amount): the request's own source (RequestRow.source,
+ * real-suppliers design §2.3), so a supplier test data total says so; an old row without one reads as demo.
+ */
+const totalCell = (row, timeZone) => p.demoPrice(row.totalCents, { pricedAt: row.pricedAt, timeZone, source: f.isSource(row.source) ? row.source : 'demo' });
 
 /** The trip cell of a list: route (a link to the request), dates, and the hotel city when there is one. */
 function tripCell(base, map, row) {
@@ -74,7 +79,7 @@ function tripTable({ base, map, rows, timeZone, caption, traveler = false, empty
     caption, columns, empty,
     rows: (rows || []).map(r => [
       ...(traveler ? [r.travelerName] : []),
-      tripCell(base, map, r), totalCell(r, timeZone), p.statusPill(r.status), p.policyBadge(r.policyStatus),
+      tripCell(base, map, r), totalCell(r, timeZone), p.statusPill(r.status, { source: r.source }), p.policyBadge(r.policyStatus),
     ]),
   });
 }
@@ -86,6 +91,8 @@ const STATUS_FILTERS = Object.freeze([
   ['draft', 'Draft'], ['pending', 'Waiting for approval'], ['approved', 'Approved to book'], ['denied', 'Denied'],
   ['cancelled', 'Cancelled'], ['expired', 'Expired'], ['past', 'Past trip'],
 ]);
+/** The same filters once supplier prices are in play: nothing priced by a supplier can be booked yet. */
+const SUPPLIER_STATUS_FILTERS = Object.freeze(STATUS_FILTERS.map(([v, text]) => Object.freeze([v, v === 'approved' ? 'Approved' : text])));
 
 /** A <select> of the Company filters, with the chosen value kept. */
 function select({ id, name, label, value, options, error }) {
@@ -120,6 +127,9 @@ function tripsView(ctx, { org, scope, scopes, list, filters = {}, options = null
   const rows = list.rows || [];
   // With no supplier there is no search to plan a trip with: no "Plan a trip" button (as on the home page).
   const searchable = Boolean(ctx.business && ctx.business.inventory && ctx.business.inventory.status !== 'none');
+  // Supplier prices in the workspace or in the list: the approved filter says "Approved" (none can be booked yet).
+  const workspace = f.ctxSource(ctx);
+  const supplier = (!!workspace && workspace !== 'demo') || rows.some(r => f.isSource(r.source) && r.source !== 'demo');
 
   let body;
   if (!rows.length && scope === 'mine') {
@@ -145,7 +155,7 @@ function tripsView(ctx, { org, scope, scopes, list, filters = {}, options = null
   const filterForm = options ? html`<form class="bz-card bz-filters" method="get" action="${base}/trips">
       <input type="hidden" name="scope" value="all">
       <div class="bz-filter-grid">
-        ${select({ id: 'f-status', name: 'status', label: 'Status', value: filters.status, options: STATUS_FILTERS, error: filterErrors.status })}
+        ${select({ id: 'f-status', name: 'status', label: 'Status', value: filters.status, options: supplier ? SUPPLIER_STATUS_FILTERS : STATUS_FILTERS, error: filterErrors.status })}
         ${select({ id: 'f-dep', name: 'departmentId', label: 'Department', value: filters.departmentId, options: options.departments.map(d => [d.id, d.archivedAt ? `${d.name} (archived)` : d.name]), error: filterErrors.departmentId })}
         ${options.travelers.length ? select({ id: 'f-trav', name: 'travelerId', label: 'Traveler', value: filters.travelerId, options: options.travelers.map(t => [t.userId, t.name]), error: filterErrors.travelerId }) : ''}
         ${select({ id: 'f-period', name: 'period', label: 'Departing in', value: filters.period, options: options.periods.map(k => [k, periodLabel(k)]), error: filterErrors.period })}
@@ -165,4 +175,4 @@ function tripsView(ctx, { org, scope, scopes, list, filters = {}, options = null
   ${p.pager(list.cursor ? `${base}/trips?${next.toString()}` : null)}`;
 }
 
-module.exports = { tripsView, tripTable, tripCell, totalCell, places, cityOf, routeText, datesText, searchQuery, nightsBetween, STATUS_FILTERS, LIST_FILTER_FIELDS };
+module.exports = { tripsView, tripTable, tripCell, totalCell, places, cityOf, routeText, datesText, searchQuery, nightsBetween, STATUS_FILTERS, SUPPLIER_STATUS_FILTERS, LIST_FILTER_FIELDS };

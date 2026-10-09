@@ -49,26 +49,43 @@ const TOKEN_RUN = /[A-Za-z0-9_-]{43,}/g;
  * @param {unknown} url req.originalUrl
  * @returns {string}
  */
-function redactUrl(url) {
-  return redactText(url).slice(0, 500);
+function redactUrl(url, secrets = []) {
+  return redactText(url, secrets).slice(0, 500);
 }
 
-/** redactUrl's replacements on any text, uncut (an error's message and stack can quote the URL or a param). */
-function redactText(text) {
-  return String(text ?? '')
+/**
+ * redactUrl's replacements on any text, uncut (an error's message and stack can quote the URL or a param).
+ * `secrets` are exact values to replace first (the configured supplier keys, real-suppliers design §1.5, §4.6):
+ * a LiteAPI sandbox key is 41 characters, shorter than TOKEN_RUN catches.
+ */
+function redactText(text, secrets = []) {
+  let out = String(text ?? '');
+  for (const secret of secrets) if (typeof secret === 'string' && secret.length >= 8) out = out.split(secret).join('[secret]');
+  return out
     .replace(/(\/business\/invite\/)[^/?#]*/gi, '$1[redacted]')
     .replace(/([?&;][^=&;#]*token)=[^&;#]*/gi, '$1=[redacted]')
     .replace(TOKEN_RUN, '[token]');
 }
 
 /** An unexpected error as the log keeps it: its stack (or text) and code, redacted like the URL (D9). */
-function redactError(err) {
+function redactError(err, secrets = []) {
   const text = err instanceof Error ? (err.stack || `${err.name}: ${err.message}`) : String(err);
   const code = err && typeof err.code === 'string' ? ` [code ${err.code}]` : '';
-  return redactText(text + code);
+  return redactText(text + code, secrets);
 }
 
-async function createApp(config, { registryOverrides, tripOverrides, store: injectedStore, now, log = console } = {}) {
+/** The configured secret values the error log must never print (the supplier keys; none when unset). */
+function configuredSecrets(config) {
+  const s = config && config.business && config.business.suppliers;
+  return s ? [s.duffelToken, s.liteapiKey].filter(v => typeof v === 'string' && v) : [];
+}
+
+/**
+ * @param {object} config loadConfig()
+ * @param {{ registryOverrides?: object, tripOverrides?: object, store?: object, now?: () => Date, log?: object,
+ *   businessFetch?: Function }} [deps] businessFetch: tests only, the fetch the Business suppliers use
+ */
+async function createApp(config, { registryOverrides, tripOverrides, store: injectedStore, now, log = console, businessFetch = null } = {}) {
   const store = injectedStore || createStore(config);
   await store.init();
   const registry = createRegistry(config, { overrides: registryOverrides });
@@ -106,7 +123,7 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
   // Its inventory is its own (server/business/inventory.js: demo where demo inventory is allowed, else
   // "Supplier not connected yet"); it never calls BookingEngine or payments.
   if (config.business.enabled) {
-    const bizInventory = createBusinessInventory(config, { registry });
+    const bizInventory = createBusinessInventory(config, { registry, fetch: businessFetch, now: clock, log });
     business = new BusinessService({
       repo: new Repo({ store, now: clock, log }),
       accounts,
@@ -124,6 +141,7 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
     });
   }
 
+  const secrets = configuredSecrets(config);
   const app = express();
   app.disable('x-powered-by');
   if (config.trustProxy) app.set('trust proxy', 1);
@@ -253,7 +271,7 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
       && (err.expose === true || err instanceof URIError) ? err.status : null;
     const status = known ? err.status : (clientStatus ?? 500);
     const ref = id('err').slice(4, 14);
-    if (!known && status >= 500) log.error(`[error ${ref}] ${req.method} ${redactUrl(req.originalUrl)}`, redactError(err));
+    if (!known && status >= 500) log.error(`[error ${ref}] ${req.method} ${redactUrl(req.originalUrl, secrets)}`, redactError(err, secrets));
     const body = known
       ? { code: err.code, message: err.message, details: err.details }
       : clientStatus
@@ -266,4 +284,4 @@ async function createApp(config, { registryOverrides, tripOverrides, store: inje
   return { app, engine, store, registry, payments, ctx, tripService, accounts, agent, hunts, business };
 }
 
-module.exports = { createApp, redactUrl };
+module.exports = { createApp, redactUrl, redactText };

@@ -9,10 +9,13 @@
 //   answers a /business or /admin/business path. Every POST runs its limiter(s) → sameOrigin → the form
 //   parser → its gate → the handler, in that order; every GET runs headers → limiters → gate → handler.
 // - Isolation: `store.` only in repo.js; repo.get (no tenant check) only for the invite token lookup; no
-//   personal record kinds, bookings, fetch or http under server/business.
+//   personal record kinds, bookings, fetch or http under server/business, but for the one supplier network call
+//   in server/business/suppliers/http.js (real-suppliers design §7.4, §8.6 item 7).
 // - No booking: nothing under server/business or the Business routes and views requires the booking engine,
 //   payments or the outbox, directly or through anything it loads, nor names createQuote or createBooking.
-// - No AI model name or id and no provider secret in any file of the repository.
+// - No AI model name or id and no provider secret in any file of the repository. No Business module reads
+//   process.env or names an API key, but for the supplier settings: suppliers/index.js passes config's LiteAPI
+//   key to liteapi.js, which keeps it in one closure for its X-API-Key header, and no supplier module logs a key.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -269,6 +272,12 @@ test('routers: every POST runs limiter → sameOrigin → form parser → gate �
 // ---------------------------------------------------------------------------------------------------------
 // Isolation in the source
 
+/** The one network call under server/business (real-suppliers design §7.4): the supplier http module's fetch. */
+const SUPPLIER_HTTP = 'server/business/suppliers/http.js';
+const SUPPLIER_FETCH = 'const send = fetchImpl || ((url, init) => globalThis.fetch(url, init));';
+/** Its line in the code as the scan reads it (comments left out, as hits() sees it). */
+const SUPPLIER_FETCH_LINE = code(read(at(SUPPLIER_HTTP))).split('\n').findIndex(l => l.trim() === SUPPLIER_FETCH) + 1;
+
 test('isolation: store. only in repo.js; repo.get only for the invite token; no personal kinds, bookings, fetch or http under server/business', () => {
   const found = [];
   for (const f of [...SERVICE_FILES, ...ROUTE_FILES, ...VIEW_FILES]) {
@@ -281,12 +290,21 @@ test('isolation: store. only in repo.js; repo.get only for the invite token; no 
     }
     found.push(...hits(f, src, /\b(?:listBookings|getBooking|listQuotes|getQuote|listIntents|putRecord|getRecord|listRecords|insertRecord|updateRecord|deleteRecord)\b/)
       .filter(h => r !== 'server/business/repo.js'));
-    found.push(...hits(f, src, /\bfetch\(|require\(\s*['"](?:node:)?https?['"]\s*\)|XMLHttpRequest|\baxios\b/));
+    // The one network call: the supplier http module's default fetch (tests inject their own), behind the gate.
+    found.push(...hits(f, src, /\bfetch\(|require\(\s*['"](?:node:)?https?['"]\s*\)|XMLHttpRequest|\baxios\b/)
+      .filter(h => !(r === SUPPLIER_HTTP && h === `${SUPPLIER_HTTP}:${SUPPLIER_FETCH_LINE}: ${SUPPLIER_FETCH}`)));
     // A personal record kind named in code (the Repo refuses every kind but biz_* at run time as well).
     found.push(...hits(f, src, /['"](?:user_email|session|saved_trip|travel_defaults|last_search|recent_trip|trip_request|outbox|platform_admin|payment_intent)['"]/));
     found.push(...hits(f, src, /\brepo\.(?:get|getIn|list|page|insert|cas|del)\(\s*['"](?!biz_)[a-z_]+['"]/));
   }
   assert.deepEqual(found, [], 'reads outside the Repo, or of a personal kind');
+  // The supplier exception is that one line, once: every call goes through the gate first, with a timeout, and
+  // never follows a redirect (a key never travels anywhere but the supplier's own host).
+  const supplierHttp = code(read(at(SUPPLIER_HTTP)));
+  assert.equal(supplierHttp.split(SUPPLIER_FETCH).length, 2, 'suppliers/http.js holds its one fetch once');
+  assert.equal(supplierHttp.split('\n')[SUPPLIER_FETCH_LINE - 1].trim(), SUPPLIER_FETCH, 'at the line the exception names');
+  assert.match(supplierHttp, /await gate\.admit\(supplier,[\s\S]*?await send\(url, \{ method, headers, body, redirect: 'error', signal: globalThis\.AbortSignal\.timeout\(/, 'the gate, then the call with no redirects and a timeout');
+  assert.equal((supplierHttp.match(/\bsend\(/g) || []).length, 1, 'one place sends');
   // Every kind the Business code names is a biz_ kind.
   const { KINDS } = require('../server/business/constants');
   for (const [k, v] of Object.entries(KINDS)) assert.match(v, /^biz_[a-z_]+$/, k);
@@ -344,8 +362,11 @@ const SECRET_RES = [
   /\bduffel_(?:test|live)_[A-Za-z0-9_-]{8,}/, /\bBearer\s+[A-Za-z0-9._~+/=-]{20,}/,
   /\b\w*(?:SECRET|TOKEN|API_?KEY|PRIVATE_KEY|PASSWORD|[Ss]ecret|[Tt]oken|[Aa]pi[Kk]ey)\w*['"]?\s*[=:]\s*['"`]?(?=[A-Za-z0-9+/_=-]*\d)(?=[A-Za-z0-9+/_=-]*[A-Za-z])[A-Za-z0-9+/_=-]{32,}/,
 ];
-/** A fixture that checks a secret never leaks names itself fake (FAKE_..., fakeToken, a dummy or example value). */
-const FAKE_FIXTURE = /\b(?:fake|dummy|example|placeholder)|FAKE_|_FAKE\b/i;
+/**
+ * A fixture that checks a secret never leaks names itself fake (FAKE_..., fakeToken, a dummy or example value), or
+ * is a supplier token whose whole random part is a placeholder word (duffel_test_FAKEFAKE, duffel_test_PLACEHOLDER).
+ */
+const FAKE_FIXTURE = /\b(?:fake|dummy|example|placeholder)|FAKE_|_(?:FAKE)+\b|_PLACEHOLDER\b/i;
 /** Each pattern's own check: a made-up key of its shape (built here, so this file holds none) and a named fake. */
 const SECRET_SAMPLES = (() => {
   const r = (n, set = 'aB3dE5gH7jK9mN1pQ2rS4tU6vW8xY0z') => set.repeat(4).slice(0, n);
@@ -365,7 +386,10 @@ test('no AI model name or id and no provider secret in any file of the repositor
   // The patterns find what they are for: each made-up key matches one, and the line that holds it fails.
   for (const sample of SECRET_SAMPLES) {
     assert.ok(SECRET_RES.some(re => re.test(sample)) && !FAKE_FIXTURE.test(sample), `a secret pattern finds ${sample.slice(0, 12)}...`);
+    // A placeholder word after a real-looking supplier token is no excuse: only a token that is all placeholder is.
+    if (/^duffel_/.test(sample)) for (const word of ['FAKEFAKE', 'PLACEHOLDER']) assert.ok(!FAKE_FIXTURE.test(`${sample}${word}`), `${sample.slice(0, 12)}... with ${word} after it is still a secret`);
   }
+  for (const fake of ['duffel_test_FAKEFAKE', 'duffel_live_FAKEFAKE', 'duffel_test_PLACEHOLDER', 'sand_FAKE']) assert.ok(FAKE_FIXTURE.test(fake), `${fake} is a named fake`);
   for (const f of files) {
     const src = read(f);
     const named = src.split(DEV_BRANCH).join('<dev-branch>');
@@ -388,6 +412,49 @@ test('no AI model name or id and no provider secret in any file of the repositor
   assert.equal(loadConfig({ APP_ENV: 'development' }).business.explainer, 'rules');
   assert.throws(() => loadConfig({ APP_ENV: 'development', BUSINESS_EXPLAINER: 'remote' }), /BUSINESS_EXPLAINER/);
   assert.equal(createExplainer(loadConfig({ APP_ENV: 'development' })).name, 'rules');
-  // No Business module names an API key or a remote model endpoint.
-  for (const f of BUSINESS_JS) assert.doesNotMatch(code(read(f)), /API_KEY|apiKey|process\.env/, rel(f));
+  // No Business module reads process.env (settings come only from config) or names an API key or a remote model
+  // endpoint. The one exception is the supplier settings (real-suppliers design §1.3), line by line below.
+  for (const f of BUSINESS_JS) {
+    const r = rel(f);
+    const src = code(read(f));
+    assert.doesNotMatch(src, /process\.env/, r);
+    const allowed = SUPPLIER_KEY_LINES[r];
+    if (!allowed) { assert.doesNotMatch(src, /API_KEY|apiKey/, r); continue; }
+    const named = src.split('\n').map(l => l.trim()).filter(l => /API_KEY|apiKey/.test(l));
+    assert.ok(named.length > 0, `${r}: the exception is still needed`);
+    for (const l of named) assert.ok(allowed.some(re => re.test(l)), `${r}: an API key named outside the supplier settings: ${l}`);
+  }
+  // The key is only ever config's: the adapters get it from config.business.suppliers, liteapi.js hands it to its
+  // header closure and stores it nowhere else, and no supplier module logs a key or a header.
+  const index = code(read(at('server/business/suppliers/index.js')));
+  assert.match(index, /new LiteApiHotels\(\{\s*apiKey: cfg\.liteapiKey,/, 'the LiteAPI key comes from config');
+  assert.match(index, /new DuffelFlights\(\{\s*token: cfg\.duffelToken,/, 'the Duffel token comes from config');
+  const lite = code(read(at('server/business/suppliers/liteapi.js')));
+  assert.equal((lite.match(/\bapiKey\b/g) || []).length, 2, 'liteapi.js: apiKey is the constructor option and the closure, nothing else');
+  assert.match(lite, /const key = apiKey;\s*this\._headers = \(\) => \(\{\s*'X-API-Key': key,/, 'liteapi.js: the key goes into its header only');
+  for (const f of filesUnder(at('server/business/suppliers'), js)) {
+    for (const l of code(read(f)).split('\n')) {
+      if (!/\b(?:log|warn|info|error|debug)\b\s*(?:\.\s*\w+\s*)?\(|\.call\(\s*log\b|console\./.test(l)) continue;
+      // What the line logs, string literals left out (a template's ${...} parts kept).
+      const exprs = l.replace(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"/g, "''").replace(/`(?:[^`\\$]|\\.|\$(?!\{))*`/g, '``');
+      assert.doesNotMatch(exprs, /\b(?:apiKey|liteapiKey|duffelToken|token|key|auth|headers|_headers)\b/, `${rel(f)}: a log line names a key or a header: ${l.trim()}`);
+    }
+  }
+});
+
+/**
+ * The supplier settings' lines that may name an API key (real-suppliers design §1.3), each a fixed shape: a
+ * problem sentence that names the variable (never its value), the key read from config, and liteapi.js's
+ * constructor option and header closure. Anything else that names a key fails.
+ */
+const SUPPLIER_KEY_LINES = Object.freeze({
+  'server/business/suppliers/index.js': [
+    /^[a-zA-Z]+: '[^'`$\\]*\bLITEAPI_API_KEY\b[^'`$\\]*',$/,
+    /^if \(cfg\.hotels === 'liteapi' && !isKey\(cfg\.liteapiKey, TEST_PREFIX\.liteapi\)\) return off\(PROBLEMS\.liteapiKey\);$/,
+    /^apiKey: cfg\.liteapiKey, /,
+  ],
+  'server/business/suppliers/liteapi.js': [
+    /^constructor\(\{ apiKey, mode, /,
+    /^const key = apiKey;$/,
+  ],
 });

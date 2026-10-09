@@ -507,3 +507,58 @@ test('compareTrips: rows that differ in DIFF_FIELDS order, null for a missing si
   assert.equal(e.reduce((n, l) => n + l.delta, 0), three.totalCents - x.totalCents);
   assert.deepEqual(diff.lineDeltas(null, x).map(l => l.delta), [100000, 14000]);
 });
+
+// ---------------------------------------------------------------------------------------------------------
+// Supplier test data (real-suppliers design §7.1 B items, §8.3): what the airline or hotel supplier doesn't say
+// is never turned into a fact. Rows in the flt_t./htl_t. namespace; weights 0 mean "not stated".
+
+test('giveUps and compareTrips on supplier rows: an unknown change rule is never "No changes allowed"; "No refund confirmed"; "No star rating"; never "0 kg"', () => {
+  const { sandboxRow } = require('./business-sandbox');
+  const { TERMS } = require('../server/business/source');
+  const usd = amount => ({ allowed: true, penaltyAmount: amount, penaltyCurrency: 'USD' });
+  const sFlight = (o, terms) => sandboxRow(flight({ ...o, fareOverride: { cabinKg: 0, checkedKg: 0, ...o.fareOverride, terms: TERMS.fare(terms) } }));
+  // The pick: refunds for a fee, changes for a fee, one checked bag (weights not stated).
+  const p = sFlight({ fare: 'CLASSIC', fareOverride: { name: 'Economy Standard', refundablePercent: 80, changeable: true, checkedBags: 1 } },
+    { refund: usd('30.00'), change: usd('50.00'), bags: { checked: 1, carryOn: 1 } });
+  // The alternative: the airline says nothing about refunds or changes.
+  const unknown = sFlight({ n: 2, fare: 'LIGHT', fareOverride: { name: 'Economy Basic', refundablePercent: 0, changeable: false, checkedBags: 1 } },
+    { refund: null, change: null, bags: { checked: 1, carryOn: 1 } });
+  const lines = diff.giveUps({ out: p }, { out: unknown });
+  assert.deepEqual(lines, ['No refund confirmed (yours refunds 80%)', 'Changes not confirmed by the airline']);
+  assert.ok(!lines.includes('No changes allowed'), 'an unknown change rule is not "No changes allowed"');
+  // The airline's own "not allowed" is a lost change; its own "not allowed" refund is "Refunds nothing".
+  const no = sFlight({ n: 3, fare: 'LIGHT', fareOverride: { name: 'Economy Basic', refundablePercent: 0, changeable: false, checkedBags: 1 } },
+    { refund: { allowed: false }, change: { allowed: false }, bags: { checked: 1, carryOn: 1 } });
+  assert.deepEqual(diff.giveUps({ out: p }, { out: no }), ['Refunds nothing (yours refunds 80%)', 'No changes allowed']);
+  // Two unknowns are not a give-up against each other.
+  assert.deepEqual(diff.giveUps({ out: unknown }, { out: sFlight({ n: 4, fare: 'LIGHT', fareOverride: { name: 'Economy Basic', refundablePercent: 0, changeable: false, checkedBags: 1 } }, { refund: null, change: null, bags: { checked: 1, carryOn: 1 } }) }), ['Nothing else changes']);
+  // Bags the airline doesn't state are not compared; weights of 0 are never printed.
+  const noBags = sFlight({ n: 5, fare: 'CLASSIC', fareOverride: { name: 'Economy Standard', refundablePercent: 80, changeable: true, checkedBags: 0 } },
+    { refund: usd('30.00'), change: usd('50.00'), bags: null });
+  assert.deepEqual(diff.giveUps({ out: p }, { out: noBags }), ['Nothing else changes'], 'a bag count the airline did not state is not "No checked bag"');
+  const stated = sFlight({ n: 6, fare: 'CLASSIC', fareOverride: { name: 'Economy Standard', refundablePercent: 80, changeable: true, checkedBags: 0 } },
+    { refund: usd('30.00'), change: usd('50.00'), bags: { checked: 0, carryOn: 1 } });
+  assert.deepEqual(diff.giveUps({ out: p }, { out: stated }), ['No checked bag instead of 1']);
+  // Demo rows keep every rule: the fixture's own "No changes allowed".
+  assert.ok(diff.giveUps({ out: flight({ fare: 'FLEX' }) }, { out: flight({ fare: 'LIGHT' }) }).includes('No changes allowed'));
+
+  const cmp = diff.compareTrips({ rows: { out: p }, totalCents: p.totalCents }, { rows: { out: unknown }, totalCents: unknown.totalCents });
+  const row = label => cmp.rows.find(r => r.label === label);
+  assert.deepEqual(row('Outbound refunds'), { label: 'Outbound refunds', a: 'Refunds 80%', b: 'No refund confirmed' });
+  const bags = diff.compareTrips({ rows: { out: p }, totalCents: 1 }, { rows: { out: noBags }, totalCents: 1 }).rows.find(r => r.label === 'Outbound bags');
+  assert.deepEqual(bags, { label: 'Outbound bags', a: '1 checked bag', b: 'Checked bags not stated by the airline' });
+  for (const r of [...cmp.rows, bags]) assert.ok(!/\b0 kg\b/.test(`${r.a} ${r.b}`), `no "0 kg": ${r.a} | ${r.b}`);
+  for (const l of [...lines, ...diff.giveUps({ out: p }, { out: noBags })]) assert.ok(!/\b0 kg\b/.test(l), l);
+  // A stated weight still prints.
+  const kg = sandboxRow(flight({ fare: 'CLASSIC', fareOverride: { cabinKg: 8, checkedKg: 23, checkedBags: 1, terms: TERMS.fare({ refund: { allowed: false }, change: usd('50.00'), bags: { checked: 1, carryOn: 1 } }) } }));
+  assert.equal(diff.compareTrips({ rows: { out: kg }, totalCents: 1 }, { rows: { out: p }, totalCents: 1 }).rows.find(r => r.label === 'Outbound bags').a, '8 kg cabin bag, 1 checked bag (23 kg)');
+
+  // Hotels: stars 0 from a supplier is "No star rating"; a half star reads as given.
+  const four = sandboxRow(hotel({ stars: 4 }));
+  const unrated = sandboxRow(hotel({ n: 2, name: 'Fixture Inn London', stars: 0 }));
+  assert.deepEqual(diff.giveUps({ hotel: four }, { hotel: unrated }), ['Stays at Fixture Inn London instead of Fixture Grand London', 'No star rating instead of 4-star']);
+  assert.deepEqual(diff.giveUps({ hotel: sandboxRow(hotel({ stars: 4.5 })) }, { hotel: sandboxRow(hotel({ n: 3, name: 'Fixture Court London', stars: 4 })) }),
+    ['Stays at Fixture Court London instead of Fixture Grand London', '4-star instead of 4.5-star']);
+  const stars = diff.compareTrips({ rows: { hotel: four }, totalCents: 1 }, { rows: { hotel: unrated }, totalCents: 1 }).rows.find(r => r.label === 'Hotel class');
+  assert.deepEqual([stars && stars.a, stars && stars.b], ['4-star', 'No star rating']);
+});

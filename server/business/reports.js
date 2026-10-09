@@ -2,8 +2,13 @@
 // method that pages the records (bounded by constants.SCAN_CAP, then `truncated`: "Based on the 5,000 most
 // recent requests"). BusinessService methods (service.js assigns `methods` onto its prototype).
 //
-// - Every money tile is calculated on demo prices (the view says so). Coming soon tiles (COMING_SOON) never
-//   show a number and never $0. Empty periods say "No requests yet", never $0.
+// - Every money tile is calculated on the requests' own prices, and says where they came from: ReportTiles
+//   and DashboardView carry `priceSource` (additive), the source of the totals they show (totalsSource,
+//   real-suppliers design §2.3): 'sandbox' ("Includes supplier test data") whenever any counted request
+//   is supplier test data, even beside demo ones; otherwise the least real of them (source.leastReal of
+//   source.requestSource: "Demo prices", or "Supplier prices" only when every counted request is live); null
+//   when they count none (the view then names the inventory's). Coming soon tiles (COMING_SOON) never show a
+//   number and never $0. Empty periods say "No requests yet", never $0.
 // - Statuses are effective statuses (this.policy.effectiveStatus with the org's time zone); nothing is
 //   written by a report.
 // - A request belongs to the period of its departure date (budgets.periodKey(query.departDate, period)).
@@ -14,6 +19,22 @@ const roles = require('./roles');
 const { loadActor, need, notFound } = require('./actor');
 const { periodKey, periodLabel, currentPeriodKey, PERIOD_KEY_RE } = require('./budgets');
 const { HOME_ROWS } = require('./requests');
+const { leastReal, requestSource } = require('./source');
+
+/**
+ * The source a total of many requests is labelled with (real-suppliers design §2.3): any supplier test data
+ * among them makes it 'sandbox' ("Includes supplier test data"), whatever else it adds up; otherwise the
+ * least real of them ('demo' beats 'live'). A value that is not a source counts as demo (a request stored
+ * before real suppliers). null for no sources at all. Not exported (this module's exports are frozen): the
+ * pages use the same rule as views/business/format.totalsSource.
+ * @param {Iterable<unknown>} sources
+ * @returns {import('./types').PriceSource|null}
+ */
+function totalsSource(sources) {
+  const list = [...sources];
+  if (list.includes('sandbox')) return 'sandbox';
+  return leastReal(list);
+}
 
 /** Tiles for what phase 1 cannot measure yet. Never a number, never $0. */
 const COMING_SOON = Object.freeze([
@@ -128,6 +149,8 @@ function reportTiles(input) {
       || String(x.name).localeCompare(String(y.name), 'en') || (x.userId < y.userId ? -1 : 1)),
     comingSoon: COMING_SOON.map(t => ({ key: t.key, label: t.label })),
     truncated: truncated === true,
+    // Additive (real suppliers): where the counted requests' prices came from; null when none is counted.
+    priceSource: totalsSource(requests.map(requestSource)),
   };
 }
 
@@ -247,11 +270,17 @@ const methods = {
     const reports = view === 'reports'
       ? reportTiles({ requests: inPeriod, budgets: budgets || [], nowIso, timezone: a.org.timezone, truncated: scanned.truncated, effectiveStatus: this.policy.effectiveStatus })
       : null;
+    // Additive (real suppliers): where the prices of the requests this page counts came from (the period's
+    // company requests the tiles and budgets count, and the rows it lists); null when it counts none.
+    const priceSource = totalsSource([
+      ...inPeriod.map(requestSource),
+      ...[...myTrips, ...(teamTrips || []), ...(waiting ? waiting.rows : [])].map(r => r.source),
+    ]);
     return {
       role, periodKey: key, periodLabel: periodLabel(key), checklist: checklistView, waiting, myTrips, teamTrips, policy, pendingCompany,
       outOfPolicyShare: reportsView ? outOfPolicyShare(inPeriod) : null,
       topReasons: reportsView ? topReasons(inPeriod.filter(r => r.submittedAt)) : null,
-      recent, budgets, reports,
+      recent, budgets, reports, priceSource,
     };
   },
 };

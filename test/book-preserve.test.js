@@ -9,6 +9,7 @@ const path = require('node:path');
 const { ENVS, BOOK, API, FIXED_NOW, stripBusiness, expectedBusinessCounts, freezeDate, bootApp, collect, providerSources } = require('../scripts/capture-baseline');
 const manifest = require('./fixtures/baseline/manifest.json');
 const mock = require('../server/providers/mock');
+const { SANDBOX_ENV, BAD_SUPPLIER_ENVS, blockSupplierHosts } = require('./supplier-fetch');
 
 const ROOT = path.join(__dirname, '..');
 const FIXTURES = path.join(__dirname, 'fixtures', 'baseline');
@@ -38,6 +39,25 @@ test('the §F8 set: /book, two flight and three hotel searches, one flight and o
   }
 });
 
+/** Business on: the search JSON exactly equal, the pages different only by the Business chrome. */
+async function checkBusinessOn(t, envName, env) {
+  const { app, got } = await run(t, env, envName);
+  assert.ok(app.ctx.business && app.ctx.businessNav, 'Business runs');
+  for (const [name, want] of Object.entries(manifest.envs[envName].full)) {
+    assert.equal(got.full[name].status, want.status, `${envName} ${name}: status`);
+    assert.equal(got.full[name].type, want.type, `${envName} ${name}: content type`);
+    if (want.type === 'application/json') {
+      assert.equal(got.full[name].text, fixture(want.file), `${envName} ${name}: the JSON is unchanged`);
+      continue;
+    }
+    const { text, counts } = stripBusiness(got.full[name].text);
+    assert.deepEqual(counts, expectedBusinessCounts(got.full[name].text), `${envName} ${name}: what Business adds`);
+    assert.equal(counts.navItem, 1, `${envName} ${name}: the Business menu item`);
+    assert.equal(text, fixture(want.file), `${envName} ${name}: nothing else changed`);
+  }
+  return app;
+}
+
 for (const [envName, env] of Object.entries(ENVS)) {
   test(`${envName}, Business off: the booking pages and search JSON are exactly the baseline`, async t => {
     const { app, got } = await run(t, env, envName);
@@ -51,29 +71,50 @@ for (const [envName, env] of Object.entries(ENVS)) {
   });
 
   test(`${envName}, Business on: the search JSON is exactly equal and the pages differ only by the Business chrome`, async t => {
-    const { app, got } = await run(t, { ...env, ENABLE_BUSINESS: 'true' }, envName);
-    assert.ok(app.ctx.business && app.ctx.businessNav, 'Business runs');
-    for (const [name, want] of Object.entries(manifest.envs[envName].full)) {
-      assert.equal(got.full[name].status, want.status, `${envName} ${name}: status`);
-      assert.equal(got.full[name].type, want.type, `${envName} ${name}: content type`);
-      if (want.type === 'application/json') {
-        assert.equal(got.full[name].text, fixture(want.file), `${envName} ${name}: the JSON is unchanged`);
-        continue;
-      }
-      const { text, counts } = stripBusiness(got.full[name].text);
-      assert.deepEqual(counts, expectedBusinessCounts(got.full[name].text), `${envName} ${name}: what Business adds`);
-      assert.equal(counts.navItem, 1, `${envName} ${name}: the Business menu item`);
-      assert.equal(text, fixture(want.file), `${envName} ${name}: nothing else changed`);
-    }
+    await checkBusinessOn(t, envName, { ...env, ENABLE_BUSINESS: 'true' });
+  });
+
+  // Round 1 of the real suppliers (design §1.6): configuring them changes nothing /book shows, and nothing here
+  // calls a supplier.
+  test(`${envName}, Business on with the sandbox suppliers configured: the same as Business on, and no supplier call`, async t => {
+    const block = blockSupplierHosts();
+    t.after(block.restore);
+    const app = await checkBusinessOn(t, envName, { ...env, ...SANDBOX_ENV });
+    assert.equal(app.business.inventory.status, 'sandbox');
+    assert.equal(block.count(), 0, 'no supplier call');
   });
 }
+
+test('every bad supplier setting: the app boots and /book is unchanged, with no supplier call', async t => {
+  const block = blockSupplierHosts();
+  t.after(block.restore);
+  const restore = freezeDate(FIXED_NOW);
+  t.after(restore);
+  const want = manifest.envs.dev.full.book;
+  for (const [label, bad] of BAD_SUPPLIER_ENVS) {
+    const app = await bootApp(ROOT, { ...SANDBOX_ENV, ...bad });
+    try {
+      const got = await collect(app, { only: 'full', offers: manifest.envs.dev.offers });
+      assert.equal(got.full.book.status, want.status, `${label}: status`);
+      assert.equal(stripBusiness(got.full.book.text).text, fixture(want.file), `${label}: /book unchanged`);
+      for (const [name, w] of Object.entries(manifest.envs.dev.full)) {
+        if (w.type === 'application/json') assert.equal(got.full[name].text, fixture(w.file), `${label} ${name}: the JSON is unchanged`);
+      }
+      assert.equal(app.business.inventory.status, 'none', label);
+    } finally {
+      await app.close();
+    }
+  }
+  assert.equal(block.count(), 0, 'no supplier call');
+});
 
 test('Business never touches the demo inventory /book runs on: the registry serves the mock providers, unchanged', async t => {
   const restore = freezeDate(FIXED_NOW);
   t.after(restore);
   assert.deepEqual(providerSources(ROOT), manifest.providerSources, 'no file under server/providers/mock changed');
   assert.deepEqual(Object.keys(mock.FACTORIES), ['hotels', 'flights', 'cars', 'cruises', 'yachts', 'transfers', 'activities', 'experiences']);
-  for (const env of [{}, { ENABLE_BUSINESS: 'true' }, { ENABLE_TRIPS: 'false', ENABLE_BUSINESS: 'true' }]) {
+  // With the real suppliers configured too, good or bad (design §1.6): the registry is never DuffelFlights.
+  for (const env of [{}, { ENABLE_BUSINESS: 'true' }, { ENABLE_TRIPS: 'false', ENABLE_BUSINESS: 'true' }, SANDBOX_ENV, { ...SANDBOX_ENV, ...BAD_SUPPLIER_ENVS[0][1] }]) {
     const app = await bootApp(ROOT, env);
     t.after(app.close);
     const flights = app.registry.get('flights');
@@ -81,6 +122,8 @@ test('Business never touches the demo inventory /book runs on: the registry serv
     assert.equal(Object.getPrototypeOf(flights), mock.MockFlightProvider.prototype, 'flights: exactly MockFlightProvider, no subclass');
     assert.equal(Object.getPrototypeOf(hotels), mock.MockHotelProvider.prototype, 'hotels: exactly MockHotelProvider, no subclass');
     assert.notEqual(flights.constructor.name, 'BusinessDemoFlights');
+    assert.notEqual(flights.constructor.name, 'DuffelFlights');
+    assert.notEqual(hotels.constructor.name, 'LiteApiHotels');
     assert.notEqual(hotels.constructor.name, 'BusinessDemoHotels');
   }
 });

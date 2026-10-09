@@ -54,6 +54,7 @@ const { loadActor, need, who, auditInsert, memberId, notFound, forbidden, suspen
 const { conflict, ORG_ID_RE, USER_ID_RE } = require('./repo');
 const { newToken, hashToken, sameHash, isToken } = require('./tokens');
 const { defaultPolicy, DEFAULTS_NOTE } = require('./policy/defaults');
+const { requestSource } = require('./source');
 
 /** The sign-up form's company fields and their defaults. */
 const COMPANY_FORM = Object.freeze({ sizes: COMPANY_SIZES, defaultTimezone: DEFAULT_TIMEZONE });
@@ -66,6 +67,34 @@ const DEPARTMENT_ID_RE = /^dep_[A-Za-z0-9_-]{16}$/;
 const SCAN_PAGE = 200;
 /** A company export reads at most this many records of each kind. */
 const EXPORT_CAP = 20000;
+/** Each exported request's price_source, in the requests CSV's words (csv.js price_source). */
+const PRICE_SOURCE_LABELS = Object.freeze({ demo: 'Demo price', sandbox: 'Supplier test data', live: 'Supplier price' });
+/**
+ * The export's note: with only demo requests (or none) the preview note word for word; with any supplier
+ * request, that each request's price_source names where its amounts came from.
+ */
+const EXPORT_NOTES = Object.freeze({
+  demo: `Tripelyx Business preview. Amounts are whole US cents from demo prices: nothing was booked or charged. Questions: ${BUSINESS_EMAIL}.`,
+  supplier: `Tripelyx Business preview. Amounts are whole US cents from demo prices, supplier test data or supplier prices, as each request's price_source says: nothing was booked or charged. Questions: ${BUSINESS_EMAIL}.`,
+  plain: `Tripelyx Business preview. Amounts are whole US cents: nothing was booked or charged. Questions: ${BUSINESS_EMAIL}.`,
+});
+/** A request as the export carries it: its own fields, with price_source (the CSV's words) for its stored source. */
+function exportedRequest(r) {
+  const out = { ...r, price_source: PRICE_SOURCE_LABELS[requestSource(r)] };
+  delete out.source;
+  return out;
+}
+
+/**
+ * Which export note fits: any supplier request names each request's price_source; requests that are all demo
+ * came from demo prices; with no requests at all, demo prices are named only under demo inventory (with no
+ * supplier, as on production, every amount is the company's own).
+ */
+function exportNote(requests, inventory) {
+  if (requests.some(r => requestSource(r) !== 'demo')) return EXPORT_NOTES.supplier;
+  if (requests.length || (inventory && inventory.status === 'demo')) return EXPORT_NOTES.demo;
+  return EXPORT_NOTES.plain;
+}
 /** A filtered activity page reads at most this many store pages, then offers "Show older". */
 const FILTER_PAGES = 25;
 /** Platform list order: waiting companies first. */
@@ -1055,17 +1084,17 @@ const methods = {
       format: 'tripelyx-business-company-export',
       version: 1,
       exportedAt,
-      // Trip prices are demo prices only with demo inventory; with none (production) every amount is the company's own.
-      note: this.inventory && this.inventory.status === 'demo'
-        ? `Tripelyx Business preview. Amounts are whole US cents from demo prices: nothing was booked or charged. Questions: ${BUSINESS_EMAIL}.`
-        : `Tripelyx Business preview. Amounts are whole US cents: nothing was booked or charged. Questions: ${BUSINESS_EMAIL}.`,
+      note: exportNote(requests.rows, this.inventory),
       org: orgView(a.org),
       members: members.rows,
       departments: sortDepartments(departments.rows),
       policies: TIERS.map(t => policies.rows.find(p => p.tier === t)).filter(Boolean),
       policyVersions: versions.rows.sort((x, y) => TIERS.indexOf(x.tier) - TIERS.indexOf(y.tier) || x.version - y.version),
       budgets: budgets.rows,
-      requests: requests.rows,
+      // Where each request's amounts came from, in the CSV's words (a request stored before real suppliers reads as
+      // demo). price_source replaces the stored source code, so the export carries no "source" key: in a download
+      // that key is kept for a policy cap's rule (the honesty test's markup check).
+      requests: requests.rows.map(r => exportedRequest(r)),
       audit: audit.rows,
       truncated: Object.fromEntries(Object.entries({ members, departments, policies, versions, budgets, requests, audit })
         .filter(([, r]) => r.truncated).map(([k]) => [k, true])),

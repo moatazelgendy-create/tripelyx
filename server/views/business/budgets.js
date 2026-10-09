@@ -3,7 +3,9 @@
 // "Spent: shows once real bookings exist". A period switcher; budget.edit holders set each department's
 // budget for the period (POST /budgets, 303 back). A Manager sees only their own department (listBudgets).
 // Every amount sits in a demo container (§F6): committed and awaiting sum demo prices, so the whole table does.
-// With no demo inventory (production) they are the company's own figures, with no demo label.
+// With real suppliers (real-suppliers design §2.3) the container is labelled with the least real source of the
+// requests it adds up (priceSource, from the route): "Includes supplier test data". With no supplier and nothing
+// counted (production) priceSource is null: the figures are the company's own, with no price label.
 const { html } = require('../../lib/html');
 const { pageHead, tabs, dataTable, emptyState, amount, budgetBar, demoBox } = require('./parts');
 const f = require('./format');
@@ -31,11 +33,14 @@ function dollarsText(cents) {
  * @param {import('../../business/types').ShellModel} shell
  * @param {{ rows: import('../../business/types').BudgetRow[], periodKey: string, choices: string[], canEdit: boolean,
  *   periodKind: 'quarter'|'month', ownOnly: boolean, uncounted?: Record<string, number>|null,
- *   values?: Record<string, string>, errors?: Record<string, Record<string, string>>, notice?: string|null, error?: string|null }} v
+ *   values?: Record<string, string>, errors?: Record<string, Record<string, string>>, notice?: string|null, error?: string|null,
+ *   priceSource?: import('../../business/types').PriceSource|null }} v
  *   ownOnly: the member sees only their own department; uncounted: per department id, the approved trips of the
- *   period its budget doesn't count, in cents (null when unknown); values/errors: keyed by department id after a 422
+ *   period its budget doesn't count, in cents (null when unknown); values/errors: keyed by department id after a 422;
+ *   priceSource: the least real source of the amounts the table adds up ('demo' when absent; null with no
+ *   supplier and no counted requests, so the table carries no price label)
  */
-function budgetsView(ctx, shell, { rows, periodKey, choices, canEdit, periodKind, ownOnly, uncounted = null, values = {}, errors = {}, notice = null, error = null }) {
+function budgetsView(ctx, shell, { rows, periodKey, choices, canEdit, periodKind, ownOnly, uncounted = null, values = {}, errors = {}, notice = null, error = null, priceSource = 'demo' }) {
   const { org } = shell;
   const base = `/business/o/${org.id}`;
   const tz = f.safeZone(org.timezone);
@@ -51,9 +56,9 @@ function budgetsView(ctx, shell, { rows, periodKey, choices, canEdit, periodKind
     amount(r.awaitingCents),
     r.remainingCents === null ? 'No budget set' : amount(r.remainingCents),
   ]);
-  // With no supplier (or a live one) the figures are the company's own, so no demo label (as home.js budgetTable).
-  const demo = Boolean(ctx.business && ctx.business.inventory && ctx.business.inventory.status === 'demo');
-  const box = (body, opts) => (demo ? demoBox(body, opts) : html`<section aria-label="${opts.label}">${body}</section>`);
+  // With no supplier and no counted requests the figures are the company's own, so no price label (as
+  // home.js budgetTable); otherwise the container says where the amounts it adds up came from.
+  const box = (body, opts) => (priceSource ? demoBox(body, opts) : html`<section aria-label="${opts.label}">${body}</section>`);
   const table = rows.length
     ? box(html`${dataTable({
       caption: `Budgets for ${label}`,
@@ -61,7 +66,7 @@ function budgetsView(ctx, shell, { rows, periodKey, choices, canEdit, periodKind
       rows: tableRows,
     })}
       <p class="bz-meta">${committedText(label)} Awaiting approval: trips waiting for a decision, not counted as committed.${truncated ? ` Awaiting approval counts the ${SCAN_CAP.toLocaleString('en-US')} most recent requests.` : ''}</p>
-      <p class="bz-meta">${SPENT}</p>`, { pricedAt: null, timeZone: tz, tag: 'section', label: `Budgets for ${label}` })
+      <p class="bz-meta">${SPENT}</p>`, { pricedAt: null, timeZone: tz, tag: 'section', label: `Budgets for ${label}`, source: priceSource, totals: true })
     : emptyState({ title: ownOnly ? "You're not in a department yet, so there's no budget to show." : 'No departments yet.', text: ownOnly ? 'Ask a travel admin to add you to one.' : 'Add departments on the People page, then set their budgets here.', iconName: 'wallet' });
   const editable = rows.filter(r => !r.department.archived);
   const forms = canEdit && editable.length

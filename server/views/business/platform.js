@@ -6,8 +6,13 @@
 // company enquiries from the /business form. Nothing inside a company: no requests, policies, budgets,
 // member lists or activity. With Travel by Budget on it is a tab of the admin control center (the trips
 // admin chrome); with it off, a corporate page. noindex; the route sends no-store.
+// Real suppliers (real-suppliers design §1.3, §2.3): when a supplier is configured, a "Flights and hotels"
+// section says whether companies see supplier test data or live prices, and a supplier setting that switched
+// them off (inventory.problem: a sentence that names the variable, never its value) is shown here and
+// nowhere else. With demo inventory, or no supplier and no problem, the page is as it was.
 const { html } = require('../../lib/html');
 const { layout } = require('../layout');
+const { icon } = require('../icons');
 const { statusPill, notice, errorBox, dataTable, emptyState } = require('./parts');
 const f = require('./format');
 const { textArea, zoneOption } = require('./auth');
@@ -21,6 +26,33 @@ const SECTIONS = Object.freeze([
   ['suspended', 'Paused', 'No paused companies.'],
 ]);
 const NOTE_HINT = 'Required. Only Tripelyx staff see this note; the company sees that Tripelyx paused it.';
+/** What companies see, by the inventory's source, when a supplier is configured. */
+const SUPPLIER_STATES = Object.freeze({
+  sandbox: "Companies search the suppliers' test systems. Prices are supplier test data, not real fares, and are labelled TEST DATA.",
+  live: 'Companies search live supplier prices. Booking is not open, so nothing is booked or charged.',
+});
+const HOTELS_OFF = 'Hotels are not connected, so companies can request flights only.';
+const SUPPLIER_OFF = 'Companies see "Supplier not connected yet" until this is fixed.';
+
+/**
+ * The "Flights and hotels" section for platform admins: what companies search, and the supplier problem
+ * sentence (inventory.problem). Nothing with demo inventory, or with no supplier and no problem.
+ * @param {object} ctx the app context (ctx.business.inventory)
+ */
+function supplierSection(ctx) {
+  const inv = ctx && ctx.business ? ctx.business.inventory : null;
+  if (!inv) return '';
+  const problem = typeof inv.problem === 'string' && inv.problem.trim() ? inv.problem.trim() : null;
+  const state = inv.status !== 'none' && Object.hasOwn(SUPPLIER_STATES, inv.source) ? SUPPLIER_STATES[inv.source] : null;
+  if (!problem && !state) return '';
+  return html`<section class="bz-section" aria-labelledby="bz-plat-suppliers">
+    <h2 id="bz-plat-suppliers">Flights and hotels</h2>
+    ${state ? html`<p>${state}</p>` : ''}
+    ${state && inv.hotelsConnected === false ? html`<p class="bz-meta">${HOTELS_OFF}</p>` : ''}
+    ${problem ? html`<div class="alert alert-warning bz-alert" role="status">${icon('alert')}<span class="bz-plat-problem">A supplier setting needs attention: ${problem}${inv.status === 'none' ? ` ${SUPPLIER_OFF}` : ''}</span></div>` : ''}
+  </section>`;
+}
+
 /** Words too common to make two company names alike on their own. */
 const COMMON_WORDS = new Set(['the', 'and', 'company', 'group', 'travel', 'global', 'international', 'inc', 'ltd', 'llc', 'co']);
 
@@ -90,7 +122,7 @@ function platformView(ctx, { data, notice: ok = null, error = null, form = null 
   })}
   </section>`;
   const inner = html`<p class="bz-meta">Confirm a company once you know it is real. Until then, its people can't join by invite. Times in UTC.</p>
-    ${notice(ok)}${errorBox(error)}
+    ${notice(ok)}${errorBox(error)}${supplierSection(ctx)}
     ${orgs.length ? sections : emptyState({ title: 'No companies yet.', text: 'Companies show up here when someone creates a workspace at /business/start.', iconName: 'layers' })}
     ${enquiries}`;
   if (ctx.trips) {
@@ -108,4 +140,4 @@ function platformView(ctx, { data, notice: ok = null, error = null, form = null 
   return layout({ title: `${TITLE} · Admin`, body, ctx, noindex: true, corporate: true, styles: ['/css/business.css'], bodyClass: 'bz-pub' });
 }
 
-module.exports = { platformView, alsoSimilar, TITLE, NOTE_HINT };
+module.exports = { platformView, alsoSimilar, supplierSection, TITLE, NOTE_HINT, SUPPLIER_STATES, HOTELS_OFF, SUPPLIER_OFF };

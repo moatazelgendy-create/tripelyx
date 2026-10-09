@@ -36,7 +36,18 @@
 // - trip.cap and budget run only when every component is available (the total is unknown otherwise; the trip
 //   is blocked anyway).
 // - Violations within a component follow RULE_IDS order.
+//
+// Real suppliers, round 1 (real-suppliers design §8.3): the texts follow where the prices came from, and the
+// demo texts above are unchanged. ctx.priceSource (absent: the row's own source, which is 'demo' for every
+// demo row) names the search's fares in a cap reason: "median of these test fares plus 20%" for supplier
+// test data, "median of the fares in this search plus 20%" for live prices. A row's own source names it in
+// inventory.unavailable ("Not available in the supplier's test data."). A supplier fare whose refund terms
+// the airline doesn't confirm (source.refundsUnconfirmed) is never said to refund nothing: "…, and Tripelyx
+// can't confirm that for Economy Light." A supplier hotel with stars 0 has no star rating: under a maxStars
+// limit it needs approval (hotel.stars, actual 0) instead of passing as a 0-star hotel; where outOfPolicy is
+// 'block' the text says it "can't be shown to be within your up to 4 stars rule" (never "needs approval").
 const { CABIN_RANK, CABIN_LABELS } = require('../constants');
+const { sourceOf, isSource, refundsUnconfirmed } = require('../source');
 
 // lib/money.format builds an Intl.NumberFormat on every call, and evaluate runs for every candidate of a
 // search (the 200-candidate ranking budget is 20 ms), so it keeps the formatters money.format would build:
@@ -127,13 +138,32 @@ function capCents(cap, medianCents) {
   }
 }
 
+/** The search's fares in a cap reason, by price source. */
+const FARES = Object.freeze({
+  demo: Object.freeze({ median: 'these demo fares', few: 'demo fares' }),
+  sandbox: Object.freeze({ median: 'these test fares', few: 'test fares' }),
+  live: Object.freeze({ median: 'the fares in this search', few: 'fares' }),
+});
+
+/** Where a row's prices came from, for its texts: ctx.priceSource when given, else the row's own. */
+const priceSourceOf = (ctx, row) => (ctx && isSource(ctx.priceSource) ? ctx.priceSource : sourceOf(row));
+
 /** Why a flight cap is what it is, for the violation text: "(median of these demo fares plus 20%)". */
-function capReason(cap, how) {
-  if (how === 'median_pct') return ` (median of these demo fares plus ${pctText(cap.pctTenths)}%)`;
-  if (how === 'median_plus') return ` (median of these demo fares plus ${format(cap.amountCents)})`;
-  if (how === 'fallback') return " (your set limit, as this search has too few demo fares to compare)";
+function capReason(cap, how, source = 'demo') {
+  const fares = FARES[source] || FARES.demo;
+  if (how === 'median_pct') return ` (median of ${fares.median} plus ${pctText(cap.pctTenths)}%)`;
+  if (how === 'median_plus') return ` (median of ${fares.median} plus ${format(cap.amountCents)})`;
+  if (how === 'fallback') return ` (your set limit, as this search has too few ${fares.few} to compare)`;
   return '';
 }
+
+/** inventory.unavailable, said for where the row came from. */
+const UNAVAILABLE_TEXT = Object.freeze({
+  demo: 'Not available in demo data.',
+  sandbox: "Not available in the supplier's test data.",
+  live: 'No longer available from the supplier.',
+});
+const unavailableText = row => UNAVAILABLE_TEXT[sourceOf(row)] || UNAVAILABLE_TEXT.demo;
 
 /**
  * The price limit for one flight row: the first matching route override (from/to, or reversed when
@@ -215,7 +245,7 @@ function evaluateFlight(row, ctx) {
     overCents = row.totalCents - cents;
     const where = override ? ' for this route' : '';
     out.push(violation('flight.cap', c, cents, row.totalCents,
-      `Over your ${format(cents)} limit${where} by ${format(overCents)}${capReason(capRule, how)}.`));
+      `Over your ${format(cents)} limit${where} by ${format(overCents)}${capReason(capRule, how, priceSourceOf(ctx, row))}.`));
   }
   const maxCabin = override && override.maxCabin != null ? override.maxCabin : band.maxCabin;
   if (CABIN_RANK[row.cabin] > CABIN_RANK[maxCabin]) {
@@ -236,8 +266,11 @@ function evaluateFlight(row, ctx) {
   const refundPct = row.fare ? row.fare.refundablePercent : 0;
   if (band.refundableOnly && !(refundPct > 0)) {
     const fareName = row.fare && row.fare.name ? row.fare.name : 'This fare';
-    out.push(violation('flight.refundable', c, null, refundPct,
-      `Your policy asks for a fare that refunds at least part of the price. ${fareName} refunds nothing.`));
+    // A supplier fare whose refund the airline doesn't confirm: its 0% is a placeholder, not a fact.
+    const unconfirmed = sourceOf(row) !== 'demo' && refundsUnconfirmed(row.fare ? row.fare.terms : null, { currency: row.currency || 'USD' });
+    out.push(violation('flight.refundable', c, null, refundPct, unconfirmed
+      ? `Your policy asks for a fare that refunds at least part of the price, and Tripelyx can't confirm that for ${row.fare && row.fare.name ? row.fare.name : 'this fare'}.`
+      : `Your policy asks for a fare that refunds at least part of the price. ${fareName} refunds nothing.`));
   }
   const blocked = new Set(rules.flights.blockedCarriers || []);
   const seen = new Set();
@@ -248,7 +281,7 @@ function evaluateFlight(row, ctx) {
     const name = (ctx.carriers && ctx.carriers[code]) || s.carrier.name || code;
     out.push(violation('flight.carrier', c, code, code, `${name} isn't used by ${ctx.orgName || 'your company'}.`));
   }
-  if (row.available !== true) out.push(violation('inventory.unavailable', c, null, null, 'Not available in demo data.'));
+  if (row.available !== true) out.push(violation('inventory.unavailable', c, null, null, unavailableText(row)));
   const violations = out.sort(byRule);
   return { status: rollUp(violations, ctx.outOfPolicy), violations, cap: { cents, source: override ? 'route' : how, haul }, overCents };
 }
@@ -272,6 +305,13 @@ function evaluateHotel(row, ctx) {
   }
   if (h.maxStars != null && row.stars > h.maxStars) {
     out.push(violation('hotel.stars', 'hotel', h.maxStars, row.stars, `${row.stars}-star hotel. Your policy allows up to ${plural(h.maxStars, 'star')}.`));
+  } else if (h.maxStars != null && row.stars === 0 && sourceOf(row) !== 'demo') {
+    // A supplier hotel with no star rating can't be shown to be inside the limit: an approver decides, or,
+    // where the company blocks out-of-policy trips, it can't be picked (so the text never says approval).
+    const rule = `your up to ${plural(h.maxStars, 'star')} rule`;
+    out.push(violation('hotel.stars', 'hotel', h.maxStars, 0, ctx.outOfPolicy === 'block'
+      ? `This hotel has no star rating from the supplier, so it can't be shown to be within ${rule}.`
+      : `This hotel has no star rating from the supplier, so it needs approval under ${rule}.`));
   }
   if (h.minAdvanceDays > 0) {
     const days = daysBetween(ctx.today, row.checkIn);
@@ -281,7 +321,7 @@ function evaluateHotel(row, ctx) {
   if (h.refundableOnly && !refundable) {
     out.push(violation('hotel.refundable', 'hotel', null, false, "Your policy asks for a room you can cancel. This rate can't be cancelled."));
   }
-  if (row.available !== true) out.push(violation('inventory.unavailable', 'hotel', null, null, 'Not available in demo data.'));
+  if (row.available !== true) out.push(violation('inventory.unavailable', 'hotel', null, null, unavailableText(row)));
   const violations = out.sort(byRule);
   return { status: rollUp(violations, ctx.outOfPolicy), violations, cap: { cents: cap.cents, source: cap.source, basis: cap.basis }, overCents };
 }

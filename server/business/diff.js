@@ -18,7 +18,16 @@
 // compareTrips rows follow DIFF_FIELDS order, the TripComparison typedef's declared order (carrier, times,
 // stops, cabin, fare, bags, refunds, hotel, room, stars, dates) with the fare terms ('changes') after refunds
 // and the hotel cancellation ('hotelRefunds') after stars; one row per field and flight leg that differs.
+//
+// Supplier rows (real-suppliers design §8.3; a row's source is read from its offer id, source.sourceOf): what
+// the airline or hotel supplier doesn't say is never turned into a fact. "No changes allowed" only when the
+// alternative's terms hold source.TERMS.changesNotAllowed (an unknown change rule says "Changes not confirmed
+// by the airline" instead); a refund the terms don't confirm (source.refundsUnconfirmed) is "No refund
+// confirmed", never "Refunds nothing"; cabinKg and checkedKg 0 mean "not stated", so no line ever says
+// "0 kg", and checked bags the airline doesn't state are not compared; hotel stars 0 is "No star rating".
+// Demo rows keep every rule above exactly.
 const { CABIN_RANK, CABIN_LABELS } = require('./constants');
+const { sourceOf, TERMS, saysNoChanges, refundsUnconfirmed, changesUnconfirmed } = require('./source');
 
 /** The compared fields, in row order. */
 const DIFF_FIELDS = Object.freeze(['carrier', 'times', 'stops', 'cabin', 'fare', 'bags', 'refunds', 'changes', 'hotel', 'room', 'stars', 'hotelRefunds', 'dates']);
@@ -66,6 +75,19 @@ function tripDatesText(rows) {
   return parts.join(' to ');
 }
 
+/** A row from a real supplier (sandbox or live), whose unknown terms are not facts. */
+const supplier = r => sourceOf(r) !== 'demo';
+/** The terms text of a flight row. */
+const termsOf = r => (r && r.fare && typeof r.fare.terms === 'string' ? r.fare.terms : '');
+/** A supplier row's refund terms are not confirmed (the airline didn't say, or the fee is in another currency). */
+const refundUnknown = r => supplier(r) && refundsUnconfirmed(termsOf(r), { currency: r.currency || 'USD' });
+/** A supplier row's change rule is not confirmed (the airline didn't say whether, or the fee). */
+const changesUnknown = r => supplier(r) && changesUnconfirmed(termsOf(r));
+/** Does the row state its checked bags? (A supplier row whose terms say the airline doesn't state them: no.) */
+const checkedStated = r => !supplier(r) || !(termsOf(r).includes(TERMS.bagsUnknown) || termsOf(r).includes('checked bags not stated'));
+/** "4-star", "4.5-star", or "No star rating" for a supplier hotel with none (stars 0). */
+const starsText = r => (supplier(r) && r.stars === 0 ? 'No star rating' : `${r.stars}-star`);
+
 /** Flight-leg give-ups for one DIFF_FIELDS field. p: the pick's row, q: the alternative's; shift: days moved. */
 const FLIGHT_GIVE_UPS = {
   carrier: (p, q) => (q.carrier.code !== p.carrier.code ? [`Flies with ${q.carrier.name} instead of ${p.carrier.name}`] : []),
@@ -92,18 +114,31 @@ const FLIGHT_GIVE_UPS = {
   bags: (p, q) => {
     const out = [];
     const a = p.fare.checkedBags, b = q.fare.checkedBags;
-    if (b < a) out.push(`${b === 0 ? 'No checked bag' : plural(b, 'checked bag')} instead of ${a}`);
-    if (q.fare.cabinKg < p.fare.cabinKg) out.push(`${q.fare.cabinKg} kg cabin bag instead of ${p.fare.cabinKg} kg`);
+    if (checkedStated(p) && checkedStated(q) && b < a) out.push(`${b === 0 ? 'No checked bag' : plural(b, 'checked bag')} instead of ${a}`);
+    // A supplier's 0 kg is "not stated": only two stated weights compare.
+    const kgStated = !(supplier(p) || supplier(q)) || (q.fare.cabinKg > 0 && p.fare.cabinKg > 0);
+    if (kgStated && q.fare.cabinKg < p.fare.cabinKg) out.push(`${q.fare.cabinKg} kg cabin bag instead of ${p.fare.cabinKg} kg`);
     return out;
   },
   refunds: (p, q) => {
     const a = p.fare.refundablePercent, b = q.fare.refundablePercent;
+    if (refundUnknown(q)) {
+      // Nothing is confirmed for the alternative: it is a give-up only against a pick that does refund.
+      return a > 0 && !refundUnknown(p) ? [`No refund confirmed (yours refunds ${a}%)`] : [];
+    }
     if (b >= a) return [];
     return [`${b === 0 ? 'Refunds nothing' : `Refunds ${b}%`} (yours refunds ${a}%)`];
   },
   changes: (p, q) => {
-    if (p.fare.changeable && !q.fare.changeable) return ['No changes allowed'];
     const free = f => /free changes/i.test(f.terms || '');
+    if (supplier(q)) {
+      // Only the airline's own "not allowed" is a lost change; a rule it doesn't state is not confirmed.
+      if (saysNoChanges(termsOf(q))) return p.fare.changeable && !saysNoChanges(termsOf(p)) ? ['No changes allowed'] : [];
+      if (changesUnknown(q)) return p.fare.changeable && !changesUnknown(p) ? ['Changes not confirmed by the airline'] : [];
+      if (q.fare.changeable && free(p.fare) && !free(q.fare)) return ['No free changes'];
+      return [];
+    }
+    if (p.fare.changeable && !q.fare.changeable) return ['No changes allowed'];
     if (q.fare.changeable && free(p.fare) && !free(q.fare)) return ['No free changes'];
     return [];
   },
@@ -126,7 +161,7 @@ const HOTEL_GIVE_UPS = {
     if (Number.isInteger(b.sleeps) && Number.isInteger(a.sleeps) && b.sleeps < a.sleeps) out.push(`Sleeps ${b.sleeps} instead of ${a.sleeps}`);
     return out;
   },
-  stars: (p, q) => (q.stars < p.stars ? [`${q.stars}-star instead of ${p.stars}-star`] : []),
+  stars: (p, q) => (q.stars < p.stars ? [`${starsText(q)} instead of ${starsText(p)}`] : []),
   hotelRefunds: (p, q) => {
     const a = p.cancellation, b = q.cancellation;
     if (a.refundable && !b.refundable) return ["Can't be cancelled (yours can)"];
@@ -177,8 +212,17 @@ const FLIGHT_TEXT = {
   stops: r => `${r.stops ? `${plural(r.stops, 'stop')} in ${viaText(r)}` : 'Nonstop'}, ${hm(r.elapsedMinutes)}`,
   cabin: r => r.cabinLabel || CABIN_LABELS[r.cabin],
   fare: r => r.fare.name,
-  bags: r => `${r.fare.cabinKg} kg cabin bag, ${r.fare.checkedBags ? `${plural(r.fare.checkedBags, 'checked bag')} (${r.fare.checkedKg} kg)` : 'no checked bag'}`,
-  refunds: r => (r.fare.refundablePercent > 0 ? `Refunds ${r.fare.refundablePercent}%` : 'Refunds nothing'),
+  bags: r => {
+    if (!supplier(r)) return `${r.fare.cabinKg} kg cabin bag, ${r.fare.checkedBags ? `${plural(r.fare.checkedBags, 'checked bag')} (${r.fare.checkedKg} kg)` : 'no checked bag'}`;
+    // A supplier's weights are printed only when stated (0 kg is "not stated").
+    const checked = !checkedStated(r) ? 'checked bags not stated by the airline'
+      : r.fare.checkedBags ? `${plural(r.fare.checkedBags, 'checked bag')}${r.fare.checkedKg > 0 ? ` (${r.fare.checkedKg} kg)` : ''}` : 'no checked bag';
+    return r.fare.cabinKg > 0 ? `${r.fare.cabinKg} kg cabin bag, ${checked}` : checked.charAt(0).toUpperCase() + checked.slice(1);
+  },
+  refunds: r => {
+    if (refundUnknown(r)) return 'No refund confirmed';
+    return r.fare.refundablePercent > 0 ? `Refunds ${r.fare.refundablePercent}%` : 'Refunds nothing';
+  },
   changes: r => r.fare.terms,
 };
 const FLIGHT_LABEL = {
@@ -187,7 +231,7 @@ const FLIGHT_LABEL = {
 const HOTEL_TEXT = {
   hotel: r => `${r.name}, ${r.area}`,
   room: r => `${r.room.name}, ${r.room.bed}`,
-  stars: r => `${r.stars}-star`,
+  stars: r => starsText(r),
   hotelRefunds: r => r.cancellation.text,
 };
 const HOTEL_LABEL = { hotel: 'Hotel', room: 'Room', stars: 'Hotel class', hotelRefunds: 'Hotel cancellation' };

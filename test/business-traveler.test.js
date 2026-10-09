@@ -1134,3 +1134,181 @@ test('the Company list keeps a valid filter applied when another is refused', as
   assert.match(main, /<option value="2026-Q2" selected>/);
   assert.match(textOf(main), /No trips match these filters\./);
 });
+
+// ---------------------------------------------------------------------------------------------------------
+// Supplier test data (real-suppliers design §2.3, §2.4, §7.1 B items): the app's demo providers moved into the
+// flt_t./htl_t. namespace (test/business-sandbox.js useSandbox), with status 'sandbox'. Every amount on every
+// page sits in a data-price-source="sandbox" container that says TEST DATA; nothing says "Demo price".
+
+const sandbox = require('./business-sandbox');
+const { PRICE_CHECK_COPY, SUPPLIER_ERRORS } = require('../server/business/source');
+const { SANDBOX_RIBBON } = require('../server/views/business/parts');
+const resultsMod = require('../server/views/business/results');
+
+/** checkPage for a supplier test data page: no demo label, every amount labelled TEST DATA. */
+function checkSandboxPage(path, res, { min = 1 } = {}) {
+  const main = checkPage(path, res, { demo: false });
+  sandbox.assertSourceMoney(main, 'sandbox', { label: path, min });
+  return main;
+}
+
+test('supplier test data: results, request and trip pages label every amount TEST DATA; a trip inside policy is "Approved (test data)"', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const { B, c } = w;
+  const sb = sandbox.useSandbox(w.app);
+  const spy = sandbox.instrument(sb.composer);
+
+  let res = await c.sam.get(`${B}/trips/search?${qs(Q)}`);
+  assert.equal(res.status, 200, res.text.slice(0, 300));
+  let main = checkSandboxPage('/trips/search (sandbox)', res, { min: 20 });
+  assert.ok(textOf(res.text).includes(`TEST DATA ${SANDBOX_RIBBON}`), 'the ribbon');
+  assert.match(res.text, /class="bz-ribbon bz-ribbon-demo bz-ribbon-test"/);
+  for (const m of main.matchAll(/type="radio"[^>]*name="(out|back|hotelKey)"[^>]*value="([^"]*)"/g)) {
+    if (m[2]) assert.match(m[2], /^[fh]\.(flt|htl)_t\./, `${m[1]}: a sandbox key`);
+  }
+  assert.ok(textOf(main).includes(resultsMod.ONE_WAY_EACH), 'each way is its own one-way ticket');
+  assert.match(textOf(main), /these test fares/, 'the limits bar names the test fares');
+  assert.doesNotMatch(textOf(res.text), /demo (?:data|fares|schedule|hotels)/i);
+
+  // A draft inside policy, sent: approved by policy, with nothing booked.
+  const rid = await createDraft(w, await withinForm(w));
+  res = await c.sam.get(`${B}/trips/${rid}`);
+  main = checkSandboxPage('draft (sandbox)', res, { min: 3 });
+  res = await c.sam.post(`${B}/trips/${rid}/submit`, { rev: revOf(main, 'submit') });
+  assert.equal(res.location, `${B}/trips/${rid}?ok=auto_approved`);
+  assert.deepEqual(spy.checks('recheck'), ['confirm'], 'submit checks the price at the confirm level');
+  res = await c.sam.get(res.location);
+  main = checkSandboxPage('approved (sandbox)', res, { min: 1 });
+  assert.ok(textOf(main).includes('Approved (test data). Nothing was booked.'));
+  assert.doesNotMatch(textOf(main), /Approved to book/, 'test data is never "approved to book"');
+  assert.match(main, /<span class="bz-pill bz-pill-good">Approved \(test data\)<\/span>/);
+
+  // The trip list and the home page.
+  res = await c.sam.get(`${B}/trips`);
+  main = checkSandboxPage('/trips (sandbox)', res, { min: 1 });
+  assert.ok(textOf(main).includes('Approved (test data)'), 'the list says it too');
+  res = await c.sam.get(B);
+  assert.equal(res.status, 200);
+  sandbox.assertSourceMoney(mainOf(res.text), 'sandbox', { label: 'home (sandbox)' });
+  // The public page says the preview runs on the suppliers' test data.
+  res = await c.anon.get('/business');
+  assert.equal(res.status, 200);
+  assert.ok(textOf(res.text).includes("In this preview, flights and hotels come from our suppliers' test systems, so prices are test data, not real fares."));
+  assert.doesNotMatch(textOf(res.text), /on demo data/);
+});
+
+test('supplier test data on results: what the supplier left out, a hotel supplier that failed, and hotels not connected', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const { B, c } = w;
+  const sb = sandbox.useSandbox(w.app);
+  const search = sb.composer.search.bind(sb.composer);
+  sb.composer.search = async q => {
+    const r = await search(q);
+    r.legs.out.skipped = { otherCurrency: 3, currencies: ['GBP'], mixedCabin: 1 };
+    r.legs.hotel = { rows: [], benchmark: { incl_taxes: { medianCents: null, sampleSize: 0, excluded: [] }, excl_taxes: { medianCents: null, sampleSize: 0, excluded: [] } }, truncated: false, error: 'unavailable' };
+    return r;
+  };
+  let res = await c.sam.get(`${B}/trips/search?${qs(Q)}`);
+  assert.equal(res.status, 200);
+  let main = checkSandboxPage('results with notes', res, { min: 10 });
+  let text = textOf(main);
+  assert.ok(text.includes('3 fares priced in another currency are not shown.'));
+  assert.ok(text.includes('Fares that mix cabins are not shown yet.'));
+  assert.ok(text.includes(PRICE_CHECK_COPY.hotelsLeg), 'the hotel supplier failed: the flights still show');
+  assert.match(main, /type="radio"[^>]*name="out"/);
+  assert.doesNotMatch(main, /name="hotelKey"/, 'no hotel to pick');
+
+  // Every outbound fare in another currency: the leg says why it is empty.
+  sb.composer.search = async q => {
+    const r = await search(q);
+    r.legs.out = { rows: [], benchmark: { medianCents: null, sampleSize: 0, excluded: [] }, truncated: false, skipped: { otherCurrency: 12, currencies: ['GBP'] } };
+    return r;
+  };
+  res = await c.sam.get(`${B}/trips/search?${qs(Q)}`);
+  text = textOf(mainOf(res.text));
+  assert.ok(text.includes('This supplier priced every fare in GBP. Tripelyx Business shows US dollar prices only for now, so none can be shown.'));
+  assert.ok(text.includes("No flights found from CAI to LHR on Thu 12 Nov in the supplier's test system."));
+  sb.restore();
+
+  // Flights only: "Hotels are not connected yet."
+  sandbox.useSandbox(w.app, { hotels: false });
+  res = await c.sam.get(`${B}/trips/search?${qs(Q)}`);
+  assert.equal(res.status, 200);
+  main = checkSandboxPage('flights only', res, { min: 10 });
+  assert.ok(textOf(main).includes(resultsMod.HOTELS_NOT_CONNECTED));
+});
+
+test('supplier test data: a supplier that fails, or the company limit, is said on the trip form with the search kept; nothing is written', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const { B, c } = w;
+  const sb = sandbox.useSandbox(w.app);
+  const form = await withinForm(w);
+  const spy = sandbox.instrument(sb.composer);
+  const before = storeSnapshot(w.app);
+  for (const [code, status, message] of [['supplier_unavailable', 503, SUPPLIER_ERRORS.supplier_unavailable.flights], ['supplier_busy', 429, SUPPLIER_ERRORS.supplier_busy.message]]) {
+    spy.fail('search', code);
+    let res = await c.sam.get(`${B}/trips/search?${qs(Q)}`);
+    assert.equal(res.status, status, code);
+    let main = checkPage(`search ${code}`, res, { priced: false, demo: false });
+    assert.ok(textOf(main).includes(message), `${code}: ${textOf(main).slice(0, 300)}`);
+    assert.match(main, /<input id="t-depart" name="depart"[^>]*value="2026-11-12"/, 'the search is kept');
+    assert.match(main, /value="CAI"/);
+    // A new draft: the form again, not the results (which would ask the failing supplier once more).
+    res = await c.sam.post(`${B}/trips`, form);
+    assert.equal(res.status, status, `POST /trips ${code}`);
+    main = checkPage(`POST /trips ${code}`, res, { priced: false, demo: false });
+    assert.ok(textOf(main).includes(message));
+    assert.match(main, /<form[^>]*method="get"[^>]*action="[^"]*\/trips\/search"/);
+  }
+  assert.equal(storeSnapshot(w.app), before, 'nothing written');
+  spy.heal();
+  assert.equal((await c.sam.get(`${B}/trips/search?${qs(Q)}`)).status, 200);
+});
+
+test('supplier test data: a swap to an alternative that is gone answers 410 and drops it; a pick that is gone at POST /trips answers 409', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const { B, c } = w;
+  const sb = sandbox.useSandbox(w.app);
+  const lose = (provider, offerId) => {
+    const real = provider.getOffer;
+    provider.getOffer = async function getOffer(id, pq) { return id === offerId ? null : real.call(this, id, pq); };
+    return () => { provider.getOffer = real; };
+  };
+
+  // The alternative's hotel is no longer in the supplier's answer.
+  const rid = await createDraft(w, await businessForm(w));
+  const draft = (await w.svc.getRequest(w.as(w.sam), rid)).request;
+  const alt = draft.alternatives.find(a => a.change.component === 'hotel') || draft.alternatives[0];
+  const comp = alt.change.component;
+  const provider = comp === 'hotel' ? sb.inventory.hotels : sb.inventory.flights;
+  let back = lose(provider, alt.rows[comp].offerId);
+  const snap = storeSnapshot(w.app);
+  let res = await c.sam.post(`${B}/trips/${rid}/swap`, { altId: alt.id, rev: String(draft.rev) });
+  assert.equal(res.status, 410, textOf(mainOf(res.text)).slice(0, 300));
+  assert.equal(storeSnapshot(w.app), snap, 'nothing written');
+  let main = mainOf(res.text);
+  assert.match(textOf(main), /That option isn't available anymore\. Pick another one, or request approval for the trip as it is\./);
+  assert.doesNotMatch(main, new RegExp(`name="altId" value="${alt.id}"`), 'the gone option is not offered again');
+  sandbox.assertSourceMoney(main, 'sandbox', { label: '410 swap' });
+  back();
+
+  // The picked hotel went between the results page and Review trip.
+  const form = await businessForm(w);
+  back = lose(sb.inventory.hotels, form.hotelKey.replace(/^h\./, '').split('|')[0]);
+  res = await c.sam.post(`${B}/trips`, form);
+  assert.equal(res.status, 409, textOf(mainOf(res.text)).slice(0, 300));
+  main = mainOf(res.text);
+  assert.ok(textOf(main).includes("That option isn't available anymore. Pick another."), textOf(main).slice(0, 300));
+  assert.equal(storeSnapshot(w.app), snap, 'nothing written');
+  back();
+
+  // A form that is wrong is still a 422 in its own words (a return flight on a one-way search).
+  const { return: _ret, ...oneWay } = form;
+  res = await c.sam.post(`${B}/trips`, { ...oneWay, back: form.back });
+  assert.equal(res.status, 422);
+  assert.ok(textOf(mainOf(res.text)).includes('Choose a return flight for a return trip, and none one way.'));
+});

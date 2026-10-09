@@ -13,6 +13,15 @@
 //   An "optional" field below is still present, holding null, unless it is marked `[field]`.
 // - Ids: org_, usr_, btr_ (request), dep_ (department), aud_ (audit), inv_ (invite publicId), each followed
 //   by 16 base64url characters (lib/ids.id). Composite ids join parts with '.'.
+// - Real suppliers, round 1 (step R1-0, real-suppliers design §8.1 and §8.6): InventoryStatus gains 'sandbox';
+//   FlightRow.demo, HotelRow.demo and Request.demo become booleans ("not a real price": true for demo and
+//   sandbox, false only for live); the rest is additive and optional (PriceSource, CheckLevel, SkipCounts,
+//   the provider query and offer details additions, searchDetailed, leg skipped/error, Request.source,
+//   EvalCtx.priceSource, RequestView.liveError, the BusinessInventory fields). source.js holds the matching
+//   code: sourceOf, leastReal, requestSource, the row id namespaces and the frozen TERMS sentences.
+//   Added at the R1-m merge (both builders' needs): GetOfferOpts and QuoteInput (the provider calls),
+//   RequestRow.source, ReportTiles.priceSource, DashboardView.priceSource, CompanyExport's price_source and
+//   note, and describe's demo/source options.
 
 // =============================================================================================================
 // 0. Names
@@ -35,7 +44,32 @@
 /** @typedef {'approval'|'block'} OutOfPolicyMode */
 /** @typedef {'quarter'|'month'} BudgetPeriod */
 /** '2026-Q4' (quarter) or '2026-11' (month), from the departure's local date. @typedef {string} PeriodKey */
-/** @typedef {'demo'|'live'|'none'} InventoryStatus */
+/**
+ * 'demo' Tripelyx demo inventory; 'sandbox' real suppliers' test systems (round 1: Duffel test mode, LiteAPI
+ * sandbox; every amount is supplier test data); 'live' real suppliers' live systems (round 1b); 'none' no supplier.
+ * @typedef {'demo'|'sandbox'|'live'|'none'} InventoryStatus
+ */
+/**
+ * Where a price came from (source.js), least real first: 'demo' Tripelyx demo data, 'sandbox' a supplier's test
+ * system, 'live' a supplier's live system. A row's source is read from its offer id's namespace
+ * (source.sourceOf: flt_t./htl_t. sandbox, flt_l./htl_l. live, anything else demo).
+ * @typedef {'demo'|'sandbox'|'live'} PriceSource
+ */
+/**
+ * How far a price check may go with a real supplier (composer.price(..., { check }), carried as pq.check; demo
+ * providers and the frozen fakes ignore it). Design §5.1.
+ *   'auto'    createRequest, swap, price (the default): the short cache, else as 'confirm'
+ *   'peek'    the approver's page (getRequest, liveCheck): the cache, or one GET of a cached Duffel offer with
+ *             more than 60 s left. Never a search, never a prebook; otherwise 503 'live_check_skipped'
+ *   'confirm' submit: a fresh answer (Duffel GET offer, re-searching the leg when the offer is unknown or
+ *             expired; LiteAPI rates for that hotel). No prebook
+ *   'final'   decide: as 'confirm', then the LiteAPI prebook
+ * @typedef {'auto'|'peek'|'confirm'|'final'} CheckLevel
+ */
+/**
+ * The live-check errors getRequest turns into RequestView.liveError (source.LIVE_ERROR_CODES); it rethrows any other.
+ * @typedef {'supplier_unavailable'|'supplier_busy'|'live_check_skipped'|'unsupported_currency'} LiveCheckError
+ */
 /** @typedef {'within'|'out'|'blocked'} PolicyStatus */
 /** @typedef {'out'|'back'|'hotel'} Component */
 /** @typedef {'fare'|'flight'|'stops'|'cabin'|'dates'|'room'|'hotel'|'all_within'} ChangeKind */
@@ -339,7 +373,10 @@
  * @property {RequestMessage[]} messages ≤ 50
  * @property {HistoryEntry[]} history ≤ 50
  * @property {{ status: 'not_open' }} booking booking is not a phase 1 state
- * @property {true} demo
+ * @property {boolean} demo not a real price: source.requestSource(request) !== 'live' (true for demo and sandbox)
+ * @property {PriceSource} [source] where the rows' prices came from, written from the rows (source.leastReal) when
+ *   the request is created, swapped or re-priced. Absent on requests stored before real suppliers: they read as
+ *   'demo' (source.requestSource)
  */
 
 // =============================================================================================================
@@ -476,24 +513,31 @@
  * @property {string} key 'f.' + offerId + '|' + optionId
  * @property {'flight'} kind
  * @property {'out'|'back'} leg
- * @property {string} offerId
- * @property {string} optionId fare family code: 'LIGHT'|'CLASSIC'|'FLEX' in the demo
- * @property {{ code: string, name: string }} carrier the itinerary's carrier
+ * @property {string} offerId its namespace says the price source: 'flt_t.ZZ1234-ZZ88_20261112T0835_economy'
+ *   (sandbox), 'flt_l.…' (live), 'flt_ZM429_2026-11-12_economy' (demo)
+ * @property {string} optionId fare family code: 'LIGHT'|'CLASSIC'|'FLEX' in the demo; a supplier fare's slug
+ *   (≤ 40 characters, stable across searches) for supplier rows
+ * @property {{ code: string, name: string }} carrier the itinerary's carrier: for a supplier row the airline
+ *   selling the fare (offer details.owner), else the first segment's
  * @property {string[]} flightNumbers
  * @property {RowSegment[]} segments
- * @property {number} stops
- * @property {Array<{ code: string, city: string }>} via connection airports
+ * @property {number} stops connections, plus stops inside a segment for supplier rows (details.stops)
+ * @property {Array<{ code: string, city: string }>} via connection airports (supplier rows: then the in-segment
+ *   stop airports, in travel order, from details.via)
  * @property {number} flyingMinutes Σ segment durationMinutes (layovers excluded; decides the haul)
  * @property {number} elapsedMinutes first departure to last arrival, in UTC
  * @property {Cabin} cabin
  * @property {'Economy'|'Premium economy'|'Business'} cabinLabel
  * @property {{ code: string, name: string, cabinKg: number, checkedBags: number, checkedKg: number,
- *   changeable: boolean, refundablePercent: number, terms: string }} fare
+ *   changeable: boolean, refundablePercent: number, terms: string }} fare supplier rows: cabinKg and checkedKg 0
+ *   mean "not stated by the airline"; changeable false and refundablePercent 0 also when the airline doesn't say;
+ *   terms is source.TERMS.fare(...) (refunds, changes, bags; read it with source.saysNoChanges,
+ *   refundsUnconfirmed, changesUnconfirmed)
  * @property {RowLine[]} lines
  * @property {number|null} totalCents Σ lines
  * @property {'USD'} currency
  * @property {boolean} available
- * @property {true} demo
+ * @property {boolean} demo not a real price: demo === (source.sourceOf(row) !== 'live') (dto.assertRow)
  * @property {string} pricedAt
  */
 
@@ -502,10 +546,10 @@
  * @typedef {object} HotelRow
  * @property {string} key 'h.' + offerId + '|' + optionId
  * @property {'hotel'} kind
- * @property {string} offerId
- * @property {string} optionId room code
+ * @property {string} offerId 'htl_t.<supplier hotel id>' (sandbox), 'htl_l.…' (live), 'htl_CA-NILE' (demo)
+ * @property {string} optionId room code (supplier rows: a slug of the rate, board and refundability, ≤ 40)
  * @property {string} name
- * @property {number} stars
+ * @property {number} stars supplier rows: as the supplier gives it (may be 4.5); 0 = no star rating from the supplier
  * @property {string} area
  * @property {string} city
  * @property {string} country
@@ -515,23 +559,54 @@
  * @property {number} nights
  * @property {number|null} nightlyCents room rate per night, before taxes
  * @property {number|null} nightlyInclCents Math.round(totalCents / nights)
- * @property {RowLine[]} lines
+ * @property {RowLine[]} lines supplier rows: a 'fee' line is always paid at the hotel, and is counted in totalCents
  * @property {number|null} totalCents
  * @property {'USD'} currency
- * @property {{ refundable: boolean, freeUntilHours: number, text: string }} cancellation
+ * @property {{ refundable: boolean, freeUntilHours: number, text: string }} cancellation supplier rows: text is
+ *   source.TERMS.hotelNonRefundable, TERMS.hotelNoDeadline, or the supplier's own deadline
  * @property {string[]} amenities ≤ 4
  * @property {boolean} available
- * @property {true} demo
+ * @property {boolean} demo not a real price: demo === (source.sourceOf(row) !== 'live') (dto.assertRow)
  * @property {string} pricedAt
  */
 
 /** @typedef {FlightRow|HotelRow} Row */
 /** The rows of one trip. @typedef {{ out: FlightRow, back: FlightRow|null, hotel: HotelRow|null }} TripRows */
 
-/** One flight leg of a search. @typedef {{ rows: FlightRow[], benchmark: Benchmark, truncated: boolean }} FlightLegResult */
 /**
- * The hotel leg. Its benchmark depends on the policy's capBasis, so both are computed.
- * @typedef {{ rows: HotelRow[], benchmark: HotelBenchmarks, truncated: boolean }} HotelLegResult
+ * What a search left out, by reason (design §1.2, §3.2 to §3.5): the adapter's counts (DetailedSearch.skipped)
+ * plus the composer's own (otherCurrency, currencies). Each count is a whole number ≥ 1; a reason that left
+ * nothing out may be absent (read it as 0). Demo legs carry none.
+ * @typedef {object} SkipCounts
+ * @property {number} [mixedCabin] flight fares whose segments are in different cabins
+ * @property {number} [firstCabin] first-class fares
+ * @property {number} [unknownCarrier] fares with an owner, marketing or operating carrier that has no IATA code
+ * @property {number} [timeMismatch] fares whose local times disagree with the segment duration
+ * @property {number} [duplicateOption] a second fare or rate with the same option id in one offer (the cheaper is kept)
+ * @property {number} [feeOtherCurrency] hotel rates with a fee paid at the hotel in another currency
+ * @property {number} [noHotelData] hotels the supplier sent without hotel data (no name)
+ * @property {number} [otherCurrency] (composer) rows priced in a currency other than USD, dropped from the search
+ * @property {string[]} [currencies] (composer) those rows' currencies: ISO codes, sorted, no repeats
+ */
+/**
+ * One flight leg of a search. A real supplier's failure throws from composer.search (503 'supplier_unavailable',
+ * 429 'supplier_busy') instead of making a leg.
+ * @typedef {object} FlightLegResult
+ * @property {FlightRow[]} rows
+ * @property {Benchmark} benchmark
+ * @property {boolean} truncated
+ * @property {SkipCounts} [skipped] real suppliers only
+ */
+/**
+ * The hotel leg. Its benchmark depends on the policy's capBasis, so both are computed. When a real hotel
+ * supplier fails, the composer catches it here: { rows: [], benchmark, truncated: false, error: 'unavailable' },
+ * and the flights still show.
+ * @typedef {object} HotelLegResult
+ * @property {HotelRow[]} rows
+ * @property {HotelBenchmarks} benchmark
+ * @property {boolean} truncated
+ * @property {SkipCounts} [skipped] real suppliers only
+ * @property {'unavailable'|null} [error] the hotel supplier failed (absent or null otherwise)
  */
 /** @typedef {{ incl_taxes: Benchmark, excl_taxes: Benchmark }} HotelBenchmarks */
 
@@ -542,13 +617,14 @@
  * @property {TripQuery} query as searched: hotel.checkIn may have moved to the outbound arrival's local date.
  *   This, not the parsed form, is the query to price a selection with and to store on a request.
  * @property {{ out: FlightLegResult, back: FlightLegResult|null, hotel: HotelLegResult|null }} legs
- * @property {string} pricedAt
+ * @property {string} pricedAt the earliest time a supplier answered for any leg (offer details.answeredAt, so a
+ *   cached answer keeps the supplier's time), else now() (demo)
  * @property {InventoryStatus} status
  */
 
 /**
- * composer.price(selection, query): every selected row priced again from the provider (client prices are
- * never trusted). totalCents is null when anything is unavailable.
+ * composer.price(selection, query, { previous, check }): every selected row priced again from the provider
+ * (client prices are never trusted). totalCents is null when anything is unavailable. pricedAt as SearchResult's.
  * @typedef {{ rows: TripRows, totalCents: number|null, pricedAt: string, unavailable: Component[] }} PriceResult
  */
 
@@ -577,6 +653,69 @@
  */
 /** @typedef {{ status: 'same'|'changed'|'unavailable', row: Row, wasCents: number, nowCents: number|null }} RecheckComponent row: the fresh row (available:false when gone) */
 
+/**
+ * The query the composer hands a Business flight provider (search, searchDetailed, getOffer, and quote's query).
+ * @typedef {object} BusinessFlightQuery
+ * @property {string} from IATA
+ * @property {string} to IATA
+ * @property {string} departDate 'YYYY-MM-DD'
+ * @property {Cabin} cabin
+ * @property {1} passengers
+ * @property {CheckLevel} [check] price checks only (absent: 'auto'); demo providers and the fakes ignore it
+ */
+
+/**
+ * The query the composer hands a Business hotel provider.
+ * @typedef {object} BusinessHotelQuery
+ * @property {string} where the searched city ('Cairo')
+ * @property {string} [country] the searched country as the airport data names it ('Egypt'); a real supplier
+ *   needs it (LiteAPI countryCode, through suppliers/places.js). Additive: the composer adds it
+ * @property {string} checkIn
+ * @property {string} checkOut
+ * @property {1} guests
+ * @property {CheckLevel} [check] price checks only (absent: 'auto')
+ */
+
+/**
+ * What a real supplier adapter adds to a provider Offer's `details` (providers/contracts.js shapes). All
+ * optional: demo offers have none of them, so demo rows are unchanged. offer.demo is true for demo and sandbox
+ * offers (not a real price) and false only for live ones; dto copies it into row.demo.
+ * @typedef {object} SupplierOfferDetails
+ * @property {{ code: string, name: string }} [owner] flights: the airline selling the fare (Duffel offer.owner;
+ *   'ZZ' is named "Test airline" in sandbox). dto.flightRow takes row.carrier from it when present
+ * @property {Array<{ code: string, city: string }>} [via] flights: connection airports, then stops inside a
+ *   segment, in travel order. dto.flightRow takes row.via from it when present
+ * @property {number} [stops] flights: connections plus stops inside a segment (dto.flightRow already reads it)
+ * @property {string} [answeredAt] ISO time the supplier answered (kept on a cache hit); the composer's pricedAt is
+ *   the earliest of them
+ */
+
+/**
+ * provider.searchDetailed(pq), an optional Business provider method (real suppliers only; demo providers and
+ * the frozen fakes don't have it): search(pq)'s offers, plus what the adapter left out. The composer calls it
+ * when the provider defines it, else search(pq).
+ * @typedef {object} DetailedSearch
+ * @property {object[]} offers provider Offers (validateOffer passes), as search(pq) would return them; offers in
+ *   another currency are passed through (the composer drops and counts them)
+ * @property {SkipCounts} skipped the adapter's own counts (never otherCurrency or currencies)
+ * @property {boolean} truncated more options existed than the adapter kept (the cheapest search.MAX_PRICED_PER_LEG)
+ */
+/** @typedef {(pq: BusinessFlightQuery|BusinessHotelQuery) => Promise<DetailedSearch>} SearchDetailed */
+
+/**
+ * How the composer calls a Business provider beyond providers/contracts.js (both additive; demo providers and the
+ * frozen fakes ignore the extra argument and field):
+ * - `provider.getOffer(offerId, pq, { optionId })`: the optional third argument names the option the caller will
+ *   quote, so a real supplier can check that one fare (DuffelFlights GETs that fare's Duffel offer at 'peek',
+ *   'confirm' and 'final'). Without it a supplier re-searches instead of guessing a fare.
+ * - `provider.quote({ offerId, optionId, query, offer })`: `offer` is the provider Offer the composer was just
+ *   handed by search, searchDetailed or getOffer for the same query. A real supplier reads the quote from it
+ *   locally (no second network call); without it, quote() calls getOffer itself. At `query.check === 'final'`
+ *   LiteApiHotels.quote prebooks the room.
+ * @typedef {{ optionId?: string|null }} GetOfferOpts
+ * @typedef {{ offerId: string, optionId: string, query: BusinessFlightQuery|BusinessHotelQuery, offer?: object|null }} QuoteInput
+ */
+
 // =============================================================================================================
 // 5. Policy evaluation (plan §E2 to §E4). Pure: no store, no clock (today is passed in).
 
@@ -600,6 +739,8 @@
  * @property {{ out?: Benchmark, back?: Benchmark, hotel?: Benchmark }} benchmarks hotel: the one on rules.hotels.capBasis
  * @property {Record<string, string>} carriers code → name (texts say "Sahara Wings", never "ZS")
  * @property {string} orgName ("Sahara Wings isn't used by Acme Inc")
+ * @property {PriceSource} [priceSource] the rows' source (request or inventory); absent means 'demo'. Only texts
+ *   depend on it, and demo texts are unchanged
  */
 
 /**
@@ -653,6 +794,9 @@
  * demo price chip), then `suffix`.
  * e.g. { key: 'flight.short', text: 'Flights under 6 hours: Economy, up to', cents: 71200,
  *        suffix: 'each way (median of these demo fares plus 20%)' }
+ * On supplier prices only an amount worked out from the search (a median cap, a Price to Beat that is not only
+ * the company's limit) gets the source chip: views/business/parts.fromSearch reads that from the suffix this
+ * module writes, and test/business-policy.test.js pins the two together.
  * @typedef {{ key: string, text: string, cents: number|null, suffix: string }} LimitItem
  */
 /** describe.limitsBar(...). @typedef {{ heading: string, items: LimitItem[] }} LimitsBar heading: 'Your limits for this search (Standard policy, v3)' */
@@ -846,6 +990,9 @@
  * @property {Array<{ userId: string, name: string, requests: number, committedCents: number }>} byTraveler
  * @property {ComingSoonTile[]} comingSoon
  * @property {boolean} truncated "Based on the 5,000 most recent requests"
+ * @property {PriceSource|null} [priceSource] where the counted requests' prices came from (reports.totalsSource):
+ *   'sandbox' when any of them is supplier test data ("Includes supplier test data"), else the least real
+ *   (source.leastReal); null when none is counted
  */
 
 /**
@@ -872,6 +1019,8 @@
  * @property {AuditEntry[]|null} recent audit.view: the 5 newest
  * @property {BudgetRow[]|null} budgets budget.view.dept (own department) or budget.view.all
  * @property {ReportTiles|null} reports view 'reports' only (reports.view)
+ * @property {PriceSource|null} [priceSource] the source of the totals this page shows (the period's counted
+ *   requests and the rows it lists), by the same rule as ReportTiles.priceSource; null when it counts none
  */
 
 /**
@@ -880,7 +1029,13 @@
  * @typedef {{ filename: string, body: string, rowCount: number, truncated: boolean }} CsvExport
  */
 
-/** service.exportCompany(actor). filename 'tripelyx-company-<org id>.json'. @typedef {{ filename: string, json: string }} CompanyExport */
+/**
+ * service.exportCompany(actor). filename 'tripelyx-company-<org id>.json'. In `json`, each request carries
+ * `price_source` ('Demo price', 'Supplier test data' or 'Supplier price', the CSV's words), and the note is
+ * team.EXPORT_NOTES.demo when every request is demo (or there are none), else EXPORT_NOTES.supplier ("from demo
+ * prices, supplier test data or supplier prices, as each request's price_source says").
+ * @typedef {{ filename: string, json: string }} CompanyExport
+ */
 
 // =============================================================================================================
 // 9. What the service methods return to routes (view models)
@@ -911,6 +1066,7 @@
  * @property {EffectiveStatus} status
  * @property {PolicyStatus} policyStatus
  * @property {string} at
+ * @property {PriceSource} source source.requestSource(request): 'demo' for a request stored before real suppliers
  */
 
 /**
@@ -941,7 +1097,17 @@
  * @property {string} pricedAt
  * @property {string[]} blockedCarrierNames for the banner ("Sahara Wings isn't used by Acme Inc. …")
  */
-/** @typedef {{ rows: ResultRow[], outsideCount: number, truncated: boolean, benchmark: Benchmark }} LegView outsideCount: out-of-policy plus blocked rows */
+/**
+ * One leg of the results page.
+ * @typedef {object} LegView
+ * @property {ResultRow[]} rows
+ * @property {number} outsideCount out-of-policy plus blocked rows
+ * @property {boolean} truncated
+ * @property {Benchmark} benchmark
+ * @property {SkipCounts} [skipped] from the leg (real suppliers): the per-cause notices
+ * @property {'unavailable'|null} [error] hotel leg only: the hotel supplier failed ("Hotels are not available right
+ *   now. You can still request the flights.")
+ */
 /** @typedef {LegView & { city: string, country: string, priceToBeatCents: number|null }} HotelLegView */
 
 /**
@@ -954,6 +1120,9 @@
  * @property {{ userId: string, name: string, rule: 'approver'|'manager'|'admin'|null }|null} approver for "Goes to Dana Lee (your manager)"
  * @property {BudgetPreview|null} budget draft: the preview; pending: the impact; approved: the hold's budget
  * @property {RecheckResult|null} live deciders only, on GET (writes nothing)
+ * @property {LiveCheckError|null} [liveError] deciders only, on GET: why live is null when the check could not answer.
+ *   'live_check_skipped': "The price is checked again when you approve."; any other: "We couldn't check the price
+ *   just now. It is checked again when you approve." (source.PRICE_CHECK_COPY). Absent or null when it answered
  * @property {TripComparison|null} comparison deciders only: requested vs cheapestWithin
  * @property {{ from: number, to: number }|null} policyChanged the tier's policy moved on since the evaluation
  * @property {string} timezone the org's, for every time on the page
@@ -1063,15 +1232,27 @@
 //     alternatives and the explainer ONLY through `this.*`, so tests can hand in test/business-fakes.js.
 
 /**
- * inventory.createBusinessInventory(config, { registry, overrides }). status 'none' (production today):
- * flights and hotels null, airports() and carriers() empty, cityFor() null.
+ * inventory.createBusinessInventory(config, { registry, overrides, fetch, now, log }). status 'none' (production
+ * today): flights and hotels null, airports() and carriers() empty, cityFor() null. A configured real supplier
+ * that cannot work (a problem) gives 'none' with `problem` set, never demo.
  * @typedef {object} BusinessInventory
  * @property {InventoryStatus} status
- * @property {object|null} flights a FlightProvider (providers/contracts.js): BusinessDemoFlights in demo
- * @property {object|null} hotels a HotelProvider: BusinessDemoHotels in demo
+ * @property {object|null} flights a FlightProvider (providers/contracts.js): BusinessDemoFlights in demo,
+ *   suppliers/duffel.js DuffelFlights in sandbox
+ * @property {object|null} hotels a HotelProvider: BusinessDemoHotels in demo, suppliers/liteapi.js LiteApiHotels in
+ *   sandbox; null when no hotel supplier works (never demo hotels next to supplier flights)
  * @property {() => Array<{ code: string, name: string, city: string, country: string, tz: string }>} airports
- * @property {() => Array<{ code: string, name: string }>} carriers
+ * @property {() => Array<{ code: string, name: string }>} carriers in sandbox: suppliers/airlines.js plus
+ *   { code: 'ZZ', name: 'Test airline' }, never the demo carriers
  * @property {(iata: string) => { city: string, country: string }|null} cityFor DBB → New Alamein, CAI → Cairo
+ * @property {PriceSource|null} [source] where its prices come from; null for status 'none'. Absent (the frozen
+ *   fakes): 'demo' for status 'demo', 'live' for 'live', null for 'none'
+ * @property {boolean} [hotelsConnected] false when flights work but hotels don't ("Hotels are not connected
+ *   yet"). Absent: hotels !== null
+ * @property {number} [maxVariantSearches] the provider searches composer.variants may spend (4 by default for real
+ *   suppliers, BUSINESS_SUPPLIER_VARIANT_SEARCHES; search.MAX_SEARCHES 20 for demo). Absent: MAX_SEARCHES
+ * @property {string|null} [problem] why a configured supplier is off, for platform admins on /admin/business: a
+ *   short sentence that names the variable, never its value or any part of it. null when none; absent means null
  */
 
 /**
@@ -1079,10 +1260,17 @@
  * @typedef {object} TripComposer
  * @property {(raw: RawTripQuery, opts: { today: string }) => TripQuery} parseQuery search.parseTripQuery with
  *   this inventory's airports; 422 'invalid_query' with per-field details
- * @property {(query: TripQuery) => Promise<SearchResult>} search 503 'no_supplier' when status is 'none'
- * @property {(selection: Selection, query: TripQuery) => Promise<PriceResult>} price 422 'invalid_selection' for malformed keys
+ * @property {(query: TripQuery) => Promise<SearchResult>} search 503 'no_supplier' when status is 'none'; a real
+ *   flight supplier's failure throws 503 'supplier_unavailable' or 429 'supplier_busy' (a hotel failure is the
+ *   hotel leg's error instead). Rows in another currency are dropped and counted (leg skipped.otherCurrency),
+ *   never a 422 for the whole search
+ * @property {(selection: Selection, query: TripQuery, opts?: { previous?: TripRows|null, check?: CheckLevel }) => Promise<PriceResult>} price
+ *   422 'invalid_selection' for malformed keys; 422 'unsupported_currency' for a selected row in another
+ *   currency; check (default 'auto') goes to the provider as pq.check
  * @property {(query: TripQuery, selection: Selection, opts: { datesFlexible: boolean, maxSearches?: number }) => Promise<VariantResult>} variants
- * @property {(request: Request) => Promise<RecheckResult>} recheck recheck.recheck(this, request)
+ *   maxSearches is also capped by inventory.maxVariantSearches
+ * @property {(request: Request, opts?: { check?: CheckLevel }) => Promise<RecheckResult>} recheck
+ *   recheck.recheck(this, request, opts); 503 'live_check_skipped' for a 'peek' that would need a search
  */
 
 /**
@@ -1100,7 +1288,8 @@
  * @property {(row: Row, ctx: EvalCtx) => Evaluation} evaluateComponent
  * @property {(rows: { out: FlightRow, back?: FlightRow|null, hotel?: HotelRow|null }, ctx: EvalCtx, opts: { budget: BudgetCtx|null }) => TripEvaluation} evaluateTrip
  * @property {(capCents: number|null, hotelBenchmark: Benchmark|null) => number|null} priceToBeat
- * @property {(rules: PolicyRules, opts: { tier: Tier, version: number, orgName: string, carriers: Record<string, string> }) => PolicyDescription} describe
+ * @property {(rules: PolicyRules, opts: { tier: Tier, version: number, orgName: string, carriers: Record<string, string>, demo?: boolean, source?: PriceSource|null }) => PolicyDescription} describe
+ *   demo (default true) says "the demo fares"; source, when given, wins ('sandbox': "the test fares", 'live': "the fares")
  * @property {(rules: PolicyRules, ctx: EvalCtx, search: SearchResult) => LimitsBar} limitsBar
  * @property {(traveler: Member, membersById: Record<string, Member>) => ApproverResolution} resolveApprover
  * @property {(request: Request, event: LifecycleEvent, opts: TransitionOpts) => TransitionResult} transition
