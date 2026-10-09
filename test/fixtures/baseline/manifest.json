@@ -1,0 +1,661 @@
+{
+  "commit": "a0ea0bc",
+  "fixedNow": "2026-10-09T09:00:00.000Z",
+  "normalised": [
+    "?v= on .css/.js links",
+    "copyright year"
+  ],
+  "providerSources": {
+    "server/providers/mock/BaseMockProvider.js": "f3674cca971a7f88b4bdebb534176267cacfbb73fa916e1b5e2e6e730765aa01",
+    "server/providers/mock/demo-data/cars.js": "36becd975478544c09bdc4ffe052a0e8406bc913ebc0b870aa367d9532988d74",
+    "server/providers/mock/demo-data/cruises.js": "d78337e6ce7fea8ad744bd8656d3719c00830a22d6ed1104d8668cbc6456b2ae",
+    "server/providers/mock/demo-data/experiences.js": "b239a9233b9fb5846e5ef42e33cb71b60f9d95e4c54e2855d47aa5272b6ec7f3",
+    "server/providers/mock/demo-data/flights.js": "5b3867e77f613551ad4b2270b9290673080027e7fc1041b91d930a1de65b47e5",
+    "server/providers/mock/demo-data/hotels.js": "13bc43b7fde19b8aa59ac19c66d4c4e9c07a7c5f7531406326da3f0532c4f6d8",
+    "server/providers/mock/demo-data/README.md": "6d1d1893106c4ec39313b78b44eb1e40970c8cbbacbd186707cf7174b5c4d8d7",
+    "server/providers/mock/demo-data/transfers.js": "5575e630694887e2ddcd4914cafa7a52dd0306d057369003524e61b885dabfca",
+    "server/providers/mock/demo-data/yachts.js": "5afc3d87c7ec871c8911c907bd53ba9b09dc7128802c81b9c3e2a15788dc264c",
+    "server/providers/mock/index.js": "10b6ea7dbe9ddd93a5c4134cb06d071ede577f5e8790295b2b8728a65a26e543",
+    "server/providers/mock/MockCarProvider.js": "6206a7d087d53bd4889323576b49b37ea6481e556ded763a5a9ab0ce4bb24988",
+    "server/providers/mock/MockCruiseProvider.js": "10a5faf9d0a1fbd32a3a896bed78d53566bfff21d1507276b1b9bd720df26c73",
+    "server/providers/mock/MockExperienceProvider.js": "fe517c8143f5fa6a49e3827e24cfefc9e775af3ae16ec783c04fd4aaa20eb327",
+    "server/providers/mock/MockFlightProvider.js": "390923a21c5f66dd46c9cf285f3d67452eba014b932a6411995102a8110931d8",
+    "server/providers/mock/MockHotelProvider.js": "ea96f8f4d6193b7e29cb7d0ea40a47c32830328e6bfe1cbd34231e562c063ecd",
+    "server/providers/mock/MockTransferProvider.js": "eb93d8b506fb5b1a6a7593223be2cd24087c04be67587c287995b64dcdf1c364",
+    "server/providers/mock/MockYachtProvider.js": "9bdf73f05fc0fae9d856f4911ae1271c62bcdbf615d0484242f577e974ddb53e"
+  },
+  "envs": {
+    "dev": {
+      "env": {},
+      "pages": {
+        "/": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "be1241190182567382a07f24ae766aeb62da6aa1bd920d6af3ff932be0550aeb"
+        },
+        "/brands": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "1fab4dd29efc70b42724bfbfcebf3260065827d33dd36039afb694419361c6a8"
+        },
+        "/technology": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "ad3e1b7faa37e5abb106258e6c985a83b9ee35401c467dc23c4c05ead6576d25"
+        },
+        "/partners": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "e579c96fd1b8e930116fe1766e0f576d95ece453a1727487921417fdbbc645e8"
+        },
+        "/about": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "f9261a102b1ae4f0c25d4e800d235576bf54902f8d06591e80aa36ad30e24d99"
+        },
+        "/contact": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "baaffef5e77924eaf13ec77b8c7c88ac435dc5c16d00b9cb4c741ab4a486034c"
+        },
+        "/ai-travel-agent": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "168b39137c6315347334772b07e3a8f046ce16c9ef0523db4068d7e2d7b2ce6b"
+        },
+        "/plan": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "92d4a6e6596f7c83550cd6ffac4ada2030549087150f4f2a917d71f42f909e93"
+        },
+        "/how-it-works": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "faf4dbfd5daa8b28152d36bdb11d248945d45ee5bc7ee21e98b6f5741a63d12b"
+        },
+        "/faq": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "f7cefec92133d0b07e59298036f40f79ec24db332e5b0ff7c818eadf3586ea6d"
+        },
+        "/destinations": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "5e818ad75f0bb36d60abf17bc9a3b75572b1b76b6ae6760d78a9a05e32dd9888"
+        },
+        "/signin": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "00e8b2dc3ea961136539f31877bfe34e30d76425d92cd906b1ccf1a0564e3a60"
+        },
+        "/signup": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "3caa2d0d76de80751e04bedcb01a99da0c9d9034ea3f8eba553064078d26fc7a"
+        },
+        "/robots.txt": {
+          "status": 200,
+          "type": "text/plain",
+          "sha256": "63a88ded09b0e02b5319df14489a6a3afbe7a0168f598cabcad7d8572d37e8e1"
+        },
+        "/sitemap.xml": {
+          "status": 200,
+          "type": "application/xml",
+          "sha256": "c6d40831f0ba5f4b98af1f9fa3d510a44b52bbbb75156bd2d3131d57caea5e15"
+        },
+        "/business": {
+          "status": 404,
+          "type": "text/html",
+          "sha256": "8877171ed818407d4dfdf09ea97fa5fc8bbf6dd451ed921f11dfb57bb2019ce5"
+        }
+      },
+      "signedIn": {
+        "/ai-travel-agent": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "f19fc50943a5491ff529782f7b033634186a82726dcb62b1131f1ca31e992c05"
+        },
+        "/my-trips": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "3c73d4e0edf8d0824d68c7fbdb83005a993d5df1f09c2e4997ef97fc25616120"
+        },
+        "/plan": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "5b14a3e59241ab70124951fe1020018c20d8e20683a191ebe9aaf72cb434da8a"
+        }
+      },
+      "full": {
+        "book": {
+          "path": "/book",
+          "status": 200,
+          "type": "text/html",
+          "file": "dev/book.html",
+          "sha256": "b68d1e5886df75ab58e06b4b7d2048e70fb04ceaf182153d7b16ed95593010b4"
+        },
+        "book-flights": {
+          "path": "/book/flights",
+          "status": 200,
+          "type": "text/html",
+          "file": "dev/book-flights.html",
+          "sha256": "2736d71b6e46c79d52c9eea10347efc086f3a132bc59144f18e0c5e6ff672d9c"
+        },
+        "book-hotels": {
+          "path": "/book/hotels",
+          "status": 200,
+          "type": "text/html",
+          "file": "dev/book-hotels.html",
+          "sha256": "75e85e7c3ada8b017d42d0157528fbe4939e84adb0890b7f1903ccadbf9908fc"
+        },
+        "book-flights-cai-dbb": {
+          "path": "/book/flights?from=CAI&to=DBB&departDate=2026-10-23&passengers=2&cabin=economy",
+          "status": 200,
+          "type": "text/html",
+          "file": "dev/book-flights-cai-dbb.html",
+          "sha256": "55077ceb7872ff676ba6a58ea9dcb4d337305ff5890cbe4dd40355ada25180fa"
+        },
+        "book-flights-cai-lhr": {
+          "path": "/book/flights?from=CAI&to=LHR&departDate=2026-11-12&passengers=1&cabin=economy",
+          "status": 200,
+          "type": "text/html",
+          "file": "dev/book-flights-cai-lhr.html",
+          "sha256": "81c4bc0c72902600f11d5262a66e3e3e520bdd567e8b5a4884622c521fee61b1"
+        },
+        "book-hotels-new-alamein": {
+          "path": "/book/hotels?where=New+Alamein&checkIn=2026-10-23&checkOut=2026-10-26&guests=2",
+          "status": 200,
+          "type": "text/html",
+          "file": "dev/book-hotels-new-alamein.html",
+          "sha256": "75e85e7c3ada8b017d42d0157528fbe4939e84adb0890b7f1903ccadbf9908fc"
+        },
+        "book-hotels-cairo": {
+          "path": "/book/hotels?where=Cairo&checkIn=2026-11-12&checkOut=2026-11-16&guests=1",
+          "status": 200,
+          "type": "text/html",
+          "file": "dev/book-hotels-cairo.html",
+          "sha256": "be6658ab1714e8a995237977b16faf422d9a7e4cdea28a552dc160a4f4ca590f"
+        },
+        "book-hotels-dubai": {
+          "path": "/book/hotels?where=Dubai&checkIn=2026-11-12&checkOut=2026-11-16&guests=1",
+          "status": 200,
+          "type": "text/html",
+          "file": "dev/book-hotels-dubai.html",
+          "sha256": "2f5e8d31a358b12d76ac9493b12bc4033e1c003528a2bd45978b0f4b080733a4"
+        },
+        "api-flights-cai-dbb": {
+          "path": "/api/search/flights?from=CAI&to=DBB&departDate=2026-10-23&passengers=2&cabin=economy",
+          "status": 200,
+          "type": "application/json",
+          "file": "dev/api-flights-cai-dbb.json",
+          "sha256": "33e30b7982f00dac1de76c1407b2902b51ae26691b59f9afbe159d136696284f"
+        },
+        "api-flights-cai-lhr": {
+          "path": "/api/search/flights?from=CAI&to=LHR&departDate=2026-11-12&passengers=1&cabin=economy",
+          "status": 200,
+          "type": "application/json",
+          "file": "dev/api-flights-cai-lhr.json",
+          "sha256": "50f138ce36a3db9bfc95e2877bb7f49b33d3b1eb104c5b66c8bbe45815fae366"
+        },
+        "api-hotels-new-alamein": {
+          "path": "/api/search/hotels?where=New+Alamein&checkIn=2026-10-23&checkOut=2026-10-26&guests=2",
+          "status": 200,
+          "type": "application/json",
+          "file": "dev/api-hotels-new-alamein.json",
+          "sha256": "489e40527e3067b59cb100d6bfd7eb999953e62e905d9afd117a2fb12e28a418"
+        },
+        "api-hotels-cairo": {
+          "path": "/api/search/hotels?where=Cairo&checkIn=2026-11-12&checkOut=2026-11-16&guests=1",
+          "status": 200,
+          "type": "application/json",
+          "file": "dev/api-hotels-cairo.json",
+          "sha256": "e14f09d93b8d34b3b67257cfbb2b9d9544accae0072577df66c144108ce25c39"
+        },
+        "api-hotels-dubai": {
+          "path": "/api/search/hotels?where=Dubai&checkIn=2026-11-12&checkOut=2026-11-16&guests=1",
+          "status": 200,
+          "type": "application/json",
+          "file": "dev/api-hotels-dubai.json",
+          "sha256": "62f45770f6a4dd55ab9e4f5a0be8cbce9dfc79435d1fe85a93b9e0c33bb40e9b"
+        },
+        "offer-flight": {
+          "path": "/book/flights/flt_ZS624-ZS681_2026-11-12_economy?from=CAI&to=LHR&departDate=2026-11-12&passengers=1&cabin=economy",
+          "status": 200,
+          "type": "text/html",
+          "file": "dev/offer-flight.html",
+          "sha256": "bd2006b705209b1ca16c50865f2ec4183eadac69d9984c9dbd1c7f91ab74570a"
+        },
+        "offer-hotel": {
+          "path": "/book/hotels/htl_NA-LATIN?where=New+Alamein&checkIn=2026-10-23&checkOut=2026-10-26&guests=2",
+          "status": 200,
+          "type": "text/html",
+          "file": "dev/offer-hotel.html",
+          "sha256": "9bbd6809673123915cc82bb2e1b475db8fd92a32d489f89dc002f7f04c92a1ea"
+        }
+      },
+      "offers": {
+        "offer-flight": "/book/flights/flt_ZS624-ZS681_2026-11-12_economy?from=CAI&to=LHR&departDate=2026-11-12&passengers=1&cabin=economy",
+        "offer-hotel": "/book/hotels/htl_NA-LATIN?where=New+Alamein&checkIn=2026-10-23&checkOut=2026-10-26&guests=2"
+      }
+    },
+    "live": {
+      "env": {
+        "APP_ENV": "staging",
+        "ENABLE_TRIPS": "true",
+        "ALLOW_DEMO_INVENTORY": "true",
+        "PAYMENT_MODE": "test",
+        "DATABASE_URL": "memory",
+        "PUBLIC_BASE_URL": "https://www.tripelyx.com"
+      },
+      "pages": {
+        "/": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "be1241190182567382a07f24ae766aeb62da6aa1bd920d6af3ff932be0550aeb"
+        },
+        "/brands": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "1fab4dd29efc70b42724bfbfcebf3260065827d33dd36039afb694419361c6a8"
+        },
+        "/technology": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "ad3e1b7faa37e5abb106258e6c985a83b9ee35401c467dc23c4c05ead6576d25"
+        },
+        "/partners": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "e579c96fd1b8e930116fe1766e0f576d95ece453a1727487921417fdbbc645e8"
+        },
+        "/about": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "f9261a102b1ae4f0c25d4e800d235576bf54902f8d06591e80aa36ad30e24d99"
+        },
+        "/contact": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "baaffef5e77924eaf13ec77b8c7c88ac435dc5c16d00b9cb4c741ab4a486034c"
+        },
+        "/ai-travel-agent": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "996c4b6800b2db3a8765df805b7d17bc9cb2f31075cb6251bfbb1e7fe6245749"
+        },
+        "/plan": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "013378e313aee6e60d11c2cda3e6bb9e903d0929b273e6776f20a449cd3f0c4c"
+        },
+        "/how-it-works": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "368c5dad87d122ed8c54ea0bc59cfd470831621191fc03e4cbd5bf014d723246"
+        },
+        "/faq": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "cf56991cdbbf0f016b16477d1b2b3074385d66b905bb9ce4cd7c0770108c9124"
+        },
+        "/destinations": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "3ccbbecd39de9fde810cbae6352d2c5c602d5af11d577d2f483806339e267a03"
+        },
+        "/signin": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "4b984f41f02a93259bf0ca41a0365f56c92606bd3346222d83afd27af655668b"
+        },
+        "/signup": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "e9b58dd556ca2dea7b03991a30853c57b9d4a914dd4f4f477aa1164375440a25"
+        },
+        "/robots.txt": {
+          "status": 200,
+          "type": "text/plain",
+          "sha256": "614de976e91f448428b45be975234d4d1cae8ca09378787fd349a082b4b5dae8"
+        },
+        "/sitemap.xml": {
+          "status": 200,
+          "type": "application/xml",
+          "sha256": "56095960e6f2a614d7199c6c30bfcb7c08426e899af0d0296901a8594e498475"
+        },
+        "/business": {
+          "status": 404,
+          "type": "text/html",
+          "sha256": "949d5469072e285a26fc7c6c7940b6b9c0228788e008e5692e0604764bc79d82"
+        }
+      },
+      "signedIn": {
+        "/ai-travel-agent": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "15640a38edce5e9ee887edd467515ceb53ca1386fc91cb2e96a451aa05b3e929"
+        },
+        "/my-trips": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "54a9614fd043bee7efc7536b55c7d062bb64a341dc9cd28eb050c28e0953b74f"
+        },
+        "/plan": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "431ae4b12ca1d6d052ed118964d99c03adbb0e98407a38699e570bf5ca9527dc"
+        }
+      },
+      "full": {
+        "book": {
+          "path": "/book",
+          "status": 200,
+          "type": "text/html",
+          "file": "live/book.html",
+          "sha256": "e8bbdd7b7317750907d3a77e3b943d9b9d1123dd48bcf7cc45991ecff7f8424a"
+        },
+        "book-flights": {
+          "path": "/book/flights",
+          "status": 200,
+          "type": "text/html",
+          "file": "live/book-flights.html",
+          "sha256": "4f9adeed2b19404583a316c767c8c0d2ff67ffc4000e3cbbc5b2ceb1e3c3325b"
+        },
+        "book-hotels": {
+          "path": "/book/hotels",
+          "status": 200,
+          "type": "text/html",
+          "file": "live/book-hotels.html",
+          "sha256": "8f8e553960601f832b3d1300b6859200b32d4b1ce0bc5f3d1b79e2747bb98717"
+        },
+        "book-flights-cai-dbb": {
+          "path": "/book/flights?from=CAI&to=DBB&departDate=2026-10-23&passengers=2&cabin=economy",
+          "status": 200,
+          "type": "text/html",
+          "file": "live/book-flights-cai-dbb.html",
+          "sha256": "15d80c11f437732bb1a9cc6b0063b1f74a2922d2f0f3d07d7f9453f046f71f9d"
+        },
+        "book-flights-cai-lhr": {
+          "path": "/book/flights?from=CAI&to=LHR&departDate=2026-11-12&passengers=1&cabin=economy",
+          "status": 200,
+          "type": "text/html",
+          "file": "live/book-flights-cai-lhr.html",
+          "sha256": "4477d46a9b891cf49e518dd7b02aafd8c5e42e5e27af28144c289095d1653c7f"
+        },
+        "book-hotels-new-alamein": {
+          "path": "/book/hotels?where=New+Alamein&checkIn=2026-10-23&checkOut=2026-10-26&guests=2",
+          "status": 200,
+          "type": "text/html",
+          "file": "live/book-hotels-new-alamein.html",
+          "sha256": "8f8e553960601f832b3d1300b6859200b32d4b1ce0bc5f3d1b79e2747bb98717"
+        },
+        "book-hotels-cairo": {
+          "path": "/book/hotels?where=Cairo&checkIn=2026-11-12&checkOut=2026-11-16&guests=1",
+          "status": 200,
+          "type": "text/html",
+          "file": "live/book-hotels-cairo.html",
+          "sha256": "ca66f2f199f32a4f5499f68b314bc3abe65177c9bb02cf686ab44d951cf99267"
+        },
+        "book-hotels-dubai": {
+          "path": "/book/hotels?where=Dubai&checkIn=2026-11-12&checkOut=2026-11-16&guests=1",
+          "status": 200,
+          "type": "text/html",
+          "file": "live/book-hotels-dubai.html",
+          "sha256": "260c69900ea36c8f331d7ccc1c5c4a164709e9d82ab10989d8b4351112747d9d"
+        },
+        "api-flights-cai-dbb": {
+          "path": "/api/search/flights?from=CAI&to=DBB&departDate=2026-10-23&passengers=2&cabin=economy",
+          "status": 200,
+          "type": "application/json",
+          "file": "live/api-flights-cai-dbb.json",
+          "sha256": "33e30b7982f00dac1de76c1407b2902b51ae26691b59f9afbe159d136696284f"
+        },
+        "api-flights-cai-lhr": {
+          "path": "/api/search/flights?from=CAI&to=LHR&departDate=2026-11-12&passengers=1&cabin=economy",
+          "status": 200,
+          "type": "application/json",
+          "file": "live/api-flights-cai-lhr.json",
+          "sha256": "50f138ce36a3db9bfc95e2877bb7f49b33d3b1eb104c5b66c8bbe45815fae366"
+        },
+        "api-hotels-new-alamein": {
+          "path": "/api/search/hotels?where=New+Alamein&checkIn=2026-10-23&checkOut=2026-10-26&guests=2",
+          "status": 200,
+          "type": "application/json",
+          "file": "live/api-hotels-new-alamein.json",
+          "sha256": "489e40527e3067b59cb100d6bfd7eb999953e62e905d9afd117a2fb12e28a418"
+        },
+        "api-hotels-cairo": {
+          "path": "/api/search/hotels?where=Cairo&checkIn=2026-11-12&checkOut=2026-11-16&guests=1",
+          "status": 200,
+          "type": "application/json",
+          "file": "live/api-hotels-cairo.json",
+          "sha256": "e14f09d93b8d34b3b67257cfbb2b9d9544accae0072577df66c144108ce25c39"
+        },
+        "api-hotels-dubai": {
+          "path": "/api/search/hotels?where=Dubai&checkIn=2026-11-12&checkOut=2026-11-16&guests=1",
+          "status": 200,
+          "type": "application/json",
+          "file": "live/api-hotels-dubai.json",
+          "sha256": "62f45770f6a4dd55ab9e4f5a0be8cbce9dfc79435d1fe85a93b9e0c33bb40e9b"
+        },
+        "offer-flight": {
+          "path": "/book/flights/flt_ZS624-ZS681_2026-11-12_economy?from=CAI&to=LHR&departDate=2026-11-12&passengers=1&cabin=economy",
+          "status": 200,
+          "type": "text/html",
+          "file": "live/offer-flight.html",
+          "sha256": "596d582c4c6f53b6ebeebac53d228f599d4133c214590f845c88d13afe84e27b"
+        },
+        "offer-hotel": {
+          "path": "/book/hotels/htl_NA-LATIN?where=New+Alamein&checkIn=2026-10-23&checkOut=2026-10-26&guests=2",
+          "status": 200,
+          "type": "text/html",
+          "file": "live/offer-hotel.html",
+          "sha256": "abc345167debd3b2870946d9e89ca7183be42612ac4f682e140cc739b3f6d0b7"
+        }
+      },
+      "offers": {
+        "offer-flight": "/book/flights/flt_ZS624-ZS681_2026-11-12_economy?from=CAI&to=LHR&departDate=2026-11-12&passengers=1&cabin=economy",
+        "offer-hotel": "/book/hotels/htl_NA-LATIN?where=New+Alamein&checkIn=2026-10-23&checkOut=2026-10-26&guests=2"
+      }
+    },
+    "tripsOff": {
+      "env": {
+        "ENABLE_TRIPS": "false"
+      },
+      "pages": {
+        "/": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "be1241190182567382a07f24ae766aeb62da6aa1bd920d6af3ff932be0550aeb"
+        },
+        "/brands": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "19ebdd68dd6306362519fe1487118971b72d55171531cf0f06b84c9a8111957b"
+        },
+        "/technology": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "ad3e1b7faa37e5abb106258e6c985a83b9ee35401c467dc23c4c05ead6576d25"
+        },
+        "/partners": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "e579c96fd1b8e930116fe1766e0f576d95ece453a1727487921417fdbbc645e8"
+        },
+        "/about": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "f9261a102b1ae4f0c25d4e800d235576bf54902f8d06591e80aa36ad30e24d99"
+        },
+        "/contact": {
+          "status": 200,
+          "type": "text/html",
+          "sha256": "baaffef5e77924eaf13ec77b8c7c88ac435dc5c16d00b9cb4c741ab4a486034c"
+        },
+        "/ai-travel-agent": {
+          "status": 404,
+          "type": "text/html",
+          "sha256": "e7bc42664b239e98ba6202ecc647e8857213cb85272f5a7727cc7c8304f2ea15"
+        },
+        "/plan": {
+          "status": 404,
+          "type": "text/html",
+          "sha256": "e7bc42664b239e98ba6202ecc647e8857213cb85272f5a7727cc7c8304f2ea15"
+        },
+        "/how-it-works": {
+          "status": 404,
+          "type": "text/html",
+          "sha256": "e7bc42664b239e98ba6202ecc647e8857213cb85272f5a7727cc7c8304f2ea15"
+        },
+        "/faq": {
+          "status": 404,
+          "type": "text/html",
+          "sha256": "e7bc42664b239e98ba6202ecc647e8857213cb85272f5a7727cc7c8304f2ea15"
+        },
+        "/destinations": {
+          "status": 404,
+          "type": "text/html",
+          "sha256": "e7bc42664b239e98ba6202ecc647e8857213cb85272f5a7727cc7c8304f2ea15"
+        },
+        "/signin": {
+          "status": 404,
+          "type": "text/html",
+          "sha256": "e7bc42664b239e98ba6202ecc647e8857213cb85272f5a7727cc7c8304f2ea15"
+        },
+        "/signup": {
+          "status": 404,
+          "type": "text/html",
+          "sha256": "e7bc42664b239e98ba6202ecc647e8857213cb85272f5a7727cc7c8304f2ea15"
+        },
+        "/robots.txt": {
+          "status": 404,
+          "type": "text/html",
+          "sha256": "e7bc42664b239e98ba6202ecc647e8857213cb85272f5a7727cc7c8304f2ea15"
+        },
+        "/sitemap.xml": {
+          "status": 404,
+          "type": "text/html",
+          "sha256": "e7bc42664b239e98ba6202ecc647e8857213cb85272f5a7727cc7c8304f2ea15"
+        },
+        "/business": {
+          "status": 404,
+          "type": "text/html",
+          "sha256": "e7bc42664b239e98ba6202ecc647e8857213cb85272f5a7727cc7c8304f2ea15"
+        }
+      },
+      "signedIn": null,
+      "full": {
+        "book": {
+          "path": "/book",
+          "status": 200,
+          "type": "text/html",
+          "file": "tripsOff/book.html",
+          "sha256": "5ceb65754cdcc551f751f367b8e232db57381a01239623232f06016615539795"
+        },
+        "book-flights": {
+          "path": "/book/flights",
+          "status": 200,
+          "type": "text/html",
+          "file": "tripsOff/book-flights.html",
+          "sha256": "4fd0b5aaca2f1495f50fad321f612ce8de200da9d3b61b5c0351a700bcdb9e11"
+        },
+        "book-hotels": {
+          "path": "/book/hotels",
+          "status": 200,
+          "type": "text/html",
+          "file": "tripsOff/book-hotels.html",
+          "sha256": "3389f14aedbcc50e4610a3bdadfed7beb4e11f008e058886c561df5729eba94d"
+        },
+        "book-flights-cai-dbb": {
+          "path": "/book/flights?from=CAI&to=DBB&departDate=2026-10-23&passengers=2&cabin=economy",
+          "status": 200,
+          "type": "text/html",
+          "file": "tripsOff/book-flights-cai-dbb.html",
+          "sha256": "ebe57a7e53f0a5252175d7123dc17f3026f4227b7b27ef77c2fb94081a952167"
+        },
+        "book-flights-cai-lhr": {
+          "path": "/book/flights?from=CAI&to=LHR&departDate=2026-11-12&passengers=1&cabin=economy",
+          "status": 200,
+          "type": "text/html",
+          "file": "tripsOff/book-flights-cai-lhr.html",
+          "sha256": "a1b548fa1219e54d082e4a42f64ab08f702b6948922352d627eb18049f58c369"
+        },
+        "book-hotels-new-alamein": {
+          "path": "/book/hotels?where=New+Alamein&checkIn=2026-10-23&checkOut=2026-10-26&guests=2",
+          "status": 200,
+          "type": "text/html",
+          "file": "tripsOff/book-hotels-new-alamein.html",
+          "sha256": "3389f14aedbcc50e4610a3bdadfed7beb4e11f008e058886c561df5729eba94d"
+        },
+        "book-hotels-cairo": {
+          "path": "/book/hotels?where=Cairo&checkIn=2026-11-12&checkOut=2026-11-16&guests=1",
+          "status": 200,
+          "type": "text/html",
+          "file": "tripsOff/book-hotels-cairo.html",
+          "sha256": "ef7e010249e01b9a7d72dce76d2ca17e07bb31a56b33de19aa9aa084445598a6"
+        },
+        "book-hotels-dubai": {
+          "path": "/book/hotels?where=Dubai&checkIn=2026-11-12&checkOut=2026-11-16&guests=1",
+          "status": 200,
+          "type": "text/html",
+          "file": "tripsOff/book-hotels-dubai.html",
+          "sha256": "29cb59a090bd270b6716810957164249720b69228aa8a7222b4323d46abfd10d"
+        },
+        "api-flights-cai-dbb": {
+          "path": "/api/search/flights?from=CAI&to=DBB&departDate=2026-10-23&passengers=2&cabin=economy",
+          "status": 200,
+          "type": "application/json",
+          "file": "tripsOff/api-flights-cai-dbb.json",
+          "sha256": "33e30b7982f00dac1de76c1407b2902b51ae26691b59f9afbe159d136696284f"
+        },
+        "api-flights-cai-lhr": {
+          "path": "/api/search/flights?from=CAI&to=LHR&departDate=2026-11-12&passengers=1&cabin=economy",
+          "status": 200,
+          "type": "application/json",
+          "file": "tripsOff/api-flights-cai-lhr.json",
+          "sha256": "50f138ce36a3db9bfc95e2877bb7f49b33d3b1eb104c5b66c8bbe45815fae366"
+        },
+        "api-hotels-new-alamein": {
+          "path": "/api/search/hotels?where=New+Alamein&checkIn=2026-10-23&checkOut=2026-10-26&guests=2",
+          "status": 200,
+          "type": "application/json",
+          "file": "tripsOff/api-hotels-new-alamein.json",
+          "sha256": "489e40527e3067b59cb100d6bfd7eb999953e62e905d9afd117a2fb12e28a418"
+        },
+        "api-hotels-cairo": {
+          "path": "/api/search/hotels?where=Cairo&checkIn=2026-11-12&checkOut=2026-11-16&guests=1",
+          "status": 200,
+          "type": "application/json",
+          "file": "tripsOff/api-hotels-cairo.json",
+          "sha256": "e14f09d93b8d34b3b67257cfbb2b9d9544accae0072577df66c144108ce25c39"
+        },
+        "api-hotels-dubai": {
+          "path": "/api/search/hotels?where=Dubai&checkIn=2026-11-12&checkOut=2026-11-16&guests=1",
+          "status": 200,
+          "type": "application/json",
+          "file": "tripsOff/api-hotels-dubai.json",
+          "sha256": "62f45770f6a4dd55ab9e4f5a0be8cbce9dfc79435d1fe85a93b9e0c33bb40e9b"
+        },
+        "offer-flight": {
+          "path": "/book/flights/flt_ZS624-ZS681_2026-11-12_economy?from=CAI&to=LHR&departDate=2026-11-12&passengers=1&cabin=economy",
+          "status": 200,
+          "type": "text/html",
+          "file": "tripsOff/offer-flight.html",
+          "sha256": "85d467f8b353fe32810d22b080b78eba52a22d686185897f5ec3d08a2ad77796"
+        },
+        "offer-hotel": {
+          "path": "/book/hotels/htl_NA-LATIN?where=New+Alamein&checkIn=2026-10-23&checkOut=2026-10-26&guests=2",
+          "status": 200,
+          "type": "text/html",
+          "file": "tripsOff/offer-hotel.html",
+          "sha256": "717830a90610b5eec2bfa8a3ab8df7f2c6d166507ce7130e30548c9d2891cfdc"
+        }
+      },
+      "offers": {
+        "offer-flight": "/book/flights/flt_ZS624-ZS681_2026-11-12_economy?from=CAI&to=LHR&departDate=2026-11-12&passengers=1&cabin=economy",
+        "offer-hotel": "/book/hotels/htl_NA-LATIN?where=New+Alamein&checkIn=2026-10-23&checkOut=2026-10-26&guests=2"
+      }
+    }
+  }
+}

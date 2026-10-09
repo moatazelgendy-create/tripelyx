@@ -2,6 +2,7 @@ const express = require('express');
 const { homeView } = require('../views/home');
 const { refine, parseRefine } = require('../booking/refine');
 const { brandsView, technologyView, partnersView, aboutView, contactView } = require('../views/pages');
+const { businessMarketingView } = require('../views/business/marketing');
 const { bookView, bookIndexView, offerView, checkoutView, bookingView, manageView, defaultsFor } = require('../views/book');
 const { notFoundView } = require('../views/errors');
 const { tripCheckoutView, tripBookingView } = require('../views/trips/pages');
@@ -29,6 +30,10 @@ function pagesRouter(ctx, { writeLimiter }) {
   r.get('/partners', (req, res) => send(res, partnersView(ctx)));
   r.get('/about', (req, res) => send(res, aboutView(ctx)));
   r.get('/contact', (req, res) => send(res, contactView(ctx)));
+  // Tripelyx Business's company page exists only when Business is enabled (it renders with Travel by Budget on
+  // or off); with Business off /business is the app's 404, as before Business. The workspace under
+  // /business/... is mounted in app.js.
+  if (config.business && config.business.enabled) r.get('/business', (req, res) => send(res, businessMarketingView(ctx)));
 
   r.get('/book', (req, res) => send(res, bookIndexView(ctx)));
 

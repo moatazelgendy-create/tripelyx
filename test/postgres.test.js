@@ -59,3 +59,39 @@ test('PostgresStore keeps generic records and lists a user’s bookings', { skip
     await store.close();
   }
 });
+
+test('PostgresStore keeps the Business store contract: insert-only, compare-and-set, leads newest first', { skip: !url && 'TEST_DATABASE_URL not set' }, async () => {
+  const store = new PostgresStore({ connectionString: url, ssl: false });
+  await store.init();
+  try {
+    const sfx = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    const owner = `org_${sfx}`;
+    assert.equal(await store.insertRecord('biz_test', `a_${sfx}`, { n: 1 }, { userId: owner }), true);
+    assert.equal(await store.insertRecord('biz_test', `a_${sfx}`, { n: 2 }, { userId: `org_other_${sfx}` }), false);
+    assert.deepEqual(await store.getRecord('biz_test', `a_${sfx}`), { n: 1 });
+    assert.equal((await store.listRecords('biz_test', { userId: owner })).length, 1);
+
+    assert.equal(await store.updateRecord('biz_test', `a_${sfx}`, 1, { n: 9 }), null, 'wrong rev (missing rev counts as 0)');
+    assert.equal(await store.updateRecord('biz_test', `missing_${sfx}`, 0, { n: 9 }), null);
+    assert.deepEqual(await store.updateRecord('biz_test', `a_${sfx}`, 0, { n: 2, rev: 77 }), { n: 2, rev: 1 });
+    assert.equal(await store.updateRecord('biz_test', `a_${sfx}`, 0, { n: 3 }), null, 'a stale rev loses');
+    assert.equal((await store.listRecords('biz_test', { userId: owner })).length, 1, 'the owner is kept');
+
+    const results = await Promise.all(['x', 'y', 'z'].map(v => store.updateRecord('biz_test', `a_${sfx}`, 1, { v })));
+    assert.equal(results.filter(Boolean).length, 1, 'racing compare-and-sets: exactly one wins');
+    assert.equal((await store.getRecord('biz_test', `a_${sfx}`)).rev, 2);
+    const inserts = await Promise.all([1, 2, 3].map(n => store.insertRecord('biz_test', `new_${sfx}`, { n })));
+    assert.equal(inserts.filter(Boolean).length, 1, 'racing inserts: exactly one wins');
+
+    for (const n of [1, 2]) {
+      await store.savePartnerLead({ id: `lead_${sfx}_${n}`, name: `n${n}` });
+      await new Promise(r => setTimeout(r, 5));
+    }
+    const leads = await store.listPartnerLeads({ limit: 2 });
+    assert.deepEqual(leads.map(l => l.id), [`lead_${sfx}_2`, `lead_${sfx}_1`]);
+    await store.deleteRecord('biz_test', `a_${sfx}`);
+    await store.deleteRecord('biz_test', `new_${sfx}`);
+  } finally {
+    await store.close();
+  }
+});

@@ -19,6 +19,21 @@ function int(value, fallback, name) {
   return n;
 }
 
+// A whole number of at least one, or the fallback when unset.
+function pos(value, fallback, name) {
+  if (value === undefined || value === '') return fallback;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 1) throw new Error(`${name} must be a whole number of 1 or more (got "${value}")`);
+  return n;
+}
+
+// One of a fixed list of values; anything else fails at boot.
+function oneOf(value, list, name) {
+  const v = String(value).trim().toLowerCase();
+  if (!list.includes(v)) throw new Error(`${name} must be one of: ${list.join(', ')} (got "${value}")`);
+  return v;
+}
+
 function databaseUrlFromParts(env) {
   if (!env.DATABASE_HOST) return null;
   if (!env.DATABASE_NAME || !env.DATABASE_USER || !env.DATABASE_PASSWORD) {
@@ -106,9 +121,32 @@ function loadConfig(env = process.env) {
     huntIntervalMinutes: int(env.HUNT_INTERVAL_MINUTES, 360, 'HUNT_INTERVAL_MINUTES'),
   };
 
+  // Tripelyx Business (company travel workspaces under /business/...). Off in every APP_ENV unless
+  // ENABLE_BUSINESS=true (D11): with it off, every existing page renders exactly as before Business. It
+  // runs with Travel by Budget on or off. Not a vertical: it is not in `flags` and never reaches publicConfig.
+  const approvalHours = pos(env.BUSINESS_APPROVAL_HOURS, 24, 'BUSINESS_APPROVAL_HOURS');
+  if (approvalHours < 4 || approvalHours > 168) throw new Error(`BUSINESS_APPROVAL_HOURS must be from 4 to 168 (got "${env.BUSINESS_APPROVAL_HOURS}")`);
+  const business = {
+    enabled: bool(env.ENABLE_BUSINESS, false),
+    // false: a new company waits for a platform admin to confirm it at /admin/business before teammates can join.
+    selfServe: bool(env.BUSINESS_SELF_SERVE, false),
+    inviteDays: pos(env.BUSINESS_INVITE_DAYS, 7, 'BUSINESS_INVITE_DAYS'),
+    maxOrgsPerUser: pos(env.BUSINESS_MAX_ORGS_PER_USER, 3, 'BUSINESS_MAX_ORGS_PER_USER'),
+    // How long a request waits for a decision before it expires: the default for new companies (each
+    // company can pick 4 to 168 hours).
+    approvalHours,
+    writeLimit: pos(env.BUSINESS_WRITE_LIMIT, 300, 'BUSINESS_WRITE_LIMIT'),
+    computeLimit: pos(env.BUSINESS_COMPUTE_LIMIT, 30, 'BUSINESS_COMPUTE_LIMIT'),
+    authLimit: pos(env.BUSINESS_AUTH_LIMIT, 20, 'BUSINESS_AUTH_LIMIT'),
+    // What writes the notes next to cheaper alternatives. Only the rule-based explainer exists ('rules'):
+    // no AI model is connected, and anything else fails at boot.
+    explainer: oneOf(env.BUSINESS_EXPLAINER || 'rules', ['rules'], 'BUSINESS_EXPLAINER'),
+  };
+
   return {
     appEnv,
     trips,
+    business,
     isProduction,
     port: Number(env.PORT || 4100),
     publicBaseUrl: env.PUBLIC_BASE_URL || null,

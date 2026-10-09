@@ -27,6 +27,15 @@ function validateTraveler(input) {
   return t;
 }
 
+// A same-site path to redirect to after sign-in (?next=…), or `fallback`. It must start with one "/" that
+// is not followed by "/" or "\" (browsers read both "//host" and "/\host" as another site) and contain no
+// control characters (a tab or newline inside "/\t/host" is dropped by browsers, which then see "//host").
+// At most 300 characters are kept.
+const LOCAL_PATH = /^\/(?![/\\])[^\x00-\x1f]*$/;
+function localPath(n, fallback) {
+  return typeof n === 'string' && LOCAL_PATH.test(n) ? n.slice(0, 300) : fallback;
+}
+
 function validatePartnerLead(input) {
   const lead = {
     name: str(input && input.name, 100),
@@ -40,7 +49,10 @@ function validatePartnerLead(input) {
   if (!EMAIL.test(lead.email)) errors.email = 'Enter a valid email address.';
   if (!lead.message || lead.message.length < 10) errors.message = 'Tell us a little more (at least 10 characters).';
   if (Object.keys(errors).length) throw new AppError('invalid_lead', 'Check the highlighted fields.', 422, errors);
+  // The company enquiry form on /business sends kind 'business' (the platform admin lists those). Any other
+  // value, or none, leaves the field out, so every other lead is stored exactly as before.
+  if (input && input.kind === 'business') lead.kind = 'business';
   return lead;
 }
 
-module.exports = { str, validateTraveler, validatePartnerLead, EMAIL };
+module.exports = { str, validateTraveler, validatePartnerLead, localPath, EMAIL };

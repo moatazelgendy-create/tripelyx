@@ -8,6 +8,9 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY server ./server
 COPY public ./public
+# The platform admin CLI (D1). On AWS it runs as a one-off ECS task with a command override:
+# node scripts/platform-admin.js list | grant --email <e> | revoke --email <e> [--sign-out].
+COPY scripts/platform-admin.js ./scripts/platform-admin.js
 # Amazon RDS certificate authorities, so the app can verify the database's TLS certificate.
 ADD --chmod=644 https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem /app/certs/rds-global-bundle.pem
 USER node

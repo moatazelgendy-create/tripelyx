@@ -6,6 +6,7 @@ const NAV = [
   { href: '/', label: 'Home', key: 'home' },
   { href: '/brands', label: 'Our Brands', key: 'brands' },
   { href: '/technology', label: 'Technology', key: 'technology' },
+  { href: '/business', label: 'Business', key: 'business' },
   { href: '/partners', label: 'Partners', key: 'partners' },
   { href: '/about', label: 'About', key: 'about' },
   { href: '/contact', label: 'Contact', key: 'contact' },
@@ -19,25 +20,33 @@ const TRIP_NAV = [
   { href: '/destinations', label: 'Destinations', key: 'destinations' },
   { href: '/my-trips', label: 'My Trips', key: 'my-trips' },
   { href: '/faq', label: 'Help', key: 'faq' },
+  { href: '/business', label: 'Business', key: 'business' },
 ];
+
+// The corporate footer keeps exactly its five links: Business is a header item only.
+const FOOTER_NAV = NAV.filter(n => n.key !== 'home' && n.key !== 'business');
 
 function logo(cls = '') {
   return html`<span class="wordmark ${cls}">TRIPELY<span class="wordmark-x">X</span></span>`;
 }
 
-function accountArea(user) {
+// Everything Business adds to the shared chrome renders only when Tripelyx Business runs here
+// (ctx.businessNav): the menu item, the header class that scopes its header CSS, the .header-name span and
+// the trip footer link. With Business off, every page is byte-identical to the site before Business.
+function accountArea(user, biz) {
   if (!user) return html`<a class="btn btn-ghost btn-sm header-cta" href="/signin">${icon('user')} Sign in</a>`;
+  const first = user.name.split(' ')[0];
   return html`<div class="header-account header-cta">
     ${user.isAdmin ? html`<a class="text-link header-admin" href="/admin">Admin</a>` : ''}
-    <a class="btn btn-ghost btn-sm" href="/my-trips">${icon('user')} ${user.name.split(' ')[0]}</a>
+    <a class="btn btn-ghost btn-sm" href="/my-trips">${icon('user')} ${biz ? html`<span class="header-name">${first}</span>` : first}</a>
   </div>`;
 }
 
-function header(active, trips) {
-  const nav = trips ? TRIP_NAV : NAV;
+function header(active, trips, biz) {
+  const nav = (trips ? TRIP_NAV : NAV).filter(n => biz || n.key !== 'business');
   const { user } = current();
   return html`
-<header class="site-header${trips ? ' site-header-trips' : ''}" data-header>
+<header class="site-header${trips ? ' site-header-trips' : ''}${biz ? ' site-header-biz' : ''}" data-header>
   <div class="container header-inner">
     <a class="header-logo" href="${trips ? '/ai-travel-agent' : '/'}" aria-label="Tripelyx home">${logo()}</a>
     <nav class="main-nav" id="main-nav" aria-label="Main">
@@ -48,7 +57,7 @@ function header(active, trips) {
         ? html`<a class="btn btn-navy btn-sm nav-cta-mobile" href="${user ? '/my-trips' : '/signin'}">${user ? 'My account' : 'Sign in'} ${icon('arrow')}</a>`
         : html`<a class="btn btn-navy btn-sm nav-cta-mobile" href="/partners#partner-form">Partner With Us ${icon('arrow')}</a>`}
     </nav>
-    ${trips ? accountArea(user) : html`<a class="btn btn-navy btn-sm header-cta" href="/partners#partner-form">Partner With Us ${icon('arrow')}</a>`}
+    ${trips ? accountArea(user, biz) : html`<a class="btn btn-navy btn-sm header-cta" href="/partners#partner-form">Partner With Us ${icon('arrow')}</a>`}
     <button class="nav-toggle" type="button" aria-controls="main-nav" aria-expanded="false" data-nav-toggle>
       <span class="sr-only">Menu</span>${icon('menu', 'icon-open')}${icon('close', 'icon-close')}
     </button>
@@ -56,7 +65,7 @@ function header(active, trips) {
 </header>`;
 }
 
-function tripFooter() {
+function tripFooter(biz) {
   const col = (title, links) => html`<div class="tf-col"><h2>${title}</h2><ul>${links.map(([h, l]) => html`<li><a href="${h}">${l}</a></li>`)}</ul></div>`;
   return html`
 <footer class="site-footer trip-footer">
@@ -65,7 +74,7 @@ function tripFooter() {
       <div class="tf-brand"><a class="footer-logo" href="/ai-travel-agent" aria-label="Tripelyx home">${logo()}</a><p>You set the budget. We build the trip, and keep the numbers clear.</p></div>
       ${col('Plan', [['/plan', 'Build My Trip'], ['/plan?style=surprise', 'Surprise Me'], ['/destinations', 'Destinations'], ['/trips-under-1000', 'Trips under $1,000'], ['/trips-under-1500', 'Trips under $1,500'], ['/beach-vacations', 'Beach vacations']])}
       ${col('Help', [['/how-it-works', 'How it works'], ['/faq', 'FAQ'], ['/my-trips', 'My Trips'], ['/manage', 'Find a booking'], ['/custom-trip', 'Request a custom trip'], ['/contact', 'Contact us']])}
-      ${col('Company', [['/about', 'About us'], ['/brands', 'Our brands'], ['/technology', 'Technology'], ['/partners', 'Partners'], ['/book', 'Alamein Go booking']])}
+      ${col('Company', [['/about', 'About us'], ['/brands', 'Our brands'], ['/technology', 'Technology'], ['/partners', 'Partners'], ...(biz ? [['/business', 'Tripelyx Business']] : []), ['/book', 'Alamein Go booking']])}
       ${col('Policies', [['/legal/terms', 'Terms & Conditions'], ['/legal/privacy', 'Privacy Policy'], ['/legal/cancellation', 'Cancellation Policy'], ['/legal/refunds', 'Refund Policy'], ['/legal/cookies', 'Cookie Policy'], ['/legal/travel-disclosures', 'Travel Disclosures']])}
     </div>
     <p class="copyright">© ${new Date().getFullYear()} Tripelyx Inc. All rights reserved.</p>
@@ -79,7 +88,7 @@ function footer() {
   <div class="container footer-inner">
     <a class="footer-logo" href="/" aria-label="Tripelyx home">${logo()}</a>
     <nav class="footer-nav" aria-label="Footer">
-      <ul>${NAV.slice(1).map(n => html`<li><a href="${n.href}">${n.label}</a></li>`)}</ul>
+      <ul>${FOOTER_NAV.map(n => html`<li><a href="${n.href}">${n.label}</a></li>`)}</ul>
     </nav>
     <ul class="social" aria-label="Tripelyx on social media">
       <li><a href="https://www.linkedin.com/" rel="noopener" target="_blank" aria-label="LinkedIn">${icon('linkedin')}</a></li>
@@ -93,8 +102,9 @@ function footer() {
 
 // The company pages (`corporate`) keep the corporate header, footer and title, and no environment
 // banner, even with Travel by Budget on.
-function layout({ title, description, active, body, scripts = [], bodyClass = '', ctx = {}, canonical = null, noindex = false, corporate = false }) {
+function layout({ title, description, active, body, scripts = [], styles = [], bodyClass = '', ctx = {}, canonical = null, noindex = false, corporate = false }) {
   const trips = !!(ctx.trips) && !corporate;
+  const biz = !!ctx.businessNav;
   const fullTitle = title ? `${title} | Tripelyx` : trips ? 'Tripelyx — Tell us what you want your trip to do. The AI builds it.' : 'Tripelyx — Travel technology that powers better journeys';
   const desc = description || 'Tripelyx builds travel platforms and technology that connect travelers, destinations and local businesses across the world.';
   return html`<!doctype html>
@@ -112,7 +122,7 @@ function layout({ title, description, active, body, scripts = [], bodyClass = ''
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/css/site.css?v=${ctx.assetVersion || '1'}">
-${trips ? html`<link rel="stylesheet" href="/css/trips.css?v=${ctx.assetVersion || '1'}">` : ''}
+${trips ? html`<link rel="stylesheet" href="/css/trips.css?v=${ctx.assetVersion || '1'}">` : ''}${styles.map(s => html`<link rel="stylesheet" href="${s}?v=${ctx.assetVersion || '1'}">`)}
 ${canonical && ctx.config && ctx.config.publicBaseUrl ? html`<link rel="canonical" href="${ctx.config.publicBaseUrl}${canonical}">` : ''}
 ${noindex ? raw('<meta name="robots" content="noindex">') : ''}
 ${ctx.preload || ''}
@@ -121,15 +131,15 @@ ${ctx.preload || ''}
 ${sprite}${corporate ? companySprite : ''}
 <a class="skip-link" href="#main">Skip to content</a>
 ${ctx.envBanner && !corporate ? html`<aside class="env-banner" aria-label="Environment notice">${ctx.envBanner}</aside>` : ''}
-${header(active, trips)}
+${header(active, trips, biz)}
 <main id="main" tabindex="-1">
 ${body}
 </main>
-${trips ? tripFooter() : footer()}
+${trips ? tripFooter(biz) : footer()}
 <script src="/js/site.js?v=${ctx.assetVersion || '1'}" defer></script>
 ${scripts.map(s => html`<script src="${s}?v=${ctx.assetVersion || '1'}" defer></script>`)}
 </body>
 </html>`;
 }
 
-module.exports = { layout, logo, NAV, TRIP_NAV };
+module.exports = { layout, logo, NAV, TRIP_NAV, FOOTER_NAV };
