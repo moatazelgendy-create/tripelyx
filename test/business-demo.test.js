@@ -5,7 +5,9 @@
 // APP_ENV=development on the in-memory store, and serves the demo (and the production preview) over http.
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { startApp, FIXED_NOW, quietLog } = require('./helpers');
 const { mutableClock, storeSnapshot } = require('./business-helpers');
@@ -22,14 +24,50 @@ function recordingLog() {
   return { lines, log: { info: at('info'), warn: at('warn'), error: at('error'), log: at('log') } };
 }
 
-/** A development app with Business on, seeded as the preview hook seeds it ({ ...createApp result, config, log, now }). */
-async function seeded({ env = {}, config: patch = null } = {}) {
+/**
+ * A development app with Business on, seeded as the preview hook seeds it ({ ...createApp result, config, log,
+ * now }). `seedEnv` stands in for process.env (where the seed reads PREVIEW_PASSWORD); by default it is empty,
+ * so a PREVIEW_PASSWORD in the environment running the tests never changes them.
+ */
+async function seeded({ env = {}, config: patch = null, seedEnv = {} } = {}) {
   const clock = mutableClock(FIXED_NOW);
   const app = await startApp({ ENABLE_BUSINESS: 'true', ADMIN_EMAILS: ADMIN, ...env }, { now: clock.now });
   const config = patch ? { ...app.config, ...patch } : app.config;
   const { lines, log } = recordingLog();
-  const result = await demo.seed({ ...app, config, log, now: app.ctx.now });
+  const result = await demo.seed({ ...app, config, log, now: app.ctx.now, env: seedEnv });
   return { app, clock, lines, result };
+}
+
+/** The gate's digest of a password, as the preview config keeps it (SHA-256, a 32-byte Buffer). */
+const digestOf = text => crypto.createHash('sha256').update(String(text), 'utf8').digest();
+
+/** Every run of 4 characters of a secret: no log line may hold any of them. */
+const piecesOf = secret => [...new Set(Array.from({ length: secret.length - 3 }, (_, i) => secret.slice(i, i + 4)))];
+/** A password with no 4-character run that a log line would hold on its own (no words, no "[demo]"). */
+const SECRET = 'Kq7#Zv9!Wx2$Pj4%';
+
+/** The roles the plan asks for in Demo Company (preview), and who reports to whom (independent of the script's table). */
+const EXPECTED_ROLES = ['employee', 'employee', 'employee', 'employee', 'finance', 'manager', 'manager', 'owner', 'travel_admin'];
+
+/** The members of a company as the store holds them, read through the service as its owner. */
+async function membersOf(app, orgId, ownerEmail) {
+  const owner = await app.store.getRecord('user', await userId(app, ownerEmail));
+  return (await app.business.listMembers({ org: { id: orgId }, user: owner })).members;
+}
+
+/** The roster seed() should return, built from the store: the platform admin, then each account's roles. */
+async function rosterFromStore(app, result) {
+  const rows = [];
+  for (const c of result.companies) {
+    const owner = c.name === demo.DEMO_COMPANY ? demo.PEOPLE[0].email : demo.SECOND_OWNER.email;
+    for (const m of await membersOf(app, c.id, owner)) {
+      if (m.status !== 'active') continue;
+      let row = rows.find(r => r.email === m.email);
+      if (!row) { row = { email: m.email, name: m.name, roles: [] }; rows.push(row); }
+      row.roles.push({ company: c.name, role: m.roleLabel });
+    }
+  }
+  return rows;
 }
 
 async function signIn(base, email, password) {
@@ -40,7 +78,7 @@ async function signIn(base, email, password) {
   return b;
 }
 
-const userId = async (app, email) => (await app.store.getRecord('user_email', email)).userId;
+async function userId(app, email) { return (await app.store.getRecord('user_email', email)).userId; }
 const requestsOf = async (app, orgId) => (await app.store.listRecords('biz_request', { limit: 1000 })).filter(r => r.orgId === orgId);
 
 test('seed: Demo Company (preview) with every role, departments, budgets, the policy, requests in every state, and a second company for the switcher', { timeout: 60000 }, async t => {
@@ -65,10 +103,37 @@ test('seed: Demo Company (preview) with every role, departments, budgets, the po
     assert.match(a.email, /\.example$/, a.email);
     assert.match(a.name, /\b(Owner|Traveladmin|Finance|Manager|Employee|Platform)\b/, `${a.name} says it is a demo role`);
   }
-  const rolesIn = company => result.accounts.flatMap(a => a.roles.filter(r => r.company === company).map(r => r.role)).sort();
-  assert.deepEqual(rolesIn(demo.DEMO_COMPANY), ['Employee', 'Employee', 'Employee', 'Employee', 'Finance', 'Manager', 'Manager', 'Owner', 'Travel Admin']);
-  assert.deepEqual(rolesIn(demo.SECOND_COMPANY), ['Employee', 'Owner']);
+  // Roles, departments and managers as the store holds them (not as the script says it seeded them): an
+  // Owner, a Travel Admin, Finance, two Managers and four Employees; Eli and Emma report to Mona in Sales, Ezra
+  // and Esme to Milo in Engineering.
+  const members = await membersOf(app, orgId, demo.PEOPLE[0].email);
+  assert.deepEqual(members.filter(m => m.status === 'active').map(m => m.role).sort(), EXPECTED_ROLES);
+  const member = email => members.find(m => m.email === email);
+  const idOf = async key => userId(app, demo.PEOPLE.find(p => p.key === key).email);
+  const expected = {
+    owner: ['owner', null, null], travelAdmin: ['travel_admin', null, null], finance: ['finance', null, null],
+    salesManager: ['manager', 'Sales', null], engManager: ['manager', 'Engineering', null],
+    eli: ['employee', 'Sales', 'salesManager'], emma: ['employee', 'Sales', 'salesManager'],
+    ezra: ['employee', 'Engineering', 'engManager'], esme: ['employee', 'Engineering', 'engManager'],
+  };
+  assert.deepEqual(Object.keys(expected).sort(), demo.PEOPLE.map(p => p.key).sort(), 'every demo person is checked');
+  for (const [key, [role, department, manager]] of Object.entries(expected)) {
+    const p = demo.PEOPLE.find(x => x.key === key);
+    const m = member(p.email);
+    assert.ok(m, `${p.email} is a member`);
+    assert.equal(m.status, 'active', p.email);
+    assert.equal(m.role, role, `${p.email} is stored as ${role}`);
+    if (department) assert.equal(m.department && m.department.name, department, `${p.email} is in ${department}`);
+    assert.equal(m.manager ? m.manager.userId : null, manager ? await idOf(manager) : null, `${p.email}'s manager`);
+  }
+  const second = await membersOf(app, org2Id, demo.SECOND_OWNER.email);
   const sharedEmail = demo.PEOPLE.find(p => p.key === demo.SHARED).email;
+  assert.deepEqual(second.filter(m => m.status === 'active').map(m => [m.email, m.role]).sort(), [[demo.SECOND_OWNER.email, 'owner'], [sharedEmail, 'employee']].sort());
+  // What the owner is told (who to sign in as) is what the store holds, the platform admin first.
+  assert.deepEqual(result.accounts[0], { email: ADMIN, name: 'Pat Platform (demo)', roles: [{ company: null, role: 'Platform admin (/admin/business)' }] });
+  const byEmail = rows => [...rows].sort((x, y) => (x.email < y.email ? -1 : 1));
+  assert.deepEqual(byEmail(result.accounts.slice(1)), byEmail(await rosterFromStore(app, result)));
+  assert.deepEqual(result.accounts.slice(1).map(a => a.email), [...demo.PEOPLE, demo.SECOND_OWNER].map(p => p.email), 'in the order of the people table');
   assert.equal(result.accounts.find(a => a.email === sharedEmail).roles.length, 2, 'one employee is in both companies');
   assert.equal(result.passwordSource, 'default');
   assert.ok(!JSON.stringify(result).includes(demo.DEMO_PASSWORD), 'the result never carries the password');
@@ -135,9 +200,21 @@ test('seed: Demo Company (preview) with every role, departments, budgets, the po
   assert.deepEqual(idx.orgIds.sort(), [orgId, org2Id].sort());
   assert.deepEqual(await requestsOf(app, org2Id), []);
 
-  // The log says "Test scenario" and never the password.
+  // Every seeded request is a demo request that books nothing.
+  for (const r of all) {
+    assert.equal(r.demo, true, `${r.purpose}: a demo request`);
+    assert.deepEqual(r.booking, { status: 'not_open' }, `${r.purpose}: booking is not open`);
+  }
+  // The log says "Test scenario" (the wrapped hotel and each scenario with its page), names every demo account
+  // and its roles (who to sign in as), and never the password.
   assert.ok(lines.some(l => /Test scenario: one demo hotel room/.test(l)), lines.join('\n'));
-  assert.ok(lines.every(l => !l.includes(demo.DEMO_PASSWORD)));
+  for (const x of result.scenarios) assert.ok(lines.some(l => l.includes(x.purpose) && l.includes(`/business/o/${orgId}/trips/${x.id}`)), x.purpose);
+  assert.deepEqual(result.scenarios.map(x => x.purpose).sort(), ['Test scenario: the approval window ran out', 'Test scenario: the hotel price changed before sending']);
+  for (const a of result.accounts) {
+    assert.ok(lines.some(l => l.includes(a.email) && a.roles.every(r => l.includes(r.role))), `the log names ${a.email} and its roles`);
+  }
+  assert.ok(lines.every(l => !l.includes(demo.DEMO_PASSWORD)), 'the default password is never logged');
+  assert.ok(lines.every(l => !/password\s*[:=]\s*\S/i.test(l)), 'no log line gives a password');
   // Nothing was booked, charged or sent.
   assert.deepEqual([app.store.quotes.size, app.store.bookings.size, app.store.intents.size, app.store.leads.length], [0, 0, 0, 0]);
   assert.deepEqual(await app.store.listRecords('outbox'), []);
@@ -169,8 +246,36 @@ test('seed over HTTP: the test scenarios are captioned on their pages, the switc
   assert.match(textOf(main), /Expired at .*\. Nothing was approved\./);
   assert.equal(storeSnapshot(app), snap, 'showing it expired writes nothing');
 
-  // Ezra: the price-change scenario, with was and now, captioned; sending it again goes through at the new price.
+  // The caption is on the scenario's page for everyone who can open it: the traveler, their manager, Finance,
+  // the Travel Admin and the Owner. (The trip lists, the inbox and the CSV show route, dates and status, never
+  // a purpose, so the caption cannot show there without a view change: see the Stage 3B report.)
+  const fay = await signIn(app.base, email('finance'), P);
+  const tara = await signIn(app.base, email('travelAdmin'), P);
+  const olivia = await signIn(app.base, email('owner'), P);
+  const milo = await signIn(app.base, email('engManager'), P);
+  const mona = await signIn(app.base, email('salesManager'), P);
+  for (const [who, label] of [[emma, 'Emma'], [mona, 'Mona'], [fay, 'Fay'], [tara, 'Tara'], [olivia, 'Olivia']]) {
+    res = await who.get(`${B}/trips/${expiredId}`);
+    assert.equal(res.status, 200, `${label} opens the expired scenario`);
+    assert.match(textOf(flows.pageChecks(`expired scenario (${label})`, res)), /Purpose Test scenario: the approval window ran out/, `${label} sees its caption`);
+  }
   const ezra = await signIn(app.base, email('ezra'), P);
+  for (const [who, label] of [[ezra, 'Ezra'], [milo, 'Milo'], [fay, 'Fay'], [tara, 'Tara'], [olivia, 'Olivia']]) {
+    res = await who.get(`${B}/trips/${repricedId}`);
+    assert.equal(res.status, 200, `${label} opens the price-change scenario`);
+    assert.match(textOf(flows.pageChecks(`price-change scenario (${label})`, res)), /Purpose Test scenario: the hotel price changed before sending/, `${label} sees its caption`);
+  }
+  // Each role opens what its role gives it, as the store holds the role: Tara People, Fay Reports (and not
+  // Approvals), the managers Approvals, an employee neither People nor Reports.
+  assert.equal((await tara.get(`${B}/people`)).status, 200, 'the Travel Admin opens People');
+  assert.equal((await fay.get(`${B}/reports`)).status, 200, 'Finance opens Reports');
+  assert.equal((await fay.get(`${B}/approvals`)).status, 403, 'Finance cannot open Approvals');
+  assert.equal((await mona.get(`${B}/approvals`)).status, 200, 'a Manager opens Approvals');
+  assert.equal((await olivia.get(`${B}/settings`)).status, 200, 'the Owner opens Settings');
+  assert.equal((await ezra.get(`${B}/people`)).status, 403, 'an Employee cannot open People');
+  assert.equal((await ezra.get(`${B}/reports`)).status, 403, 'an Employee cannot open Reports');
+
+  // Ezra: the price-change scenario, with was and now, captioned; sending it again goes through at the new price.
   res = await ezra.get(`${B}/trips/${repricedId}`);
   main = flows.pageChecks('price-change scenario', res);
   assert.match(textOf(main), /Test scenario: the hotel price changed before sending/);
@@ -179,14 +284,10 @@ test('seed over HTTP: the test scenarios are captioned on their pages, the switc
   res = await ezra.post(`${B}/trips/${repricedId}/submit`, formOf(res.text, `${B}/trips/${repricedId}/submit`));
   assert.match(res.location || '', /\?ok=auto_approved$/, `sent again: ${res.location}`);
 
-  // The Sales manager: the expired scenario under Expired, and captioned on its page as she sees it.
-  const mona = await signIn(app.base, email('salesManager'), P);
+  // The Sales manager: the expired scenario under Expired.
   res = await mona.get(`${B}/approvals?tab=expired`);
   assert.ok(flows.pageChecks('approvals expired', res).includes(`href="${B}/trips/${expiredId}"`));
-  res = await mona.get(`${B}/trips/${expiredId}`);
-  assert.match(textOf(flows.pageChecks('expired scenario (manager)', res)), /Test scenario: the approval window ran out/);
   // The Engineering manager: two requests waiting, one with his question.
-  const milo = await signIn(app.base, email('engManager'), P);
   res = await milo.get(`${B}/approvals`);
   main = flows.pageChecks('approvals (milo)', res);
   for (const p of ['Board meeting in London', 'Product launch in London']) assert.ok(main.includes(`href="${B}/trips/${rid(p)}"`), p);
@@ -219,17 +320,85 @@ test('seed over HTTP: the test scenarios are captioned on their pages, the switc
   assert.equal((await ops.get(B)).status, 404);
 });
 
-test('seed uses config.preview.password for every demo account and never logs it', { timeout: 60000 }, async t => {
-  const secret = 'gate-and-demo-password-1234';
-  const { app, result, lines } = await seeded({ config: { preview: { gate: null, seed: 'business', password: secret } } });
-  t.after(app.close);
+/** Every demo account signs in with `password` and not with the default one; no log line holds any 4 characters of it. */
+async function assertPreviewPassword(app, result, lines, password) {
   assert.equal(result.passwordSource, 'preview');
+  assert.ok(result.accounts.length >= 11, 'the platform admin and every demo account');
   for (const a of result.accounts) {
-    assert.ok(await app.accounts.authenticate({ email: a.email, password: secret }), a.email);
+    assert.ok(await app.accounts.authenticate({ email: a.email, password }), a.email);
     await assert.rejects(app.accounts.authenticate({ email: a.email, password: demo.DEMO_PASSWORD }), /match/);
   }
-  assert.ok(lines.length > 0 && lines.every(l => !l.includes(secret)), 'the password is never logged');
-  assert.ok(!JSON.stringify(result).includes(secret));
+  assert.ok(lines.length > 0, 'the seed logs');
+  for (const piece of piecesOf(password)) {
+    const hit = lines.find(l => l.includes(piece));
+    assert.ok(!hit, `no log line holds "${piece}" of the password: ${hit}`);
+  }
+  assert.ok(lines.every(l => !/password\s*[:=]\s*\S/i.test(l)), 'no log line gives a password');
+  assert.ok(!JSON.stringify(result).includes(password), 'the result never carries it');
+  // The log tells whoever reads it who to sign in as.
+  for (const a of result.accounts) assert.ok(lines.some(l => l.includes(a.email)), `the log names ${a.email}`);
+}
+
+test('seed with the preview config the hook really passes (only the gate digest): PREVIEW_PASSWORD for every demo account, never logged', { timeout: 60000 }, async t => {
+  // The preview's config keeps only { gate: { passwordDigest }, seed } (server/config.js on the preview
+  // branch); the password itself is PREVIEW_PASSWORD in the environment.
+  const config = { preview: { gate: { passwordDigest: digestOf(SECRET) }, seed: 'business' } };
+  const { app, result, lines } = await seeded({ config, seedEnv: { PREVIEW_PASSWORD: SECRET } });
+  t.after(app.close);
+  await assertPreviewPassword(app, result, lines, SECRET);
+});
+
+test('seed takes PREVIEW_PASSWORD only when it matches the gate, and config.preview.password when the config carries one', { timeout: 60000 }, async t => {
+  // An environment password that is not the gate's: the default password, and nothing of it logged.
+  const other = 'Lm8&Rt5*Yu3^Nb6@';
+  const a = await seeded({ config: { preview: { gate: { passwordDigest: digestOf(SECRET) }, seed: 'business' } }, seedEnv: { PREVIEW_PASSWORD: other } });
+  t.after(a.app.close);
+  assert.equal(a.result.passwordSource, 'default');
+  assert.ok(await a.app.accounts.authenticate({ email: demo.PEOPLE[0].email, password: demo.DEMO_PASSWORD }));
+  await assert.rejects(a.app.accounts.authenticate({ email: demo.PEOPLE[0].email, password: other }), /match/);
+  assert.ok(a.lines.every(l => piecesOf(other).every(piece => !l.includes(piece))));
+  // No gate: an environment password is never used.
+  assert.equal(demo.demoPassword({ preview: { gate: null, seed: 'business' } }, { PREVIEW_PASSWORD: SECRET }).source, 'default');
+  assert.equal(demo.demoPassword({}, { PREVIEW_PASSWORD: SECRET }).source, 'default');
+  // A config that carries the password itself (the task's config.preview.password).
+  const b = await seeded({ config: { preview: { gate: null, seed: 'business', password: SECRET } } });
+  t.after(b.app.close);
+  await assertPreviewPassword(b.app, b.result, b.lines, SECRET);
+});
+
+const HOOK = path.join(__dirname, '..', 'server', 'lib', 'previewSeed.js');
+test('the preview boot hook end to end: loadConfig, createApp, runPreviewSeed, seed', {
+  skip: !fs.existsSync(HOOK) && 'the preview boot hook (server/lib/previewSeed.js, branch biz-prev) is not in this tree yet', timeout: 60000,
+}, async t => {
+  const { loadConfig } = require('../server/config');
+  const { createApp } = require('../server/app');
+  const { runPreviewSeed } = require(HOOK);
+  const env = {
+    APP_ENV: 'staging', DATABASE_URL: 'memory', ENABLE_BUSINESS: 'true', ALLOW_DEMO_INVENTORY: 'true',
+    PREVIEW_PASSWORD: SECRET, PREVIEW_SEED: 'business', ADMIN_EMAILS: ADMIN,
+  };
+  const config = loadConfig(env);
+  assert.ok(!JSON.stringify(config).includes(SECRET), 'the config keeps no password text');
+  const built = await createApp(config, { log: quietLog });
+  t.after(() => built.store.close && built.store.close());
+  const { lines, log } = recordingLog();
+  // The hook passes no env: the seed reads process.env, as on the preview.
+  const was = process.env.PREVIEW_PASSWORD;
+  process.env.PREVIEW_PASSWORD = SECRET;
+  let r;
+  try {
+    r = await runPreviewSeed(config, built, { log });
+  } finally {
+    if (was === undefined) delete process.env.PREVIEW_PASSWORD; else process.env.PREVIEW_PASSWORD = was;
+  }
+  assert.equal(r.seeded, true, lines.join('\n'));
+  const emails = [ADMIN, ...demo.PEOPLE.map(p => p.email), demo.SECOND_OWNER.email];
+  for (const email of emails) {
+    assert.ok(await built.accounts.authenticate({ email, password: SECRET }), email);
+    await assert.rejects(built.accounts.authenticate({ email, password: demo.DEMO_PASSWORD }), /match/);
+    assert.ok(lines.some(l => l.includes(email)), `the boot log names ${email}`);
+  }
+  for (const piece of piecesOf(SECRET)) assert.ok(lines.every(l => !l.includes(piece)), `no log line holds "${piece}"`);
 });
 
 test('seed refuses a store that is not the in-memory one, production, Business off, no ADMIN_EMAILS, and a second run', { timeout: 60000 }, async t => {
@@ -273,7 +442,7 @@ test('priceStep moves one room on one stay only, and passes everything else thro
   assert.equal(calls.length, 4);
 });
 
-test('the command: arguments, and it refuses anything but APP_ENV=development on the in-memory store', async () => {
+test('the command: arguments, and it refuses anything but APP_ENV=development on the in-memory store', async t => {
   assert.deepEqual(demo.parseArgs([]), { port: 4400, prodPort: null });
   assert.deepEqual(demo.parseArgs(['--port', '4500', '--production-preview=4501']), { port: 4500, prodPort: 4501 });
   assert.match(demo.parseArgs(['--port']).error, /needs a port/);
@@ -281,18 +450,26 @@ test('the command: arguments, and it refuses anything but APP_ENV=development on
   assert.match(demo.parseArgs(['--seed']).error, /Unknown option/);
   assert.match(demo.parseArgs(['--port', '4500', '--production-preview', '4500']).error, /two different ports/);
   const out = () => { const lines = []; return { lines, log: m => lines.push(String(m)), error: m => lines.push(String(m)) }; };
-  for (const env of [{}, { APP_ENV: 'staging' }, { APP_ENV: 'production' }]) {
+  // Port 0 throughout: a refusal that regressed into a run would bind a free port (never 4400) and is closed.
+  const run = async (env, argv = ['--port', '0']) => {
     const o = out();
-    assert.equal((await demo.main({ argv: [], env, out: o })).code, 1, JSON.stringify(env));
-    assert.match(o.lines.join('\n'), /only with APP_ENV=development/);
+    const r = await demo.main({ argv, env, out: o });
+    if (typeof r.close === 'function') t.after(r.close);
+    return { r, text: o.lines.join('\n') };
+  };
+  for (const env of [{}, { APP_ENV: 'staging' }, { APP_ENV: 'production' }, { APP_ENV: 'Development' }]) {
+    const { r, text } = await run(env);
+    assert.equal(r.code, 1, JSON.stringify(env));
+    assert.equal(r.close, undefined, 'nothing started');
+    assert.match(text, /only with APP_ENV=development/);
   }
   for (const env of [{ APP_ENV: 'development', DATABASE_URL: 'postgres://x@127.0.0.1:9/db' }, { APP_ENV: 'development', DATABASE_HOST: 'db.internal' }]) {
-    const o = out();
-    assert.equal((await demo.main({ argv: [], env, out: o })).code, 1);
-    assert.match(o.lines.join('\n'), /only fills the in-memory store/);
+    const { r, text } = await run(env);
+    assert.equal(r.code, 1);
+    assert.equal(r.close, undefined, 'nothing started');
+    assert.match(text, /only fills the in-memory store/);
   }
-  const o = out();
-  assert.equal((await demo.main({ argv: ['--nope'], env: { APP_ENV: 'development' }, out: o })).code, 2);
+  assert.equal((await run({ APP_ENV: 'development' }, ['--nope'])).r.code, 2);
 });
 
 test('the command: the demo and the production preview, in this process, over plain http', { timeout: 60000 }, async t => {
@@ -303,8 +480,9 @@ test('the command: the demo and the production preview, in this process, over pl
   assert.equal(r.code, 0, lines.join('\n'));
   const text = lines.join('\n');
   assert.match(text, /Password for every demo account: preview-only-password/);
-  assert.ok(text.includes(demo.PEOPLE[0].email) && text.includes(demo.DEMO_ADMIN_EMAIL), 'who to sign in as');
-  assert.match(text, /Test scenario/);
+  for (const a of r.result.accounts) assert.ok(text.includes(a.email), `who to sign in as: ${a.email}`);
+  assert.ok(text.includes(demo.DEMO_ADMIN_EMAIL), 'the platform admin');
+  for (const x of r.result.scenarios) assert.ok(text.includes(`${x.purpose}: ${r.urls.dev}${x.path}`), `where to find "${x.purpose}"`);
 
   // The demo: the owner signs in with the printed password and sees the company.
   const owner = await signIn(r.urls.dev, demo.PEOPLE[0].email, demo.DEMO_PASSWORD);
@@ -317,11 +495,20 @@ test('the command: the demo and the production preview, in this process, over pl
   const ops = await signIn(r.urls.dev, demo.DEMO_ADMIN_EMAIL, demo.DEMO_PASSWORD);
   assert.equal((await ops.get('/admin/business')).status, 200);
 
-  // The production preview: plain http works (no https redirect, no Secure cookie), no supplier.
+  // The production preview: plain http works (no https redirect, no HSTS, no Secure cookie), no supplier, and
+  // its own empty store: a demo account does not exist there.
   const p = browser(r.urls.prod);
   res = await p.get('/business/start');
   assert.equal(res.status, 200);
   assert.doesNotMatch(res.headers.get('content-security-policy') || '', /upgrade-insecure-requests/);
+  assert.equal(res.headers.get('strict-transport-security'), null, 'no HSTS over local http');
+  const stranger = browser(r.urls.prod);
+  res = await stranger.get('/business/signin');
+  res = await stranger.post('/business/signin', setFields(formOf(res.text, '/business/signin'), { email: demo.PEOPLE[0].email, password: demo.DEMO_PASSWORD }));
+  assert.equal(res.status, 401, 'a demo account cannot sign in on the production preview');
+  assert.match(textOf(mainOf(res.text)), /That email and password don.t match an account\./);
+  assert.equal(stranger.jar.size, 0, 'and gets no session');
+  res = await p.get('/business/start');
   res = await p.post('/business/start', setFields(formOf(res.text, '/business/start'), {
     name: 'Prue Preview', email: 'prue@production-preview.example', password: demo.DEMO_PASSWORD, companyName: 'Preview Check Co (demo)', size: '1-10 people', timezone: 'Africa/Cairo', ack: '1',
   }));
@@ -331,6 +518,17 @@ test('the command: the demo and the production preview, in this process, over pl
   res = await p.get(`${B}/trips/new`);
   assert.equal(res.status, 200);
   assert.match(textOf(mainOf(res.text)), /Supplier not connected yet\./);
+  assert.equal(res.headers.get('strict-transport-security'), null);
+});
+
+test('the command takes DATABASE_URL=memory (the in-memory store, said explicitly)', { timeout: 60000 }, async t => {
+  const lines = [];
+  const out = { log: m => lines.push(String(m)), error: m => lines.push(String(m)) };
+  const r = await demo.main({ argv: ['--port', '0'], env: { APP_ENV: 'development', DATABASE_URL: 'memory' }, out });
+  t.after(() => r.close && r.close());
+  assert.equal(r.code, 0, lines.join('\n'));
+  assert.equal(r.urls.prod, null, 'no production preview unless asked');
+  assert.equal((await fetch(`${r.urls.dev}/business`)).status, 200);
 });
 
 test('the command run directly: a refusal exits 1 with one line; a development run serves until stopped', { timeout: 60000 }, async () => {

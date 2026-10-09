@@ -14,8 +14,11 @@
 // 2. As a module: `await require('./scripts/business-demo').seed(deps)`, which the private preview's boot hook
 //    (PREVIEW_SEED=business) calls with createApp's result plus { config, log, now }. seed() refuses itself
 //    (it throws) on any store but the in-memory one, and when APP_ENV is production. Its demo accounts use
-//    config.preview.password when there is one (the preview's own password, so one password opens the gate
-//    and every demo account), else preview-only-password. The password is never logged.
+//    the preview's own password, so one password opens the gate and every demo account: config.preview.password
+//    when the config carries it, else PREVIEW_PASSWORD from the environment, used only when its SHA-256 matches
+//    the gate's config.preview.gate.passwordDigest (the config keeps only that digest). With neither, they use
+//    preview-only-password. The password is never logged; the log names every demo account and its roles, and
+//    each test scenario with its page, so whoever reads the boot log knows who to sign in as.
 //
 // What it seeds, through the BusinessService (the same methods the pages call), on the app's own clock:
 // - a platform admin (the first ADMIN_EMAILS address, given a platform_admin record with grantPlatformAdmin);
@@ -34,6 +37,7 @@
 // Every name is fictional, every address is on the reserved .example domain, and every price is a demo price.
 'use strict';
 
+const crypto = require('node:crypto');
 const { BusinessService } = require('../server/business/service');
 const { Repo } = require('../server/business/repo');
 const { TripComposer } = require('../server/business/search');
@@ -79,10 +83,25 @@ function say(log, message) {
   if (typeof fn === 'function') fn.call(log, message);
 }
 
-/** The password every demo account gets: the preview's own when configured, else DEMO_PASSWORD. */
-function demoPassword(config) {
-  const p = config && config.preview && config.preview.password;
-  return typeof p === 'string' && p.length >= 10 ? { password: p, source: 'preview' } : { password: DEMO_PASSWORD, source: 'default' };
+/**
+ * The password every demo account gets: the preview's own when configured, else DEMO_PASSWORD. The preview's
+ * config keeps only the gate's SHA-256 digest, so PREVIEW_PASSWORD is read from `env` and used only when it
+ * matches that digest (the password the gate really asks for, never some other value in the environment).
+ * @param {object} config
+ * @param {object} [env] default process.env
+ * @returns {{ password: string, source: 'preview'|'default' }}
+ */
+function demoPassword(config, env = process.env) {
+  const preview = (config && config.preview) || {};
+  const p = preview.password;
+  if (typeof p === 'string' && p.length >= 10) return { password: p, source: 'preview' };
+  const digest = preview.gate && preview.gate.passwordDigest;
+  const fromEnv = env && typeof env.PREVIEW_PASSWORD === 'string' ? env.PREVIEW_PASSWORD : '';
+  if (fromEnv.length >= 10 && Buffer.isBuffer(digest) && digest.length === 32) {
+    const mine = crypto.createHash('sha256').update(fromEnv, 'utf8').digest();
+    if (crypto.timingSafeEqual(mine, digest)) return { password: fromEnv, source: 'preview' };
+  }
+  return { password: DEMO_PASSWORD, source: 'default' };
 }
 
 /** Throws unless this is a Business app on the in-memory store, outside production. */
@@ -118,19 +137,21 @@ const addDays = (date, n) => new Date(Date.parse(`${date}T00:00:00Z`) + n * DAY_
 
 /**
  * Seed the demo companies (see the header). Awaited once by the preview's boot hook, or by the command.
- * @param {{ config: object, store: object, accounts: object, business: object, log?: object, now?: () => Date }} deps
- *   createApp's result plus config, log and the app clock (now defaults to business.now)
+ * @param {{ config: object, store: object, accounts: object, business: object, log?: object, now?: () => Date,
+ *   env?: object }} deps createApp's result plus config, log and the app clock (now defaults to business.now);
+ *   env (default process.env) is where PREVIEW_PASSWORD is read from
  * @returns {Promise<{ companies: { id: string, name: string }[], accounts: { email: string, name: string,
  *   roles: { company: string|null, role: string }[] }[], passwordSource: 'preview'|'default',
- *   requests: { id: string, company: string, traveler: string, purpose: string, status: string }[] }>}
- *   who to sign in as (never the password itself)
+ *   requests: { id: string, company: string, traveler: string, purpose: string, status: string }[],
+ *   scenarios: { id: string, purpose: string, traveler: string, path: string }[] }>}
+ *   who to sign in as, read back from the store (never the password itself)
  * @throws {Error} outside development and staging on the in-memory store, or when a demo account already exists
  */
 async function seed(deps = {}) {
   assertDemoAllowed(deps);
   const { config, store, accounts, business: svc, log } = deps;
   const now = typeof deps.now === 'function' ? deps.now : svc.now;
-  const { password, source } = demoPassword(config);
+  const { password, source } = demoPassword(config, deps.env || process.env);
   const adminEmail = (config.trips && config.trips.adminEmails || [])[0] || null;
   if (!adminEmail) throw new Error('The Business demo needs ADMIN_EMAILS: its first address becomes the demo platform admin.');
   if (await accounts.emailInUse(PEOPLE[0].email)) throw new Error('The Business demo companies are already here.');
@@ -148,31 +169,24 @@ async function seed(deps = {}) {
 
   const users = {};
   for (const p of [...PEOPLE, SECOND_OWNER]) users[p.key] = await register(p.name, p.email);
-  const roleOf = (key, company, role) => {
-    let row = roster.find(r => r.email === users[key].email);
-    if (!row) { row = { email: users[key].email, name: users[key].name, roles: [] }; roster.push(row); }
-    row.roles.push({ company, role: ROLE_LABELS[role] || role });
-  };
 
   // The company, confirmed by the platform admin.
   const confirm = async org => svc.platformSetStatus(admin, org.id, { status: 'active', rev: org.rev, note: 'Demo company for the preview' });
   const created = await svc.createCompany({ user: users.owner }, { name: DEMO_COMPANY, size: '11-50 people', timezone: 'Africa/Cairo', ack: '1' });
   const org = await confirm(created.org);
   const as = key => ({ org: { id: org.id }, user: users[key] });
-  roleOf('owner', DEMO_COMPANY, 'owner');
 
   const departments = {};
   for (const name of Object.keys(BUDGETS)) departments[name] = await svc.saveDepartment(as('owner'), { name });
 
-  const join = async (p, orgId, inviter, companyName) => {
+  const join = async (p, orgId, inviter) => {
     const form = { email: p.email, role: p.role };
     if (p.department) form.departmentId = departments[p.department].id;
     if (p.manager) form.managerId = users[p.manager].id;
     const { token } = await svc.invite({ org: { id: orgId }, user: users[inviter] }, form);
     await svc.acceptInvite({ user: users[p.key] }, token);
-    roleOf(p.key, companyName, p.role);
   };
-  for (const p of PEOPLE.slice(1)) await join(p, org.id, 'owner', DEMO_COMPANY);
+  for (const p of PEOPLE.slice(1)) await join(p, org.id, 'owner');
 
   // The Standard policy: a Cairo to London route exception (both ways, Premium economy, up to the median of
   // the fares plus 30%) and the demo airline ZS blocked. A new version, with its note.
@@ -293,18 +307,35 @@ async function seed(deps = {}) {
   // The second company, which shares one employee (the company switcher).
   const second = await svc.createCompany({ user: users.secondOwner }, { name: SECOND_COMPANY, size: '1-10 people', timezone: 'Africa/Cairo', ack: '1' });
   const org2 = await confirm(second.org);
-  roleOf('secondOwner', SECOND_COMPANY, 'owner');
   const shared = PEOPLE.find(p => p.key === SHARED);
   const { token } = await svc.invite({ org: { id: org2.id }, user: users.secondOwner }, { email: shared.email, role: 'employee' });
   await svc.acceptInvite({ user: users[SHARED] }, token);
-  roleOf(SHARED, SECOND_COMPANY, 'employee');
+
+  // Who to sign in as, read back from the store: each account's role in each company as the company holds it.
+  for (const [company, ownerKey] of [[org, 'owner'], [org2, 'secondOwner']]) {
+    const people = await svc.listMembers({ org: { id: company.id }, user: users[ownerKey] });
+    for (const m of people.members) {
+      if (m.status !== 'active') continue;
+      let row = roster.find(x => x.email === m.email);
+      if (!row) { row = { email: m.email, name: m.name, roles: [] }; roster.push(row); }
+      row.roles.push({ company: company.name, role: m.roleLabel || ROLE_LABELS[m.role] || m.role });
+    }
+  }
+  const order = [adminUser.email, ...[...PEOPLE, SECOND_OWNER].map(p => p.email)];
+  roster.sort((x, y) => order.indexOf(x.email) - order.indexOf(y.email));
+  const scenarios = requests.filter(x => x.purpose.startsWith(TEST_SCENARIO))
+    .map(x => ({ id: x.id, purpose: x.purpose, traveler: x.traveler, path: `/business/o/${org.id}/trips/${x.id}` }));
 
   say(log, `[demo] Business demo: ${DEMO_COMPANY} (${PEOPLE.length} people, ${requests.length} trip requests) and ${SECOND_COMPANY}, ${roster.length} demo accounts.`);
+  say(log, `[demo] Sign in at /business/signin as any of these demo accounts (${source === 'preview' ? "each uses the preview gate's own password" : 'their password is printed by the command only'}):`);
+  for (const a of roster) say(log, `[demo]   ${a.email}: ${a.roles.map(x => (x.company ? `${x.role}, ${x.company}` : x.role)).join('; ')}`);
+  for (const x of scenarios) say(log, `[demo] ${x.purpose} (${x.traveler}'s trip): ${x.path}`);
   return {
     companies: [{ id: org.id, name: DEMO_COMPANY }, { id: org2.id, name: SECOND_COMPANY }],
     accounts: roster,
     passwordSource: source,
     requests,
+    scenarios,
   };
 }
 
@@ -379,7 +410,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
   const close = async () => { for (const s of servers) await new Promise(r => s.close(r)); };
   let result;
   try {
-    result = await seed({ ...built, config, log: { info: m => out.log(m), warn: m => out.error(m), error: m => out.error(m) }, now: built.ctx.now });
+    result = await seed({ ...built, config, log: { info: m => out.log(m), warn: m => out.error(m), error: m => out.error(m) }, now: built.ctx.now, env });
     servers.push(await listen(built.app, args.port));
   } catch (e) {
     await close();
@@ -409,12 +440,9 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
   out.log('');
   out.log(`Tripelyx Business demo: ${devUrl}/business  (development, demo prices; nothing is booked, charged or emailed)`);
   if (prodUrl) out.log(`Production preview:     ${prodUrl}/business/start  (no supplier: "Supplier not connected yet"; nothing seeded)`);
-  out.log('');
-  out.log('Sign in at /business/signin as:');
-  for (const a of result.accounts) out.log(`  ${a.email.padEnd(42)} ${a.roles.map(x => (x.company ? `${x.role}, ${x.company}` : x.role)).join('; ')}`);
-  out.log('');
+  out.log(`Sign in at ${devUrl}/business/signin with the demo accounts listed above.`);
   out.log(result.passwordSource === 'default' ? `Password for every demo account: ${DEMO_PASSWORD}` : 'Password for every demo account: the preview password you set.');
-  out.log('Test scenarios: the requests whose purpose starts with "Test scenario".');
+  for (const x of result.scenarios) out.log(`${x.purpose}: ${devUrl}${x.path}`);
   out.log('Stop with Ctrl+C.');
   return { code: 0, close, urls: { dev: devUrl, prod: prodUrl }, result };
 }

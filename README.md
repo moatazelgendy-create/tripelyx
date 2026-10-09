@@ -254,8 +254,9 @@ APP_ENV=development node scripts/business-demo.js --port 4400 --production-previ
 ```
 
 It runs only with `APP_ENV=development` on the in-memory store (no `DATABASE_URL`, or `DATABASE_URL=memory`)
-and refuses anything else. It starts the app in the same process with Business on and prints who to sign
-in as at `http://127.0.0.1:4400/business/signin`. Every demo account's password is
+and refuses anything else. It starts the app in the same process with Business on and prints every demo
+account (email, role and company) to sign in as at `http://127.0.0.1:4400/business/signin`, and a link to
+each test scenario's page. Every demo account's password is
 `preview-only-password`. `--production-preview 4401` also starts the production configuration
 (`APP_ENV=production`, no supplier, trips off, an empty in-memory store) on a second port, with HTTPS
 forced off so it opens over plain http on your computer only; sign up a company there to see
@@ -278,11 +279,13 @@ What it seeds:
   switcher has two companies.
 
 The private preview's boot hook (`PREVIEW_SEED=business`, on an in-memory staging app with Business on)
-calls the same `seed()` from this file, with the app and its config. The demo accounts then use
-`config.preview.password` when the config carries one (the preview's own password), else
-`preview-only-password`; the platform admin is the first `ADMIN_EMAILS` address, so the preview needs
-`ADMIN_EMAILS` set. `seed()` throws on any store but the in-memory one and in production, and never logs
-the password.
+calls the same `seed()` from this file, with the app and its config. The demo accounts then use the
+preview's own password: `config.preview.password` when the config carries one, else `PREVIEW_PASSWORD` when
+its SHA-256 matches the preview gate's digest (`config.preview.gate.passwordDigest`), else
+`preview-only-password`. The platform admin is the first `ADMIN_EMAILS` address, so the preview needs
+`ADMIN_EMAILS` set. `seed()` logs every demo account with its role and company, and the path of each test
+scenario, so the preview log says who to sign in as. It throws on any store but the in-memory one and in
+production, and never logs a password.
 
 ## Pages
 

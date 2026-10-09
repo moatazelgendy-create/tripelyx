@@ -10,7 +10,15 @@ const flows = require('./business-e2e-flows');
 const ALLOWED_KINDS = new Set(['user', 'user_email', 'session', 'platform_admin', 'platform_admin_seed']);
 const allowedKind = kind => ALLOWED_KINDS.has(kind) || /^biz_[a-z_]+$/.test(kind);
 
-/** Count every call to the booking engine, the payment processor and the store's booking methods. */
+/** What a supplier provider does that would book, hold or cancel (the Business demo providers and the registry's). */
+const SUPPLIER_BOOKING = ['book', 'cancel', 'hold', 'createBooking', 'cancelBooking', 'createHold', 'confirm', 'issue', 'ticket'];
+
+/**
+ * Count every call to the booking engine, the payment processor, the store's booking methods, and any
+ * provider's book, cancel or hold: Business's own demo flights and hotels (app.business.inventory) and every
+ * provider in the app's registry. A mock provider keeps its bookings in memory and never touches the store,
+ * so only these spies see a supplier booking.
+ */
 function spy(app) {
   const calls = [];
   const wrap = (obj, label, names) => {
@@ -23,6 +31,13 @@ function spy(app) {
   wrap(app.engine, 'engine', ['search', 'getOffer', 'createQuote', 'getQuote', 'createBooking', 'authorize', 'getBooking', 'payBooking', 'cancelBooking']);
   wrap(app.payments, 'payments', ['createIntent', 'confirm', 'refund']);
   wrap(app.store, 'store', ['saveQuote', 'getQuote', 'createBooking', 'updateBooking', 'getBooking', 'getBookingByRef', 'savePaymentIntent', 'getPaymentIntent', 'savePartnerLead', 'listBookings']);
+  const providers = [];
+  const inv = app.business && app.business.inventory;
+  if (inv && inv.flights) providers.push(['business.flights', inv.flights]);
+  if (inv && inv.hotels) providers.push(['business.hotels', inv.hotels]);
+  for (const vertical of app.registry ? app.registry.enabled() : []) providers.push([`registry.${vertical}`, app.registry.get(vertical)]);
+  for (const [label, provider] of providers) wrap(provider, label, SUPPLIER_BOOKING);
+  const watched = providers.map(([label]) => label);
   // Which kinds the store is asked to write, by any path.
   const written = new Set();
   for (const name of ['putRecord', 'insertRecord']) {
@@ -36,7 +51,7 @@ function spy(app) {
     for (const part of ['inserts', 'cas', 'deletes', 'checks']) for (const op of (spec && spec[part]) || []) if (op && op.kind) written.add(op.kind);
     return realCommit.call(this, spec);
   };
-  return { calls, written };
+  return { calls, written, watched };
 }
 
 /** What the MemoryStore holds that would be a booking, a charge, a lead or a message. */
@@ -56,7 +71,7 @@ async function assertNothingBooked(app, label) {
   }
 }
 
-test('after the e2e flows (A3 walk, cancel, a price change, expiry), no quotes, bookings, payment intents or outbox messages exist', { timeout: 180000 }, async t => {
+test('after the e2e flows (A3 walk, cancel, a price change, expiry, who may decide), no quotes, bookings, payment intents or outbox messages exist', { timeout: 180000 }, async t => {
   // One traveler runs every flow here within a minute or two: more searches than one person makes, so this
   // world allows more compute requests per minute (the limiter itself is tested in business-traveler).
   const w = await flows.devWorld({ env: { BUSINESS_COMPUTE_LIMIT: '200' } });
@@ -67,6 +82,7 @@ test('after the e2e flows (A3 walk, cancel, a price change, expiry), no quotes, 
   await flows.cancelFlow(w);
   await flows.priceChangeFlow(w);
   await flows.expiryFlow(w);
+  await flows.deciderScopeFlow(w);
   // The flows ran: trips in every state the walk and the scenarios reach, on demo prices.
   const statuses = new Set();
   for (const rid of Object.values(w.rids)) statuses.add((await w.app.store.getRecord('biz_request', rid)).status);
@@ -78,7 +94,9 @@ test('after the e2e flows (A3 walk, cancel, a price change, expiry), no quotes, 
   }
 
   await assertNothingBooked(w.app, 'development');
-  assert.deepEqual(seen.calls, [], 'nothing called the booking engine, payments or the store booking methods');
+  assert.ok(seen.watched.includes('business.flights') && seen.watched.includes('business.hotels'), `the Business providers are watched (${seen.watched.join(', ')})`);
+  assert.ok(seen.watched.some(l => l.startsWith('registry.')), 'and the registry providers');
+  assert.deepEqual(seen.calls, [], 'nothing called the booking engine, payments, the store booking methods or a provider book, cancel or hold');
   assert.deepEqual([...seen.written].filter(k => !allowedKind(k)), [], `only accounts and biz_ kinds were written (${[...seen.written].join(', ')})`);
 });
 
