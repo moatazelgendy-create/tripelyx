@@ -1315,7 +1315,7 @@ test('supplier test data: drafts store source sandbox and demo true; rows, lists
   assert.ok(body.some(l => l.startsWith('Supplier test data,')), 'a sandbox row');
   assert.ok(body.some(l => l.startsWith('Demo price,')), 'the old demo row');
   const dash = await w.svc.dashboard(w.as(w.owner), { view: 'reports' });
-  assert.equal(dash.priceSource, 'demo', 'demo is the least real');
+  assert.equal(dash.priceSource, 'sandbox', 'any supplier test data among the counted requests: "Includes supplier test data"');
   const exported = JSON.parse((await w.svc.exportCompany(w.as(w.owner))).json);
   assert.deepEqual(exported.requests.map(x => [x.id, x.price_source]).sort(), [[r.id, 'Supplier test data'], [out.id, 'Supplier test data'], [old.id, 'Demo price']].sort());
   assert.match(exported.note, /supplier test data or supplier prices, as each request's price_source says/);
@@ -1445,3 +1445,20 @@ function AppErrorFor(code, status) {
   const { AppError } = require('../server/lib/errors');
   return new AppError(code, `${code}.`, status);
 }
+
+test('totals of supplier test data and demo requests together are labelled supplier test data (totalsSource, reportTiles)', () => {
+  const { totalsSource } = require('../server/views/business/format');
+  assert.equal(totalsSource([]), null);
+  assert.equal(totalsSource(['demo']), 'demo');
+  assert.equal(totalsSource([undefined, 'live']), 'demo', 'a request stored before real suppliers reads as demo');
+  assert.equal(totalsSource(['demo', 'sandbox']), 'sandbox', 'any supplier test data: "Includes supplier test data"');
+  assert.equal(totalsSource(['live', 'sandbox', 'demo']), 'sandbox');
+  assert.equal(totalsSource(['live', 'live']), 'live', 'supplier prices only when every one is live');
+  assert.equal(totalsSource(['live', 'demo']), 'demo', 'otherwise the least real');
+  const base = { status: 'approved', travelerId: 'usr_AAAAAAAAAAAAAAAA', travelerName: 'Sam', totalCents: 1000, originalTotalCents: 1000, query: { departDate: '2026-11-12' }, evaluation: { status: 'within', violations: [] }, history: [] };
+  const tiles = reports.reportTiles({
+    requests: [{ ...base, id: 'btr_a' }, { ...base, id: 'btr_b', source: 'sandbox', rows: { out: { offerId: 'flt_t.ZZ1_20261112T0835_economy' } } }],
+    budgets: [], nowIso: '2026-10-09T09:00:00.000Z', timezone: 'UTC', truncated: false, effectiveStatus: r => r.status,
+  });
+  assert.equal(tiles.priceSource, 'sandbox');
+});

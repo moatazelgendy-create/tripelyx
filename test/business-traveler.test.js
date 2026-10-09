@@ -1267,3 +1267,48 @@ test('supplier test data: a supplier that fails, or the company limit, is said o
   spy.heal();
   assert.equal((await c.sam.get(`${B}/trips/search?${qs(Q)}`)).status, 200);
 });
+
+test('supplier test data: a swap to an alternative that is gone answers 410 and drops it; a pick that is gone at POST /trips answers 409', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const { B, c } = w;
+  const sb = sandbox.useSandbox(w.app);
+  const lose = (provider, offerId) => {
+    const real = provider.getOffer;
+    provider.getOffer = async function getOffer(id, pq) { return id === offerId ? null : real.call(this, id, pq); };
+    return () => { provider.getOffer = real; };
+  };
+
+  // The alternative's hotel is no longer in the supplier's answer.
+  const rid = await createDraft(w, await businessForm(w));
+  const draft = (await w.svc.getRequest(w.as(w.sam), rid)).request;
+  const alt = draft.alternatives.find(a => a.change.component === 'hotel') || draft.alternatives[0];
+  const comp = alt.change.component;
+  const provider = comp === 'hotel' ? sb.inventory.hotels : sb.inventory.flights;
+  let back = lose(provider, alt.rows[comp].offerId);
+  const snap = storeSnapshot(w.app);
+  let res = await c.sam.post(`${B}/trips/${rid}/swap`, { altId: alt.id, rev: String(draft.rev) });
+  assert.equal(res.status, 410, textOf(mainOf(res.text)).slice(0, 300));
+  assert.equal(storeSnapshot(w.app), snap, 'nothing written');
+  let main = mainOf(res.text);
+  assert.match(textOf(main), /That option isn't available anymore\. Pick another one, or request approval for the trip as it is\./);
+  assert.doesNotMatch(main, new RegExp(`name="altId" value="${alt.id}"`), 'the gone option is not offered again');
+  sandbox.assertSourceMoney(main, 'sandbox', { label: '410 swap' });
+  back();
+
+  // The picked hotel went between the results page and Review trip.
+  const form = await businessForm(w);
+  back = lose(sb.inventory.hotels, form.hotelKey.replace(/^h\./, '').split('|')[0]);
+  res = await c.sam.post(`${B}/trips`, form);
+  assert.equal(res.status, 409, textOf(mainOf(res.text)).slice(0, 300));
+  main = mainOf(res.text);
+  assert.ok(textOf(main).includes("That option isn't available anymore. Pick another."), textOf(main).slice(0, 300));
+  assert.equal(storeSnapshot(w.app), snap, 'nothing written');
+  back();
+
+  // A form that is wrong is still a 422 in its own words (a return flight on a one-way search).
+  const { return: _ret, ...oneWay } = form;
+  res = await c.sam.post(`${B}/trips`, { ...oneWay, back: form.back });
+  assert.equal(res.status, 422);
+  assert.ok(textOf(mainOf(res.text)).includes('Choose a return flight for a return trip, and none one way.'));
+});

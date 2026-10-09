@@ -7,8 +7,11 @@
 // In the demo preview every amount is demo-labelled; with no supplier (production) the company's own limits
 // and budgets are plain amounts, never "Demo price". A share with nothing submitted says "No requests yet",
 // never 0%. With real suppliers (real-suppliers design §2.3) the containers say where the prices came from:
-// the budgets and activity boxes add many requests up, so they carry the least real source of the requests
-// the page counts (dash.priceSource, else the inventory's): "Includes supplier test data".
+// the budgets and activity boxes add many requests up, so they carry the source of the requests the page
+// counts (dash.priceSource, else the inventory's): "Includes supplier test data". They do so whatever the
+// inventory says now: a supplier switched off ('none') leaves trips priced on its test data behind. The
+// policy box holds the company's own limits: on supplier prices it says what they are checked against
+// (parts.LIMITS_CHECKED), never "not a real price".
 const { html } = require('../../lib/html');
 const { icon } = require('../icons');
 const { LABELS, can } = require('../../business/roles');
@@ -61,8 +64,10 @@ function homeView(ctx, { org, member, dash, inventoryStatus }) {
   const inv = f.inventorySource(ctx.business && ctx.business.inventory) || (f.isSource(inventoryStatus) ? inventoryStatus : null);
   const demo = inventoryStatus === 'demo' || inv === 'sandbox' || inv === 'live';
   const sandbox = inv === 'sandbox' && inventoryStatus !== 'demo';
-  // What the totals (budgets, activity) add up: the counted requests' least real source, else the inventory's.
+  // What the totals (budgets, activity) add up: the counted requests' source, else the inventory's. Counted
+  // requests are labelled whatever the inventory says now (switched off, they were still priced somewhere).
   const totals = dash.priceSource || inv || 'demo';
+  const totalsBox = demo || f.isSource(dash.priceSource);
   const blocks = [];
 
   if (dash.checklist) {
@@ -107,7 +112,7 @@ function homeView(ctx, { org, member, dash, inventoryStatus }) {
   }
 
   if (dash.budgets) {
-    blocks.push(section('bz-h-budgets', `Budgets, ${dash.periodLabel}`, budgetTable(dash.budgets, { label: dash.periodLabel, timeZone, demo, source: totals }), {
+    blocks.push(section('bz-h-budgets', `Budgets, ${dash.periodLabel}`, budgetTable(dash.budgets, { label: dash.periodLabel, timeZone, demo: totalsBox, source: totals }), {
       iconName: 'wallet', action: { href: `${base}/budgets`, label: 'All budgets' },
     }));
     if (role === 'finance' && can(role, 'reports.view') && !tiles.length) {
@@ -139,9 +144,9 @@ function homeView(ctx, { org, member, dash, inventoryStatus }) {
   const lines = pol.lines.slice(0, 5);
   const money = lines.some(l => MONEY.test(l));
   // The same line /policy uses says why a limit sits beside "Demo price" in the preview.
-  const polBody = html`<p class="bz-muted">${pol.sub}</p><ul class="bz-policy-lines">${lines.map(l => html`<li>${icon('check')}<span>${l}</span></li>`)}</ul>${money ? html`<p class="bz-muted">${demo ? p.limitsNote(inventoryStatus === 'demo' ? 'demo' : inv) : 'Limits are in US dollars.'}</p>` : ''}`;
+  const polBody = html`<p class="bz-muted">${pol.sub}</p><ul class="bz-policy-lines">${lines.map(l => html`<li>${icon('check')}<span>${l}</span></li>`)}</ul>${money ? html`<p class="bz-muted">${demo && inventoryStatus === 'demo' ? p.limitsNote('demo') : 'Limits are in US dollars.'}</p>` : ''}`;
   blocks.push(section('bz-h-policy', 'Your policy at a glance',
-    money && demo ? p.demoBox(polBody, { pricedAt: null, timeZone, cls: 'bz-card bz-policy', source: inventoryStatus === 'demo' ? 'demo' : inv }) : html`<div class="bz-card bz-policy">${polBody}</div>`,
+    money && demo ? p.demoBox(polBody, { pricedAt: null, timeZone, cls: 'bz-card bz-policy', source: inventoryStatus === 'demo' ? 'demo' : inv, limits: true }) : html`<div class="bz-card bz-policy">${polBody}</div>`,
     { iconName: 'shield', action: { href: `${base}/policy`, label: 'Your whole policy' } }));
 
   if (dash.recent) {
@@ -149,7 +154,7 @@ function homeView(ctx, { org, member, dash, inventoryStatus }) {
     const list = dash.recent.length
       ? html`<ol class="bz-timeline">${dash.recent.map(e => html`<li><span class="bz-timeline-when">${f.whenIn(timeZone, e.at, { now, zone: true })}</span>${e.summary}</li>`)}</ol>`
       : html`<p class="bz-muted">Nothing here yet.</p>`;
-    blocks.push(section('bz-h-recent', 'Recent activity', demo && dash.recent.some(e => MONEY.test(e.summary || '')) ? p.demoBox(list, { pricedAt: null, timeZone, cls: 'bz-card', source: totals, totals: true }) : html`<div class="bz-card">${list}</div>`, {
+    blocks.push(section('bz-h-recent', 'Recent activity', totalsBox && dash.recent.some(e => MONEY.test(e.summary || '')) ? p.demoBox(list, { pricedAt: null, timeZone, cls: 'bz-card', source: totals, totals: true }) : html`<div class="bz-card">${list}</div>`, {
       iconName: 'clock', action: can(role, 'audit.view') ? { href: `${base}/activity`, label: 'All activity' } : null,
     }));
   }

@@ -1003,3 +1003,128 @@ test('supplier test data on the admin pages: budgets, reports, home and policies
   assert.doesNotMatch(textOf(res.text), /LITEAPI_API_KEY|needs attention/);
   sb.restore();
 });
+
+/** A home page block (section aria-labelledby="<id>") up to the next block. */
+function homeBlock(page, id) {
+  const main = mainOf(page);
+  const at = main.indexOf(`aria-labelledby="${id}"`);
+  assert.ok(at >= 0, `the ${id} block`);
+  const next = main.indexOf('<section class="bz-home-block', at);
+  return main.slice(at, next < 0 ? main.length : next);
+}
+/** The price sources of a markup's containers. */
+const sourcesIn = markup => [...String(markup).matchAll(/data-price-source="([a-z]+)"/g)].map(m => m[1]);
+
+test('totals that count supplier test data and demo requests together say "Includes supplier test data" (budgets, reports, home)', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const { MONEY_SUBS, CSV_SOURCES } = require('../server/views/business/reports');
+  // The preview moves from demo data to supplier test data with its requests kept (design §2.2).
+  const demo = await trips(w);
+  assert.deepEqual([demo.approved.source, demo.pending.source], ['demo', 'demo']);
+  sandbox.useSandbox(w.app);
+  const sb = await trips(w);
+  assert.deepEqual([sb.approved.source, sb.pending.source], ['sandbox', 'sandbox']);
+
+  // Reports: the sub-heading, the tiles that add requests up, and the CSV note.
+  let res = await w.c(w.fay).get(`${w.o}/reports?period=2026-Q4`);
+  assert.equal(res.status, 200);
+  let main = mainOf(res.text);
+  assert.ok(textOf(main).includes(MONEY_SUBS.sandbox), textOf(main).slice(0, 300));
+  assert.ok(textOf(main).includes(CSV_SOURCES), 'the CSV note');
+  const committed = main.match(/aria-label="Committed vs budget">[\s\S]*?data-price-source="([a-z]+)"[^>]*>([\s\S]*?)<\/section>/);
+  assert.ok(committed, 'the Committed vs budget tile');
+  assert.equal(committed[1], 'sandbox');
+  assert.ok(textOf(committed[2]).includes('TEST DATA') && textOf(committed[2]).includes('Includes supplier test data'), textOf(committed[2]));
+  assert.match(main, /data-price-source="sandbox" aria-label="Requests by traveler"/);
+
+  // Budgets for the owner and Finance (who read every request), and the Manager (who reads her team's).
+  for (const who of [w.owner, w.fay, w.dana]) {
+    res = await w.c(who).get(`${w.o}/budgets`);
+    assert.equal(res.status, 200);
+    sandbox.assertSourceMoney(mainOf(res.text), 'sandbox', { label: `budgets for ${who.user.name}`, min: 1 });
+  }
+  // The home budget tables.
+  for (const who of [w.owner, w.fay, w.dana, w.tom]) {
+    res = await w.c(who).get(w.o);
+    assert.equal(res.status, 200);
+    const block = homeBlock(res.text, 'bz-h-budgets');
+    assert.deepEqual([...new Set(sourcesIn(block))], ['sandbox'], `home budgets for ${who.user.name}`);
+    assert.ok(textOf(block).includes('TEST DATA') && textOf(block).includes('Includes supplier test data'), textOf(block).slice(0, 300));
+  }
+});
+
+test('with the supplier switched off after trips on supplier test data, home and a Manager\'s budgets still say so; /activity names its source', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const sb = sandbox.useSandbox(w.app);
+  await trips(w);
+
+  // The activity page on supplier test data.
+  let res = await w.c(w.owner).get(`${w.o}/activity`);
+  assert.equal(res.status, 200);
+  let main = mainOf(res.text);
+  assert.ok(/\$\d/.test(textOf(main)), 'an amount (the budget set) is listed');
+  sandbox.assertSourceMoney(main, 'sandbox', { label: 'activity' });
+  assert.ok(textOf(main).includes('amounts here are budgets your company set or trips priced on supplier test data'), textOf(main).slice(-400));
+
+  // A supplier problem switches suppliers off (design §1.3, §1.4); the requests stay.
+  sb.inventory.status = 'none';
+  sb.inventory.source = null;
+  sb.inventory.problem = 'DUFFEL_ACCESS_TOKEN is not a Duffel test token.';
+  for (const who of [w.owner, w.fay, w.dana]) {
+    res = await w.c(who).get(w.o);
+    assert.equal(res.status, 200);
+    const block = homeBlock(res.text, 'bz-h-budgets');
+    assert.deepEqual([...new Set(sourcesIn(block))], ['sandbox'], `home budgets for ${who.user.name}`);
+    assert.ok(textOf(block).includes('Includes supplier test data'));
+  }
+  res = await w.c(w.owner).get(w.o);
+  const recent = homeBlock(res.text, 'bz-h-recent');
+  assert.deepEqual([...new Set(sourcesIn(recent))], ['sandbox'], 'the recent activity box');
+  for (const who of [w.dana, w.fay]) {
+    res = await w.c(who).get(`${w.o}/budgets`);
+    assert.equal(res.status, 200);
+    sandbox.assertSourceMoney(mainOf(res.text), 'sandbox', { label: `budgets on none for ${who.user.name}`, min: 1 });
+  }
+});
+
+test('reports and the Company trips filter never say "Approved to book" once requests are on supplier test data', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const tileOf = text => {
+    const m = mainOf(text).match(/aria-label="Requests by status">([\s\S]*?)<\/section>/);
+    assert.ok(m, 'the Requests by status tile');
+    return textOf(m[1]);
+  };
+  const optionOf = (text, id) => {
+    const m = text.match(new RegExp(`<select id="${id}"[\\s\\S]*?<option value="approved"[^>]*>([^<]*)</option>`));
+    assert.ok(m, `the approved option of #${id}`);
+    return m[1];
+  };
+  // Demo: unchanged.
+  await trips(w);
+  let res = await w.c(w.fay).get(`${w.o}/reports?period=2026-Q4`);
+  assert.match(tileOf(res.text), /Approved to book: 1/);
+  assert.equal(optionOf(res.text, 'bz-rep-status'), 'Approved to book');
+  res = await w.c(w.fay).get(`${w.o}/trips?scope=all`);
+  assert.equal(optionOf(res.text, 'f-status'), 'Approved to book');
+
+  // Supplier test data counted with the demo requests: nothing can be booked, so plain "Approved".
+  const sb = sandbox.useSandbox(w.app);
+  await trips(w);
+  for (const off of [false, true]) {
+    if (off) { sb.inventory.status = 'none'; sb.inventory.source = null; }
+    res = await w.c(w.fay).get(`${w.o}/reports?period=2026-Q4`);
+    assert.equal(res.status, 200);
+    const tile = tileOf(res.text);
+    assert.match(tile, /Approved: 2/, tile);
+    assert.doesNotMatch(tile, /to book/);
+    assert.equal(optionOf(res.text, 'bz-rep-status'), 'Approved');
+    res = await w.c(w.fay).get(`${w.o}/trips?scope=all`);
+    assert.equal(res.status, 200);
+    assert.equal(optionOf(res.text, 'f-status'), 'Approved', `supplier ${off ? 'off' : 'on'}`);
+    // Each listed request keeps its own source's pill: the demo one "Approved to book", the test one "Approved (test data)".
+    assert.ok(textOf(mainOf(res.text)).includes('Approved (test data)'));
+  }
+});

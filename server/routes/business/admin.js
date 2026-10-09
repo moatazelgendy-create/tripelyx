@@ -30,8 +30,10 @@
 // re-renders the page with what was typed and the message; a 403 from the service (a role this member may
 // not grant) re-renders People with the reason. GETs never write.
 // Price sources (real-suppliers design §2.3): with a supplier's test system the welcome checklist offers "Try a
-// trip with supplier test data", and the budgets table is labelled with the least real source of the requests
-// it adds up (source.leastReal), falling back to the workspace's.
+// trip with supplier test data", and the budgets table is labelled with the source of the requests it adds up
+// (format.totalsSource: "Includes supplier test data" whenever one of them is supplier test data), read in
+// the widest list the member may see (every request, or a Manager's team), falling back to the workspace's.
+// The activity list says where its amounts come from by the workspace's source.
 const express = require('express');
 const { AppError } = require('../../lib/errors');
 const v = require('../../business/validate');
@@ -41,7 +43,8 @@ const { send, clientError, routesOf, mountTable } = require('./table');
 const { can, LABELS } = require('../../business/roles');
 const { TIERS, MEMBER_CAP, PAGE_SIZE, SCAN_CAP, AUDIT_GROUPS } = require('../../business/constants');
 const { periodChoices, currentPeriodKey, PERIOD_KEY_RE } = require('../../business/budgets');
-const { isSource, leastReal } = require('../../business/source');
+const { isSource } = require('../../business/source');
+const { totalsSource } = require('../../views/business/format');
 const { welcomeView } = require('../../views/business/welcome');
 const { workspaceForbiddenView } = require('../../views/business/auth');
 const { peopleView } = require('../../views/business/people');
@@ -250,13 +253,36 @@ function router(ctx, deps) {
     const rows = await svc.listBudgets(actor, key);
     const choices = periodTabs(org, ctx.now(), key);
     const scan = can(roleOf(req), 'request.view.all') ? await uncountedByDepartment(actor, key, rows) : null;
-    // The table adds up the period's requests: label it with their least real source when they were read,
-    // else the workspace's (demo pages stay as they were).
-    const priceSource = (scan && leastReal(scan.sources)) || inventorySource() || 'demo';
+    // The table adds up the period's requests: label it by their sources when they were read (every request,
+    // or the ones a Manager can read), else the workspace's (demo pages stay as they were). A supplier switched
+    // off ('none') leaves its requests' label in place.
+    const sources = scan ? scan.sources : rows.length ? await readableSources(actor, roleOf(req), key) : [];
+    const priceSource = totalsSource(sources) || inventorySource() || 'demo';
     return page(req, res, status, budgetsView, {
       rows, periodKey: key, choices, canEdit: can(roleOf(req), 'budget.edit'), periodKind: org.settings && org.settings.budgetPeriod === 'month' ? 'month' : 'quarter',
       ownOnly: !can(roleOf(req), 'budget.view.all'), uncounted: scan ? scan.uncounted : null, values, errors, notice, error, priceSource,
     });
+  }
+
+  /** The statuses a budget table adds up (committed, past and awaiting approval). */
+  const COUNTED = Object.freeze(['approved', 'past', 'pending']);
+
+  /**
+   * The price sources (RequestRow.source) of the period's counted requests a member who can't read every
+   * request can read (a Manager: their team's, which includes their department's travelers they manage).
+   * @returns {Promise<string[]>}
+   */
+  async function readableSources(actor, role, periodKey) {
+    const scope = can(role, 'request.view.team') ? 'team' : 'mine';
+    const sources = [];
+    let cursor = null;
+    for (let i = 0; i < Math.ceil(SCAN_CAP / PAGE_SIZE); i += 1) {
+      const p = await svc.listRequests(actor, { scope, period: periodKey, cursor });
+      for (const x of p.rows) if (COUNTED.includes(x.status)) sources.push(x.source);
+      cursor = p.cursor;
+      if (!cursor) break;
+    }
+    return sources;
   }
 
   /**
@@ -276,7 +302,7 @@ function router(ctx, deps) {
     for (let i = 0; i < Math.ceil(SCAN_CAP / PAGE_SIZE); i += 1) {
       const p = await svc.listRequests(actor, { scope: 'all', period: periodKey, cursor });
       for (const x of p.rows) {
-        if (x.status === 'approved' || x.status === 'past' || x.status === 'pending') sources.push(x.source);
+        if (COUNTED.includes(x.status)) sources.push(x.source);
         if ((x.status === 'approved' || x.status === 'past') && x.departmentId && Number.isSafeInteger(x.totalCents)) {
           approved[x.departmentId] = (approved[x.departmentId] || 0) + x.totalCents;
         }

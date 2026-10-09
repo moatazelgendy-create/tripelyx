@@ -1077,11 +1077,18 @@ test('supplier rows read as the supplier gave them: stops in, operated by, no "0
   const base = sandbox.sandboxRow(fx.hotel());
   const fee = { label: 'Resort fee, paid at the hotel', kind: 'fee', cents: 4000 };
   const withFee = { ...base, lines: [...base.lines, fee], totalCents: base.totalCents + 4000 };
+  // Supplier test data is never booked: the part paid at the hotel is said without "when booked".
   const hotelCard = String(parts.rowCard([ev(withFee)], { timeZone: TZ, lines: true }));
-  assert.ok(textOf(hotelCard).includes(`You pay ${f.money(base.totalCents)} when booked and $40 at the hotel.`), textOf(hotelCard).slice(0, 400));
+  assert.ok(textOf(hotelCard).includes('Of this total, $40 is paid at the hotel.'), textOf(hotelCard).slice(0, 400));
+  assert.doesNotMatch(textOf(hotelCard), /when booked|You pay/);
   sandbox.assertSourceMoney(hotelCard, 'sandbox', { label: 'hotel with a fee' });
   const table = String(parts.linesTable(withFee.lines, { pricedAt: PRICED, timeZone: TZ, source: 'sandbox', kind: 'room', row: withFee }));
-  assert.ok(textOf(table).includes(`You pay ${f.money(base.totalCents)} when booked and $40 at the hotel.`));
+  assert.ok(textOf(table).includes('Of this total, $40 is paid at the hotel.'));
+  assert.doesNotMatch(textOf(table), /when booked/);
+  // Live supplier prices: what is paid when booked and what at the hotel.
+  const live = { ...withFee, key: withFee.key.replace('htl_t.', 'htl_l.'), offerId: withFee.offerId.replace('htl_t.', 'htl_l.') };
+  assert.equal(require('../server/business/source').sourceOf(live), 'live');
+  assert.ok(textOf(String(parts.paidAtHotel(live))).includes(`You pay ${f.money(base.totalCents)} when booked and $40 at the hotel.`));
   assert.equal(String(parts.paidAtHotel(fx.hotel())), '', 'demo rows never');
   assert.equal(String(parts.paidAtHotel(base)), '', 'no fee, no split');
   // Not available, in the supplier's words.
@@ -1119,4 +1126,96 @@ test('shell, results notes and the platform page on supplier test data', () => {
   assert.ok(textOf(bad).includes(`A supplier setting needs attention: DUFFEL_ACCESS_TOKEN is a live key, and BUSINESS_FLIGHT_SUPPLIER=duffel_test allows test keys only. ${SUPPLIER_OFF}`));
   assert.match(bad, /role="status"/);
   assert.ok(section({ status: 'sandbox', source: 'sandbox', problem: '<script>' }).includes('&lt;script&gt;'), 'escaped');
+});
+
+test('home: the budgets and activity boxes carry the counted requests\' source, mixed or with the supplier switched off', () => {
+  const { homeView } = require('../server/views/business/home');
+  const budget = { budgetId: 'b1', department: { id: 'dep_AAAAAAAAAAAAAAAA', name: 'Engineering', archived: false }, amountCents: 2000000, committedCents: 569074, awaitingCents: 0, remainingCents: 1430926, truncated: false };
+  const dash = priceSource => ({
+    role: 'owner', periodKey: '2026-Q4', periodLabel: 'Q4 2026', checklist: null, waiting: null, myTrips: [], teamTrips: null,
+    policy: { sub: '', lines: [] }, pendingCompany: null, outOfPolicyShare: null, topReasons: null,
+    recent: [{ at: '2026-10-09T09:00:00.000Z', summary: 'Fay Finance set the Engineering budget for Q4 2026 to $20,000' }],
+    budgets: [budget], reports: null, priceSource,
+  });
+  const page = (status, source, priceSource) => String(homeView({ now: () => new Date('2026-10-09T09:00:00Z'), business: { inventory: { status, source, airports: () => [] } } }, {
+    org: { id: 'org_AAAAAAAAAAAAAAAA', name: 'Acme Inc', timezone: 'Africa/Cairo' }, member: { name: 'Olivia Owner', role: 'owner' }, dash: dash(priceSource), inventoryStatus: status,
+  }));
+  // Demo and supplier test data counted together (the preview moved from demo to sandbox, its requests kept).
+  let out = page('sandbox', 'sandbox', 'sandbox');
+  sandbox.assertSourceMoney(out, 'sandbox', { label: 'home, mixed', min: 4 });
+  assert.ok(sandbox.textOf(out).includes('Includes supplier test data'));
+  // The supplier switched off by a problem: the stored requests were still priced on its test data.
+  out = page('none', null, 'sandbox');
+  sandbox.assertSourceMoney(out, 'sandbox', { label: 'home, supplier off', min: 4 });
+  // Production with nothing counted: the company's own figures, plain.
+  out = page('none', null, null);
+  assert.doesNotMatch(out, /data-price-source/);
+  // Demo: unchanged.
+  out = page('demo', undefined, null);
+  assert.doesNotMatch(out, /data-price-source="sandbox"|TEST DATA/);
+  assert.match(out, /data-price-source="demo"/);
+});
+
+test('the company\'s own policy limits on supplier prices say what they are checked against, and only search amounts get a chip', () => {
+  const { policyMineView } = require('../server/views/business/policyMine');
+  const { homeView } = require('../server/views/business/home');
+  const org = { id: 'org_AAAAAAAAAAAAAAAA', name: 'Acme Inc', timezone: 'Africa/Cairo', settings: { outOfPolicy: 'approval', approvalHours: 24 } };
+  const lines = ['Hotels: up to $180 a night, taxes included.', 'Nightly limits by country: United Kingdom $260 (London $300).'];
+  const policy = { description: { title: 'Your travel policy', sub: 'Standard policy, version 3', lines }, tierLabel: 'Standard', version: 3 };
+  const ctxOf = status => ({ now: () => new Date(FIXED_NOW), business: { inventory: { status, source: status === 'demo' ? undefined : status, airports: () => [] } } });
+  const dash = { role: 'employee', periodKey: '2026-Q4', periodLabel: 'Q4 2026', checklist: null, waiting: null, myTrips: [], teamTrips: null,
+    policy: { sub: 'Standard policy, version 3', lines }, pendingCompany: null, outOfPolicyShare: null, topReasons: null, recent: null, budgets: null, reports: null, priceSource: null };
+  const homeBox = status => {
+    const out = String(homeView(ctxOf(status), { org, member: { name: 'Sam Rivera', role: 'employee' }, dash, inventoryStatus: status }));
+    const at = out.indexOf('id="bz-h-policy');
+    assert.ok(at >= 0, 'the home policy box');
+    return out.slice(at, out.indexOf('</section>', out.indexOf('bz-policy', at)) + 10);
+  };
+  for (const source of ['sandbox', 'live']) {
+    for (const [name, markup] of [['/policy', String(policyMineView(ctxOf(source), { org, policy }))], ['home', homeBox(source)]]) {
+      const text = textOf(markup);
+      assert.ok(text.includes(parts.LIMITS_CHECKED[source]), `${source} ${name}: ${text.slice(0, 400)}`);
+      assert.doesNotMatch(text, /not a real price|Checked at|Supplier price\b/, `${source} ${name}: a company limit is not a supplier price`);
+      if (source === 'sandbox') sandbox.assertSourceMoney(markup, 'sandbox', { label: name });
+    }
+  }
+  // Demo: the demo label and note, as before.
+  for (const markup of [String(policyMineView(ctxOf('demo'), { org, policy })), homeBox('demo')]) {
+    assert.ok(textOf(markup).includes('Demo price') && textOf(markup).includes(parts.limitsNote('demo')));
+  }
+
+  // The limits bar: a chip on amounts worked out from the search (a median cap, the Price to Beat), none on a
+  // limit the company set; demo keeps "Demo price" on every amount.
+  const bar = {
+    heading: 'Your limits for this search (Standard policy, v3)',
+    items: [
+      { key: 'flight.short', text: 'Flights under 6 hours: Economy, up to', cents: 71200, suffix: 'each way (median of these test fares plus 20%)' },
+      { key: 'flight.long', text: 'Flights of 6 hours or more: up to Premium economy, up to', cents: 150000, suffix: "(this search has too few test fares to compare, so your set limit applies)" },
+      { key: 'hotel.cap', text: 'Hotels in London: up to', cents: 30000, suffix: 'a night, taxes included' },
+      { key: 'hotel.priceToBeat', text: 'Price to Beat:', cents: 26400, suffix: 'a night (the lower of your limit and the middle test rate of this search)' },
+      { key: 'trip.cap', text: 'Trip total: up to', cents: 400000, suffix: '' },
+    ],
+  };
+  const chips = markup => [...String(markup).matchAll(/<li data-limit="([^"]+)">[\s\S]*?<\/li>/g)].filter(m => /bz-chip-demo/.test(m[0])).map(m => m[1]);
+  for (const source of ['sandbox', 'live']) {
+    const markup = parts.limitsBar(bar, { pricedAt: PRICED, timeZone: TZ, source });
+    assert.deepEqual(chips(markup), ['flight.short', 'hotel.priceToBeat'], source);
+  }
+  assert.deepEqual(chips(parts.limitsBar(bar, { pricedAt: PRICED, timeZone: TZ })), ['flight.short', 'flight.long', 'hotel.cap', 'hotel.priceToBeat', 'trip.cap'], 'demo unchanged');
+});
+
+test('results copy never claims scarcity: live empty states say the options can\'t be picked, not that seats or rooms ran out', () => {
+  const { COPY } = require('../server/views/business/results');
+  assert.equal(COPY.live.noSeats, 'None of these flights can be picked from the supplier right now. Try another date.');
+  assert.equal(COPY.live.noRooms, 'None of these hotels can be picked from the supplier for these dates. You can still request the flights.');
+  for (const source of ['demo', 'sandbox', 'live']) {
+    for (const [k, v] of Object.entries(COPY[source])) {
+      const text = typeof v === 'function' ? v('CAI', 'LHR', 'Thu 12 Nov') : v;
+      assert.doesNotMatch(text, /\bleft\b|sold out|last (seat|room)|only \d|hurry|selling fast/i, `${source}.${k}: ${text}`);
+      assert.ok(!text.includes('\u2014'), `${source}.${k}: no em dash`);
+    }
+  }
+  // Demo and sandbox copy unchanged.
+  assert.equal(COPY.demo.noSeats, 'None of these flights has a seat in the demo data. Try another date.');
+  assert.equal(COPY.sandbox.noSeats, "None of these flights has a seat in the supplier's test data. Try another date.");
 });

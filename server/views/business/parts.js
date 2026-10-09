@@ -29,7 +29,7 @@
 // demo data: stars 0 is "No star rating from the supplier" (and 4.5 is "4.5-star"), a weight of 0 kg is not
 // stated (never printed), stops name their airports ("1 stop in Doha"), a flight sold by one airline and
 // flown by another says "operated by", and a hotel's fee lines are paid at the hotel ("You pay $X when
-// booked and $Y at the hotel").
+// booked and $Y at the hotel" on live prices; "Of this total, $Y is paid at the hotel." on test data).
 const crypto = require('node:crypto');
 const { html, raw } = require('../../lib/html');
 const { icon } = require('../icons');
@@ -44,6 +44,11 @@ const rowKind = row => (row && row.kind === 'hotel' ? 'room' : 'fare');
 const known = source => (source === 'sandbox' || source === 'live' ? source : 'demo');
 /** The container's class: a sandbox one also gets bz-price-test. */
 const boxClass = (cls, source) => `${cls}${known(source) === 'sandbox' ? ' bz-price-test' : ''}`;
+/** What the company's own policy limits are checked against, by supplier source (the /policies page's words). */
+const LIMITS_CHECKED = Object.freeze({
+  sandbox: "Supplier test data: in this preview, these limits are checked against flight and hotel prices from our suppliers' test systems, not real fares.",
+  live: 'Supplier prices: these limits are checked against flight and hotel prices from our suppliers, which can change until booked.',
+});
 /** The visible "TEST DATA" tag of a sandbox label. */
 const testTag = source => (known(source) === 'sandbox' ? html`<span class="bz-test-tag">TEST DATA</span>` : '');
 
@@ -84,10 +89,13 @@ const keyId = (prefix, key) => `${prefix}-${crypto.createHash('sha256').update(S
  * @param {string} timeZone the company's
  * @param {{ inline?: boolean, source?: import('../../business/types').PriceSource, kind?: 'fare'|'room'|'price', totals?: boolean }} [opts]
  *   inline: a <span> for use inside a sentence; totals: the container adds many requests up (budgets, reports,
- *   home), so a supplier source says format.SOURCE_TOTALS ("Includes supplier test data"); demo is unchanged
+ *   home), so a supplier source says format.SOURCE_TOTALS ("Includes supplier test data"); limits: the container
+ *   holds the company's own policy limits, so a supplier source says what they are checked against
+ *   (LIMITS_CHECKED), never "not a real price"; demo is unchanged
  */
-function priceNote(pricedAt, timeZone, { inline = false, source = 'demo', kind = 'price', totals = false } = {}) {
-  const text = totals && known(source) !== 'demo' ? f.SOURCE_TOTALS[known(source)] : f.pricedAtText(pricedAt, timeZone, { source: known(source), kind });
+function priceNote(pricedAt, timeZone, { inline = false, source = 'demo', kind = 'price', totals = false, limits = false } = {}) {
+  const text = limits && known(source) !== 'demo' ? LIMITS_CHECKED[known(source)]
+    : totals && known(source) !== 'demo' ? f.SOURCE_TOTALS[known(source)] : f.pricedAtText(pricedAt, timeZone, { source: known(source), kind });
   if (known(source) !== 'sandbox') {
     return inline
       ? html`<span class="bz-price-note">${text}</span>`
@@ -121,10 +129,10 @@ const BOX_TAGS = Object.freeze(['div', 'section', 'article', 'aside']);
  *   source?: import('../../business/types').PriceSource, kind?: 'fare'|'room'|'price', totals?: boolean }} opts
  *   label: an aria-label for a section or aside; totals: see priceNote
  */
-function demoBox(body, { pricedAt, timeZone, tag = 'div', cls = '', label = '', source = 'demo', kind = 'price', totals = false }) {
+function demoBox(body, { pricedAt, timeZone, tag = 'div', cls = '', label = '', source = 'demo', kind = 'price', totals = false, limits = false }) {
   const t = BOX_TAGS.includes(tag) ? tag : 'div';
   const s = known(source);
-  return html`${raw(`<${t}`)} class="${boxClass(`bz-demo-box${cls ? ` ${cls}` : ''}`, s)}" data-price-source="${s}"${label ? html` aria-label="${label}"` : ''}>${body}${priceNote(pricedAt, timeZone, { source: s, kind, totals })}${raw(`</${t}>`)}`;
+  return html`${raw(`<${t}`)} class="${boxClass(`bz-demo-box${cls ? ` ${cls}` : ''}`, s)}" data-price-source="${s}"${label ? html` aria-label="${label}"` : ''}>${body}${priceNote(pricedAt, timeZone, { source: s, kind, totals, limits })}${raw(`</${t}>`)}`;
 }
 
 /** The workspace's demo ribbon (§B3): shown on every workspace page. */
@@ -158,14 +166,17 @@ function supplierPanel({ level = 2 } = {}) {
 const LINE_KINDS = Object.freeze(['base', 'tax', 'fee', 'discount']);
 
 /**
- * "You pay $X when booked and $Y at the hotel": a supplier hotel's fee lines are paid at the hotel and are in
- * its total (real-suppliers design §3.4). Nothing when it has none, or for a demo row.
+ * A supplier hotel's fee lines are paid at the hotel and are in its total (real-suppliers design §3.4). Live
+ * prices: "You pay $X when booked and $Y at the hotel". Supplier test data is never booked, so it says only
+ * "Of this total, $Y is paid at the hotel." Nothing when it has none, or for a demo row.
  * @param {import('../../business/types').Row} row
  */
 function paidAtHotel(row) {
-  if (!row || row.kind !== 'hotel' || sourceOf(row) === 'demo' || !Array.isArray(row.lines)) return '';
+  const source = row ? sourceOf(row) : 'demo';
+  if (!row || row.kind !== 'hotel' || source === 'demo' || !Array.isArray(row.lines)) return '';
   const fees = row.lines.filter(l => l && l.kind === 'fee' && Number.isSafeInteger(l.cents)).reduce((n, l) => n + l.cents, 0);
   if (fees <= 0 || !Number.isSafeInteger(row.totalCents)) return '';
+  if (source !== 'live') return html`<p class="bz-paid-split">Of this total, ${amount(fees)} is paid at the hotel.</p>`;
   return html`<p class="bz-paid-split">You pay ${amount(row.totalCents - fees)} when booked and ${amount(fees)} at the hotel.</p>`;
 }
 
@@ -304,12 +315,28 @@ const LIMITS_NOTES = Object.freeze({
 });
 const limitsNote = source => LIMITS_NOTES[source] || LIMITS_NOTES.demo;
 
+/**
+ * Is a limits-bar item's amount worked out from the search's prices (a median cap, the Price to Beat) rather
+ * than a limit the company set? Read from the reason policy/describe.limitsBar wrote: a median cap says
+ * "(median of …", and the Price to Beat is the company's limit only when "this search has too few … hotels to
+ * compare".
+ * @param {import('../../business/types').LimitItem} item
+ */
+function fromSearch(item) {
+  if (!item || item.cents === null || item.cents === undefined) return false;
+  const suffix = String(item.suffix || '');
+  if (item.key === 'hotel.priceToBeat') return !/too few (?:test )?hotels to compare/.test(suffix);
+  return /^flight\./.test(String(item.key)) && suffix.includes('(median of ');
+}
+
 /** The chip beside each amount of the limits bar, by source. */
 const LIMIT_CHIPS = Object.freeze({ demo: 'Demo price', sandbox: 'Test data', live: 'Supplier price' });
 
 /**
  * "Your limits for this search" (§E4, policy/describe.limitsBar): each amount in a chip that says
- * "Demo price" ("Test data" for supplier test data), and the bar's own price label.
+ * "Demo price" ("Test data" for supplier test data), and the bar's own price label. On supplier prices only an
+ * amount worked out from the search (fromSearch: a median cap, the Price to Beat) gets the chip; a
+ * limit the company set is its own amount, not a supplier price.
  * @param {import('../../business/types').LimitsBar} bar
  * @param {{ pricedAt: string|null, timeZone: string, level?: number, source?: import('../../business/types').PriceSource }} opts
  */
@@ -320,7 +347,7 @@ function limitsBar(bar, { pricedAt, timeZone, level = 2, source = 'demo' }) {
   return html`<section class="${boxClass('bz-limits', s)}" data-price-source="${s}" aria-labelledby="bz-limits-title">
     ${heading(level, html` class="bz-limits-title" id="bz-limits-title"`, html`${icon('shield')}<span>${bar.heading}</span>`)}
     <ul class="bz-limits-list">
-      ${bar.items.map(it => html`<li data-limit="${it.key}"><span>${it.text}</span>${it.cents === null || it.cents === undefined ? '' : html` <span class="bz-limit-amount">${amount(it.cents)}<span class="${chip}">${LIMIT_CHIPS[s]}</span></span>`}${it.suffix ? html` <span>${it.suffix}</span>` : ''}</li>`)}
+      ${bar.items.map(it => html`<li data-limit="${it.key}"><span>${it.text}</span>${it.cents === null || it.cents === undefined ? '' : html` <span class="bz-limit-amount">${amount(it.cents)}${s === 'demo' || fromSearch(it) ? html`<span class="${chip}">${LIMIT_CHIPS[s]}</span>` : ''}</span>`}${it.suffix ? html` <span>${it.suffix}</span>` : ''}</li>`)}
     </ul>
     ${priceNote(pricedAt, timeZone, { source: s })}
   </section>`;
@@ -713,5 +740,5 @@ module.exports = {
   DEMO_RIBBON, NO_SUPPLIER, BADGES, PILLS, CHEAPEST_WITHIN_LABEL, PIN_BADGE, ALT_HEADING, ALT_SUB, ALT_TRUNCATED, ALT_NONE,
   UNAVAILABLE,
   // Price sources (real-suppliers design §2.3)
-  SANDBOX_RIBBON, LIVE_RIBBON, APPROVED_PILLS, ALT_SUBS, LIMIT_CHIPS, LIMITS_NOTES, limitsNote, NO_STARS, UNAVAILABLE_BY_SOURCE, unavailableText, paidAtHotel, tripSource,
+  SANDBOX_RIBBON, LIVE_RIBBON, APPROVED_PILLS, ALT_SUBS, LIMIT_CHIPS, LIMITS_NOTES, LIMITS_CHECKED, limitsNote, fromSearch, NO_STARS, UNAVAILABLE_BY_SOURCE, unavailableText, paidAtHotel, tripSource,
 };

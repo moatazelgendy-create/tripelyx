@@ -44,7 +44,8 @@
 // inventory.unavailable ("Not available in the supplier's test data."). A supplier fare whose refund terms
 // the airline doesn't confirm (source.refundsUnconfirmed) is never said to refund nothing: "…, and Tripelyx
 // can't confirm that for Economy Light." A supplier hotel with stars 0 has no star rating: under a maxStars
-// limit it needs approval (hotel.stars, actual 0) instead of passing as a 0-star hotel.
+// limit it needs approval (hotel.stars, actual 0) instead of passing as a 0-star hotel; where outOfPolicy is
+// 'block' the text says it "can't be shown to be within your up to 4 stars rule" (never "needs approval").
 const { CABIN_RANK, CABIN_LABELS } = require('../constants');
 const { sourceOf, isSource, refundsUnconfirmed } = require('../source');
 
@@ -305,9 +306,12 @@ function evaluateHotel(row, ctx) {
   if (h.maxStars != null && row.stars > h.maxStars) {
     out.push(violation('hotel.stars', 'hotel', h.maxStars, row.stars, `${row.stars}-star hotel. Your policy allows up to ${plural(h.maxStars, 'star')}.`));
   } else if (h.maxStars != null && row.stars === 0 && sourceOf(row) !== 'demo') {
-    // A supplier hotel with no star rating can't be shown to be inside the limit: an approver decides.
-    out.push(violation('hotel.stars', 'hotel', h.maxStars, 0,
-      `This hotel has no star rating from the supplier, so it needs approval under your up to ${plural(h.maxStars, 'star')} rule.`));
+    // A supplier hotel with no star rating can't be shown to be inside the limit: an approver decides, or,
+    // where the company blocks out-of-policy trips, it can't be picked (so the text never says approval).
+    const rule = `your up to ${plural(h.maxStars, 'star')} rule`;
+    out.push(violation('hotel.stars', 'hotel', h.maxStars, 0, ctx.outOfPolicy === 'block'
+      ? `This hotel has no star rating from the supplier, so it can't be shown to be within ${rule}.`
+      : `This hotel has no star rating from the supplier, so it needs approval under ${rule}.`));
   }
   if (h.minAdvanceDays > 0) {
     const days = daysBetween(ctx.today, row.checkIn);

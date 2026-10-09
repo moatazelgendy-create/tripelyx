@@ -49,9 +49,10 @@ const COPY = Object.freeze({
   }),
   live: Object.freeze({
     noFlights: (a, b, day) => `No flights found from ${a} to ${b} on ${day}.`,
-    noSeats: 'None of these flights has a seat left. Try another date.',
+    // Every option unavailable means the supplier didn't confirm it again, not that it sold out: no scarcity claim.
+    noSeats: 'None of these flights can be picked from the supplier right now. Try another date.',
     noHotels: city => `No hotels found in ${city}.`,
-    noRooms: 'None of these hotels has a room for these dates. You can still request the flights.',
+    noRooms: 'None of these hotels can be picked from the supplier for these dates. You can still request the flights.',
     flightsTruncated: 'Showing the lowest-priced fares of this search.',
     hotelsTruncated: 'Showing the lowest-priced rooms of this search.',
   }),

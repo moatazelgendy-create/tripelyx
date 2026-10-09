@@ -739,3 +739,81 @@ test('supplier test data: a supplier failure at submit leaves the draft as it wa
   }
   assert.equal((await stored(w, rid)).status, 'draft');
 });
+
+/** Make a sandbox provider lose one offer (getOffer answers null for it), as a supplier's offer that expired or went. */
+function vanish(t, provider, offerId) {
+  const real = provider.getOffer;
+  provider.getOffer = async function getOffer(id, pq) { return id === offerId ? null : real.call(this, id, pq); };
+  t.after(() => { provider.getOffer = real; });
+  return () => { provider.getOffer = real; };
+}
+
+test('supplier test data: a picked option that is gone sends the trip back at decide and re-prices it at submit (why unavailable), never a 422', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const { B, c } = w;
+  const sb = sandbox.useSandbox(w.app);
+
+  // Decide: the hotel picked is no longer in the supplier's answer.
+  const rid = await pendingTrip(w);
+  const hotelOffer = (await stored(w, rid)).rows.hotel.offerId;
+  assert.match(hotelOffer, /^htl_t\./);
+  const back = vanish(t, sb.inventory.hotels, hotelOffer);
+  let res = await c.dana.get(`${B}/trips/${rid}`);
+  assert.equal(res.status, 200);
+  assert.match(textOf(mainOf(res.text)), /an option is no longer in the supplier's test data\. Approving sends it back to Sam/);
+  res = await c.dana.post(`${B}/trips/${rid}/decide`, { action: 'approve', note: '', rev: revOf(mainOf(res.text), 'decide') });
+  assert.equal(res.status, 303, textOf(mainOf(res.text)).slice(0, 400));
+  assert.equal(res.location, `${B}/trips/${rid}?ok=returned`);
+  let r = await stored(w, rid);
+  assert.equal(r.status, 'draft');
+  assert.equal(r.returned.why, 'unavailable');
+  assert.equal(r.returned.toCents, null);
+  assert.equal(r.source, 'sandbox');
+  assert.equal(r.rows.hotel.available, false);
+  assert.deepEqual(r.alternatives, [], 'no alternatives for a trip with a part that is gone');
+  res = await c.sam.get(`${B}/trips/${rid}`);
+  assert.equal(res.status, 200);
+  sandbox.assertSourceMoney(mainOf(res.text), 'sandbox', { label: 'returned, an option gone' });
+  back();
+
+  // Submit: the same at the traveler's price check.
+  const rid2 = await createDraft(w, await businessForm(w));
+  vanish(t, sb.inventory.hotels, (await stored(w, rid2)).rows.hotel.offerId);
+  const page = await c.sam.get(`${B}/trips/${rid2}`);
+  res = await c.sam.post(`${B}/trips/${rid2}/submit`, { rev: revOf(page.text, 'submit'), reason: REASON, category: 'client_meeting' });
+  assert.equal(res.status, 303, textOf(mainOf(res.text)).slice(0, 400));
+  assert.equal(res.location, `${B}/trips/${rid2}?ok=repriced`);
+  r = await stored(w, rid2);
+  assert.equal(r.status, 'draft');
+  assert.equal(r.returned.why, 'unavailable');
+  assert.equal(r.reason.text, REASON, 'the reason typed is kept');
+});
+
+test('supplier test data: the service sends back an old demo request decided after the switch, and a trip whose hotels were switched off', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  // A demo request, pending when the workspace moved to supplier test data (design §2.2).
+  const rid = await pendingTrip(w);
+  assert.equal((await stored(w, rid)).source, 'demo');
+  const sb = sandbox.useSandbox(w.app);
+  let r = await stored(w, rid);
+  let out = await w.svc.decide(w.as(w.dana), rid, { action: 'approve', note: '', rev: r.rev });
+  assert.equal(out.outcome, 'returned');
+  assert.equal(out.request.returned.why, 'unavailable', 'a demo option is never priced from the supplier');
+  assert.equal(out.request.status, 'draft');
+
+  // Hotels switched off by a supplier problem (design §1.3): a sandbox trip with a hotel goes back too.
+  const rid2 = await pendingTrip(w);
+  const rid3 = await createDraft(w, await businessForm(w));
+  sb.inventory.hotels = null;
+  sb.inventory.hotelsConnected = false;
+  r = await stored(w, rid2);
+  out = await w.svc.decide(w.as(w.dana), rid2, { action: 'approve', note: '', rev: r.rev });
+  assert.equal(out.outcome, 'returned');
+  assert.equal(out.request.returned.why, 'unavailable');
+  r = await stored(w, rid3);
+  const sent = await w.svc.submit(w.as(w.sam), rid3, { rev: r.rev, reason: REASON });
+  assert.equal(sent.outcome, 'repriced');
+  assert.equal(sent.request.returned.why, 'unavailable');
+});

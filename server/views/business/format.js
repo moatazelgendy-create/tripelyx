@@ -188,6 +188,19 @@ const ctxSource = ctx => inventorySource(ctx && ctx.business ? ctx.business.inve
 const rowsSource = rows => leastReal((rows || []).filter(Boolean).map(r => sourceOf(r))) || 'demo';
 
 /**
+ * The source a total of many requests is labelled with (real-suppliers design §2.3), the rule of the service's
+ * ReportTiles/DashboardView priceSource: any supplier test data among them makes it 'sandbox' ("Includes
+ * supplier test data"); otherwise the least real of them. A value that is not a source counts as demo (a
+ * request stored before real suppliers); null for none.
+ * @param {Iterable<unknown>} sources
+ * @returns {import('../../business/types').PriceSource|null}
+ */
+function totalsSource(sources) {
+  const list = [...sources];
+  return list.includes('sandbox') ? 'sandbox' : leastReal(list);
+}
+
+/**
  * How long until an instant, rounded down so it never says more time is left than there is: "45 min",
  * "6 h", "3 days" ("under 1 min" in the last minute). null once the moment has passed (the caller says
  * "Expired").
@@ -207,5 +220,5 @@ function timeLeft(now, until) {
 module.exports = {
   safeZone, zoneLabel, money, plural, percent, duration, day, dayRange, clock24, timeIn, dayIn, dateTimeIn, whenIn,
   pricedAtText, timeLeft, WEEKDAYS, MONTHS,
-  SOURCE_TOTALS, inventorySource, ctxSource, rowsSource, sourceOf, leastReal, requestSource, isSource,
+  SOURCE_TOTALS, inventorySource, ctxSource, rowsSource, totalsSource, sourceOf, leastReal, requestSource, isSource,
 };

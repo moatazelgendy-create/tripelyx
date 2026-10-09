@@ -2,8 +2,9 @@
 // (policy/describe.describe through service.getPolicy), and how the company handles trips outside it.
 // Policy limits are written in dollars. In the demo preview the page labels them beside the demo prices they
 // are compared with; with no supplier (production) they are the company's own limits, never "Demo price".
-// With a real supplier (real-suppliers design §2.3) the box says where those fares come from: supplier test
-// data (dashed, "TEST DATA") or supplier prices.
+// With a real supplier (real-suppliers design §2.3) the box says what the company's limits are checked
+// against (parts.LIMITS_CHECKED, the /policies wording): supplier test data (dashed, "TEST DATA") or supplier
+// prices. The limits themselves are never called "not a real price".
 const { html } = require('../../lib/html');
 const { icon } = require('../icons');
 const f = require('./format');
@@ -32,10 +33,10 @@ function policyMineView(ctx, { org, policy }) {
     actions: searchable ? html`<a class="btn btn-navy bz-btn" href="${base}/trips/new">${icon('plane')}<span>Plan a trip</span></a>` : '',
   })}
   ${(body => (demo
-    ? p.demoBox(body, { pricedAt: null, timeZone: f.safeZone(org.timezone), tag: 'section', cls: 'bz-card bz-policy', label: 'What your policy allows', source })
+    ? p.demoBox(body, { pricedAt: null, timeZone: f.safeZone(org.timezone), tag: 'section', cls: 'bz-card bz-policy', label: 'What your policy allows', source, limits: true })
     : html`<section class="bz-card bz-policy" aria-label="What your policy allows">${body}</section>`))(html`<h2 class="bz-block-title">${icon('shield')}<span>What your policy allows</span></h2>
     ${d.lines.length ? html`<ul class="bz-policy-lines">${d.lines.map(l => html`<li>${icon('check')}<span>${l}</span></li>`)}</ul>` : html`<p>Your policy has no limits set.</p>`}
-    <p class="bz-muted">${demo ? p.limitsNote(source) : 'Limits are in US dollars.'}</p>`)}
+    <p class="bz-muted">${source === 'demo' ? p.limitsNote(source) : 'Limits are in US dollars.'}</p>`)}
   <section class="bz-card" aria-labelledby="bz-handling-title">
     <h2 class="bz-block-title" id="bz-handling-title">${icon('info')}<span>Trips outside the policy</span></h2>
     <p>${handling}</p>

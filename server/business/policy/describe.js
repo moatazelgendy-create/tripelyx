@@ -33,7 +33,10 @@
 // "(median of these test fares plus 20%)", "(median of the fares in this search plus 20%)". The hotel
 // Price to Beat names a supplier search's hotels: "the middle rate of the 40 lowest-priced test hotels in
 // this search" when the supplier returned 40 (it is asked for the 40 lowest-priced), else "the middle test
-// rate of this search".
+// rate of this search". A supplier search whose hotel leg has no rows (hotels not connected) or failed
+// (leg.error 'unavailable') gets no Price to Beat item: the company's nightly limit and star limit still show.
+// The view (parts.limitsBar) reads these reasons to tell amounts from the search (a median cap: "(median of …";
+// the Price to Beat unless "too few … hotels to compare") from the company's own limits.
 const { format } = require('../../lib/money');
 const { CABIN_LABELS, TIER_LABELS } = require('../constants');
 const { flightCap, hotelCap, priceToBeat } = require('./evaluate');
@@ -245,7 +248,10 @@ function limitsBar(rules, ctx, search) {
     const bench = legs.hotel.benchmark ? legs.hotel.benchmark[basis] || null : null;
     if (cap.cents != null) items.push({ key: 'hotel.cap', text: `Hotels in ${hq.city}: up to`, cents: cap.cents, suffix: `a night, ${basisText(basis)}` });
     else items.push({ key: 'hotel.cap', text: `Hotels in ${hq.city}: no nightly limit`, cents: null, suffix: '' });
-    const ptb = priceToBeat(cap.cents, bench);
+    // A supplier hotel leg with no rows was not searched (hotels not connected) or failed (leg.error): there
+    // is nothing to beat, so no Price to Beat and no "too few hotels" reason. Demo always searches.
+    const searched = !legs.hotel.error && (priceSource === 'demo' || (Array.isArray(legs.hotel.rows) && legs.hotel.rows.length > 0));
+    const ptb = searched ? priceToBeat(cap.cents, bench) : null;
     if (ptb != null) {
       const median = bench && bench.medianCents != null ? bench.medianCents : null;
       const hotels = new Set((Array.isArray(legs.hotel.rows) ? legs.hotel.rows : []).map(r => r && r.offerId)).size;

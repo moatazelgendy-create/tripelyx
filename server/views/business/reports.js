@@ -5,7 +5,8 @@
 // says "No requests yet", never $0. Every amount sits in a demo container (§F6). With real suppliers
 // (real-suppliers design §2.3) the tiles are labelled with the least real source of the requests they count
 // (dash.priceSource, else the workspace's): "Includes supplier test data"; each listed request carries its
-// own source's label, and the CSV's price_source column says it per row.
+// own source's label, and the CSV's price_source column says it per row. Once any request counted or listed
+// is not demo, the "Requests by status" tile and the status filter say "Approved" (never "Approved to book").
 const { html } = require('../../lib/html');
 const { pageHead, tabs, dataTable, emptyState, amount, budgetBar, demoBox, demoPrice, comingSoon, statusPill, policyBadge, pager } = require('./parts');
 const f = require('./format');
@@ -16,6 +17,8 @@ const { periodLabel } = require('../../business/budgets');
 const { SCAN_CAP } = require('../../business/constants');
 
 const NO_REQUESTS = 'No requests yet';
+/** The approved status once supplier prices are counted (booking isn't open for them: design §2.3). */
+const APPROVED = 'Approved';
 const COMING_TEXT = Object.freeze({
   spend: 'Shows once trips are booked through Tripelyx.',
   invoices: 'Shows once booking and billing are live.',
@@ -48,11 +51,13 @@ function reportsView(ctx, shell, { dash, choices, list, filters = {}, department
   const t = dash.reports;
   const label = dash.periodLabel;
   const total = Object.values(t.byStatus).reduce((s, n) => s + n, 0);
-  const statusLabel = s => (PILLS.request[s] ? PILLS.request[s][0] : s);
   const share = t.outOfPolicyShare;
   const budgets = (t.committedVsBudget || []).filter(b => b.budgetId);
   // What the tiles add up: the period's requests' least real source, else the workspace's ('demo' as before).
   const source = f.isSource(dash.priceSource) ? dash.priceSource : (f.ctxSource(ctx) || 'demo');
+  // Nothing priced by a supplier can be booked yet: once any is counted or listed, "Approved", not "Approved to book".
+  const supplier = source !== 'demo' || list.rows.some(r => f.isSource(r.source) && r.source !== 'demo');
+  const statusLabel = s => (s === 'approved' && supplier ? APPROVED : PILLS.request[s] ? PILLS.request[s][0] : s);
   const box = { pricedAt: null, timeZone: tz, source, totals: true };
   const tiles = html`<div class="bz-tiles">
     ${tile('Requests by status', total

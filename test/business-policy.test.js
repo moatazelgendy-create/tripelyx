@@ -853,3 +853,60 @@ test('describe and the limits bar on supplier test data: "the test fares", and t
   assert.equal(demoBar.items[0].suffix, 'each way (median of these demo fares plus 20%)', 'no priceSource: demo wording');
   assert.equal(demoBar.items.find(i => i.key === 'hotel.priceToBeat').suffix, 'a night (the lower of your limit and the middle rate of this search)');
 });
+
+test('the limits bar gives no Price to Beat for supplier hotels that were not searched (not connected, or the hotel supplier failed)', () => {
+  const { sandboxRow } = require('./business-sandbox');
+  const r = defaultPolicy('standard');
+  const median = { medianCents: 59335, sampleSize: 5, excluded: [] };
+  const none = { medianCents: null, sampleSize: 0, excluded: [] };
+  const search = (status, hotelLeg) => ({
+    query: fx.query(), pricedAt: fx.PRICED_AT, status,
+    legs: {
+      out: { rows: [sandboxRow(flight())], benchmark: median, truncated: false },
+      back: { rows: [sandboxRow(flight({ leg: 'back' }))], benchmark: median, truncated: false },
+      hotel: hotelLeg,
+    },
+  });
+  const failed = { rows: [], benchmark: { incl_taxes: none, excl_taxes: none }, truncated: false, error: 'unavailable' };
+  const empty = { rows: [], benchmark: { incl_taxes: none, excl_taxes: none }, truncated: false };
+  for (const priceSource of ['sandbox', 'live']) {
+    for (const [label, leg] of [['hotel supplier failed', failed], ['hotels not connected', empty]]) {
+      const bar = describeMod.limitsBar(r, ctx(r, { priceSource }), search(priceSource, leg));
+      const keys = bar.items.map(i => i.key);
+      assert.ok(!keys.includes('hotel.priceToBeat'), `${priceSource}, ${label}: no Price to Beat (${JSON.stringify(bar.items)})`);
+      assert.ok(keys.includes('hotel.cap'), `${priceSource}, ${label}: the company's nightly limit still shows`);
+      assert.ok(bar.items.every(i => !/too few (test )?hotels/.test(i.suffix)), `${priceSource}, ${label}: no "too few hotels" reason`);
+    }
+  }
+  // The view's chip rule reads these reasons: amounts from the search get a chip, the company's own limits don't.
+  const { fromSearch } = require('../server/views/business/parts');
+  const hotels = Array.from({ length: 3 }, (_, i) => sandboxRow(hotel({ n: i + 1, nightlyCents: 20000 + i * 100 })));
+  const searched = { rows: hotels, benchmark: { incl_taxes: { medianCents: 26400, sampleSize: 3, excluded: [] }, excl_taxes: { medianCents: 23000, sampleSize: 3, excluded: [] } }, truncated: false };
+  const withHotels = describeMod.limitsBar(r, ctx(r, { priceSource: 'sandbox' }), search('sandbox', searched));
+  assert.deepEqual(withHotels.items.filter(fromSearch).map(i => i.key), ['flight.short', 'hotel.priceToBeat']);
+  const few = { rows: hotels.slice(0, 1), benchmark: { incl_taxes: none, excl_taxes: none }, truncated: false };
+  const capOnly = describeMod.limitsBar(r, ctx(r, { priceSource: 'live' }), search('live', few));
+  assert.equal(capOnly.items.find(i => i.key === 'hotel.priceToBeat').suffix, 'a night (your limit, as this search has too few hotels to compare)');
+  assert.deepEqual(capOnly.items.filter(fromSearch).map(i => i.key), ['flight.short'], 'a Price to Beat that is the company limit gets no chip');
+  // Demo: unchanged (its hotel leg always searched).
+  const demo = describeMod.limitsBar(r, ctx(r), search('demo', empty));
+  assert.equal(demo.items.find(i => i.key === 'hotel.priceToBeat').suffix, 'a night (your limit, as this search has too few hotels to compare)');
+});
+
+test('supplier rows: an unrated hotel under a star limit in a company that blocks out-of-policy trips never says "needs approval"', () => {
+  const { sandboxRow } = require('./business-sandbox');
+  const r = defaultPolicy('standard');
+  r.hotels.countryCaps = [];
+  r.hotels.defaultNightlyCents = null;
+  const blocked = evaluateComponent(sandboxRow(hotel({ stars: 0 })), ctx(r, { outOfPolicy: 'block' }));
+  assert.equal(blocked.status, 'blocked');
+  assert.deepEqual(pick(blocked, 'hotel.stars'), [{ rule: 'hotel.stars', limit: 4, actual: 0, severity: 'approval', component: 'hotel' }]);
+  assert.equal(blocked.violations[0].text, "This hotel has no star rating from the supplier, so it can't be shown to be within your up to 4 stars rule.");
+  assert.doesNotMatch(blocked.violations[0].text, /approv/);
+  // Approval mode keeps the design's sentence.
+  assert.equal(evaluateComponent(sandboxRow(hotel({ stars: 0 })), ctx(r)).violations[0].text,
+    'This hotel has no star rating from the supplier, so it needs approval under your up to 4 stars rule.');
+  // The policy editor's hint is true in both modes.
+  const { HOTEL_CLASS_HINTS } = require('../server/views/business/policies');
+  for (const s of ['sandbox', 'live']) assert.equal(HOTEL_CLASS_HINTS[s], 'Hotel class as the supplier gives it. A hotel with no star rating from the supplier is outside the policy when a highest class is set.');
+});

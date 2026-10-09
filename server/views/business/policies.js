@@ -12,7 +12,7 @@
 // supplier test data (a dashed "TEST DATA" box) or supplier prices.
 const { html, raw } = require('../../lib/html');
 const { icon } = require('../icons');
-const { pageHead, pager, charCount, actionBar } = require('./parts');
+const { pageHead, pager, charCount, actionBar, LIMITS_CHECKED } = require('./parts');
 const f = require('./format');
 const { shellView } = require('./shell');
 const { textField, textArea, selectField, checkField } = require('./auth');
@@ -39,14 +39,14 @@ const HOTEL_CLASS_HINT = 'Hotel class as shown in the demo hotel data.';
 /** What policy limits are checked against, by where search prices come from ('demo': LIMITS_NOTE). */
 const LIMITS_NOTES = Object.freeze({
   demo: LIMITS_NOTE,
-  sandbox: "Supplier test data: in this preview, these limits are checked against flight and hotel prices from our suppliers' test systems, not real fares.",
-  live: 'Supplier prices: these limits are checked against flight and hotel prices from our suppliers, which can change until booked.',
+  sandbox: LIMITS_CHECKED.sandbox,
+  live: LIMITS_CHECKED.live,
 });
 const COUNTRIES_DONE_SUPPLIER = 'Every country in the list already has its own limits.';
 const HOTEL_CLASS_HINTS = Object.freeze({
   demo: HOTEL_CLASS_HINT,
-  sandbox: 'Hotel class as the supplier gives it. A hotel with no star rating from the supplier needs approval when a highest class is set.',
-  live: 'Hotel class as the supplier gives it. A hotel with no star rating from the supplier needs approval when a highest class is set.',
+  sandbox: 'Hotel class as the supplier gives it. A hotel with no star rating from the supplier is outside the policy when a highest class is set.',
+  live: 'Hotel class as the supplier gives it. A hotel with no star rating from the supplier is outside the policy when a highest class is set.',
 });
 /** Where this workspace's search prices come from ('demo' with no supplier, as before). */
 const sourceOf = ctx => f.ctxSource(ctx) || 'demo';

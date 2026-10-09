@@ -63,6 +63,11 @@
 //   (503 supplier_unavailable, 429 supplier_busy) leaves the request untouched; getRequest turns the
 //   source.LIVE_ERROR_CODES into RequestView.liveError, so the approver's page always opens.
 // - EvalCtx.priceSource is the search's rows' source (else the inventory's): only the policy texts read it.
+// - A supplier option can disappear between two calls (design §5.2, §5.4). A price check then finds it
+//   'unavailable' (submit re-prices with why 'unavailable', decide sends the trip back), and a draft with a
+//   part that is gone gets no alternatives (no variants are priced for it). A swap to an alternative that is
+//   gone answers 410 'alternative_gone', and a pick that is gone by POST /trips 409 'option_unavailable':
+//   never the 422 of a malformed form.
 
 const { AppError } = require('../lib/errors');
 const { id: newId } = require('../lib/ids');
@@ -120,6 +125,27 @@ function asRace(e) {
 const expired = () => new AppError('request_expired', 'This request expired before anyone decided it. The trip can be planned again.', 409);
 
 const gone = () => new AppError('alternative_gone', "That option isn't available anymore. Here are the current ones.", 410);
+const optionUnavailable = () => new AppError('option_unavailable', "That option isn't available anymore. Pick another.", 409);
+/** composer.price's refusal of a key it can no longer find (search.js invalidSelection's default words). */
+const NOT_IN_SEARCH = "That option isn't part of this search.";
+/**
+ * Did composer.price refuse a key because the option is gone? A supplier's option can disappear between two
+ * calls (a cached search or an offer expired, real-suppliers design §5.2): price() then answers 422
+ * 'invalid_selection' with its default words for a key it no longer finds. With a supplier's key, or prices
+ * from a supplier, that means the option is gone, not that the form was wrong. The form's own mistakes (a
+ * return flight on a one-way search, a hotel without a stay) carry other words and stay 422. Demo keys on
+ * demo inventory keep today's answer.
+ * @param {unknown} e
+ * @param {Array<string|null|undefined>} keys the selection's row keys
+ * @param {object|null} inventory
+ */
+function optionGone(e, keys, inventory) {
+  if (!(e instanceof AppError) || e.code !== 'invalid_selection' || e.message !== NOT_IN_SEARCH) return false;
+  const supplierPrices = !!inventory && inventory.status !== 'demo' && inventory.status !== 'none';
+  return supplierPrices || keys.some(k => typeof k === 'string' && sourceOf(k) !== 'demo');
+}
+/** A row that no longer prices (gone from the supplier, sold out, or from another source). */
+const isGoneRow = row => !!row && row.available === false;
 const noSupplier = () => new AppError('no_supplier', "Supplier not connected yet. Tripelyx hasn't connected airlines and hotels for company travel.", 503);
 
 /** Form text bounds before the lifecycle checks it: it refuses a reason past 500 and a message past 1,000
@@ -327,9 +353,13 @@ function applyTransition(svc, event, opts, outcome) {
  * explainer (which sees no prices). Returns the DraftFields alternatives part, in the explainer's order.
  */
 async function alternativesFor(svc, { ctx, budget, query, selection, rows, totalCents, evaluation, searched }) {
-  const v = await svc.composer.variants(query, selection, {
-    datesFlexible: query.datesFlexible === true, evaluate: row => svc.policy.evaluateComponent(row, ctx), searched, today: ctx.today,
-  });
+  // A pick with a part that no longer prices has no cheaper variants (composer.variants finds none for it), and
+  // pricing a supplier key that is gone again would refuse it: so no variants are asked for.
+  const v = COMPONENTS.some(c => isGoneRow(rows[c]))
+    ? { candidates: [], searches: 0, truncated: false }
+    : await svc.composer.variants(query, selection, {
+      datesFlexible: query.datesFlexible === true, evaluate: row => svc.policy.evaluateComponent(row, ctx), searched, today: ctx.today,
+    });
   const bctx = budgetCtx(budget);
   const result = svc.alternatives.buildAlternatives({
     pick: { selection, query, rows, totalCents }, pickEval: evaluation, candidates: v.candidates,
@@ -673,8 +703,11 @@ const methods = {
     // The query as searched (search may move the hotel check-in), never the raw re-parse.
     const searched = await this.composer.search(parsed);
     const query = searched.query;
-    const priced = await this.composer.price(selection, query);
-    if (priced.unavailable.length) throw new AppError('option_unavailable', "That option isn't available anymore. Pick another.", 409);
+    const priced = await this.composer.price(selection, query).catch(e => {
+      if (optionGone(e, COMPONENTS.map(c => selection[c]), this.inventory)) throw optionUnavailable();
+      throw e;
+    });
+    if (priced.unavailable.length) throw optionUnavailable();
     assertUsd(priced.rows);
     const rid = newId(ID_PREFIX.request);
     const nowIso = this.repo.iso();
@@ -851,7 +884,11 @@ const methods = {
     // The guards first (status, traveler), before any pricing.
     this.policy.transition(r, { type: 'swap', alternative: alt, draft: { totalCents: r.totalCents } }, opts);
     const searched = await this.composer.search(alt.query);
-    const priced = await this.composer.price(alt.selection, searched.query);
+    // The stored rows stand in for a part the supplier no longer has (an unavailable row, so 410 below).
+    const priced = await this.composer.price(alt.selection, searched.query, { previous: alt.rows || null }).catch(e => {
+      if (optionGone(e, COMPONENTS.map(c => alt.selection && alt.selection[c]), this.inventory)) throw gone();
+      throw e;
+    });
     if (priced.unavailable.length) throw gone();
     assertUsd(priced.rows);
     const draft = keepCheapest(await draftFields(this, a, {
