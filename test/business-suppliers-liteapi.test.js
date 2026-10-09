@@ -4,6 +4,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { supplierKit, testClock, loadFixture } = require('./supplier-fetch');
+const { parseMinor } = require('../server/business/suppliers/money');
+const { rateLines } = require('../server/business/suppliers/liteapi');
 const { withCompany } = require('../server/business/scope');
 const { validateOffer, validateQuote } = require('../server/providers/contracts');
 const dto = require('../server/business/dto');
@@ -228,6 +230,101 @@ test('prebook: price changed, terms changed', async () => {
   assert.equal(terms.row.totalCents, 24050);
   assert.deepEqual(terms.row.cancellation, { refundable: false, freeUntilHours: 0, text: TERMS.hotelNonRefundable });
 });
+
+test('prebook: a changed meal plan is a change of terms the row shows (boardChanged, or a board that differs)', async () => {
+  const said = 'The supplier changed the meal plan to Breakfast Included.';
+  const board = await finalRow(['liteapi/prebook.board-changed.json']);
+  assert.equal(board.row.totalCents, 24050, 'the same price');
+  assert.ok(board.row.cancellation.text.endsWith(` ${said}`), board.row.cancellation.text);
+  assert.match(board.row.cancellation.text, /^Free cancellation until 2026-11-10 12:00 GMT/, 'the cancellation terms are kept');
+  // The board moved without the flag: still a change.
+  const unflagged = await finalRow([{ fixture: 'liteapi/prebook.board-changed.json', transform: b => { b.data.boardChanged = false; return b; } }]);
+  assert.ok(unflagged.row.cancellation.text.endsWith(said), unflagged.row.cancellation.text);
+  // The flag with the same board name: the supplier says it changed, so the row says so.
+  const flagged = await finalRow([{ fixture: 'liteapi/prebook.json', transform: b => { b.data.boardChanged = true; return b; } }]);
+  assert.match(flagged.row.cancellation.text, / The supplier changed the meal plan to Room Only\.$/);
+  // No change: the terms are the rates' own.
+  const same = await finalRow(['liteapi/prebook.json']);
+  assert.doesNotMatch(same.row.cancellation.text, /meal plan/);
+  for (const r of [board, unflagged, flagged, same]) assert.doesNotMatch(r.row.cancellation.text, /[–—]/, 'no long dashes');
+});
+
+test('prebook: a supplier that stays down is an outage (503), never a sold-out room, and costs no fresh rates call', async () => {
+  for (const reply of [
+    { status: 500, body: { error: { code: 5000, message: 'retry' } } },
+    { status: 503, body: {} },
+    { status: 502, body: { error: { code: 5000, message: 'retry' } } },
+  ]) {
+    const r = await finalRow([reply]);
+    assert.ok(r.error, JSON.stringify(reply));
+    assert.equal(r.error.code, 'supplier_unavailable', JSON.stringify(reply));
+    assert.equal(r.error.status, 503);
+    assert.equal(ratesCalls(r.kit).length, 1, 'only the getOffer rates: an outage is not "search again"');
+    assert.ok(prebookCalls(r.kit).length <= 2, 'at most one retry');
+  }
+});
+
+test('money: JSON numbers with float noise are read as written, rounded half-up and counted, never dropped', () => inOrg(async () => {
+  assert.deepEqual(parseMinor(JSON.parse('213.66000000000003'), 'USD'), { minor: 21366, rounded: true });
+  assert.deepEqual(parseMinor(30.499999999999996, 'USD'), { minor: 3050, rounded: true });
+  assert.deepEqual(parseMinor(0.1 + 0.2, 'USD'), { minor: 30, rounded: true });
+  assert.deepEqual(parseMinor(2.675, 'USD'), { minor: 268, rounded: true }, 'the number as the supplier wrote it (2.675), not its binary value');
+  assert.deepEqual(parseMinor(1e-7, 'USD'), { minor: 0, rounded: true }, 'exponent notation from String(n)');
+  assert.deepEqual(parseMinor(105.5, 'USD'), { minor: 10550, rounded: false });
+  assert.equal(parseMinor(1e21, 'USD'), null, 'too large');
+  assert.equal(parseMinor('1e3', 'USD'), null, 'a string in exponent notation is still refused');
+  assert.deepEqual(rateLines({ retailRate: { total: [{ amount: 213.66000000000003, currency: 'USD' }], taxesAndFees: null } }, 2),
+    { lines: [{ code: 'room', label: 'Room total including taxes', kind: 'base', amount: 21366 }], currency: 'USD', supplierTotal: 21366, rounded: true });
+  // A whole rates answer with noisy amounts: the room is shown with its taxes and its penalty, and the log counts it.
+  const noisy = body => {
+    const rate = body.data.find(d => d.hotelId === 'lp1001').roomTypes[0].rates[0];
+    rate.retailRate.total[0].amount = 240.50000000000003;
+    rate.retailRate.taxesAndFees[0].amount = 30.499999999999996;
+    rate.cancellationPolicies.cancelPolicyInfos[0].amount = 120.49999999999999;
+    return body;
+  };
+  const kit = supplierKit({ routes: [{ method: 'POST', url: RATES, reply: { fixture: 'liteapi/rates.cairo.json', transform: noisy } }] });
+  const std = row(await rowsOf(kit), 'htl_t.lp1001', 'standard-room-ro-r');
+  assert.ok(std, 'the rate is not dropped');
+  assert.equal(std.totalCents, 24050);
+  assert.deepEqual(std.lines, [{ label: 'Room, 2 nights', kind: 'base', cents: 21000 }, { label: 'VAT', kind: 'tax', cents: 3050 }]);
+  assert.match(std.cancellation.text, /After that, cancelling costs 120\.50 USD\.$/);
+  assert.match(kit.log.text(), /liteapi: 1 amounts had more digits than their currency and were rounded half-up/);
+  assert.doesNotMatch(kit.log.text(), /could not be read/);
+}));
+
+test('a price check refreshes the cached search: auto and peek then serve the newer price, with no extra call', () => inOrg(async () => {
+  const clock = testClock();
+  const bump = body => {
+    for (const d of body.data) for (const rt of d.roomTypes) for (const r of rt.rates) r.retailRate.total[0].amount += 50;
+    body.data[0].roomTypes = body.data[0].roomTypes.filter(rt => !/dlx/.test(rt.offerId)); // the deluxe room is gone now
+    return body;
+  };
+  const kit = supplierKit({ clock, routes: [{ method: 'POST', url: RATES, reply: c => (c.body.hotelIds ? { fixture: 'liteapi/rates.hotel.json', transform: bump } : 'liteapi/rates.cairo.json') }] });
+  const price = async (check, optionId = 'standard-room-ro-r') => {
+    const pq = { ...PQ, check };
+    const o = await kit.hotels.getOffer('htl_t.lp1001', pq);
+    if (!o.options.some(x => x.id === optionId)) return null;
+    const q = await kit.hotels.quote({ offerId: o.id, optionId, query: pq, offer: o });
+    return q.lines.reduce((n, l) => n + l.amount, 0);
+  };
+  const before = await kit.hotels.search(PQ);
+  assert.equal(await price('auto'), 24050);
+  assert.equal(await price('auto', 'deluxe-room-bb-n'), 31000);
+  clock.advance(60 * 1000);
+  assert.equal(await price('confirm'), 29050, 'the supplier answers 50 more');
+  const calls = kit.ff.calls.length;
+  assert.equal(await price('peek'), 29050, 'peek: the newer price');
+  assert.equal(await price('auto'), 29050, 'auto: the newer price');
+  assert.equal(await price('auto', 'deluxe-room-bb-n'), null, 'a room the fresh rates no longer have is not served from the older search');
+  const after = await kit.hotels.search(PQ);
+  const lp1001 = after.find(o => o.id === 'htl_t.lp1001');
+  assert.deepEqual(lp1001.options.map(o => [o.id, o.price.amount]), [['standard-room-ro-r', 14525]], 'only what the fresh rates still have, at their price');
+  assert.equal(lp1001.details.answeredAt, '2026-10-09T09:01:00.000Z', 'when the supplier gave that price');
+  const others = o => o.filter(x => x.id !== 'htl_t.lp1001');
+  assert.deepEqual(others(after), others(before), 'the other hotels are untouched');
+  assert.equal(kit.ff.calls.length, calls, 'all from the cache');
+}));
 
 test('prebook 2001 or 4040: fresh rates for that hotel, then one more prebook of the same room', async () => {
   for (const stale of ['liteapi/prebook.2001.json', 'liteapi/prebook.4040-outdated.json']) {

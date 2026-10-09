@@ -91,6 +91,15 @@ class SupplierCache {
     return true;
   }
 
+  /**
+   * How long the value stored for (company, key) stays valid.
+   * @returns {number} milliseconds, 0 when nothing valid is stored
+   */
+  expiresIn(company, key) {
+    const e = this.entries.get(SupplierCache.id(company, key));
+    return e ? Math.max(0, e.expires - this._t()) : 0;
+  }
+
   /** Forget (company, key). */
   delete(company, key) {
     this._drop(SupplierCache.id(company, key));

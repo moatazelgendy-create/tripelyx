@@ -265,6 +265,65 @@ test('mode: live_mode true, or missing, fails closed with 503 and latches flight
   assert.equal(kit.state.latched.duffel, true);
 });
 
+test('mode: a GET /air/offers answer with live_mode true, or none, fails closed at confirm and at peek, and latches', async () => {
+  const cases = [['true', b => { b.data.live_mode = true; return b; }], ['missing', b => { delete b.data.live_mode; return b; }]];
+  for (const check of ['confirm', 'peek']) {
+    for (const [label, transform] of cases) {
+      const clock = testClock();
+      const kit = search([{ method: 'GET', url: OFFERS, reply: { fixture: 'duffel/offer.get.json', transform } }], { clock });
+      await withCompany(ORG, async () => {
+        await kit.flights.search(PQ);
+        if (check === 'peek') clock.advance(301 * 1000); // the search is stale, its Duffel offer is not: peek GETs it
+        await assert.rejects(kit.flights.getOffer(I1, { ...PQ, check }, { optionId: 'standard' }),
+          e => e.code === 'supplier_unavailable' && e.status === 503, `${check}, live_mode ${label}: an outage, never skipped or stale`);
+        assert.equal(kit.ff.calls.filter(c => c.method === 'GET').length, 1, `${check}, live_mode ${label}`);
+        assert.equal(kit.state.latched.duffel, true, `${check}, live_mode ${label}: latched`);
+        assert.match(kit.state.problem(), /DUFFEL_ACCESS_TOKEN/);
+        const n = kit.ff.calls.length;
+        await assert.rejects(kit.flights.search({ ...PQ, departDate: '2026-11-13' }), e => e.code === 'supplier_unavailable');
+        await assert.rejects(kit.flights.getOffer(I1, { ...PQ, check: 'auto' }, { optionId: 'standard' }), e => e.code === 'supplier_unavailable');
+        await assert.rejects(kit.flights.getOffer(I1, { ...PQ, check: 'confirm' }, { optionId: 'standard' }), e => e.code === 'supplier_unavailable');
+        assert.equal(kit.ff.calls.length, n, 'latched: later calls fail fast, with no call');
+        assert.equal(kit.log.lines.filter(l => l.text.includes('mode_mismatch')).length, 1, 'logged once');
+        assert.ok(!kit.log.text().includes('off_'), 'the answer is not logged');
+      });
+    }
+  }
+});
+
+test('a price check refreshes the cached search: auto and peek then serve the newer price, with no extra call', () => inOrg(async () => {
+  const clock = testClock();
+  const kit = search([{ method: 'GET', url: OFFERS, reply: 'duffel/offer.get.price-changed.json' }], { clock });
+  const price = async check => {
+    const o = await kit.flights.getOffer(I1, { ...PQ, check }, { optionId: 'standard' });
+    const q = await kit.flights.quote({ offerId: I1, optionId: 'standard', query: { ...PQ, check }, offer: o });
+    return q.lines.reduce((n, l) => n + l.amount, 0);
+  };
+  const before = await kit.flights.searchDetailed(PQ);
+  assert.equal(await price('auto'), 28990);
+  clock.advance(60 * 1000);
+  assert.equal(await price('confirm'), 30140, 'the GET shows a new total_amount');
+  const n = kit.ff.calls.length;
+  assert.equal(await price('peek'), 30140, 'peek: the newer price');
+  assert.equal(await price('auto'), 30140, 'auto: the newer price');
+  const after = await kit.flights.searchDetailed(PQ);
+  const i1 = after.offers.find(o => o.id === I1);
+  assert.deepEqual(i1.options.map(o => [o.id, o.price.amount]), [['basic', 24530], ['standard', 30140], ['flexible', 41200]], 'the other fares keep theirs');
+  assert.equal(i1.details.answeredAt, '2026-10-09T09:00:00.000Z', 'never claims a fresher time than its oldest fare');
+  const others = r => r.offers.filter(o => o.id !== I1);
+  assert.deepEqual(others(after), others(before), 'the other itineraries are untouched');
+  assert.deepEqual(after.skipped, before.skipped);
+  assert.equal(kit.ff.calls.length, n, 'all from the cache');
+  // Times that moved make the cached itinerary stale as a whole: it is not served again from the old search.
+  const moved = body => { const seg = body.data.slices[0].segments[0]; seg.departing_at = '2026-11-12T08:50:00'; seg.arriving_at = '2026-11-12T13:05:00'; return body; };
+  const k2 = search([{ method: 'GET', url: OFFERS, reply: { fixture: 'duffel/offer.get.json', transform: moved } }]);
+  await k2.flights.search(PQ);
+  const fresh = await k2.flights.getOffer(I1, { ...PQ, check: 'confirm' }, { optionId: 'standard' });
+  assert.equal(fresh.details.segments[0].departAt, '2026-11-12T08:50');
+  const auto = await k2.flights.getOffer(I1, { ...PQ, check: 'auto' }, { optionId: 'standard' });
+  assert.equal(auto.details.segments[0].departAt, '2026-11-12T08:50', 'auto: the times the check saw');
+}));
+
 test('getOffer: another namespace answers null with no call', () => inOrg(async () => {
   const kit = search([]);
   for (const id of ['flt_ZM429_2026-11-12_economy', 'flt_l.ZZ1234_20261112T0835_economy', 'htl_t.lp1001', 'flt_T.x', null]) {

@@ -11,9 +11,10 @@
 //   inside the segment; live_mode false everywhere; the ratelimit headers (ratelimit-reset is an HTTP-date);
 //   GET /air/airlines against suppliers/airlines.js;
 // - LiteAPI: rates for the 10 Business cities and New Alamein (sandbox true on every answer, USD, stars, taxes,
-//   RFN/NRFN); Cairo sorted by price with limit 40 against limit 200; at most 3 prebooks of a fresh rate (Cairo,
-//   Dubai, London; each locks a room briefly, L-VAL), plus one deliberate prebook of an old offerId that the
-//   supplier refuses (4040 or 2001); Cairo with guestNationality US and EG.
+//   RFN/NRFN); Cairo sorted by price with limit 40 against limit 200; at most 3 prebooks of a fresh rate in all
+//   (Cairo, Dubai, London; each locks a room briefly, L-VAL; held at the fetch, per send, so an adapter's second
+//   prebook after a refusal counts too), plus one deliberate prebook of an old offerId that the supplier refuses
+//   (4040 or 2001); Cairo with guestNationality US and EG.
 // Output: counts, booleans and medians only, in the job log and supplier-sandbox-report.json. Never an id, a
 // key, a name or a body. The same harness runs on every `npm test` against the fixtures ("dry run", no
 // network), so its code is exercised and its report is checked for anything that is not a count.
@@ -84,10 +85,13 @@ function newObservations() {
     liteapi: {
       answers: 0, noAvailability: 0, sandboxTrue: 0, sandboxNotTrue: 0, hotels: 0, rates: 0, starsUnrated: 0, starsWhole: 0,
       starsHalf: 0, nonUsdTotals: 0, excludedCurrencies: {}, taxesNull: 0, refundable: 0, refundableWithDeadline: 0,
-      nonRefundable: 0, largestBodyBytes: 0, prebookCalls: 0, prebookPriceDifferencePercent: [], prebookCancellationChanged: 0,
+      nonRefundable: 0, largestBodyBytes: 0, prebookCalls: 0, reusedPrebookCalls: 0, prebookCapHit: 0,
+      prebookPriceDifferencePercent: [], prebookCancellationChanged: 0,
     },
     // Kept in memory for the reused-offerId case; never reported.
     secret: { oldOfferId: null },
+    // True only while the deliberate old-offerId prebook is in flight (its one send is counted apart).
+    reusedPrebookOpen: false,
     sends: { duffel: [], liteapi: [] },
   };
 }
@@ -194,18 +198,33 @@ function observeLite(obs, url, res, text) {
 /**
  * The fetch the adapters get: LiteAPI calls at least 1 s apart, every send recorded, and each answer observed on
  * a clone (the adapter reads the original exactly as it would).
+ *
+ * Prebooks are capped per send, not per city: at most MAX_FRESH_PREBOOKS of a fresh rate in the whole run and
+ * one of the old offerId. An adapter may prebook more than once for one check (a refused prebook is followed by
+ * a fresh search and one more prebook, L-ERRW; 4016 and 5000 send again), and each prebook locks a room in the
+ * sandbox (L-VAL). A prebook past the cap is never sent: it fails as a connection error before any answer (the
+ * adapter reports the check as unavailable), and the report counts it in prebookCapHit.
  */
 function observedFetch(baseFetch, obs, { sleep, clock }) {
   let lastLite = -Infinity;
   return async (url, init) => {
     const host = new URL(String(url)).host;
+    if (LITE_HOSTS.includes(host) && new URL(String(url)).pathname.endsWith('/rates/prebook')) {
+      const reused = obs.reusedPrebookOpen;
+      const used = reused ? obs.liteapi.reusedPrebookCalls : obs.liteapi.prebookCalls;
+      if (used >= (reused ? 1 : MAX_FRESH_PREBOOKS)) {
+        obs.liteapi.prebookCapHit += 1;
+        throw new TypeError('fetch failed', { cause: new Error('[contract] the prebook cap is reached: not sent') });
+      }
+      if (reused) obs.liteapi.reusedPrebookCalls += 1;
+      else obs.liteapi.prebookCalls += 1;
+    }
     if (LITE_HOSTS.includes(host)) {
       const wait = lastLite + LITE_SPACING_MS - clock();
       if (wait > 0) await sleep(wait);
       lastLite = clock();
       obs.sends.liteapi.push(lastLite);
     } else if (host === DUFFEL_HOST) obs.sends.duffel.push(clock());
-    if (LITE_HOSTS.includes(host) && new URL(String(url)).pathname.endsWith('/rates/prebook')) obs.liteapi.prebookCalls += 1;
     const res = await baseFetch(url, init);
     try {
       const text = await res.clone().text();
@@ -440,11 +459,12 @@ async function collect({ token, apiKey, fetch: baseFetch, sleep, clock, timing =
     // An old offerId (the first rates answer's, minutes ago, maybe prebooked since): refused with 4040 or 2001?
     const reused = {};
     if (obs.secret.oldOfferId) {
+      obs.reusedPrebookOpen = true;
       try {
         const res = await http.call({ supplier: 'liteapi', op: 'prebook', vertical: 'hotels', method: 'POST', url: `${BOOK_API}/rates/prebook?timeout=20`, headers: liteHeaders, body: JSON.stringify({ offerId: obs.secret.oldOfferId, usePaymentSdk: false }), timeoutMs: 25000 });
         const code = res.json && res.json.error && Number.isSafeInteger(res.json.error.code) ? res.json.error.code : null;
         Object.assign(reused, { httpStatus: res.status, errorCode: code, refused: code === 4040 || code === 2001 });
-      } catch (e) { reused.failed = codeOf(e); }
+      } catch (e) { reused.failed = codeOf(e); } finally { obs.reusedPrebookOpen = false; }
     } else reused.noOfferSeen = true;
     return { perCity, sortCheck, nationality, prebooks, reused };
   };
@@ -469,7 +489,7 @@ async function collect({ token, apiKey, fetch: baseFetch, sleep, clock, timing =
       latchedOff: us.state.latched.liteapi || eg.state.latched.liteapi,
     },
   };
-  return { report: JSON.parse(JSON.stringify(report)), trace: { duffelSends: [...o.sends.duffel], liteSends: [...o.sends.liteapi], prebookCalls: o.liteapi.prebookCalls } };
+  return { report: JSON.parse(JSON.stringify(report)), trace: { duffelSends: [...o.sends.duffel], liteSends: [...o.sends.liteapi], prebookCalls: o.liteapi.prebookCalls, reusedPrebookCalls: o.liteapi.reusedPrebookCalls } };
 }
 
 /** Every value in the report is a count, a boolean, null, a median, or a short lower-case code: nothing else. */
@@ -504,8 +524,11 @@ test('guard: runs only with SUPPLIER_SANDBOX=1 and both keys, and refuses any ke
   }
 });
 
-test('dry run on the fixtures: the harness paces its calls and reports counts and booleans only', async () => {
-  const keys = testKeys();
+/**
+ * The fixtures the dry run answers with. `prebook` is the answer to a fresh offer's prebook (the old offerId,
+ * offer_PLACEHOLDER_lp1001_std, is always refused with 4040).
+ */
+function dryRunFetch(keys, prebook = null) {
   // The CAI-LHR fixture moved to the route and date each offer request asks for, so every case has offers.
   const asAsked = (body, call) => {
     const want = call.body.data.slices[0];
@@ -520,13 +543,18 @@ test('dry run on the fixtures: the harness paces its calls and reports counts an
   };
   // A prebook answers for the hotel of the offerId it was asked about.
   const forHotel = (body, call) => { const m = /lp\d+/.exec(call.body.offerId); if (m) body.data.hotelId = m[0]; return body; };
-  const ff = fakeFetch([
+  return fakeFetch([
     { method: 'POST', url: `${DUFFEL_API}/air/offer_requests`, reply: { fixture: 'duffel/offer-request.cai-lhr.json', transform: asAsked } },
     { method: 'GET', url: /^https:\/\/api\.duffel\.com\/air\/offers\//, reply: 'duffel/offer.get.json' },
     { method: 'GET', url: `${DUFFEL_API}/air/airlines`, reply: 'duffel/airlines.page1.json' },
     { method: 'POST', url: `${LITE_API}/hotels/rates`, reply: 'liteapi/rates.cairo.json' },
-    { method: 'POST', url: /^https:\/\/book\.liteapi\.travel\/v3\.0\/rates\/prebook\?timeout=\d+$/, reply: c => (c.body.offerId === 'offer_PLACEHOLDER_lp1001_std' ? 'liteapi/prebook.4040-outdated.json' : { fixture: 'liteapi/prebook.json', transform: forHotel }) },
+    { method: 'POST', url: /^https:\/\/book\.liteapi\.travel\/v3\.0\/rates\/prebook\?timeout=\d+$/, reply: c => (c.body.offerId === 'offer_PLACEHOLDER_lp1001_std' ? 'liteapi/prebook.4040-outdated.json' : prebook || { fixture: 'liteapi/prebook.json', transform: forHotel }) },
   ], keys);
+}
+
+test('dry run on the fixtures: the harness paces its calls and reports counts and booleans only', async () => {
+  const keys = testKeys();
+  const ff = dryRunFetch(keys);
   let t = Date.parse('2026-10-09T09:00:00.000Z');
   const clock = () => t;
   const sleep = async ms => { t += Math.max(0, ms); };
@@ -538,7 +566,8 @@ test('dry run on the fixtures: the harness paces its calls and reports counts an
   // Pacing: never more than 10 Duffel sends in a minute; LiteAPI sends at least a second apart.
   for (const x of trace.duffelSends) assert.ok(trace.duffelSends.filter(y => y >= x && y < x + 60000).length <= DUFFEL_PER_MINUTE);
   for (let i = 1; i < trace.liteSends.length; i += 1) assert.ok(trace.liteSends[i] - trace.liteSends[i - 1] >= LITE_SPACING_MS);
-  assert.ok(trace.prebookCalls <= MAX_FRESH_PREBOOKS + 1, `prebooks: ${trace.prebookCalls}`);
+  assert.ok(trace.prebookCalls <= MAX_FRESH_PREBOOKS && trace.reusedPrebookCalls <= 1, `prebooks: ${trace.prebookCalls}`);
+  assert.equal(ff.calls.filter(c => new URL(c.url).pathname.endsWith('/rates/prebook')).length, trace.prebookCalls + trace.reusedPrebookCalls);
   // The fixtures give the harness something to count.
   assert.equal(report.duffel.liveModeAllFalse, true);
   assert.equal(report.liteapi.sandboxAllTrue, true);
@@ -549,6 +578,27 @@ test('dry run on the fixtures: the harness paces its calls and reports counts an
   assert.equal(report.liteapi.reused.refused, true, 'the old offerId case reads the error code');
   assert.ok(report.liteapi.raw.excludedCurrencies.AED > 0, 'the AED fee is counted');
   assert.ok(report.duffel.raw.resetSeen > 0 && report.duffel.raw.resetHttpDate === report.duffel.raw.resetSeen);
+});
+
+test('dry run: a sandbox that refuses every prebook (2001) still gets at most 3 fresh prebooks, plus the one old offerId', async () => {
+  // Each refused prebook makes the adapter search again and prebook once more (L-ERRW), so one city can take
+  // two: a check only before each city would let Cairo and Dubai send four. The cap holds per send.
+  const keys = testKeys();
+  const ff = dryRunFetch(keys, 'liteapi/prebook.2001.json');
+  let t = Date.parse('2026-10-09T09:00:00.000Z');
+  const clock = () => t;
+  const sleep = async ms => { t += Math.max(0, ms); };
+  const { report, trace } = await collect({ token: keys.token, apiKey: keys.apiKey, fetch: ff.fetch, sleep, clock, timing: { sleep, mono: clock } });
+  ff.assertClean();
+  assert.deepEqual(onlyCounts(report), []);
+  const sent = ff.calls.filter(c => new URL(c.url).pathname.endsWith('/rates/prebook'));
+  assert.equal(sent.length, MAX_FRESH_PREBOOKS + 1, 'three fresh prebooks and the old offerId, nothing more');
+  assert.equal(trace.prebookCalls, MAX_FRESH_PREBOOKS);
+  assert.equal(trace.reusedPrebookCalls, 1);
+  assert.equal(sent[sent.length - 1].body.offerId, 'offer_PLACEHOLDER_lp1001_std', 'the old offerId is the last prebook');
+  assert.equal(report.liteapi.raw.prebookCapHit, 1, 'the fourth fresh prebook was held back, and the report says so');
+  assert.deepEqual(report.liteapi.prebooks, { cairo: { failed: 'option_sold_out' }, dubai: { failed: 'supplier_unavailable' }, london: { skipped: true } });
+  assert.equal(report.liteapi.reused.refused, true);
 });
 
 test('the keys are test keys (the run refuses anything else)', { skip: plan.refused ? false : plan.reason }, () => {
@@ -582,7 +632,7 @@ test('contract: the Duffel and LiteAPI sandboxes answer as the adapters expect',
   assert.equal(l.latchedOff, false, 'LiteAPI answered in sandbox');
   assert.equal(l.sandboxAllTrue, true, 'sandbox true on every rates answer');
   assert.equal(l.raw.nonUsdTotals, 0, 'every total in USD');
-  assert.ok(l.raw.prebookCalls <= MAX_FRESH_PREBOOKS + 1);
+  assert.ok(l.raw.prebookCalls <= MAX_FRESH_PREBOOKS && l.raw.reusedPrebookCalls <= 1, 'at most 3 fresh prebooks and the old offerId');
   assert.equal(l.reused.refused, true, 'an old offerId is refused with 4040 or 2001');
 });
 

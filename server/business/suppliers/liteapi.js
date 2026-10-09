@@ -30,6 +30,9 @@
 // Price checks (§5.3), by pq.check: auto = the cached search, else rates for that hotel; peek = cache only
 //   (else 503 live_check_skipped); confirm = fresh rates for that hotel; final = fresh rates, then quote()
 //   prebooks the room (POST https://book.liteapi.travel/v3.0/rates/prebook, never with the payment SDK).
+//   Fresh rates for one hotel also refresh that hotel in the cached city search, so a later auto or peek
+//   never serves an older price than a check already saw. A prebook that changed the meal plan (boardChanged,
+//   or another board) says so in the room's name and terms text: the price check then reads it as a change.
 //   Prebook 2001, 4040 or 4020 → fresh rates for the hotel → the same option re-found → one more prebook; still
 //   nothing → 409 option_sold_out (the composer shows the room unavailable). 4016 → once more with the longer
 //   timeout; 5000 → once more; anything else → 503 supplier_unavailable.
@@ -78,6 +81,10 @@ function cleanText(value, max = 80) {
 }
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+/** A hotel's rooms: US dollars first, then cheapest, then by id. */
+const byPrice = (a, b) => (a.currency === 'USD' ? 0 : 1) - (b.currency === 'USD' ? 0 : 1) || a.totalMinor - b.totalMinor || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+/** Hotels: the cheapest room first, then by hotel id. */
+const byCheapest = (a, b) => a.options[0].totalMinor - b.options[0].totalMinor || (a.hotelId < b.hotelId ? -1 : a.hotelId > b.hotelId ? 1 : 0);
 
 /**
  * Price lines for one rate (§3.4), totalling the supplier's total plus any fee paid at the hotel.
@@ -308,8 +315,31 @@ class LiteApiHotels {
       });
       const entry = this._answer(res, q);
       if (this.cacheMs > 0) this.cache.set(org, key, entry, this.cacheMs);
+      if (hotelId) this._refreshCity(org, q, hotelId, entry);
       return entry;
     });
+  }
+
+  /**
+   * A price check's fresh rates for one hotel replace what the cached city search holds for it (§4.4), so
+   * auto and peek, the search pages and the variants never serve an older price than one already seen: each
+   * room the city search showed takes its fresh price and terms, a room the fresh answer no longer has is
+   * dropped, and the hotel goes when none is left. The city entry keeps its own expiry.
+   */
+  _refreshCity(org, q, hotelId, entry) {
+    const key = this._key(q);
+    const city = this.cache.get(org, key);
+    if (!city || !city.hotels.some(x => x.hotelId === hotelId)) return;
+    const fresh = entry.hotels.find(x => x.hotelId === hotelId) || null;
+    const byId = new Map((fresh ? fresh.options : []).map(o => [o.id, o]));
+    const hotels = [];
+    for (const old of city.hotels) {
+      if (old.hotelId !== hotelId) { hotels.push(old); continue; }
+      const options = old.options.filter(o => byId.has(o.id)).map(o => byId.get(o.id)).sort(byPrice);
+      if (options.length) hotels.push({ ...old, options, answeredAt: fresh.answeredAt });
+    }
+    hotels.sort(byCheapest);
+    this.cache.set(org, key, { ...city, hotels }, this.cache.expiresIn(org, key));
   }
 
   /** A rates answer as a cache entry, after the mode check (§2.1). */
@@ -365,8 +395,7 @@ class LiteApiHotels {
       if (h.options.some(o => o.id === x.option.id)) { count('duplicateOption'); continue; }
       h.options.push(x.option);
     }
-    const list = [...hotels.values()].filter(h => h.options.length)
-      .sort((a, b) => a.options[0].totalMinor - b.options[0].totalMinor || (a.hotelId < b.hotelId ? -1 : a.hotelId > b.hotelId ? 1 : 0));
+    const list = [...hotels.values()].filter(h => h.options.length).sort(byCheapest);
     return { hotels: list, skipped, truncated };
   }
 
@@ -408,6 +437,8 @@ class LiteApiHotels {
       option: {
         id: ids.hotelOptionId({ rateName: rate.name, boardType: rate.boardType, refundable: refundableTag === 'RFN' }),
         name: board ? `${rateName}, ${board}` : rateName,
+        rateName,
+        board: { type: cleanText(rate.boardType, 8), name: board },
         sleeps,
         totalMinor,
         currency: priced.currency,
@@ -522,7 +553,20 @@ class LiteApiHotels {
     const o = this._option(rt && typeof rt === 'object' ? { ...rt, offerId: opt.ref } : null, q, this._zone(q), price);
     if (o.skip) throw soldOut();
     // The prebooked room is the same option (its id names what was selected); its terms and price are new.
-    return this._quoteOf(h, { ...o.option, id: opt.id, name: opt.name, sleeps: opt.sleeps });
+    // A meal plan the supplier changed (L-PRE `boardChanged`, or a board that differs from the selected one) is
+    // a change of terms: the room's name and its terms text say the new plan, and the terms text is what the
+    // price check compares (recheck.terms()), so a decision sees `changed`, never `same`, at the same price.
+    const now = o.option;
+    const differs = (a, b) => Boolean(a) && Boolean(b) && a.toLowerCase() !== b.toLowerCase();
+    const boardMoved = data.boardChanged === true || differs(now.board.type, opt.board.type) || differs(now.board.name, opt.board.name);
+    if (!boardMoved) return this._quoteOf(h, { ...now, id: opt.id, name: opt.name, sleeps: opt.sleeps });
+    const plan = now.board.name || now.board.type;
+    const said = plan ? `The supplier changed the meal plan to ${plan}.` : 'The supplier changed the meal plan.';
+    return this._quoteOf(h, {
+      ...now, id: opt.id, sleeps: opt.sleeps,
+      name: plan ? `${opt.rateName}, ${plan}` : opt.name,
+      cancellation: { ...now.cancellation, summary: `${now.cancellation.summary} ${said}` },
+    });
   }
 
   /**

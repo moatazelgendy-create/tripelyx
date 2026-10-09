@@ -205,3 +205,55 @@ test('variants: at most inventory.maxVariantSearches searches (BUSINESS_SUPPLIER
     assert.ok(ff.calls.length <= 3, `at most one more supplier call: ${ff.calls.length}`);
   });
 });
+
+test('pricedAt per row: every cached flight and hotel row keeps the supplier\'s time; a flights-only search too', () => inOrg(async () => {
+  for (const raw of [RAW, { from: 'CAI', to: 'LHR', depart: '2026-11-12', cabin: 'economy' }]) {
+    const clock = testClock();
+    const { composer, ff } = supplierComposer({ clock });
+    const q = composer.parseQuery(raw, { today: TODAY });
+    const first = await composer.search(q);
+    clock.advance(2 * 60 * 1000);
+    const again = await composer.search(q);
+    assert.equal(ff.calls.length, first.legs.hotel ? 2 : 1, 'the second search is a cache hit');
+    const rows = [...again.legs.out.rows, ...(again.legs.hotel ? again.legs.hotel.rows : [])];
+    assert.ok(again.legs.out.rows.length > 0);
+    for (const row of rows) assert.equal(row.pricedAt, T0, `${row.key}: the supplier's time, not the cache hit's`);
+    assert.equal(again.pricedAt, T0);
+  }
+}));
+
+test('final: a meal plan the supplier changed at the same price is `changed`, never `same`', () => inOrg(async () => {
+  const { composer, ff } = supplierComposer({ routes: [ROUTES.search, ROUTES.get, ROUTES.rates, { method: 'POST', url: PREBOOK, reply: 'liteapi/prebook.board-changed.json' }] });
+  const q = composer.parseQuery(RAW, { today: TODAY });
+  const { selection, rows } = pickOf(await composer.search(q));
+  const rc = await recheck(composer, { selection, query: q, rows }, { check: 'final' });
+  assert.equal(ff.calls.filter(c => PREBOOK.test(c.url)).length, 1);
+  assert.equal(rc.components.hotel.status, 'changed');
+  assert.equal(rc.components.hotel.wasCents, rc.components.hotel.nowCents, 'the same price: a change of terms');
+  assert.match(rc.components.hotel.row.cancellation.text, /The supplier changed the meal plan to Breakfast Included\.$/);
+  assert.equal(rc.status, 'changed');
+}));
+
+test('a supplier that stays down during a price check is 503 with nothing decided, never an unavailable row', () => inOrg(async () => {
+  const q0 = c => c.composer.parseQuery(RAW, { today: TODAY });
+  // decide: the prebook keeps failing (5000 and its retry, or a plain 5xx).
+  for (const reply of [{ status: 500, body: { error: { code: 5000, message: 'retry' } } }, { status: 503, body: {} }]) {
+    const c = supplierComposer({ routes: [ROUTES.search, ROUTES.get, ROUTES.rates, { method: 'POST', url: PREBOOK, reply }] });
+    const q = q0(c);
+    const { selection, rows } = pickOf(await c.composer.search(q));
+    await assert.rejects(recheck(c.composer, { selection, query: q, rows }, { check: 'final' }), e => e.code === 'supplier_unavailable' && e.status === 503, JSON.stringify(reply));
+  }
+  // submit: Duffel's GET keeps failing (a 503 retried twice, or a 500).
+  for (const reply of [{ fixture: 'duffel/error.500.json', status: 503 }, 'duffel/error.500.json']) {
+    const c = supplierComposer({ routes: [ROUTES.search, { method: 'GET', url: OFFERS, reply }, ROUTES.rates, ROUTES.prebook] });
+    const q = q0(c);
+    const { selection, rows } = pickOf(await c.composer.search(q));
+    await assert.rejects(recheck(c.composer, { selection, query: q, rows }, { check: 'confirm' }), e => e.code === 'supplier_unavailable' && e.status === 503, JSON.stringify(reply));
+    await assert.rejects(recheck(c.composer, { selection, query: q, rows }, { check: 'final' }), e => e.code === 'supplier_unavailable' && e.status === 503);
+  }
+  // submit: the hotel's fresh rates keep failing.
+  const c = supplierComposer({ routes: [ROUTES.search, ROUTES.get, { method: 'POST', url: RATES, reply: x => (x.body.hotelIds ? { status: 503, body: {} } : 'liteapi/rates.cairo.json') }] });
+  const q = q0(c);
+  const { selection, rows } = pickOf(await c.composer.search(q));
+  await assert.rejects(recheck(c.composer, { selection, query: q, rows }, { check: 'confirm' }), e => e.code === 'supplier_unavailable' && e.status === 503);
+}));

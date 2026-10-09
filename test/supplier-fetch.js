@@ -10,10 +10,13 @@
 // A route matches on the method and the URL (a string matches the URL without its query, or the whole URL when
 // it has a '?'; a RegExp is tested on the whole URL). A reply is a fixture name, a spec, a function of the call
 // returning either, or a list (one per call, the last repeating). A spec:
-//   { fixture, body, status, headers, transform(body), text, delayMs, hang, reset, oversized }
+//   { fixture, body, status, headers, transform(body), text, delayMs, hang, reset, redirect, bodyError, oversized }
 //   body: a JSON body instead of a fixture's; transform: edits a copy of the fixture's body; text: a raw body;
 //   hang: never answers (only the request's abort signal ends it, as a timeout); reset: the connection fails
-//   before any answer (TypeError 'fetch failed'); oversized: a streamed body of that many bytes.
+//   before any answer (TypeError 'fetch failed'); redirect: the answer was a redirect that `redirect: 'error'`
+//   refused (TypeError 'fetch failed', cause 'unexpected redirect', as Node's fetch throws it); bodyError: the
+//   status and headers arrive, then the body breaks after that many bytes (TypeError 'terminated', as Node's
+//   fetch throws when the connection drops mid-body); oversized: a streamed body of that many bytes.
 // Every call is recorded (method, url, lower-cased headers, parsed body) and checked: the Duffel token only in
 // Authorization (as "Bearer <token>") and with Duffel-Version v2, the LiteAPI key only in X-API-Key, redirects
 // refused (redirect: 'error'). Anything else goes to `problems`; assertClean() throws when there are any.
@@ -54,6 +57,18 @@ function oversizedStream(bytes) {
   });
 }
 
+/** The first `bytes` of `text`, then the stream fails as a dropped connection does. */
+function brokenStream(text, bytes) {
+  const head = Buffer.from(text, 'utf8').subarray(0, Math.max(0, bytes));
+  let sent = false;
+  return new globalThis.ReadableStream({
+    pull(controller) {
+      if (!sent && head.length) { sent = true; controller.enqueue(new Uint8Array(head)); return; }
+      controller.error(new TypeError('terminated'));
+    },
+  });
+}
+
 function aborted(signal) {
   return new Promise((_, reject) => {
     if (!signal) return;
@@ -76,6 +91,7 @@ function hang(signal) {
 async function respond(reply, call, signal) {
   const spec = typeof reply === 'string' ? { fixture: reply } : reply || {};
   if (spec.reset) throw new TypeError('fetch failed');
+  if (spec.redirect) throw new TypeError('fetch failed', { cause: new Error('unexpected redirect') });
   if (spec.hang) return hang(signal);
   if (spec.delayMs) {
     await Promise.race([new Promise(r => setTimeout(r, spec.delayMs)), aborted(signal)]);
@@ -87,6 +103,7 @@ async function respond(reply, call, signal) {
   const headers = { 'content-type': 'application/json', ...fx.headers, ...(spec.headers || {}) };
   if (spec.oversized) return new globalThis.Response(oversizedStream(spec.oversized), { status, headers });
   const text = spec.text !== undefined ? spec.text : body === null ? '' : JSON.stringify(body);
+  if (spec.bodyError !== undefined) return new globalThis.Response(brokenStream(text, spec.bodyError), { status, headers });
   return new globalThis.Response(text, { status, headers });
 }
 

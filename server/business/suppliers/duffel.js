@@ -32,6 +32,11 @@
 //           offer_expired, offer_no_longer_available or 404 → re-search once, then GET again; still missing
 //           → null (unavailable). A changed total_amount in the GET answer is simply the new price (D-OFF
 //           lists no price_changed for GET; D-TYI's LHR→STN scenario shows it there).
+//   Every GET answer (peek, confirm, final) also replaces that fare in the cached search, so a later auto or
+//   peek never serves an older price than a check already saw; every GET answer's live_mode is checked too.
+// Retries (§4.2, D-ERR): an offer request once, only after a connection error before any answer or a 503;
+//   a GET twice, after a connection error, 503, 504 or a short 429. Never 500 or 502 ("You should not retry
+//   this request"), never a timeout of the offer request, never an offer request whose answer had started.
 //   The composer passes the selected option as getOffer's third argument ({ optionId }); quote() reads the
 //   offer it was handed (or the one getOffer just answered), never the network.
 // book() and cancel() answer 409 booking_not_open: nothing calls them in round 1.
@@ -83,9 +88,45 @@ function parseDuration(text) {
   return Number(m[1] || 0) * 1440 + Number(m[2] || 0) * 60 + Number(m[3] || 0) + Math.round(Number(m[4] || 0) / 60);
 }
 
+/**
+ * Whether an offer request is sent once more (§4.2): only after a connection error before any answer, or a
+ * 503 ("Please retry later", D-ERR). Never after an answer that broke mid-body or a refused redirect (Duffel
+ * got the request: a second one is a second search, which costs ratio), never after a timeout (a retry could
+ * not finish inside the 15 s), and never on 500 or 502 (D-ERR: "You should not retry this request") or 504
+ * (Duffel's airline_internal timeout).
+ * @param {{ kind: string, status?: number, afterResponse?: boolean }} o http.js's outcome
+ * @returns {boolean}
+ */
+function offerRequestRetry(o) {
+  return (o.kind === 'network' && !o.afterResponse) || (o.kind === 'response' && o.status === 503);
+}
+
+/**
+ * Whether GET /air/offers/{id} is sent again (§4.2, at most twice): a connection error (a GET is idempotent,
+ * so one that broke mid-body too), 503 or 504 ("Please retry later", D-ERR), and a 429 whose ratelimit-reset
+ * is at most 2 s away (that wait, in ms). Never 500 or 502 (D-ERR: "You should not retry this request").
+ * @param {{ kind: string, status?: number, headers?: { get: Function } }} o
+ * @param {Date} now
+ * @returns {boolean|number}
+ */
+function offerGetRetry(o, now) {
+  if (o.kind === 'network') return true;
+  if (o.kind !== 'response') return false;
+  if (o.status === 503 || o.status === 504) return true;
+  if (o.status === 429) {
+    const reset = Date.parse(String((o.headers && o.headers.get('ratelimit-reset')) || ''));
+    const wait = Number.isFinite(reset) ? Math.max(0, Math.ceil((reset - now.getTime()) / 1000) * 1000) : Infinity;
+    return wait <= 2000 ? wait : false;
+  }
+  return false;
+}
+
 const isCode = v => typeof v === 'string' && IATA_RE.test(v);
 const dayIndex = date => Math.round(Date.parse(`${date}T00:00:00Z`) / 86400000);
 const company = () => currentCompany() || 'unscoped';
+/** Fares: US dollars first, then cheapest (byAmount); then by fare id (byFare). */
+const byAmount = (a, b) => (a.currency === 'USD' ? 0 : 1) - (b.currency === 'USD' ? 0 : 1) || a.totalMinor - b.totalMinor;
+const byFare = (a, b) => byAmount(a, b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 const firstError = json => (json && Array.isArray(json.errors) && json.errors[0] && typeof json.errors[0] === 'object' ? json.errors[0] : {});
 
 /** A condition as source.TERMS reads it, slice level first, then offer level; null when both are null. */
@@ -322,9 +363,7 @@ class DuffelFlights {
         timeoutMs: this.timeouts.offerRequest,
         maxBytes: MAX_BYTES.offerRequest,
         maxAttempts: 2,
-        // Once, only before any response, or on 502/503. Never on a timeout and never on 504 (Duffel's
-        // airline_internal timeout): a second search costs ratio and couldn't finish inside the 15 s.
-        retry: o => o.kind === 'network' || (o.kind === 'response' && (o.status === 502 || o.status === 503)),
+        retry: offerRequestRetry,
       });
       const data = this._data(res, 'offer_request');
       // The mode check (§2.1): the offer request and every offer must say the mode we run in; a missing field
@@ -630,6 +669,35 @@ class DuffelFlights {
   }
 
   /**
+   * A GET answer for one fare replaces that fare in the cached search (§4.4), so auto and peek, the search
+   * pages and the variants never serve an older price than one a check already saw. The other fares keep
+   * theirs, and the itinerary keeps its answer time (the oldest of its fares: never a fresher claim than is
+   * true). When the answer moved the itinerary itself (times, carriers, stops), the cached itinerary is stale
+   * as a whole and the search entry is dropped. The entry keeps its expiry, shortened to the fare's new
+   * expires_at less 120 s (under 60 s left: dropped).
+   * @param {string} org
+   * @param {string} key
+   * @param {object} fresh the re-normalised itinerary with the one fare
+   * @param {number} expiresAt the fare's Duffel expires_at (ms; NaN when unknown)
+   */
+  _refresh(org, key, fresh, expiresAt) {
+    const entry = this.results.get(org, key);
+    if (!entry) return;
+    const old = entry.groups.find(g => g.offerId === fresh.offerId);
+    const option = fresh.options[0];
+    if (!old || !old.options.some(o => o.id === option.id)) return;
+    const shape = g => JSON.stringify([g.segments, g.owner, g.stops, g.via, g.elapsedMinutes, g.cabin, g.date, g.from, g.to]);
+    const ttl = Math.min(this.results.expiresIn(org, key), Number.isFinite(expiresAt) ? expiresAt - FRESH_MARGIN_MS - this.now().getTime() : 0);
+    if (shape(old) !== shape(fresh) || !(ttl >= MIN_LEFT_MS)) { this.results.delete(org, key); return; }
+    const options = old.options.map(o => (o.id === option.id ? option : o)).sort(byFare);
+    // The search's own order: by each itinerary's cheapest fare, ties by offer id then fare id.
+    const keyOf = g => `${g.offerId}|${g.options[0].id}`;
+    const groups = entry.groups.map(g => (g === old ? { ...old, options } : g))
+      .sort((a, b) => byAmount(a.options[0], b.options[0]) || (keyOf(a) < keyOf(b) ? -1 : keyOf(a) > keyOf(b) ? 1 : 0));
+    this.results.set(org, key, { ...entry, groups }, ttl);
+  }
+
+  /**
    * GET /air/offers/{id} for one fare.
    * @returns {Promise<{ offer?: object, gone?: boolean, failed?: boolean }>}
    */
@@ -641,17 +709,7 @@ class DuffelFlights {
       timeoutMs: this.timeouts.offerGet,
       maxBytes: MAX_BYTES.other,
       maxAttempts: 3,
-      retry: o => {
-        if (o.kind === 'network') return true;
-        if (o.kind !== 'response') return false;
-        if (o.status === 502 || o.status === 503 || o.status === 504) return true;
-        if (o.status === 429) {
-          const reset = Date.parse(String((o.headers && o.headers.get('ratelimit-reset')) || ''));
-          const wait = Number.isFinite(reset) ? Math.max(0, Math.ceil((reset - this.now().getTime()) / 1000) * 1000) : Infinity;
-          return wait <= 2000 ? wait : false;
-        }
-        return false;
-      },
+      retry: o => offerGetRetry(o, this.now()),
     });
     if (res.status === 200) {
       const data = this._data(res, 'offer_get');
@@ -667,6 +725,7 @@ class DuffelFlights {
       if (refs && refs[`${offerId}|${optionId}`]) {
         refs[`${offerId}|${optionId}`] = { ...refs[`${offerId}|${optionId}`], expiresAt: n.ref.expiresAt || ref.expiresAt };
       }
+      this._refresh(org, key, g, Date.parse(n.ref.expiresAt));
       return { offer: this._offer(g) };
     }
     const code = firstError(res.json).code;
@@ -676,4 +735,4 @@ class DuffelFlights {
   }
 }
 
-module.exports = { DuffelFlights, parseDuration, condition, refundablePercent, cancellationOf, bagsOf, linesOf, API, TIMEOUTS, MAX_OPTIONS, SUPPLIER_TIMEOUT_MS };
+module.exports = { DuffelFlights, offerRequestRetry, offerGetRetry, parseDuration, condition, refundablePercent, cancellationOf, bagsOf, linesOf, API, TIMEOUTS, MAX_OPTIONS, SUPPLIER_TIMEOUT_MS };

@@ -13,9 +13,14 @@ const { Gate, duffelResetWait, companyTag } = require('../server/business/suppli
 const { SupplierCache } = require('../server/business/suppliers/cache');
 const { createSupplierHttp, readCapped, MB } = require('../server/business/suppliers/http');
 const { redactText } = require('../server/app');
+const { offerRequestRetry } = require('../server/business/suppliers/duffel');
+const { seedUser, seedOrg, client } = require('./business-helpers');
+const { currentCompany } = require('../server/business/scope');
 
 const ORG = 'org_gateTest0000000001';
 const OTHER = 'org_gateTest0000000002';
+const THIRD = 'org_gateTest0000000003';
+const FOURTH = 'org_gateTest0000000004';
 const OFFER_REQUESTS = 'https://api.duffel.com/air/offer_requests';
 const OFFERS = /^https:\/\/api\.duffel\.com\/air\/offers\//;
 const RATES = 'https://api.liteapi.travel/v3.0/hotels/rates';
@@ -34,14 +39,18 @@ const nightsFrom = d => ({ ...HQ, checkIn: `2026-11-${String(d).padStart(2, '0')
 // ---------------------------------------------------------------------------------------------------------
 // §4.1, §4.2: timeouts and bounded retries, with call counts
 
-test('offer request: 504 (airline_internal) is called once; 500 once; 502 and 503 retried once', () => inOrg(async () => {
+test('offer request: 504 (airline_internal) is called once; 500 and 502 once; 503 retried once', () => inOrg(async () => {
   const k504 = flightKit('duffel/error.504-airline-internal.json');
   await assert.rejects(k504.flights.search(FQ), down('flights'));
   assert.equal(k504.ff.calls.length, 1, 'never a second search after a 504');
   const k500 = flightKit('duffel/error.500.json');
   await assert.rejects(k500.flights.search(FQ), down('flights'));
   assert.equal(k500.ff.calls.length, 1);
-  for (const status of [502, 503]) {
+  // D-ERR: 500 and 502 "You should not retry this request"; 503 and 504 "Please retry later".
+  const k502 = flightKit([{ fixture: 'duffel/error.500.json', status: 502 }, 'duffel/offer-request.cai-lhr.json']);
+  await assert.rejects(k502.flights.search(FQ), down('flights'));
+  assert.equal(k502.ff.calls.length, 1, 'a 502 is never retried (D-ERR)');
+  for (const status of [503]) {
     const k = flightKit([{ fixture: 'duffel/error.500.json', status }, 'duffel/offer-request.cai-lhr.json']);
     assert.equal((await k.flights.search(FQ)).length, 6, `${status}: the retry answered`);
     assert.equal(k.ff.calls.length, 2);
@@ -65,8 +74,15 @@ test('offer request: a connection error before any answer is retried once; a tim
   assert.deepEqual(supplierLines(slow.log).map(l => l.outcome), ['timeout']);
 }));
 
-test('GET offer: two retries for a connection error, 502, 503, 504; a timeout ends as 503', () => inOrg(async () => {
-  for (const fail of [{ reset: true }, { fixture: 'duffel/error.500.json', status: 502 }, { fixture: 'duffel/error.504-airline-internal.json' }]) {
+test('GET offer: two retries for a connection error, 503, 504; 502 never; a timeout ends as 503', () => inOrg(async () => {
+  const k502 = supplierKit({ routes: [
+    { method: 'POST', url: OFFER_REQUESTS, reply: 'duffel/offer-request.cai-lhr.json' },
+    { method: 'GET', url: OFFERS, reply: [{ fixture: 'duffel/error.500.json', status: 502 }, 'duffel/offer.get.json'] },
+  ] });
+  await k502.flights.search(FQ);
+  await assert.rejects(k502.flights.getOffer(I1, { ...FQ, check: 'confirm' }, { optionId: 'standard' }), down('flights'));
+  assert.equal(k502.ff.calls.filter(c => c.method === 'GET').length, 1, 'a 502 is never retried (D-ERR)');
+  for (const fail of [{ reset: true }, { fixture: 'duffel/error.500.json', status: 503 }, { fixture: 'duffel/error.504-airline-internal.json' }, { fixture: 'duffel/offer.get.json', bodyError: 64 }]) {
     const kit = supplierKit({ routes: [
       { method: 'POST', url: OFFER_REQUESTS, reply: 'duffel/offer-request.cai-lhr.json' },
       { method: 'GET', url: OFFERS, reply: [fail, fail, 'duffel/offer.get.json'] },
@@ -83,6 +99,39 @@ test('GET offer: two retries for a connection error, 502, 503, 504; a timeout en
   ] });
   await slow.flights.search(FQ);
   await assert.rejects(slow.flights.getOffer(I1, { ...FQ, check: 'confirm' }, { optionId: 'standard' }), down('flights'));
+}));
+
+test('offer request: an answer that breaks after it started, or a refused redirect, is never sent a second time', () => inOrg(async () => {
+  // The 201 arrived, then the connection dropped mid-body: Duffel ran the search, so a second one costs ratio.
+  const broken = flightKit([{ fixture: 'duffel/offer-request.cai-lhr.json', status: 201, bodyError: 64 }, 'duffel/offer-request.cai-lhr.json']);
+  await assert.rejects(broken.flights.search(FQ), down('flights'));
+  assert.equal(broken.ff.calls.length, 1, 'one offer request');
+  assert.deepEqual(supplierLines(broken.log).map(l => [l.status, l.outcome]), [[null, 'body_error']]);
+  const redirected = flightKit([{ redirect: true }, 'duffel/offer-request.cai-lhr.json']);
+  await assert.rejects(redirected.flights.search(FQ), down('flights'));
+  assert.equal(redirected.ff.calls.length, 1, 'a redirect is an answer: never retried');
+  assert.deepEqual(supplierLines(redirected.log).map(l => l.outcome), ['redirect']);
+  // The same through http.js alone, with the offer request's retry rule (the reviewer's case: 201, then 'terminated').
+  const gate = new Gate({ now: testClock().now, log: captureLog(), sleep: async () => {} });
+  let sends = 0;
+  const fetch = async () => {
+    sends += 1;
+    let n = 0;
+    const body = new globalThis.ReadableStream({ pull(c) { if (n++ === 0) c.enqueue(new TextEncoder().encode('{"data":{"offers":[')); else c.error(new TypeError('terminated')); } });
+    return new globalThis.Response(body, { status: 201, headers: { 'content-type': 'application/json' } });
+  };
+  const http = createSupplierHttp({ fetch, gate, now: testClock().now, log: captureLog(), sleep: async () => {} });
+  const retry = offerRequestRetry;
+  assert.equal(typeof retry, 'function');
+  await assert.rejects(http.call({ supplier: 'duffel', op: 'offer_request', vertical: 'flights', method: 'POST', url: OFFER_REQUESTS, headers: {}, body: '{}', timeoutMs: 15000, maxAttempts: 2, retry }), down('flights'));
+  assert.equal(sends, 1);
+  // Before any answer, it is retried once (design §4.2).
+  assert.equal(retry({ kind: 'network', afterResponse: false }), true);
+  assert.equal(retry({ kind: 'network', afterResponse: true }), false);
+  assert.equal(retry({ kind: 'redirect' }), false);
+  assert.equal(retry({ kind: 'timeout', afterResponse: false }), false);
+  for (const status of [500, 502, 504]) assert.equal(retry({ kind: 'response', status }), false, String(status));
+  assert.equal(retry({ kind: 'response', status: 503 }), true);
 }));
 
 test('LiteAPI rates: a timeout is 503 with one call; prebook never retries a connection error', () => inOrg(async () => {
@@ -216,6 +265,41 @@ test('no company in scope: one shared bucket of 10 an hour, a warning logged onc
   await withCompany(ORG, async () => assert.equal((await kit.hotels.search(nightsFrom(11))).length, 4));
 });
 
+test('through the routes: memberGate puts the company in scope, so each company has its own cache and its own count', async t => {
+  const keys = testKeys();
+  const ff = fakeFetch([
+    { method: 'POST', url: OFFER_REQUESTS, reply: 'duffel/offer-request.cai-lhr.json' },
+    { method: 'POST', url: RATES, reply: 'liteapi/rates.cairo.json' },
+  ], keys);
+  const seen = [];
+  const businessFetch = (url, init) => { seen.push({ host: new URL(url).host, org: currentCompany() }); return ff.fetch(url, init); };
+  const app = await startApp({
+    ENABLE_BUSINESS: 'true', BUSINESS_FLIGHT_SUPPLIER: 'duffel', DUFFEL_ACCESS_TOKEN: keys.token,
+    BUSINESS_HOTEL_SUPPLIER: 'liteapi', LITEAPI_API_KEY: keys.apiKey, BUSINESS_ALLOW_SUPPLIER_TEST: 'true',
+  }, { businessFetch });
+  t.after(app.close);
+  assert.equal(app.business.inventory.status, 'sandbox');
+  const a = await seedUser(app), b = await seedUser(app);
+  const orgA = await seedOrg(app, a, { name: 'Alpha Co' }), orgB = await seedOrg(app, b, { name: 'Beta Co' });
+  const path = org => `/business/o/${org.id}/trips/search?from=CAI&to=LHR&depart=2026-11-12&cabin=economy`;
+  const ra = await client(app.base, a.cookie).get(path(orgA));
+  assert.equal(ra.status, 200);
+  assert.deepEqual(seen.map(x => x.org), [orgA.id], 'the supplier call knows its company');
+  const again = await client(app.base, a.cookie).get(path(orgA));
+  assert.equal(again.status, 200);
+  assert.equal(seen.length, 1, 'the same company: a cache hit');
+  const rb = await client(app.base, b.cookie).get(path(orgB));
+  assert.equal(rb.status, 200);
+  assert.deepEqual(seen.map(x => x.org), [orgA.id, orgB.id], 'another company makes its own call, in its own scope');
+  assert.match(rb.text, /Test airline/, 'and sees its own results');
+  const gate = app.business.inventory.flights.http.gate;
+  assert.deepEqual([...gate.companies.keys()].sort(), [orgA.id, orgB.id].sort(), 'each company counted against its own limit');
+  assert.equal(gate.companies.get(orgA.id).length, 1);
+  assert.equal(gate.companies.get(orgB.id).length, 1);
+  assert.deepEqual(gate.unscoped, [], 'nothing fell into the shared unscoped bucket');
+  ff.assertClean();
+});
+
 test('global buckets: Duffel bursts 10 then 1 a second, LiteAPI 4 a second; a wait over 2 s is 503 at once', async () => {
   let mono = 0;
   const waits = [];
@@ -281,6 +365,7 @@ test('cache: per company, single-flight, and answeredAt kept on a hit', async ()
   const kit = supplierKit({ clock, routes: [
     { method: 'POST', url: RATES, reply: { fixture: 'liteapi/rates.cairo.json', delayMs: 20 } },
     { method: 'POST', url: OFFER_REQUESTS, reply: { fixture: 'duffel/offer-request.cai-lhr.json', delayMs: 20 } },
+    { method: 'GET', url: OFFERS, reply: 'duffel/offer.get.json' },
   ] });
   await withCompany(ORG, async () => {
     const [a, b] = await Promise.all([kit.hotels.search(HQ), kit.hotels.search(HQ)]);
@@ -292,12 +377,26 @@ test('cache: per company, single-flight, and answeredAt kept on a hit', async ()
   await withCompany(OTHER, async () => {
     await kit.hotels.search(HQ);
     assert.equal(kit.ff.calls.length, 3, 'another company never reads the first company\'s cache');
+    await kit.flights.search(FQ);
+    assert.equal(kit.ff.calls.length, 4, 'nor its flight search');
   });
+  // Nor its Duffel offers: a price check for a third company searches for itself before any GET.
+  await withCompany(THIRD, async () => {
+    const o = await kit.flights.getOffer(I1, { ...FQ, check: 'confirm' }, { optionId: 'standard' });
+    assert.equal(o.options[0].price.amount, 28990);
+    assert.deepEqual(kit.ff.calls.slice(4).map(c => c.method), ['POST', 'GET'], 'its own offer request, then the GET');
+    assert.equal(await kit.flights.getOffer(I1, { ...FQ, check: 'peek' }, { optionId: 'standard' }).then(x => x.id), I1);
+  });
+  await withCompany(FOURTH, async () => {
+    await assert.rejects(kit.flights.getOffer(I1, { ...FQ, check: 'peek' }, { optionId: 'standard' }), e => e.code === 'live_check_skipped', 'peek: no search and no other company\'s offer');
+    await assert.rejects(kit.hotels.getOffer('htl_t.lp1001', { ...HQ, check: 'peek' }), e => e.code === 'live_check_skipped');
+  });
+  assert.equal(kit.ff.calls.length, 6);
   clock.advance(120 * 1000);
   await withCompany(ORG, async () => {
     const again = await kit.hotels.search(HQ);
     const flights = await kit.flights.search(FQ);
-    assert.equal(kit.ff.calls.length, 3);
+    assert.equal(kit.ff.calls.length, 6);
     for (const o of [...again, ...flights]) assert.equal(o.details.answeredAt, '2026-10-09T09:00:00.000Z', 'the supplier\'s time, not the hit\'s');
     // The cached offers are fresh copies: changing one changes nothing stored.
     again[0].options[0].price.amount = 1;

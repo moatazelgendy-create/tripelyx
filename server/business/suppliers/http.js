@@ -14,6 +14,11 @@
 //   build, and nothing here reads, logs or throws a header value.
 // A connection error, a timeout, an oversized body or a body that isn't JSON, after the retries, is 503
 // supplier_unavailable. Any other answer goes back to the adapter, which maps its status and error codes.
+// What `retry(outcome)` sees: { kind: 'response', status, headers, json }, { kind: 'timeout', afterResponse },
+// { kind: 'too_large' }, { kind: 'redirect' } (a 3xx that `redirect: 'error'` refused: the supplier answered),
+// or { kind: 'network', afterResponse }. `afterResponse` is true when the status and headers had arrived and
+// the body then broke (a connection dropped mid-body): the supplier got the request and acted on it, so a
+// call that is not idempotent (Duffel's offer request: a second search) must not be sent again.
 const { performance } = require('node:perf_hooks');
 const { currentCompany } = require('../scope');
 const { supplierError } = require('../source');
@@ -61,6 +66,12 @@ async function readCapped(res, maxBytes) {
   return Buffer.concat(chunks, n).toString('utf8');
 }
 
+/** Did fetch refuse a redirect (`redirect: 'error'`)? Node's fetch says so in the error's cause. */
+function refusedRedirect(e) {
+  const cause = e && e.cause;
+  return Boolean(cause) && typeof cause.message === 'string' && /redirect/i.test(cause.message);
+}
+
 /** A supplier error's type and code, if they look like codes (never its message or title). */
 function errorCodes(json) {
   if (!json || typeof json !== 'object') return {};
@@ -79,7 +90,8 @@ function errorCodes(json) {
  * @param {{ fetch?: Function|null, gate: import('./gate').Gate, now: () => Date, log?: object,
  *   sleep?: (ms: number) => Promise<void>, random?: () => number, mono?: () => number }} deps
  *   fetch: tests inject one; by default the global fetch, looked up at call time
- * @returns {{ call: (req: SupplierRequest) => Promise<SupplierResponse> }}
+ * @returns {{ call: (req: SupplierRequest) => Promise<SupplierResponse>, warn: Function, info: Function,
+ *   gate: import('./gate').Gate }}
  */
 function createSupplierHttp({ fetch: fetchImpl = null, gate, now, log = console, sleep = null, random = Math.random, mono = () => performance.now() } = {}) {
   if (!gate || typeof now !== 'function') throw new TypeError('[suppliers] http needs a gate and a clock');
@@ -102,7 +114,7 @@ function createSupplierHttp({ fetch: fetchImpl = null, gate, now, log = console,
    * @property {number} [budgetMs] the whole operation, retries and waits included (default timeoutMs)
    * @property {number} [maxBytes] default 4 MB
    * @property {number} [maxAttempts] default 1
-   * @property {(outcome: object, attempt: number) => boolean|number} [retry]
+   * @property {(outcome: object, attempt: number) => boolean|number} [retry] see the header for the outcomes
    * @property {boolean} [countCompany] false for the second half of one operation (LiteAPI's prebook retry with
    *   a longer timeout): the company's limit counts an operation once
    *
@@ -124,15 +136,19 @@ function createSupplierHttp({ fetch: fetchImpl = null, gate, now, log = console,
       if (left < 1) throw unavailable();
       const t0 = mono();
       let outcome;
+      let answered = false;
       try {
         const res = await send(url, { method, headers, body, redirect: 'error', signal: globalThis.AbortSignal.timeout(Math.max(1, Math.min(timeoutMs, Math.floor(left)))) });
+        answered = true;
         const text = await readCapped(res, maxBytes);
         let json = null;
         if (text) { try { json = JSON.parse(text); } catch { json = null; } }
         outcome = { kind: 'response', status: res.status, headers: res.headers, json, badJson: Boolean(text) && json === null };
       } catch (e) {
         outcome = e instanceof TooLarge ? { kind: 'too_large' }
-          : e && (e.name === 'TimeoutError' || e.name === 'AbortError') ? { kind: 'timeout' } : { kind: 'network' };
+          : e && (e.name === 'TimeoutError' || e.name === 'AbortError') ? { kind: 'timeout', afterResponse: answered }
+            : !answered && refusedRedirect(e) ? { kind: 'redirect' }
+              : { kind: 'network', afterResponse: answered };
       }
       const ms = Math.round(mono() - t0);
       const status = outcome.kind === 'response' ? outcome.status : null;
@@ -142,7 +158,8 @@ function createSupplierHttp({ fetch: fetchImpl = null, gate, now, log = console,
       const requestId = typeof rid === 'string' && REQUEST_ID_RE.test(rid) ? rid : null;
       const line = {
         supplier, op, status, ms, attempt, requestId, company,
-        outcome: outcome.kind !== 'response' ? outcome.kind : outcome.badJson ? 'bad_body' : status < 400 ? 'ok' : 'error',
+        outcome: outcome.kind === 'network' && outcome.afterResponse ? 'body_error'
+          : outcome.kind !== 'response' ? outcome.kind : outcome.badJson ? 'bad_body' : status < 400 ? 'ok' : 'error',
         ...(outcome.kind === 'response' && status >= 400 ? errorCodes(outcome.json) : {}),
       };
       (failure ? warn : info)(`[suppliers] ${JSON.stringify(line)}`);
@@ -161,7 +178,8 @@ function createSupplierHttp({ fetch: fetchImpl = null, gate, now, log = console,
     }
   }
 
-  return { call, warn, info };
+  // The gate is shared and read-only from outside (the route-level tests check whose count a call went to).
+  return { call, warn, info, gate };
 }
 
-module.exports = { createSupplierHttp, readCapped, errorCodes, SUPPLIER_HOSTS, MB, DELAYS, MIN_ATTEMPT_MS };
+module.exports = { createSupplierHttp, readCapped, errorCodes, refusedRedirect, SUPPLIER_HOSTS, MB, DELAYS, MIN_ATTEMPT_MS };
