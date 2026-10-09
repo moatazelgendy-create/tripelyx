@@ -14,7 +14,21 @@
 //   date, and nothing moves if that would leave no night. SearchResult.query is the query as searched.
 //   (This is the rule Stage 0 froze in parseTripQuery's JSDoc. While a same-day flight exists the stay starts
 //   on the departure date for every pick, which also holds the room for an early-morning arrival.)
-// - A currency other than the org's (USD): 422 'unsupported_currency', "Priced in another currency, not supported yet".
+// - A currency other than the org's (USD): search() leaves the row out and counts it (leg.skipped.otherCurrency
+//   and the sorted leg.skipped.currencies); price(), recheck() and so createRequest and swap still answer 422
+//   'unsupported_currency', "Priced in another currency, not supported yet" for a selected one (real-suppliers
+//   design §3.5). Demo is always USD.
+// - Real suppliers (design §1.2, §2.3, §2.4, §5.1; the frozen demo providers and fakes ignore all of it):
+//   a provider's searchDetailed(pq) is used when it has one ({ offers, skipped, truncated }: what the adapter
+//   left out goes into leg.skipped, its truncated into the leg's); a leg that came from searchDetailed or left
+//   anything out carries `skipped` (demo legs have none). The hotel pq carries the stay's `country`; price() and
+//   recheck() pass the check level as pq.check ('auto', 'peek', 'confirm', 'final') and getOffer gets the
+//   selected option as a third argument ({ optionId }); quote() gets the offer it prices (`offer`). A hotel
+//   search that answers 503 supplier_unavailable leaves the flights standing: the hotel leg is
+//   { rows: [], benchmark, truncated: false, error: 'unavailable' }. "Priced at" is when the supplier answered:
+//   a leg's rows carry the earliest details.answeredAt of its offers, and SearchResult/PriceResult.pricedAt is
+//   the earliest over the rows, falling back to now() when no offer says (demo). variants() spends at most
+//   inventory.maxVariantSearches searches (4 with real suppliers; demo keeps 20).
 // - The benchmarks are plan §E2's median with outliers removed, computed here so the composer needs no policy
 //   engine (the same rule as policy/benchmark.js; test/business-search.test.js checks the two agree).
 // - Latency targets with MOCK_LATENCY_MS=0: search ≤ 150 ms, draft creation with alternatives ≤ 400 ms
@@ -265,6 +279,45 @@ function describe(kind, row) {
   return `${row.carrier.name} ${row.flightNumbers.join(' + ')}, leaves ${row.segments[0].departLocal.slice(11)}`;
 }
 
+/** What a leg's search found: searchDetailed(pq) when the provider has it, else search(pq). */
+async function searchOf(provider, pq) {
+  if (typeof provider.searchDetailed === 'function') {
+    const d = await provider.searchDetailed(pq);
+    const offers = d && Array.isArray(d.offers) ? d.offers : [];
+    return { offers, skipped: skipCounts(d && d.skipped), truncated: Boolean(d && d.truncated), detailed: true };
+  }
+  return { offers: await provider.search(pq), skipped: {}, truncated: false, detailed: false };
+}
+
+/** The adapter's reasons for leaving offers out (types.SkipCounts): whole counts of 1 or more only. */
+const ADAPTER_SKIPS = Object.freeze(['mixedCabin', 'firstCabin', 'unknownCarrier', 'timeMismatch', 'duplicateOption', 'feeOtherCurrency', 'noHotelData']);
+function skipCounts(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object') return out;
+  for (const k of ADAPTER_SKIPS) if (Number.isSafeInteger(raw[k]) && raw[k] > 0) out[k] = raw[k];
+  return out;
+}
+
+/** A leg with `skipped` when the provider reported (searchDetailed) or the composer left something out. */
+function withSkipped(leg, found, composerSkipped) {
+  if (!found.detailed && !composerSkipped) return leg;
+  return { ...leg, skipped: { ...found.skipped, ...(composerSkipped || {}) } };
+}
+
+/** When a supplier answered for an offer (details.answeredAt), as an ISO string; null when it doesn't say. */
+function answeredAt(offer) {
+  const a = offer && offer.details && offer.details.answeredAt;
+  const t = typeof a === 'string' ? Date.parse(a) : NaN;
+  return Number.isFinite(t) ? new Date(t).toISOString() : null;
+}
+
+/** The earliest of some ISO instants (nulls ignored), else the fallback. */
+function earliest(list, fallback) {
+  let best = null;
+  for (const x of list) if (typeof x === 'string' && x && (best === null || x < best)) best = x;
+  return best === null ? fallback : best;
+}
+
 /** A gone component's row: the stored row with no price (recheck's "no longer in the demo data"). */
 function goneRow(prev, key, component, pricedAt) {
   if (!prev || prev.key !== key || (component === 'hotel') !== (prev.kind === 'hotel')) return null;
@@ -314,7 +367,8 @@ class TripComposer {
   async search(query) {
     this._ready();
     const q = copyQuery(assertQuery(query));
-    const pricedAt = this._pricedAt();
+    const fallback = this._pricedAt();
+    const pricedAt = fallback;
     const [out, back, hotel] = await Promise.all([
       this._flightLeg('out', q, q.cabin, pricedAt),
       q.returnDate ? this._flightLeg('back', q, q.cabin, pricedAt) : null,
@@ -328,30 +382,33 @@ class TripComposer {
         legs.hotel = await this._hotelLeg(moved, pricedAt);
       }
     }
-    return { query: q, legs, pricedAt, status: this.inventory.status };
+    return { query: q, legs, pricedAt: earliest(COMPONENTS.flatMap(c => (legs[c] ? legs[c].rows.map(r => r.pricedAt) : [])), fallback), status: this.inventory.status };
   }
 
   /**
    * Price a selection again, now (never trusting any price a form sent).
    * @param {import('./types').Selection} selection
    * @param {import('./types').TripQuery} query
-   * @param {{ previous?: import('./types').TripRows|null }} [opts] previous: the stored rows (recheck): a
-   *   component whose offer is gone from the inventory comes back as that row with no price, rather than a 422
+   * @param {{ previous?: import('./types').TripRows|null, check?: import('./types').CheckLevel }} [opts] previous:
+   *   the stored rows (recheck): a component whose offer is gone from the inventory comes back as that row with
+   *   no price, rather than a 422. check: the price check level the providers get as pq.check (absent: none
+   *   sent, which a supplier reads as 'auto')
    * @returns {Promise<import('./types').PriceResult>}
    * @throws {AppError} 422 'invalid_selection' for a malformed key, a key on the wrong leg, back without a
    *   returnDate or hotel without query.hotel; 422 'unsupported_currency'; 503 'no_supplier'
    */
-  async price(selection, query, { previous = null } = {}) {
+  async price(selection, query, { previous = null, check = null } = {}) {
     this._ready();
     assertQuery(query);
     const sel = checkSelection(selection, query);
-    const pricedAt = this._pricedAt();
+    const fallback = this._pricedAt();
     const rows = { out: null, back: null, hotel: null };
     await Promise.all(COMPONENTS.filter(c => sel[c]).map(async c => {
-      rows[c] = await this._priceOne(c, sel[c], query, pricedAt, previous ? previous[c] : null);
+      rows[c] = await this._priceOne(c, sel[c], query, fallback, previous ? previous[c] : null, check);
     }));
     const parts = COMPONENTS.filter(c => rows[c]);
     const unavailable = parts.filter(c => !rows[c].available);
+    const pricedAt = earliest(parts.map(c => rows[c].pricedAt), fallback);
     return { rows, totalCents: unavailable.length ? null : rowsTotal(rows), pricedAt, unavailable };
   }
 
@@ -374,7 +431,8 @@ class TripComposer {
   async variants(query, selection, { datesFlexible = false, maxSearches = MAX_SEARCHES, evaluate = null, searched = null, today = null } = {}) {
     this._ready();
     assertQuery(query);
-    const max = Number.isInteger(maxSearches) && maxSearches > 0 ? Math.min(maxSearches, MAX_SEARCHES) : 0;
+    const inventoryCap = Number.isInteger(this.inventory.maxVariantSearches) && this.inventory.maxVariantSearches >= 0 ? this.inventory.maxVariantSearches : MAX_SEARCHES;
+    const max = Number.isInteger(maxSearches) && maxSearches > 0 ? Math.min(maxSearches, MAX_SEARCHES, inventoryCap) : 0;
     const priced = await this.price(selection, query);
     if (priced.unavailable.length) return { candidates: [], searches: 0, truncated: false };
     const pricedAt = priced.pricedAt;
@@ -493,12 +551,13 @@ class TripComposer {
   }
 
   /**
-   * Price a stored request's selection again (recheck.recheck(this, request)). Writes nothing.
+   * Price a stored request's selection again (recheck.recheck(this, request, opts)). Writes nothing.
    * @param {import('./types').Request} request
+   * @param {{ check?: import('./types').CheckLevel }} [opts]
    * @returns {Promise<import('./types').RecheckResult>}
    */
-  async recheck(request) {
-    return recheck(this, request);
+  async recheck(request, opts = {}) {
+    return recheck(this, request, opts);
   }
 
   // -------------------------------------------------------------------------------------------------------
@@ -513,55 +572,90 @@ class TripComposer {
   }
 
   /** One flight leg of `query` in `cabin`: every option priced (up to the cap), sorted, with its benchmark. */
-  async _flightLeg(leg, query, cabin, pricedAt) {
+  async _flightLeg(leg, query, cabin, fallback) {
     const { from, to, date } = legOf(query, leg);
     const provider = this.inventory.flights;
     const pq = { from, to, departDate: date, passengers: 1, cabin };
-    const offers = (await provider.search(pq)).filter(o => {
+    const found = await searchOf(provider, pq);
+    const offers = found.offers.filter(o => {
       validateOffer(o, 'flights');
       const segs = o.details && o.details.segments;
       return Array.isArray(segs) && segs.length && segs[0].from.code === from && segs[segs.length - 1].to.code === to && o.details.cabin === cabin;
     });
-    const { rows, truncated } = await this._rows(provider, 'flights', offers, pq, (offer, option, quote) => dto.flightRow(offer, option, quote, { leg, pricedAt }));
-    return { rows, benchmark: flightBenchmark(rows), truncated };
+    const pricedAt = earliest(offers.map(answeredAt), fallback);
+    const { rows, truncated, skipped } = await this._rows(provider, 'flights', offers, pq, (offer, option, quote) => dto.flightRow(offer, option, quote, { leg, pricedAt }));
+    return withSkipped({ rows, benchmark: flightBenchmark(rows), truncated: truncated || found.truncated }, found, skipped);
   }
 
-  /** The hotel leg: the hotels of that city (exactly), every room priced, sorted, with both benchmarks. */
-  async _hotelLeg(stay, pricedAt) {
+  /**
+   * The hotel leg: the hotels of that city (exactly), every room priced, sorted, with both benchmarks. A
+   * supplier outage (503 supplier_unavailable) leaves the flights standing: the leg says error 'unavailable'.
+   */
+  async _hotelLeg(stay, fallback) {
     const provider = this.inventory.hotels;
     if (!provider) return { rows: [], benchmark: hotelBenchmarks([]), truncated: false };
-    const pq = { where: stay.city, checkIn: stay.checkIn, checkOut: stay.checkOut, guests: 1 };
-    const offers = (await provider.search(pq)).filter(o => {
+    const pq = { where: stay.city, country: stay.country, checkIn: stay.checkIn, checkOut: stay.checkOut, guests: 1 };
+    let found;
+    try {
+      found = await searchOf(provider, pq);
+    } catch (e) {
+      if (e instanceof AppError && e.code === 'supplier_unavailable') return { rows: [], benchmark: hotelBenchmarks([]), truncated: false, error: 'unavailable' };
+      throw e;
+    }
+    const offers = found.offers.filter(o => {
       validateOffer(o, 'hotels');
       return o.location && o.location.city === stay.city && o.location.country === stay.country;
     });
-    const { rows, truncated } = await this._rows(provider, 'hotels', offers, pq,
-      (offer, option, quote) => dto.hotelRow(offer, option, quote, { pricedAt, checkIn: stay.checkIn, checkOut: stay.checkOut }));
-    return { rows, benchmark: hotelBenchmarks(rows), truncated };
+    const pricedAt = earliest(offers.map(answeredAt), fallback);
+    let built;
+    try {
+      built = await this._rows(provider, 'hotels', offers, pq,
+        (offer, option, quote) => dto.hotelRow(offer, option, quote, { pricedAt, checkIn: stay.checkIn, checkOut: stay.checkOut }));
+    } catch (e) {
+      if (e instanceof AppError && e.code === 'supplier_unavailable') return { rows: [], benchmark: hotelBenchmarks([]), truncated: false, error: 'unavailable' };
+      throw e;
+    }
+    const { rows, truncated, skipped } = built;
+    return withSkipped({ rows, benchmark: hotelBenchmarks(rows), truncated: truncated || found.truncated }, found, skipped);
   }
 
-  /** Rows for the offers of one search: available options quoted (at most MAX_PRICED_PER_LEG), the rest not. */
+  /**
+   * Rows for the offers of one search: available options quoted (at most MAX_PRICED_PER_LEG), the rest not.
+   * A row in another currency than the org's is left out and counted (before its quote when the option's
+   * price already says so, else after it): `skipped` is null when nothing was left out.
+   */
   async _rows(provider, vertical, offers, pq, build) {
     const kind = vertical === 'flights' ? 'flight' : 'hotel';
     let quoted = 0, truncated = false;
+    const other = new Map();
+    const drop = currency => other.set(String(currency), (other.get(String(currency)) || 0) + 1);
     const jobs = [];
     for (const offer of offers) {
       for (const option of offer.options) {
         if (!dto.ROW_KEY_RE.test(dto.rowKey(kind, offer.id, option.id))) continue; // an id no form can carry
+        if (option.price.currency !== CURRENCY) { drop(option.price.currency); continue; }
         if (!option.available) { jobs.push([offer, option, null]); continue; }
         if (quoted >= MAX_PRICED_PER_LEG) { truncated = true; continue; }
         quoted += 1;
         jobs.push(this._quote(provider, vertical, offer, option, pq).then(quote => [offer, option, quote]));
       }
     }
-    const rows = (await Promise.all(jobs)).map(([offer, option, quote]) => this._row(build(offer, option, quote)));
-    return { rows: rows.sort(byTotal), truncated };
+    const rows = [];
+    for (const [offer, option, quote] of await Promise.all(jobs)) {
+      const row = dto.assertRow(build(offer, option, quote));
+      if (row.currency !== CURRENCY) { drop(row.currency); continue; }
+      rows.push(row);
+    }
+    const skipped = other.size
+      ? { otherCurrency: [...other.values()].reduce((n, x) => n + x, 0), currencies: [...other.keys()].sort() }
+      : null;
+    return { rows: rows.sort(byTotal), truncated, skipped };
   }
 
   /** provider.quote(), checked; null when the option no longer prices (404 or 409 from the provider). */
   async _quote(provider, vertical, offer, option, pq) {
     try {
-      const quote = await provider.quote({ offerId: offer.id, optionId: option.id, query: pq });
+      const quote = await provider.quote({ offerId: offer.id, optionId: option.id, query: pq, offer });
       return validateQuote(quote, vertical);
     } catch (e) {
       if (e instanceof AppError && (e.status === 404 || e.status === 409)) return null;
@@ -576,25 +670,27 @@ class TripComposer {
     return row;
   }
 
-  /** One selected component priced now. */
-  async _priceOne(component, key, query, pricedAt, prev) {
+  /** One selected component priced now (at `check`, when given); its row carries when the supplier answered. */
+  async _priceOne(component, key, query, fallback, prev, check = null) {
     const k = dto.parseRowKey(key);
     const gone = () => {
-      const row = goneRow(prev, key, component, pricedAt);
+      const row = goneRow(prev, key, component, fallback);
       if (!row) throw invalidSelection();
       return row;
     };
+    const withCheck = pq => (check ? { ...pq, check } : pq);
     if (component === 'hotel') {
       const stay = query.hotel;
       const provider = this.inventory.hotels;
       if (!provider) return gone();
-      const pq = { where: stay.city, checkIn: stay.checkIn, checkOut: stay.checkOut, guests: 1 };
-      const offer = await provider.getOffer(k.offerId, pq);
+      const pq = withCheck({ where: stay.city, country: stay.country, checkIn: stay.checkIn, checkOut: stay.checkOut, guests: 1 });
+      const offer = await provider.getOffer(k.offerId, pq, { optionId: k.optionId });
       if (offer) validateOffer(offer, 'hotels');
       const here = offer && offer.location && offer.location.city === stay.city && offer.location.country === stay.country;
       const option = here ? offer.options.find(o => o.id === k.optionId) : null;
       if (!option) return gone();
       const quote = option.available ? await this._quote(provider, 'hotels', offer, option, pq) : null;
+      const pricedAt = earliest([answeredAt(offer)], fallback);
       return this._row(dto.hotelRow(offer, option, quote, { pricedAt, checkIn: stay.checkIn, checkOut: stay.checkOut }));
     }
     const { from, to, date } = legOf(query, component);
@@ -603,14 +699,15 @@ class TripComposer {
     // A cabin variant may sit below the searched cabin, never above it.
     if (CABIN_RANK[cabin] > CABIN_RANK[query.cabin]) throw invalidSelection();
     const provider = this.inventory.flights;
-    const pq = { from, to, departDate: date, passengers: 1, cabin };
-    const offer = await provider.getOffer(k.offerId, pq);
+    const pq = withCheck({ from, to, departDate: date, passengers: 1, cabin });
+    const offer = await provider.getOffer(k.offerId, pq, { optionId: k.optionId });
     if (offer) validateOffer(offer, 'flights');
     const segs = offer && offer.details && offer.details.segments;
     const here = Array.isArray(segs) && segs.length && segs[0].from.code === from && segs[segs.length - 1].to.code === to;
     const option = here ? offer.options.find(o => o.id === k.optionId) : null;
     if (!option) return gone();
     const quote = option.available ? await this._quote(provider, 'flights', offer, option, pq) : null;
+    const pricedAt = earliest([answeredAt(offer)], fallback);
     return this._row(dto.flightRow(offer, option, quote, { leg: component, pricedAt }));
   }
 }

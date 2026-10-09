@@ -226,12 +226,21 @@ test('search: a leg with more than 60 options prices 60 and says it was cut', as
   assert.equal(r.legs.out.truncated, false);
 });
 
-test('search: a price in another currency is refused with 422', async () => {
+test('search: a row priced in another currency is left out and counted; pricing one still answers 422', async () => {
+  // Real-suppliers design §3.5, §8.6 item 3: search drops and counts (leg.skipped), price/recheck keep the 422.
   class Euros extends BusinessDemoHotels {
     async quote(input) { return { ...(await super.quote(input)), currency: 'EUR' }; }
   }
   const { composer } = overrideComposer({ hotels: new Euros() });
-  await assert.rejects(composer.search(parse(RAW)), e => e.code === 'unsupported_currency' && e.status === 422 && e.message === 'Priced in another currency, not supported yet.');
+  const r = await composer.search(parse(RAW));
+  assert.equal(r.legs.hotel.rows.filter(x => x.available).length, 0, 'no EUR row is shown');
+  assert.ok(r.legs.hotel.skipped.otherCurrency > 0);
+  assert.deepEqual(r.legs.hotel.skipped.currencies, ['EUR']);
+  assert.ok(r.legs.out.rows.length > 0 && !('skipped' in r.legs.out), 'the USD legs are untouched and carry no skipped');
+  const demo = await demoComposer().search(parse(RAW));
+  const room = demo.legs.hotel.rows.find(x => x.available);
+  const selection = { out: r.legs.out.rows.find(x => x.available).key, back: r.legs.back.rows.find(x => x.available).key, hotel: room.key };
+  await assert.rejects(composer.price(selection, r.query), e => e.code === 'unsupported_currency' && e.status === 422 && e.message === 'Priced in another currency, not supported yet.');
 });
 
 test('search: an unavailable option is a row with the flag and no price, and is never quoted', async () => {

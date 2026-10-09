@@ -23,6 +23,7 @@ const { KINDS } = require('./constants');
 const { safeLocal } = require('./validate');
 const { loadActor, roleMessage, SUSPENDED } = require('./actor');
 const { shellErrorView } = require('../views/business/shell');
+const { withCompany } = require('./scope');
 
 /** Private workspace headers: never cached, never indexed. */
 function privateHeaders(res) {
@@ -198,7 +199,9 @@ function memberGate(ctx, perm, { own = false, forbiddenView = defaultForbiddenVi
         biz.request = record;
       }
       req.biz = biz;
-      next();
+      // Everything this request runs from here on (the service, the composer, a supplier call several awaits
+      // later) knows its company: the per-company supplier limit and result cache key on it (scope.js).
+      withCompany(org.id, () => next());
     } catch (e) { next(e); }
   };
 }

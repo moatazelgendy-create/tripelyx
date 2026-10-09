@@ -34,6 +34,71 @@ function oneOf(value, list, name) {
   return v;
 }
 
+// Tripelyx Business suppliers (real-suppliers design §1.3). Round 1 accepts only test keys.
+const SUPPLIER_TEST_PREFIX = Object.freeze({ duffel: 'duffel_test_', liteapi: 'sand_' });
+const SUPPLIER_KEY_RE = /^[\x21-\x7e]{1,512}$/;
+
+// A whole number from min to max, or the fallback when unset; null when it is anything else (never throws).
+function range(value, fallback, min, max) {
+  if (value === undefined || value === '') return fallback;
+  const n = Number(String(value).trim());
+  return Number.isInteger(n) && n >= min && n <= max ? n : null;
+}
+
+/**
+ * config.business.suppliers. Never throws, whatever the environment holds: every problem becomes `problem`, one
+ * sentence that names the variable and never its value (Business then shows "Supplier not connected yet",
+ * never demo). The keys are non-enumerable, so they never appear when the config is logged or serialised,
+ * and they are only set when there is no problem. Not in publicConfig.
+ * @param {object} env
+ * @param {string} appEnv
+ */
+function businessSuppliers(env, appEnv) {
+  const text = v => (v === undefined || v === null ? '' : String(v).trim());
+  const flightName = text(env.BUSINESS_FLIGHT_SUPPLIER).toLowerCase();
+  const hotelName = text(env.BUSINESS_HOTEL_SUPPLIER).toLowerCase();
+  const configured = Boolean(flightName || hotelName);
+  const nationality = text(env.BUSINESS_GUEST_NATIONALITY || 'US').toUpperCase();
+  const cacheSeconds = range(env.BUSINESS_SUPPLIER_CACHE_SECONDS, 300, 0, 900);
+  const companyCallsPerHour = range(env.BUSINESS_SUPPLIER_COMPANY_CALLS_PER_HOUR, 120, 1, 100000);
+  const variantSearches = range(env.BUSINESS_SUPPLIER_VARIANT_SEARCHES, 4, 0, 20);
+  const allowTest = bool(env.BUSINESS_ALLOW_SUPPLIER_TEST, appEnv === 'development');
+  const token = text(env.DUFFEL_ACCESS_TOKEN), key = text(env.LITEAPI_API_KEY);
+  const isKey = (value, prefix) => SUPPLIER_KEY_RE.test(value) && value.startsWith(prefix) && value.length > prefix.length;
+  const problems = [
+    [flightName !== '' && flightName !== 'duffel', 'BUSINESS_FLIGHT_SUPPLIER must be duffel or empty.'],
+    [hotelName !== '' && hotelName !== 'liteapi', 'BUSINESS_HOTEL_SUPPLIER must be liteapi or empty.'],
+    [hotelName !== '' && flightName === '', 'BUSINESS_HOTEL_SUPPLIER needs a working flight supplier (BUSINESS_FLIGHT_SUPPLIER).'],
+    [flightName === 'duffel' && !token, 'DUFFEL_ACCESS_TOKEN is not set.'],
+    [flightName === 'duffel' && token && !isKey(token, SUPPLIER_TEST_PREFIX.duffel), 'DUFFEL_ACCESS_TOKEN is not a Duffel test token.'],
+    [hotelName === 'liteapi' && !key, 'LITEAPI_API_KEY is not set.'],
+    [hotelName === 'liteapi' && key && !isKey(key, SUPPLIER_TEST_PREFIX.liteapi), 'LITEAPI_API_KEY is not a LiteAPI sandbox key.'],
+    [!allowTest, 'BUSINESS_ALLOW_SUPPLIER_TEST is not true, so supplier test data stays off on this site.'],
+    [!/^[A-Z]{2}$/.test(nationality), 'BUSINESS_GUEST_NATIONALITY must be a two-letter country code.'],
+    [cacheSeconds === null, 'BUSINESS_SUPPLIER_CACHE_SECONDS must be a whole number from 0 to 900.'],
+    [companyCallsPerHour === null, 'BUSINESS_SUPPLIER_COMPANY_CALLS_PER_HOUR must be a whole number of 1 or more.'],
+    [variantSearches === null, 'BUSINESS_SUPPLIER_VARIANT_SEARCHES must be a whole number from 0 to 20.'],
+  ];
+  const found = configured ? problems.find(([bad]) => bad) : null;
+  const problem = found ? found[1] : null;
+  const out = {
+    configured,
+    flights: flightName === 'duffel' ? 'duffel' : null,
+    hotels: hotelName === 'liteapi' ? 'liteapi' : null,
+    allowTest,
+    guestNationality: /^[A-Z]{2}$/.test(nationality) ? nationality : 'US',
+    cacheSeconds: cacheSeconds ?? 300,
+    companyCallsPerHour: companyCallsPerHour ?? 120,
+    variantSearches: variantSearches ?? 4,
+    problem,
+  };
+  if (configured && !problem) {
+    Object.defineProperty(out, 'duffelToken', { value: token, enumerable: false });
+    if (out.hotels) Object.defineProperty(out, 'liteapiKey', { value: key, enumerable: false });
+  }
+  return Object.freeze(out);
+}
+
 function databaseUrlFromParts(env) {
   if (!env.DATABASE_HOST) return null;
   if (!env.DATABASE_NAME || !env.DATABASE_USER || !env.DATABASE_PASSWORD) {
@@ -142,6 +207,9 @@ function loadConfig(env = process.env) {
     // no AI model is connected, and anything else fails at boot.
     explainer: oneOf(env.BUSINESS_EXPLAINER || 'rules', ['rules'], 'BUSINESS_EXPLAINER'),
   };
+  // The real suppliers (Duffel flights, LiteAPI hotels; design §1.3). Non-enumerable like the keys inside it,
+  // so the business block reads, compares and logs exactly as before for everyone who doesn't ask for it.
+  Object.defineProperty(business, 'suppliers', { value: businessSuppliers(env, appEnv), enumerable: false });
 
   return {
     appEnv,

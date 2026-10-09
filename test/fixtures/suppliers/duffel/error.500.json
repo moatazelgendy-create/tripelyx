@@ -1,0 +1,18 @@
+{
+  "_source": "https://duffel.com/docs/api/overview/errors: api_error, HTTP 500.",
+  "_status": 500,
+  "meta": {
+    "status": 500,
+    "request_id": "FZW0H3HdJwKk5HMAAKxD"
+  },
+  "errors": [
+    {
+      "type": "api_error",
+      "code": "internal_server_error",
+      "title": "Internal server error",
+      "message": "Something went wrong",
+      "documentation_url": "https://duffel.com/docs/api/overview/errors",
+      "source": null
+    }
+  ]
+}

@@ -29,14 +29,18 @@ function terms(row) {
 
 /**
  * Price the request's selection again with composer.price(request.selection, request.query, { previous:
- * request.rows }) and compare each component with request.rows: its total, then its terms.
+ * request.rows, check }) and compare each component with request.rows: its total, then its terms.
  * @param {import('./search').TripComposer} composer
  * @param {import('./types').Request} request
+ * @param {{ check?: import('./types').CheckLevel }} [opts] check: how far a real supplier may go to answer
+ *   (real-suppliers design §5.1): 'auto' (default: the supplier's cache, else a fresh check), 'peek' (an
+ *   approver's page view: never a search; 503 live_check_skipped when it would need one), 'confirm' (submit),
+ *   'final' (decide: hotels prebook). Demo providers and the frozen fakes ignore it
  * @returns {Promise<import('./types').RecheckResult>} at = the fresh pricedAt
  */
-async function recheck(composer, request) {
+async function recheck(composer, request, { check = null } = {}) {
   const was = request.rows || {};
-  const fresh = await composer.price(request.selection, request.query, { previous: was });
+  const fresh = await composer.price(request.selection, request.query, check ? { previous: was, check } : { previous: was });
   const components = { out: null, back: null, hotel: null };
   let status = 'same';
   for (const c of COMPONENTS) {

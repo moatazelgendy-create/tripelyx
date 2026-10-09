@@ -1,0 +1,41 @@
+name: Supplier sandbox contract
+on:
+  push:
+    branches: [claude/travel-by-budget-uv85qf]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: supplier-sandbox
+  cancel-in-progress: false
+jobs:
+  sandbox:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check for sandbox keys
+        id: keys
+        # Step-level env: the keys are visible to this step and the contract step only (GH-SEC: secrets can't be used in if:).
+        env:
+          DUFFEL_TEST_TOKEN: ${{ secrets.DUFFEL_TEST_TOKEN }}
+          LITEAPI_SANDBOX_KEY: ${{ secrets.LITEAPI_SANDBOX_KEY }}
+        run: |
+          if [ -n "$DUFFEL_TEST_TOKEN" ] && [ -n "$LITEAPI_SANDBOX_KEY" ]; then echo "ready=true" >> "$GITHUB_OUTPUT";
+          else echo "ready=false" >> "$GITHUB_OUTPUT"; echo "::notice::Supplier sandbox keys are not set; the contract test is skipped."; fi
+      - if: steps.keys.outputs.ready == 'true'
+        uses: actions/checkout@v4
+      - if: steps.keys.outputs.ready == 'true'
+        uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - if: steps.keys.outputs.ready == 'true'
+        run: npm ci --ignore-scripts
+      - if: steps.keys.outputs.ready == 'true'
+        name: Contract test against the supplier sandboxes
+        run: node --test test/business-suppliers-contract.test.js
+        env:
+          SUPPLIER_SANDBOX: '1'
+          DUFFEL_TEST_TOKEN: ${{ secrets.DUFFEL_TEST_TOKEN }}
+          LITEAPI_SANDBOX_KEY: ${{ secrets.LITEAPI_SANDBOX_KEY }}
+      - if: steps.keys.outputs.ready == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with: { name: supplier-sandbox-report, path: supplier-sandbox-report.json, if-no-files-found: ignore, retention-days: 14 }
