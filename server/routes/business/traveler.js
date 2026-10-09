@@ -16,8 +16,13 @@
 //   POST /o/:orgId/trips/:rid/message    request.view.own, approval.* own:'request'  bizWrite → message
 //   GET  /o/:orgId/approvals             approval.decide                             → inbox (?tab, cursor)
 //
-// Every POST runs limiter(s) → sameOrigin → form → memberGate → handler, and answers 303 to the request page
-// with ?ok=<code> (mapped to fixed text by the view) on success. A refusal the traveler or approver can act on
+// Every route starts with noStore (Cache-Control: no-store, X-Robots-Tag: noindex, so even a limiter's 429 is
+// private), then every POST runs limiter(s) → sameOrigin → form → memberGate → handler, and answers 303 to the
+// request page with ?ok=<code> (mapped to fixed text by the view) on success. A decision that sent the trip
+// back to a traveler the decider can no longer see (an assigned approver who is not their manager) answers
+// 303 to the Approvals inbox with ?ok=returned instead. A decider's view of a pending request prices it again
+// (getRequest's live check), so that one GET counts against bizCompute inside its handler, after the gate;
+// every other view is free. A refusal the traveler or approver can act on
 // re-renders the page it came from, with the service's message and what they typed, and its own status:
 // 422 (a reason too short, a card number, a blocked trip, a past departure), 409 (someone acted first, the
 // request expired), 410 (an alternative that is gone), 503 (no supplier). 404 and 403 answer with the app's
@@ -29,6 +34,7 @@ const { gates } = require('../../business/http');
 const roles = require('../../business/roles');
 const { TIER_LABELS } = require('../../business/constants');
 const { periodChoices, currentPeriodKey } = require('../../business/budgets');
+const { LIST_FILTER_FIELDS } = require('../../views/business/trips');
 const { shellView } = require('../../views/business/shell');
 const { homeView } = require('../../views/business/home');
 const { policyMineView } = require('../../views/business/policyMine');
@@ -107,11 +113,14 @@ function router(ctx, deps) {
     return next(e);
   }
 
-  /** Mount one ROUTES entry: limiters → (POST: sameOrigin → form) → memberGate → handler. */
+  /**
+   * Mount one ROUTES entry: noStore → limiters → (POST: sameOrigin → form) → memberGate → handler. noStore is
+   * no gate: it only marks the answer private, so a limiter's 429 is never cached or indexed either.
+   */
   function mount(path, method, handler) {
     const e = ROUTES.find(x => x.path === path && x.method === method);
     if (!e) throw new Error(`[business] ${method} ${path} is not in traveler ROUTES`);
-    const chain = e.limiter.map(name => deps.limits[name]);
+    const chain = [g.noStore, ...e.limiter.map(name => deps.limits[name])];
     if (method === 'POST') chain.push(deps.sameOrigin, deps.form);
     chain.push(g.memberGate(e.perm, { own: e.own }));
     const run = async (req, res, next) => {
@@ -168,7 +177,7 @@ function router(ctx, deps) {
    * The results page for a raw query, or the trip form when the query needs fixing. `pick` re-renders a
    * POST /trips the service refused: its selection stays checked, its purpose filled in, with the error.
    */
-  async function resultsPage(req, res, raw, { status = 200, pick = null, error = null, errors = {} } = {}) {
+  async function resultsPage(req, res, raw, { status = 200, pick = null, error = null, errors = {}, missing = [] } = {}) {
     let view;
     try {
       view = await svc().searchTrip(req.biz.actor, raw);
@@ -179,7 +188,7 @@ function router(ctx, deps) {
     }
     if (view.status === 'none') return formPage(req, res, 503, { values: formValues(raw) });
     const body = resultsView(ctx, {
-      org: req.biz.org, view, all: one(req.query.all) === '1', pick, error, errors, action: tripsBase(req),
+      org: req.biz.org, view, all: one(req.query.all) === '1', pick, error, errors, missing, action: tripsBase(req),
     });
     await page(req, res, status, { title: 'Trip results', body, searchPage: true });
   }
@@ -192,13 +201,21 @@ function router(ctx, deps) {
     const b = req.body || {};
     const raw = rawQuery(b);
     const selection = { out: one(b.out), back: one(b.back), hotelKey: one(b.hotelKey) };
+    const pick = () => ({ out: selection.out, back: selection.back, hotel: selection.hotelKey, purpose: typeof b.purpose === 'string' ? b.purpose.slice(0, 200) : '' });
+    // Every choice the results form still needs, named at once (the service stops at the first). The form
+    // says it offered hotels with hotelChoice=1: then no hotelKey at all (not even "No hotel", which is '')
+    // means no choice was made.
+    const missing = [];
+    if (!selection.out) missing.push('out');
+    if (typeof raw.return === 'string' && raw.return.trim() && !selection.back) missing.push('back');
+    if (one(b.hotelChoice) === '1' && b.hotelKey === undefined) missing.push('hotel');
+    if (missing.length) return resultsPage(req, res, raw, { status: 422, pick: pick(), missing });
     try {
       const request = await svc().createRequest(req.biz.actor, { query: raw, selection, purpose: typeof b.purpose === 'string' ? b.purpose : '' });
       return res.redirect(303, `${tripsBase(req)}/${request.id}`);
     } catch (e) {
       if (!shown(e) && !isStatus(e, 503)) throw e;
-      const pick = { out: selection.out, back: selection.back, hotel: selection.hotelKey, purpose: typeof b.purpose === 'string' ? b.purpose.slice(0, 200) : '' };
-      return resultsPage(req, res, raw, { status: e.status, pick, error: e.message, errors: e.details || {} });
+      return resultsPage(req, res, raw, { status: e.status, pick: pick(), error: e.message, errors: e.details || {} });
     }
   });
 
@@ -214,14 +231,18 @@ function router(ctx, deps) {
     const filters = scope === 'all'
       ? { status: one(req.query.status), departmentId: one(req.query.departmentId), travelerId: one(req.query.travelerId), period: one(req.query.period) }
       : {};
-    let list, filterError = null, filterErrors = {};
+    let list, filterError = null, filterErrors = {}, applied = filters;
     try {
       list = await svc().listRequests(a, { scope, ...filters, cursor: one(req.query.cursor) || null });
     } catch (e) {
       if (!isStatus(e, 422)) throw e;
       filterError = e.message;
       filterErrors = e.details || {};
-      list = await svc().listRequests(a, { scope });
+      // Keep every filter the service accepted, so the list matches the selects that show as chosen; only
+      // the refused ones are dropped (and the cursor, which belongs to the refused scan).
+      applied = {};
+      for (const k of LIST_FILTER_FIELDS) if (filters[k] && !Object.hasOwn(filterErrors, k)) applied[k] = filters[k];
+      list = await svc().listRequests(a, { scope, ...applied });
     }
     let options = null;
     if (scope === 'all') {
@@ -238,7 +259,7 @@ function router(ctx, deps) {
       }
       options = { departments, travelers, periods: periodChoices(currentPeriodKey(req.biz.org, ctx.now())) };
     }
-    const body = tripsView(ctx, { org: req.biz.org, member: req.biz.member, scope, scopes, list, filters, options, query: req.query, filterError, filterErrors });
+    const body = tripsView(ctx, { org: req.biz.org, member: req.biz.member, scope, scopes, list, filters: applied, options, query: req.query, filterError, filterErrors });
     await page(req, res, filterError ? 422 : 200, { title: 'Trips', body });
   });
 
@@ -254,15 +275,47 @@ function router(ctx, deps) {
     const depName = await departmentName(req, view.request.departmentId);
     const body = requestView(ctx, {
       org: req.biz.org, member: req.biz.member, view, departmentName: depName, ok: one(req.query.ok), error, failed, form, refusal,
-      base: `/business/o/${req.biz.org.id}`,
+      base: `/business/o/${req.biz.org.id}`, confirm: one(req.query.confirm),
     });
     const title = view.self && view.status === 'draft' ? 'Review your trip' : 'Trip request';
     await page(req, res, status, { title, body });
   }
 
+  /**
+   * Will getRequest price this request again for this viewer (its live check)? Only for a pending request,
+   * and only for someone who decides it: its assigned approver, or an override holder (who covers the pool,
+   * which is drawn from Owners and Travel Admins). Never for the traveler.
+   */
+  function pricesAgain(req) {
+    const r = req.biz.request;
+    const m = req.biz.member;
+    if (!r || r.travelerId === m.userId) return false;
+    const decides = roles.can(m.role, 'approval.override') || (roles.can(m.role, 'approval.decide') && !!r.approval && r.approval.approverId === m.userId);
+    if (!decides) return false;
+    return svc().policy.effectiveStatus(r, ctx.now().toISOString(), req.biz.org.timezone) === 'pending';
+  }
+
+  /** Run one limiter (an Express middleware) inside a handler: resolves, or rejects with its 429 AppError. */
+  const limit = (name, req, res) => new Promise((resolve, reject) => {
+    Promise.resolve(deps.limits[name](req, res, err => (err ? reject(err) : resolve()))).catch(reject);
+  });
+
   mount('/o/:orgId/trips/:rid', 'GET', async (req, res) => {
+    // A decider's view asks the supplier for fresh prices: it counts as compute, as search and decide do.
+    if (pricesAgain(req)) await limit('bizCompute', req, res);
     await requestPage(req, res);
   });
+
+  /** Can this member still open the request (after a decision sent it back to its traveler as a draft)? */
+  async function canOpen(req) {
+    try {
+      await svc().getRequest(req.biz.actor, req.params.rid);
+      return true;
+    } catch (e) {
+      if (isStatus(e, 404)) return false;
+      throw e;
+    }
+  }
 
   /** Run one request POST: 303 to the request page with ?ok=code, or the page again with the refusal. */
   function act(path, failed, run, okCode) {
@@ -270,13 +323,19 @@ function router(ctx, deps) {
       const b = req.body || {};
       try {
         const result = await run(req.biz.actor, req.params.rid, b);
-        return res.redirect(303, `${tripsBase(req)}/${req.params.rid}?ok=${okCode(result)}`);
+        const code = okCode(result);
+        // 'returned' makes the request a draft again: an assigned approver who is not the traveler's manager
+        // can no longer open it, so their answer is the inbox, which says what happened.
+        if (code === 'returned' && !(await canOpen(req))) return res.redirect(303, `/business/o/${req.biz.org.id}/approvals?ok=returned`);
+        return res.redirect(303, `${tripsBase(req)}/${req.params.rid}?ok=${code}`);
       } catch (e) {
         if (!shown(e) && !isStatus(e, 503)) throw e;
         const form = {
           reason: typeof b.reason === 'string' ? b.reason.slice(0, 2000) : '', category: one(b.category),
           note: typeof b.note === 'string' ? b.note.slice(0, 1000) : '', ack: one(b.ackOverBudget) === '1',
           text: typeof b.text === 'string' ? b.text.slice(0, 1001) : '', action: one(b.action),
+          // The alternative a 410 swap refused: the page leaves it out instead of offering it again.
+          altId: e.code === 'alternative_gone' ? one(b.altId) : '',
         };
         return requestPage(req, res, { status: e.status, error: e.message, failed, form, refusal: e.code });
       }
@@ -297,7 +356,7 @@ function router(ctx, deps) {
   mount('/o/:orgId/approvals', 'GET', async (req, res) => {
     const tab = one(req.query.tab) || 'waiting';
     const inbox = await svc().inbox(req.biz.actor, { tab, cursor: one(req.query.cursor) || null });
-    const body = approvalsView(ctx, { org: req.biz.org, member: req.biz.member, inbox, override: roles.can(req.biz.member.role, 'approval.override') });
+    const body = approvalsView(ctx, { org: req.biz.org, member: req.biz.member, inbox, override: roles.can(req.biz.member.role, 'approval.override'), ok: one(req.query.ok) });
     await page(req, res, 200, { title: 'Approvals', body });
   });
 

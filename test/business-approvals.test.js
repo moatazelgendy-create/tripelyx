@@ -262,8 +262,7 @@ test('deny needs a reason: 422 with what was typed and nothing written, then "De
   assert.equal(res.status, 422);
   assert.equal(storeSnapshot(w.app), snap, 'nothing written');
   let main = checkPage('deny without a reason', res);
-  assert.match(textOf(main), /Check the highlighted field below\./);
-  assert.match(textOf(main), /Tell the traveler why, in at least 10 characters\./);
+  assert.match(main, /<div class="alert alert-error bz-alert" role="alert">[\s\S]*?<a href="#d-note">Tell the traveler why, in at least 10 characters\.<\/a>/, 'the box links to the field');
   assert.match(main, /<textarea id="d-note"[^>]*aria-invalid="true"[^>]*>No\.<\/textarea>/);
 
   const note = 'Please fly Economy for a meeting this short.';
@@ -272,7 +271,7 @@ test('deny needs a reason: 422 with what was typed and nothing written, then "De
   assert.equal(res.location, `${B}/trips/${rid}?ok=denied`);
   res = await c.dana.get(res.location);
   main = checkPage('denied (approver)', res);
-  assert.match(textOf(main), /Denied\. Sam can see your note on this page\./);
+  assert.match(textOf(main), /Decision saved\. Sam sees your note on this trip\./);
   assert.doesNotMatch(main, /action="[^"]*\/decide"/, 'no second decision');
 
   page = await c.sam.get(`${B}/trips/${rid}`);
@@ -361,7 +360,7 @@ test('over budget: the approver sees by how much, a box to approve anyway, 422 w
   let main = checkPage('over budget page', res);
   assert.match(textOf(main), /Engineering has \$1,000 left for Q4 2026\. This trip needs \$[\d,.]+ ?, so approving it goes \$[\d,.]+ ?over\./);
   assert.match(main, /<input id="d-ack" type="checkbox" name="ackOverBudget" value="1"/);
-  assert.match(textOf(main), /Approve even though Engineering goes \$[\d,.]+ ?over its Q4 2026 budget \(demo prices\)\./);
+  assert.match(textOf(main), /Approve even though Engineering goes \$[\d,.]+ ?over its Q4 2026 budget\./);
   const rev = revOf(main, 'decide');
 
   const snap = storeSnapshot(w.app);
@@ -443,7 +442,8 @@ test('a price that changed while it waited: the approver sees now and was, and a
   assert.equal(res.location, `${B}/trips/${rid}?ok=returned`);
   res = await c.dana.get(res.location);
   main = checkPage('returned (approver)', res);
-  assert.match(textOf(main), /The price changed, so this went back to Sam to confirm\./);
+  assert.match(textOf(main), /The price changed while this was waiting, so it went back to Sam\. Nothing was approved\./);
+  assert.doesNotMatch(main, /alert-success/, 'the banner says it once');
 
   const after = await stored(w, rid);
   assert.deepEqual([after.status, after.totalCents - before.totalCents], ['draft', 4000]);
@@ -475,4 +475,170 @@ test('nobody decides their own trip: an admin\'s own request goes to the owner, 
   assert.equal(storeSnapshot(w.app), snap);
   res = await c.owner.get(`${B}/approvals`);
   assert.match(mainOf(res.text), new RegExp(`href="${B}/trips/${rid}"`));
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// Review fixes (Stage 2B review 2)
+
+/** Ann (Engineering, managed by Dana) whose assigned approver is Max, a Manager in Operations. */
+async function withMax(w) {
+  const ops = await seedDepartment(w.app, w.org, { name: 'Operations' });
+  const max = await seedMember(w.app, w.org, 'manager', { name: 'Max Moss', departmentId: ops.id });
+  const ann = await seedMember(w.app, w.org, 'employee', { name: 'Ann Approve', departmentId: w.eng.id, managerId: w.dana.user.id, approverId: max.user.id });
+  w.c.max = client(w.app.base, max.cookie);
+  w.c.ann = client(w.app.base, ann.cookie);
+  return { max, ann };
+}
+
+/** Raise every hotel quote's first line by `cents` until the test ends. */
+function bumpHotels(t, w, cents = 4000) {
+  const hotels = w.svc.inventory.hotels;
+  const real = hotels.quote;
+  t.after(() => { hotels.quote = real; });
+  hotels.quote = async function quote(args) {
+    const q = await real.call(this, args);
+    return { ...q, lines: q.lines.map((l, i) => (i === 0 ? { ...l, amount: l.amount + cents } : l)) };
+  };
+  return () => { hotels.quote = real; };
+}
+
+test('an assigned approver who is not the manager: approving a re-priced request lands on Approvals with what happened, not on a 404', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const { B, c, svc } = w;
+  const { ann } = await withMax(w);
+  const sv = await svc.searchTrip(w.as(ann), BQ);
+  const rid = await createDraft(w, { ...BQ, out: keyWhere(sv, 'out', zm), back: keyWhere(sv, 'back', zm), hotelKey: keyWhere(sv, 'hotel', r => r.row.available && r.row.stars === 5), purpose: 'Board meeting in London' }, c.ann);
+  let page = await c.ann.get(`${B}/trips/${rid}`);
+  assert.match(textOf(mainOf(page.text)), /Goes to Max Moss \(your approver\)\./);
+  let res = await c.ann.post(`${B}/trips/${rid}/submit`, { rev: revOf(page.text, 'submit'), reason: REASON });
+  assert.equal(res.location, `${B}/trips/${rid}?ok=submitted`);
+  bumpHotels(t, w);
+  page = await c.max.get(`${B}/trips/${rid}`);
+  assert.equal(page.status, 200);
+  res = await c.max.post(`${B}/trips/${rid}/decide`, { action: 'approve', note: '', rev: revOf(page.text, 'decide') });
+  assert.equal(res.status, 303);
+  assert.equal(res.location, `${B}/approvals?ok=returned`, 'Max can no longer open the draft, so the answer is his inbox');
+  res = await c.max.get(res.location);
+  assert.equal(res.status, 200);
+  const main = checkPage('/approvals after a return', res, { priced: false });
+  assert.match(textOf(main), /The trip changed while it waited, so it went back to the traveler to confirm\. Nothing was approved\./);
+  assert.equal((await svc.getRequest(w.as(ann), rid)).request.status, 'draft');
+  // Dana still opens it (she manages Ann), so her answer stays the request page.
+});
+
+test('sold out while waiting: the approver is not promised another option, and the traveler gets a way forward, not a policy block', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const { B, c, svc } = w;
+  const rid = await pendingTrip(w);
+  const hotels = svc.inventory.hotels;
+  const real = hotels.quote;
+  t.after(() => { hotels.quote = real; });
+  const { AppError } = require('../server/lib/errors');
+  hotels.quote = async () => { throw new AppError('option_sold_out', 'Sold out', 409); };
+  let page = await c.dana.get(`${B}/trips/${rid}`);
+  let main = checkPage('sold out (approver)', page);
+  assert.doesNotMatch(textOf(main), /pick another option/i, 'nothing promises an option that may not exist');
+  assert.match(textOf(main), /an option is no longer in the demo data\. Approving sends it back to Sam, and nothing is approved\./);
+  assert.match(main, /name="action" value="approve"[^>]*>[\s\S]*?Send back to Sam/, 'the button says what it does');
+  const res = await c.dana.post(`${B}/trips/${rid}/decide`, { action: 'approve', note: '', rev: revOf(main, 'decide') });
+  assert.equal(res.location, `${B}/trips/${rid}?ok=returned`);
+  hotels.quote = real;
+  page = await c.sam.get(`${B}/trips/${rid}`);
+  main = checkPage('sold out (traveler)', page);
+  const body = textOf(main);
+  assert.doesNotMatch(body, /can't be requested under Acme Inc's policy/, 'a sold-out option is not the company policy');
+  assert.doesNotMatch(body, /Blocked by policy/);
+  assert.match(body, /An option in this trip is no longer in the demo data/);
+  const alts = (main.match(/name="altId"/g) || []).length;
+  if (!alts) assert.doesNotMatch(body, /Pick another option below/);
+  assert.match(main, new RegExp(`href="${B}/trips/search\\?[^"]*"`), 'a way to plan the trip again');
+  assert.match(body, /Plan this trip again/);
+});
+
+test('the approver\'s panel: the deny rule keeps its own hint beside the counter, the bar holds Approve and Deny, reasons name the traveler, and a Business search says why there is nothing to compare', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const { B, c } = w;
+  const rid = await pendingTrip(w);
+  const res = await c.dana.get(`${B}/trips/${rid}`);
+  const main = checkPage('approver panel', res);
+  // The counter (/js/business.js rewrites #d-note-count) and the rule are two elements.
+  const ta = main.match(/<textarea id="d-note"[^>]*>/)[0];
+  assert.match(ta, /data-count="d-note-count"/);
+  assert.match(ta, /aria-describedby="d-note-hint d-note-count"/);
+  assert.match(main, /<p class="field-hint" id="d-note-hint">Needed to deny: tell Sam why, in at least 10 characters\. Sam sees this note\.<\/p>/);
+  assert.match(main, /<p class="field-hint bz-charcount" id="d-note-count"[^>]*>Up to 500 characters\.<\/p>/);
+  // Approve and Deny in the bar; "Ask a question" is a link outside it.
+  const bar = main.match(/<div class="bz-actionbar">([\s\S]*?)<\/div>/)[1];
+  assert.match(bar, /value="approve"/);
+  assert.match(bar, /value="deny"/);
+  assert.doesNotMatch(bar, /Ask a question/);
+  assert.match(main, /<a class="bz-ask" href="#message">/);
+  // The reasons are Sam's limits, not the viewer's.
+  assert.match(textOf(main), /Business class is above Sam's limit \(Economy\)/);
+  assert.doesNotMatch(textOf(main), /\byour limit\b|Your policy allows/);
+  // Sam searched Business class: there was no fare in the allowed cabin to compare with.
+  assert.match(textOf(main), /Sam searched Business class, so there is no Economy fare to compare\./);
+});
+
+test('over budget: the box\'s label is one sentence, with the demo note under it in the same demo container', async t => {
+  const w = await world({ budgetCents: 100000 });
+  t.after(w.app.close);
+  const { B, c } = w;
+  const rid = await pendingTrip(w);
+  const res = await c.dana.get(`${B}/trips/${rid}`);
+  const main = checkPage('over budget label', res);
+  const label = main.match(/<label class="bz-choice" for="d-ack">([\s\S]*?)<\/label>/)[1];
+  assert.match(textOf(label), /^Approve even though Engineering goes \$[\d,.]+ ?over its Q4 2026 budget\.$/);
+  assert.doesNotMatch(label, /Priced at|demo/i);
+  const box = main.match(/<div class="bz-demo-box bz-ack-box"[^>]*data-price-source="demo"[^>]*>([\s\S]*?)<\/div>\s*<\/div>/);
+  assert.ok(box, 'the box and its note share a demo container');
+  assert.match(textOf(box[1]), /Demo price · Priced at/);
+});
+
+test('the inbox: the Expires column says "in 24 h", and after an approval the notice does not repeat the banner', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const { B, c } = w;
+  const rid = await pendingTrip(w);
+  let res = await c.dana.get(`${B}/approvals`);
+  let main = checkPage('/approvals', res);
+  assert.match(main, /<span class="bz-cell-label">Expires<\/span><span class="bz-cell-value"><span class="bz-nowrap">in 24 h<\/span>/);
+  assert.doesNotMatch(main, /<span class="bz-cell-value"><span class="bz-nowrap">Expires/, 'the value does not repeat its label');
+  const page = await c.dana.get(`${B}/trips/${rid}`);
+  res = await c.dana.post(`${B}/trips/${rid}/decide`, { action: 'approve', note: '', rev: revOf(page.text, 'decide') });
+  res = await c.dana.get(res.location);
+  main = checkPage('approved notice', res);
+  const notice = main.match(/<div class="alert alert-success bz-alert" role="status">([\s\S]*?)<\/div>/);
+  assert.ok(notice, 'a notice for the approval');
+  assert.match(textOf(notice[1]), /^Approval saved\. Sam sees it on this trip\.$/);
+});
+
+test('an expired request refused on decide: the time is said once, in the error', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const { B, c } = w;
+  const rid = await pendingTrip(w);
+  const page = await c.dana.get(`${B}/trips/${rid}`);
+  w.clock.set('2026-10-10T09:30:00.000Z');
+  const res = await c.dana.post(`${B}/trips/${rid}/decide`, { action: 'approve', note: '', rev: revOf(page.text, 'decide') });
+  assert.equal(res.status, 409);
+  const main = checkPage('expired 409', res);
+  assert.equal(textOf(main).split('12:00 PM, Sat 10 Oct (Cairo time)').length - 1, 1, 'said once');
+  assert.match(textOf(main), /This request expired at 12:00 PM, Sat 10 Oct \(Cairo time\)\. Ask Sam to plan it again\./);
+});
+
+test('a decider\'s view of a pending request counts against the compute limit (it prices again); the traveler\'s views do not', async t => {
+  const w = await world({ env: { BUSINESS_COMPUTE_LIMIT: '8' } });
+  t.after(w.app.close);
+  const { B, c } = w;
+  const rid = await pendingTrip(w);
+  for (let i = 0; i < 12; i += 1) assert.equal((await c.sam.get(`${B}/trips/${rid}`)).status, 200, 'the traveler\'s page prices nothing');
+  let last;
+  for (let i = 0; i < 9; i += 1) last = await c.dana.get(`${B}/trips/${rid}`);
+  assert.equal(last.status, 429);
+  assert.equal(last.headers.get('cache-control'), 'no-store');
+  assert.match(String(last.headers.get('x-robots-tag')), /noindex/);
 });

@@ -106,7 +106,11 @@ const mainOf = page => (page.match(/<main\b[\s\S]*<\/main>/) || [''])[0];
 const textMain = page => textOf(mainOf(page));
 
 /** The checks every workspace page passes: CSP, no em dash, no pressure words, headings, labels, the demo rule. */
-function checkPage(path, res, { priced = true } = {}) {
+/**
+ * The checks every page passes. `demo: false` is a production page (no supplier): it holds the company's own
+ * figures (limits, budgets), which are never demo prices, so no amount may sit in a demo container.
+ */
+function checkPage(path, res, { priced = true, demo = true } = {}) {
   noInline(path, res.text);
   const main = mainOf(res.text);
   assert.ok(main, `${path}: has <main>`);
@@ -117,7 +121,8 @@ function checkPage(path, res, { priced = true } = {}) {
   assert.doesNotMatch(res.text, /supplierQuoteRef|netCents|commission|markup|BusinessDemo/i, `${path}: nothing internal`);
   assertHeadingOrder(main, path);
   assertLabelled(main, path);
-  assertDemoMoney(main, { priced, label: path });
+  if (demo) assertDemoMoney(main, { priced, label: path });
+  else assert.doesNotMatch(main, /data-price-source="demo"|Demo price/, `${path}: nothing labelled a demo price`);
   return main;
 }
 
@@ -251,7 +256,7 @@ test('the journey on demo inventory: inside policy is approved by policy; Busine
   assert.equal(res.location, `${B}/trips/${rid1}?ok=auto_approved`);
   res = await c.sam.get(res.location);
   main = checkPage('approved by policy', res);
-  assert.match(textOf(main), /Confirmed\. Your trip is approved to book under your policy\./);
+  assert.match(textOf(main), /Trip confirmed\. Nothing else is needed from you\./);
   assert.match(textOf(main), /Approved to book\. Booking opens once Tripelyx connects airlines and hotels\. Nothing has been booked or charged\./);
   assert.match(textOf(main), /Approved by policy\./);
   const first = (await w.svc.getRequest(w.as(w.sam), rid1)).request;
@@ -352,7 +357,7 @@ test('the journey on demo inventory: inside policy is approved by policy; Busine
   assert.equal(res.location, `${B}/trips/${rid2}?ok=approved`);
   res = await c.dana.get(res.location);
   main = checkPage('approved (approver)', res);
-  assert.match(textOf(main), /Approved\. The trip is approved to book\./);
+  assert.match(textOf(main), /Approval saved\. Sam sees it on this trip\./);
   assert.match(textOf(main), /Approved by Dana Lee\./);
   res = await c.sam.get(`${B}/trips/${rid2}`);
   main = checkPage('approved (traveler)', res);
@@ -466,13 +471,13 @@ test('production config: the trip form says "Supplier not connected yet", search
   checkPage('POST /trips (production)', res, { priced: false });
 
   res = await c.get(`${B}/policy`, h);
-  main = checkPage('/policy (production)', res, { priced: false });
+  main = checkPage('/policy (production)', res, { demo: false });
   assert.match(textOf(main), /Limits are in US dollars\./);
   assert.doesNotMatch(textOf(main), /fares and rates they are checked against/, 'no demo fares to check against');
 
   res = await c.get(B, h);
   assert.equal(res.status, 200);
-  main = checkPage('home (production)', res, { priced: false });
+  main = checkPage('home (production)', res, { demo: false });
   assert.match(textOf(main), /Supplier not connected yet\./);
   assert.doesNotMatch(main, /href="[^"]*\/trips\/new"/, 'no link to a search that cannot run');
   res = await c.get(`${B}/trips`, h);
@@ -503,7 +508,7 @@ test('submit outcomes: a past departure is 422 too_late; a terms-only change say
   let main = checkPage('repriced (terms)', res);
   let body = textOf(main);
   assert.match(body, /This trip changed before it was sent\. Review it and send it again\./);
-  assert.match(body, /The fare or room terms changed before this was sent\. The price is the same\./);
+  assert.match(body, /The fare or room terms changed\. The price is the same\./);
   assert.doesNotMatch(body, /price changed|Was \$/i, 'no price change claimed when the totals are the same');
   // Sending it again now goes through (the terms are the new ones).
   res = await c.sam.post(`${B}/trips/${rid1}/submit`, { rev: revOf(main, 'submit') });
@@ -526,7 +531,8 @@ test('submit outcomes: a past departure is 422 too_late; a terms-only change say
   const now = (await svc.getRequest(w.as(w.sam), rid2)).request.totalCents;
   assert.equal(was - now, 4000);
   assert.match(body, /This trip changed before it was sent\. Review it and send it again\./);
-  assert.match(body, /The price changed before this was sent\./);
+  assert.match(body, /The price changed\./);
+  assert.equal(body.split('This trip changed before it was sent.').length - 1, 1, 'the lead copy once (the banner), no green notice repeating it');
   assert.match(body, /Was \$[\d,.]+ ?, now \$[\d,.]+ ?\./);
 
   // A departure date that has passed: 422 too_late, nothing written.
@@ -537,7 +543,9 @@ test('submit outcomes: a past departure is 422 too_late; a terms-only change say
   res = await c.sam.post(`${B}/trips/${rid3}/submit`, { rev: revOf(page.text, 'submit') });
   assert.equal(res.status, 422);
   main = checkPage('too late', res);
-  assert.match(textOf(main), /This trip's departure date has passed\. Plan it again with new dates\./);
+  // The refusal is said once, by the banner that also links to plan it again (role="alert" on the 422).
+  assert.match(main, /<div class="alert alert-warning bz-alert bz-late" role="alert">/);
+  assert.match(textOf(main), /This trip was planned to leave on Thu 12 Nov, which has passed, so it can't be sent\. Plan it again with new dates\./);
   assert.equal(storeSnapshot(w.app), snap);
 });
 
@@ -726,8 +734,8 @@ test('isolation and the gates: another company\'s requests are 404, signed out i
   assert.equal(res.location, `${B}/trips/${rid}?ok=cancelled`);
   res = await c.sam.get(res.location);
   const main = checkPage('cancelled', res);
-  assert.match(textOf(main), /Cancelled\. Nothing was booked or charged\./);
-  assert.match(textOf(main), /You cancelled this trip at /);
+  assert.match(textOf(main), /Trip cancelled\./);
+  assert.match(textOf(main), /You cancelled this trip at [^.]+\. Nothing was booked or charged\./);
   assert.doesNotMatch(main, /action="[^"]*\/(?:submit|cancel)"/, 'nothing left to do');
 
   // The compute limit: five searches a minute here, then 429 with the page chrome.
@@ -735,4 +743,316 @@ test('isolation and the gates: another company\'s requests are 404, signed out i
   for (let i = 0; i < 6; i += 1) last = await c.dana.get(`${B}/trips/search?${qs(Q)}`);
   assert.equal(last.status, 429);
   assert.match(last.text, /Too many requests in a short time/);
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// Review fixes (Stage 2B review 2)
+
+const { AppError } = require('../server/lib/errors');
+
+/** Every hotel quote throws option_sold_out until `restore()` (or the test's end). */
+function sellOutHotels(t, w) {
+  const hotels = w.svc.inventory.hotels;
+  const real = hotels.quote;
+  t.after(() => { hotels.quote = real; });
+  hotels.quote = async () => { throw new AppError('option_sold_out', 'Sold out', 409); };
+  return () => { hotels.quote = real; };
+}
+
+test('a hotel sold out before the trip was sent: the page says so (not the policy), offers no option that is not there, and links to plan it again', async t => {
+  for (const kind of ['within', 'out']) {
+    const w = await world();
+    t.after(w.app.close);
+    const { B, c } = w;
+    const rid = await createDraft(w, kind === 'within' ? await withinForm(w) : await businessForm(w));
+    const page = await c.sam.get(`${B}/trips/${rid}`);
+    const restore = sellOutHotels(t, w);
+    const res = await c.sam.post(`${B}/trips/${rid}/submit`, { rev: revOf(page.text, 'submit'), reason: REASON });
+    assert.equal(res.location, `${B}/trips/${rid}?ok=repriced`, kind);
+    restore();
+    const back = await c.sam.get(res.location);
+    const main = checkPage(`sold out (${kind})`, back);
+    const body = textOf(main);
+    assert.doesNotMatch(body, /can't be requested under Acme Inc's policy/, `${kind}: not blamed on the policy`);
+    assert.doesNotMatch(body, /Blocked by policy/, kind);
+    assert.match(body, /An option in this trip is no longer in the demo data, so the trip can't be sent as it is\./, kind);
+    if (!(main.match(/name="altId"/g) || []).length) assert.doesNotMatch(body, /Pick another option below/, kind);
+    assert.match(main, new RegExp(`href="${B}/trips/search\\?[^"]+"[^>]*>[\\s\\S]*?Plan this trip again`), kind);
+    assert.doesNotMatch(main, /name="reason"/, `${kind}: nothing to request`);
+  }
+});
+
+test('a swap refused with 410: the gone option is not offered again and the page does not claim a fresh list', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const { B, c } = w;
+  const rid = await createDraft(w, await businessForm(w));
+  const page = await c.sam.get(`${B}/trips/${rid}`);
+  const alts = [...page.text.matchAll(/name="altId" value="([^"]+)"/g)].map(m => m[1]);
+  assert.ok(alts.length > 1);
+  sellOutHotels(t, w);
+  const snap = storeSnapshot(w.app);
+  // The first alternative that changes the hotel is the one that is gone.
+  const draft = (await w.svc.getRequest(w.as(w.sam), rid)).request;
+  const gone = draft.alternatives.find(a => a.kind === 'hotel' || a.kind === 'room' || a.change.component === 'hotel') || draft.alternatives[0];
+  const res = await c.sam.post(`${B}/trips/${rid}/swap`, { altId: gone.id, rev: String(draft.rev) });
+  assert.equal(res.status, 410);
+  assert.equal(storeSnapshot(w.app), snap);
+  const main = checkPage('410 swap', res);
+  assert.doesNotMatch(textOf(main), /Here are the current ones/);
+  assert.match(textOf(main), /That option isn't available anymore\. Pick another one, or request approval for the trip as it is\./);
+  assert.doesNotMatch(main, new RegExp(`name="altId" value="${gone.id}"`), 'the gone option is not offered again');
+});
+
+test('a traveler\'s second click is not "someone else"; the saved line counts only what switching saved', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const { B, c } = w;
+  // A double click on Confirm trip.
+  const rid1 = await createDraft(w, await withinForm(w));
+  const page = await c.sam.get(`${B}/trips/${rid1}`);
+  const rev = revOf(page.text, 'submit');
+  assert.equal((await c.sam.post(`${B}/trips/${rid1}/submit`, { rev })).location, `${B}/trips/${rid1}?ok=auto_approved`);
+  const again = await c.sam.post(`${B}/trips/${rid1}/submit`, { rev });
+  assert.equal(again.status, 409);
+  const main = checkPage('second click', again);
+  assert.doesNotMatch(textOf(main), /Someone else/);
+  assert.match(textOf(main), /This trip changed since you opened this page, maybe in another tab or with a second click\. Here is where it stands now\./);
+
+  // A swap saves; then every hotel price drops by $200 before it is sent: "Saved" stays the swap's saving.
+  const rid2 = await createDraft(w, await businessForm(w, 'Partner meeting in London'));
+  const d = (await w.svc.getRequest(w.as(w.sam), rid2)).request;
+  const alt = d.alternatives.filter(a => a.kind === 'hotel').sort((x, y) => y.savesCents - x.savesCents)[0];
+  let res = await c.sam.post(`${B}/trips/${rid2}/swap`, { altId: alt.id, rev: String(d.rev) });
+  assert.equal(res.location, `${B}/trips/${rid2}?ok=swapped`);
+  const swapped = (await w.svc.getRequest(w.as(w.sam), rid2)).request;
+  const savedBySwap = swapped.history.filter(h => h.action === 'swapped').reduce((n, h) => n + h.savedCents, 0);
+  const hotels = w.svc.inventory.hotels;
+  const real = hotels.quote;
+  t.after(() => { hotels.quote = real; });
+  hotels.quote = async function quote(args) {
+    const q = await real.call(this, args);
+    return { ...q, lines: q.lines.map((l, i) => (i === 0 ? { ...l, amount: l.amount - 20000 } : l)) };
+  };
+  const p2 = await c.sam.get(`${B}/trips/${rid2}`);
+  res = await c.sam.post(`${B}/trips/${rid2}/submit`, { rev: revOf(p2.text, 'submit'), reason: REASON });
+  assert.equal(res.location, `${B}/trips/${rid2}?ok=repriced`);
+  hotels.quote = real;
+  const after = (await w.svc.getRequest(w.as(w.sam), rid2)).request;
+  assert.ok(after.originalTotalCents - after.totalCents > savedBySwap, 'the supplier move is on top of the saving');
+  res = await c.sam.get(`${B}/trips/${rid2}`);
+  const body = textOf(checkPage('saved after a price drop', res));
+  const m = body.match(/Saved \$([\d,]+(?:\.\d\d)?) by switching to cheaper options\./);
+  assert.ok(m, body.slice(0, 300));
+  assert.equal(Math.round(Number(m[1].replace(/,/g, '')) * 100), savedBySwap);
+});
+
+test('messages name who reads them: none on a draft or a trip approved by policy, and "Write to Dana Lee" once it waits for her', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const { B, c } = w;
+  const rid1 = await createDraft(w, await withinForm(w));
+  let res = await c.sam.get(`${B}/trips/${rid1}`);
+  let main = checkPage('draft (within) messages', res);
+  assert.doesNotMatch(main, /id="m-text"/);
+  assert.doesNotMatch(textOf(main), /your approver/i);
+  res = await c.sam.post(`${B}/trips/${rid1}/submit`, { rev: revOf(main, 'submit') });
+  res = await c.sam.get(`${B}/trips/${rid1}`);
+  main = checkPage('approved by policy messages', res);
+  assert.doesNotMatch(main, /id="m-text"/, 'nobody to write to on a trip approved by policy');
+  assert.doesNotMatch(textOf(main), /Write to your approver|They'll see it/);
+
+  const rid2 = await createDraft(w, await businessForm(w));
+  res = await c.sam.get(`${B}/trips/${rid2}`);
+  main = checkPage('draft (out) messages', res);
+  assert.doesNotMatch(main, /id="m-text"/);
+  assert.match(textOf(main), /Messages open once you send this for approval\./);
+  res = await c.sam.post(`${B}/trips/${rid2}/submit`, { rev: revOf(main, 'submit'), reason: REASON });
+  res = await c.sam.get(`${B}/trips/${rid2}`);
+  main = checkPage('pending messages', res);
+  assert.match(main, /<label for="m-text">Write to Dana Lee<\/label>/);
+  assert.match(textOf(main), /We don't send emails yet\. Dana Lee sees it on this trip under Approvals\./);
+  res = await c.sam.post(`${B}/trips/${rid2}/message`, { text: 'The client moved the meeting to Thursday.' });
+  res = await c.sam.get(res.location);
+  assert.match(textOf(mainOf(res.text)), /Message sent to Dana Lee\./);
+  // The traveler sees what they wrote when they asked.
+  assert.match(textOf(mainOf(res.text)), new RegExp(`Your reason “${REASON.replace(/[.,]/g, '\\$&')}”`));
+});
+
+test('a trip whose departure date has passed: the draft says so and links to plan it again, with no form that would only fail', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const { B, c } = w;
+  const rid = await createDraft(w, await businessForm(w));
+  w.clock.set('2026-11-13T09:00:00.000Z');
+  const res = await c.sam.get(`${B}/trips/${rid}`);
+  const main = checkPage('late draft', res);
+  const body = textOf(main);
+  assert.match(body, /This trip was planned to leave on Thu 12 Nov, which has passed, so it can't be sent\. Plan it again with new dates\./);
+  assert.doesNotMatch(main, /name="reason"|name="altId"|action="[^"]*\/submit"/);
+  assert.match(main, new RegExp(`href="${B}/trips/new\\?[^"]+"[^>]*>[\\s\\S]*?Plan it again with new dates`));
+});
+
+test('a trip that came back: the reason is kept in the form, the history speaks to the traveler, and the notices do not repeat the banner', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const { B, c, svc } = w;
+  const rid = await createDraft(w, await businessForm(w));
+  let page = await c.sam.get(`${B}/trips/${rid}`);
+  await c.sam.post(`${B}/trips/${rid}/submit`, { rev: revOf(page.text, 'submit'), reason: REASON, category: 'client_meeting' });
+  const hotels = svc.inventory.hotels;
+  const real = hotels.quote;
+  t.after(() => { hotels.quote = real; });
+  hotels.quote = async function quote(args) {
+    const q = await real.call(this, args);
+    return { ...q, lines: q.lines.map((l, i) => (i === 0 ? { ...l, amount: l.amount + 4000 } : l)) };
+  };
+  page = await c.dana.get(`${B}/trips/${rid}`);
+  assert.match(page.text, /value="approve"[^>]*>[\s\S]*?Send back to Sam<\/span>/);
+  const res = await c.dana.post(`${B}/trips/${rid}/decide`, { action: 'approve', note: '', rev: revOf(page.text, 'decide') });
+  assert.equal(res.location, `${B}/trips/${rid}?ok=returned`);
+  const dana = checkPage('returned (Dana)', await c.dana.get(res.location));
+  assert.doesNotMatch(dana, /alert-success/, 'the banner says it; no green notice');
+  hotels.quote = real;
+  page = await c.sam.get(`${B}/trips/${rid}`);
+  const main = checkPage('returned (Sam)', page);
+  assert.match(main, new RegExp(`<textarea id="s-reason"[^>]*>${REASON}</textarea>`), 'the reason is kept');
+  assert.match(main, /<option value="client_meeting" selected>/);
+  assert.match(textOf(main), /It went back to you to confirm: the trip changed while it was waiting\./);
+  assert.doesNotMatch(textOf(main), /went back to Sam/);
+
+  // A repriced draft: the lead copy once, as a warning, never with the success style.
+  const rid2 = await createDraft(w, await withinForm(w));
+  page = await c.sam.get(`${B}/trips/${rid2}`);
+  hotels.quote = async function quote(args) {
+    const q = await real.call(this, args);
+    return { ...q, lines: q.lines.map((l, i) => (i === 0 ? { ...l, amount: l.amount + 4000 } : l)) };
+  };
+  const r2 = await c.sam.post(`${B}/trips/${rid2}/submit`, { rev: revOf(page.text, 'submit') });
+  hotels.quote = real;
+  const m2 = checkPage('repriced notice', await c.sam.get(r2.location));
+  assert.equal(textOf(m2).split('This trip changed before it was sent. Review it and send it again.').length - 1, 1);
+  assert.doesNotMatch(m2, /alert-success/);
+});
+
+test('a company with no one to approve: the alternatives do not suggest requesting approval', async t => {
+  const clock = mutableClock(FIXED_NOW);
+  const app = await startApp({ ENABLE_BUSINESS: 'true' }, { now: clock.now, store: new MemoryStore() });
+  t.after(app.close);
+  const owner = await seedUser(app, { name: 'Solo Owner' });
+  const org = await seedOrg(app, owner, { name: 'Solo Studio' });
+  const c = client(app.base, owner.cookie);
+  const sv = await app.business.searchTrip({ org: { id: org.id }, user: owner.user }, BQ);
+  const res = await c.post(`/business/o/${org.id}/trips`, { ...BQ, out: keyWhere(sv, 'out', zm), back: keyWhere(sv, 'back', zm), hotelKey: keyWhere(sv, 'hotel', r => r.row.available && r.row.stars === 5), purpose: 'Board meeting in London' });
+  const page = await c.get(res.location);
+  const main = checkPage('solo draft', page);
+  assert.match(textOf(main), /No one else at Solo Studio can approve this yet/);
+  assert.doesNotMatch(textOf(main), /request approval with a reason/i);
+});
+
+test('the draft: alternatives have distinct titles, a refused reason links to its field, and Request Approval keeps the alternatives first', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const { B, c } = w;
+  const rid = await createDraft(w, await businessForm(w));
+  const page = await c.sam.get(`${B}/trips/${rid}`);
+  const main = checkPage('draft titles', page);
+  const titles = [...main.matchAll(/<h3 class="bz-alt-title">([\s\S]*?)<\/h3>/g)].map(m => textOf(m[1]));
+  assert.ok(titles.length > 1);
+  assert.equal(new Set(titles).size, titles.length, `distinct: ${titles.join(' | ')}`);
+  const res = await c.sam.post(`${B}/trips/${rid}/submit`, { rev: revOf(main, 'submit'), reason: 'Too short' });
+  assert.equal(res.status, 422);
+  const m = checkPage('reason 422', res);
+  const box = m.match(/<div class="alert alert-error bz-alert" role="alert">([\s\S]*?)<\/div>/)[1];
+  assert.match(box, /<a href="#s-reason">Tell your approver why this trip needs an exception, in 10 to 500 characters\.<\/a>/);
+});
+
+test('home, policy and the trip form: one way to plan a trip, the demo note beside the limits, plain words on expiry; production pages say nothing of demo prices and drop the dead Search button', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const { B, c } = w;
+  let res = await c.sam.get(B);
+  let main = checkPage('home (employee)', res, { priced: false });
+  assert.equal((main.match(/href="[^"]*\/trips\/new"/g) || []).length, 1, 'one button to plan a trip');
+  assert.match(textOf(main), /Limits are in US dollars\. In this preview, the fares and rates they are checked against are demo prices\./);
+  res = await c.sam.get(`${B}/policy`);
+  main = checkPage('/policy', res, { priced: false });
+  assert.match(textOf(main), /Your approver has 24 hours to decide\. If they don't, the request expires and nothing is approved\./);
+
+  const clock = mutableClock(FIXED_NOW);
+  const app = await startApp({ APP_ENV: 'production', DATABASE_URL: 'postgres://x/prod', ENABLE_BUSINESS: 'true', ENABLE_TRIPS: 'false' }, { store: new MemoryStore(), now: clock.now });
+  t.after(app.close);
+  const owner = await seedUser(app, { name: 'Olivia Owner' });
+  const org = await seedOrg(app, owner);
+  const eng = await seedDepartment(app, org, { name: 'Engineering' });
+  await seedBudget(app, org, eng.id, { periodKey: '2026-Q4', amountCents: 2000000 });
+  const fay = await seedMember(app, org, 'finance', { name: 'Fay Finance' });
+  const h = { headers: { 'x-forwarded-proto': 'https' } };
+  const P = `/business/o/${org.id}`;
+  for (const [who, path] of [[owner, `${P}/policy`], [owner, P], [fay, P]]) {
+    res = await client(app.base, who.cookie).get(path, h);
+    assert.equal(res.status, 200, path);
+    noInline(path, res.text);
+    main = mainOf(res.text);
+    assert.doesNotMatch(textOf(main), /Demo price/, `${path}: the company's own limits and budgets are not demo prices`);
+    assert.doesNotMatch(main, /data-price-source="demo"/, path);
+  }
+  assert.match(textOf(mainOf(res.text)), /\$20,000/, 'the budget still shows');
+  res = await client(app.base, owner.cookie).get(`${P}/trips/new`, h);
+  main = mainOf(res.text);
+  assert.doesNotMatch(main, /<button[^>]*type="submit"/, 'no Search button that cannot run');
+  assert.doesNotMatch(main, /bz-actionbar/);
+  const fieldset = main.match(/<fieldset[\s\S]*?<\/fieldset>/)[0];
+  assert.doesNotMatch(fieldset, /Your department:/, 'the information line is not dimmed with the disabled fields');
+  assert.match(textOf(main), /Your department: [^·]+ · Your policy: Standard/);
+});
+
+test('an approved trip is cancelled in two steps: the consequence first, then a clearly marked button', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const { B, c } = w;
+  const rid = await createDraft(w, await withinForm(w));
+  let page = await c.sam.get(`${B}/trips/${rid}`);
+  await c.sam.post(`${B}/trips/${rid}/submit`, { rev: revOf(page.text, 'submit') });
+  page = await c.sam.get(`${B}/trips/${rid}`);
+  let main = checkPage('approved (cancel link)', page);
+  assert.doesNotMatch(main, /action="[^"]*\/cancel"/, 'no one-tap cancel');
+  assert.match(main, new RegExp(`<a class="btn btn-ghost bz-btn" href="${B}/trips/${rid}\\?confirm=cancel#cancel">Cancel this trip</a>`));
+  page = await c.sam.get(`${B}/trips/${rid}?confirm=cancel`);
+  main = checkPage('approved (confirm cancel)', page);
+  assert.match(textOf(main), /Cancel your approved trip to London\? Its approval ends, and you'd need to plan and confirm it again\. Nothing was booked or charged\./);
+  assert.match(main, /<form method="post" action="[^"]*\/cancel">[\s\S]*?<button class="btn bz-btn bz-btn-danger" type="submit">Yes, cancel this trip<\/button>/);
+  assert.match(main, new RegExp(`href="${B}/trips/${rid}">Keep this trip</a>`));
+});
+
+test('Review trip with nothing picked: one 422 that names every missing choice, each linked to its section', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const { B, c } = w;
+  const res0 = await c.sam.get(`${B}/trips/search?${qs(Q)}`);
+  assert.match(res0.text, /<input type="hidden" name="hotelChoice" value="1">/);
+  const snap = storeSnapshot(w.app);
+  const res = await c.sam.post(`${B}/trips`, { ...Q, hotelChoice: '1', purpose: 'Client workshop in London' });
+  assert.equal(res.status, 422);
+  assert.equal(storeSnapshot(w.app), snap);
+  const main = checkPage('nothing picked', res);
+  assert.match(textOf(main), /Choose an outbound flight ?, a return flight and a hotel ?\(or No hotel for this trip\)\./);
+  for (const id of ['bz-leg-out', 'bz-leg-back', 'bz-leg-hotel']) assert.match(main, new RegExp(`<a href="#${id}">`), id);
+  // "No hotel for this trip" is a choice.
+  const form = await withinForm(w);
+  const ok = await c.sam.post(`${B}/trips`, { ...form, hotelChoice: '1', hotelKey: '' });
+  assert.equal(ok.status, 303);
+});
+
+test('the Company list keeps a valid filter applied when another is refused', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const { B, c } = w;
+  const rid = await createDraft(w, await withinForm(w));
+  const res = await c.tom.get(`${B}/trips?scope=all&status=bogus&period=2026-Q2`);
+  assert.equal(res.status, 422);
+  const main = checkPage('/trips mixed filters', res);
+  assert.doesNotMatch(main, new RegExp(`href="${B}/trips/${rid}"`), 'Sam\'s Q4 trip is not in Q2');
+  assert.match(main, /<option value="2026-Q2" selected>/);
+  assert.match(textOf(main), /No trips match these filters\./);
 });

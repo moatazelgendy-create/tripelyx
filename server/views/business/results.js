@@ -86,13 +86,33 @@ function hiddenQuery(q) {
   return fields.map(([n, v]) => html`<input type="hidden" name="${n}" value="${v}">`);
 }
 
+const MISSING = Object.freeze({
+  out: ['bz-leg-out', 'an outbound flight'],
+  back: ['bz-leg-back', 'a return flight'],
+  hotel: ['bz-leg-hotel', 'a hotel'],
+});
+
+/**
+ * "Choose an outbound flight, a return flight and a hotel (or No hotel for this trip)." with each choice a
+ * link to its section, so one answer names everything Review trip still needs.
+ * @param {string[]} missing of 'out', 'back', 'hotel'
+ */
+function missingText(missing) {
+  const list = (missing || []).filter(k => MISSING[k]);
+  if (!list.length) return '';
+  const links = list.map(k => html`<a href="#${MISSING[k][0]}">${MISSING[k][1]}</a>`);
+  const joined = links.length === 1 ? links[0] : html`${links.slice(0, -1).map((l, i) => html`${i ? ', ' : ''}${l}`)} and ${links[links.length - 1]}`;
+  return html`Choose ${joined}${list.includes('hotel') ? ' (or No hotel for this trip)' : ''}.`;
+}
+
 /**
  * @param {object} ctx
  * @param {{ org: object, view: import('../../business/types').SearchView, all: boolean,
  *   pick?: { out: string, back: string, hotel: string, purpose: string }|null, error?: string|null,
- *   errors?: Record<string, string>, action: string }} m action: the POST /trips URL
+ *   errors?: Record<string, string>, missing?: string[], action: string }} m action: the POST /trips URL;
+ *   missing: the choices a refused Review trip still needs ('out', 'back', 'hotel')
  */
-function resultsView(ctx, { org, view, all = false, pick = null, error = null, errors = {}, action }) {
+function resultsView(ctx, { org, view, all = false, pick = null, error = null, errors = {}, missing = [], action }) {
   const base = `/business/o/${org.id}`;
   const timeZone = f.safeZone(org.timezone);
   const map = places(ctx);
@@ -146,7 +166,9 @@ function resultsView(ctx, { org, view, all = false, pick = null, error = null, e
     } else {
       const basis = (h.rows.find(r => r.evaluation.cap && r.evaluation.cap.basis) || { evaluation: { cap: { basis: 'incl_taxes' } } }).evaluation.cap.basis;
       const b = legBody(h, { name: 'hotelKey', checked: chosen.hotel, timeZone, open: all, priceToBeatCents: h.priceToBeatCents, basis });
-      const none = html`<label class="bz-choice bz-nohotel" for="t-nohotel"><input id="t-nohotel" type="radio" name="hotelKey" value=""${pick && pick.hotel === '' && pick.out ? html` checked` : ''}><span>No hotel for this trip</span></label>`;
+      // hotelChoice tells POST /trips that this form offered hotels, so leaving them all unpicked is a
+      // missing choice (No hotel is a choice: the empty hotelKey).
+      const none = html`<input type="hidden" name="hotelChoice" value="1"><label class="bz-choice bz-nohotel" for="t-nohotel"><input id="t-nohotel" type="radio" name="hotelKey" value=""${pick && pick.hotel === '' && pick.out ? html` checked` : ''}><span>No hotel for this trip</span></label>`;
       sections.push(legSection('bz-leg-hotel', `Hotel in ${city}`, sub, html`${b.selectable ? '' : noPick(b.blocked ? `None of these hotels can be picked under ${org.name}'s policy. You can still request the flights.` : 'None of these hotels has a room in the demo data for these dates. You can still request the flights.')}${b.markup}${none}${h.truncated ? html`<p class="bz-leg-note">${icon('info')}<span>Showing the first hotels of this search.</span></p>` : ''}`));
     }
   }
@@ -180,10 +202,10 @@ function resultsView(ctx, { org, view, all = false, pick = null, error = null, e
     sub: `${view.tierLabel} policy${view.departmentName ? ` · ${view.departmentName}` : ''} · ${f.plural(1, 'traveler')} · ${CABIN_LABELS[q.cabin] || q.cabin}`,
     actions: html`<a class="btn btn-ghost bz-btn" href="${base}/trips/new?${searchQuery(q)}">${icon('sliders')}<span>Change search</span></a>`,
   })}
-  ${p.errorBox(error)}
+  ${p.errorBox(missing && missing.length ? missingText(missing) : error)}
   ${p.limitsBar(view.limits, { pricedAt: view.pricedAt, timeZone, level: 2 })}
   ${notes}
   ${form}`;
 }
 
-module.exports = { resultsView, byOffer, legBody, hiddenQuery };
+module.exports = { resultsView, byOffer, legBody, hiddenQuery, missingText };

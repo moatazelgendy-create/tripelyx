@@ -1,10 +1,12 @@
 // The workspace home (/business/o/:orgId, plan §B4, §B6, §H5), one page for every role: the service's
 // DashboardView leaves out (null) what the member's role does not reach, and this page shows what is there.
 //   Employee: "Plan a work trip", My trips, "Your policy at a glance".
-//   Manager: "Waiting for you (n)" with the 5 oldest and "Expires in …", team trips this period.
+//   Manager: "Waiting for you (n)" with the 5 oldest and when each expires ("in 6 h"), team trips this period.
 //   Owner and Travel Admin: the set-up checklist, pending company-wide, out-of-policy share, top reasons,
 //   recent activity. Finance: the budget table and a Reports link.
-// Every amount is demo-labelled; a share with nothing submitted says "No requests yet", never 0%.
+// In the demo preview every amount is demo-labelled; with no supplier (production) the company's own limits
+// and budgets are plain amounts, never "Demo price". A share with nothing submitted says "No requests yet",
+// never 0%.
 const { html } = require('../../lib/html');
 const { icon } = require('../icons');
 const { LABELS, can } = require('../../business/roles');
@@ -23,8 +25,12 @@ function section(id, title, body, { iconName = null, action = null, cls = '' } =
   </section>`;
 }
 
-/** The budget table (BudgetRow[]): one demo container, "No budget set" instead of an amount where none is set. */
-function budgetTable(rows, { label, timeZone }) {
+/**
+ * The budget table (BudgetRow[]): "No budget set" instead of an amount where none is set. In the demo preview
+ * it is one demo container (what trips commit is priced from demo data); in production it is the company's
+ * own figures.
+ */
+function budgetTable(rows, { label, timeZone, demo }) {
   const cell = c => (c === null || c === undefined ? 'No budget set' : p.amount(c));
   const table = p.dataTable({
     caption: `Budgets for ${label}`,
@@ -36,7 +42,8 @@ function budgetTable(rows, { label, timeZone }) {
     ]),
     empty: `No budgets for ${label}. Without a budget, trips are checked against the policy only.`,
   });
-  return p.demoBox(html`${table}<p class="bz-muted">Committed is what approved trips hold. Spent shows once real bookings exist.</p>`, { pricedAt: null, timeZone, cls: 'bz-budgets-box' });
+  const body = html`${table}<p class="bz-muted">Committed is what approved trips hold. Spent shows once real bookings exist.</p>`;
+  return demo ? p.demoBox(body, { pricedAt: null, timeZone, cls: 'bz-budgets-box' }) : html`<div class="bz-budgets-box">${body}</div>`;
 }
 
 /**
@@ -92,7 +99,7 @@ function homeView(ctx, { org, member, dash, inventoryStatus }) {
   }
 
   if (dash.budgets) {
-    blocks.push(section('bz-h-budgets', `Budgets, ${dash.periodLabel}`, budgetTable(dash.budgets, { label: dash.periodLabel, timeZone }), {
+    blocks.push(section('bz-h-budgets', `Budgets, ${dash.periodLabel}`, budgetTable(dash.budgets, { label: dash.periodLabel, timeZone, demo }), {
       iconName: 'wallet', action: { href: `${base}/budgets`, label: 'All budgets' },
     }));
     if (role === 'finance' && can(role, 'reports.view') && !tiles.length) {
@@ -116,14 +123,17 @@ function homeView(ctx, { org, member, dash, inventoryStatus }) {
 
   blocks.push(section('bz-h-mine', 'My trips', dash.myTrips.length
     ? tripTable({ base, map, rows: dash.myTrips, timeZone, caption: 'Your newest trips' })
-    : p.emptyState({ title: 'No work trips yet.', text: "Plan one and you'll see your policy as you search.", iconName: 'calendar', action: inventoryStatus === 'none' ? null : { href: `${base}/trips/new`, label: 'Plan a trip' } }),
+    // No second button: "Plan a work trip" above is the one way to start.
+    : p.emptyState({ title: 'No work trips yet.', text: "Plan one and you'll see your policy as you search.", iconName: 'calendar' }),
   { iconName: 'calendar', action: dash.myTrips.length ? { href: `${base}/trips`, label: 'All your trips' } : null }));
 
   const pol = dash.policy || { sub: '', lines: [] };
   const lines = pol.lines.slice(0, 5);
-  const polBody = html`<p class="bz-muted">${pol.sub}</p><ul class="bz-policy-lines">${lines.map(l => html`<li>${icon('check')}<span>${l}</span></li>`)}</ul>`;
+  const money = lines.some(l => MONEY.test(l));
+  // The same line /policy uses says why a limit sits beside "Demo price" in the preview.
+  const polBody = html`<p class="bz-muted">${pol.sub}</p><ul class="bz-policy-lines">${lines.map(l => html`<li>${icon('check')}<span>${l}</span></li>`)}</ul>${money ? html`<p class="bz-muted">${demo ? 'Limits are in US dollars. In this preview, the fares and rates they are checked against are demo prices.' : 'Limits are in US dollars.'}</p>` : ''}`;
   blocks.push(section('bz-h-policy', 'Your policy at a glance',
-    lines.some(l => MONEY.test(l)) ? p.demoBox(polBody, { pricedAt: null, timeZone, cls: 'bz-card bz-policy' }) : html`<div class="bz-card bz-policy">${polBody}</div>`,
+    money && demo ? p.demoBox(polBody, { pricedAt: null, timeZone, cls: 'bz-card bz-policy' }) : html`<div class="bz-card bz-policy">${polBody}</div>`,
     { iconName: 'shield', action: { href: `${base}/policy`, label: 'Your whole policy' } }));
 
   if (dash.recent) {
@@ -131,7 +141,7 @@ function homeView(ctx, { org, member, dash, inventoryStatus }) {
     const list = dash.recent.length
       ? html`<ol class="bz-timeline">${dash.recent.map(e => html`<li><span class="bz-timeline-when">${f.whenIn(timeZone, e.at, { now, zone: true })}</span>${e.summary}</li>`)}</ol>`
       : html`<p class="bz-muted">Nothing here yet.</p>`;
-    blocks.push(section('bz-h-recent', 'Recent activity', dash.recent.some(e => MONEY.test(e.summary || '')) ? p.demoBox(list, { pricedAt: null, timeZone, cls: 'bz-card' }) : html`<div class="bz-card">${list}</div>`, {
+    blocks.push(section('bz-h-recent', 'Recent activity', demo && dash.recent.some(e => MONEY.test(e.summary || '')) ? p.demoBox(list, { pricedAt: null, timeZone, cls: 'bz-card' }) : html`<div class="bz-card">${list}</div>`, {
       iconName: 'clock', action: can(role, 'audit.view') ? { href: `${base}/activity`, label: 'All activity' } : null,
     }));
   }

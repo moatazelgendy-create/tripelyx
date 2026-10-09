@@ -11,12 +11,19 @@
 //
 // Amounts: every one sits in a demo container that says "Demo price · Priced at …" (parts.demoBox and
 // friends), in the company's time zone.
+//
+// What the page never does: blame the company policy for an option that is gone from the demo data (that is
+// said as availability, with a way to plan the trip again); offer a form that can only fail (a draft whose
+// departure date has passed shows how to plan it again instead); let the traveler write to "your approver"
+// when nobody named will read it; count a supplier's price move as a saving (the saved line sums the swaps'
+// own savings, as reports.savedBySwitching does); or cancel an approved trip in one tap.
 const { html } = require('../../lib/html');
 const { icon } = require('../icons');
 const f = require('./format');
 const p = require('./parts');
 const { LABELS, can: roleCan } = require('../../business/roles');
-const { REASON_CATEGORIES, REASON_CATEGORY_LABELS, REASON_MIN_CHARS, TIER_LABELS } = require('../../business/constants');
+const { REASON_CATEGORIES, REASON_CATEGORY_LABELS, REASON_MIN_CHARS, TIER_LABELS, CABIN_LABELS } = require('../../business/constants');
+const tz = require('../../business/tz');
 const { REASON_MAX_CHARS, NOTE_MIN_CHARS, MESSAGE_CHARS } = require('../../business/lifecycle');
 const { periodKey, periodLabel } = require('../../business/budgets');
 const { places, cityOf, routeText, datesText, searchQuery, nightsBetween } = require('./trips');
@@ -42,6 +49,19 @@ const OK_STATUS = Object.freeze({
   cancelled: ['cancelled'], approved: ['approved', 'past'], denied: ['denied'], returned: ['draft'],
 });
 
+/**
+ * Who reads what the viewer writes in Messages, by name, or null when nobody named does: the traveler for
+ * anyone else; for the traveler, the approver while the request waits, then whoever decided it by hand. A
+ * draft is in nobody's inbox, and a trip approved by policy has no approver.
+ */
+function messageTo(r, view) {
+  if (!view.self) return r.travelerName || null;
+  const ap = r.approval || {};
+  if (view.status === 'pending') return view.approver ? view.approver.name : null;
+  if (['approved', 'past', 'denied'].includes(view.status) && ap.mode === 'manual' && ap.decidedBy && ap.decidedBy.userId && ap.decidedBy.name) return ap.decidedBy.name;
+  return null;
+}
+
 /** The fixed text of each ?ok= code. */
 function okText(code, r, view) {
   if (OK_STATUS[code] && view.status && !OK_STATUS[code].includes(view.status)) return null;
@@ -50,19 +70,34 @@ function okText(code, r, view) {
   const approverName = view.approver ? view.approver.name : 'your approver';
   switch (code) {
     case 'swapped': return 'Switched to the cheaper option. Here is your updated trip.';
-    case 'auto_approved': return 'Confirmed. Your trip is approved to book under your policy.';
+    case 'auto_approved': return 'Trip confirmed. Nothing else is needed from you.';
     case 'submitted': return `Sent for approval. We don't send emails yet, so ${approverName} will see it under Approvals.`;
     case 'repriced': return 'This trip changed before it was sent. Review it and send it again.';
-    case 'cancelled': return 'Cancelled. Nothing was booked or charged.';
-    case 'approved': return 'Approved. The trip is approved to book.';
-    case 'denied': return `Denied. ${first} can see your note on this page.`;
+    case 'cancelled': return view.self || !r.travelerName ? 'Trip cancelled.' : `Trip cancelled. ${first} sees it on this trip.`;
+    case 'approved': return `Approval saved. ${first} sees it on this trip.`;
+    case 'denied': return `Decision saved. ${first} sees your note on this trip.`;
     case 'returned':
-      if (ret.why === 'unavailable') return `An option is no longer available, so this went back to ${first} to confirm.`;
-      if (ret.why === 'price_changed' && ret.toCents !== ret.fromCents) return `The price changed, so this went back to ${first} to confirm.`;
-      return `The fare or room terms changed, so this went back to ${first} to confirm.`;
-    case 'message': return 'Message sent. They will see it on this page.';
+      if (ret.why === 'unavailable') return `An option is no longer in the demo data, so this went back to ${first}. Nothing was approved.`;
+      if (ret.why === 'price_changed' && ret.toCents !== ret.fromCents) return `The price changed, so this went back to ${first} to confirm. Nothing was approved.`;
+      return `The fare or room terms changed, so this went back to ${first} to confirm. Nothing was approved.`;
+    case 'message': {
+      const to = messageTo(r, view);
+      return to ? `Message sent to ${to}.` : 'Message sent. It shows on this trip.';
+    }
     default: return null;
   }
+}
+
+/**
+ * The ?ok= notice. A trip that changed (repriced, returned) is a warning, never a success, and is left out
+ * when the banner under it already says so.
+ */
+function okNotice(code, r, view, { banner }) {
+  const changed = code === 'repriced' || code === 'returned';
+  if (changed && banner) return '';
+  const text = okText(code, r, view);
+  if (!text) return '';
+  return changed ? html`<div class="alert alert-warning bz-alert" role="status">${icon('alert')}<span>${text}</span></div>` : p.notice(text);
 }
 
 /** A form that only POSTs the request's rev (cancel, confirm). */
@@ -71,27 +106,34 @@ function revForm(action, rev, button, { cls = 'btn btn-ghost bz-btn', bar = fals
   return html`<form method="post" action="${action}"><input type="hidden" name="rev" value="${String(rev)}">${bar ? p.actionBar(b) : b}</form>`;
 }
 
-/** The banner of a draft that a price check sent back (or changed before it was sent). */
-function returnedBanner(r, { self, timeZone }) {
+/**
+ * The banner of a draft that a price check sent back (or changed before it was sent). `pick` is true when
+ * the page offers other options to pick (alternatives the traveler can use): only then does it say so.
+ */
+function returnedBanner(r, { self, timeZone, pick = false }) {
   const ret = r.returned;
   const last = (r.history || [])[r.history.length - 1];
   if (!ret || !last || (last.action !== 'returned' && last.action !== 'repriced')) return '';
   const waiting = last.action === 'returned';
   const first = firstName(r.travelerName);
   const priced = ret.why === 'price_changed' && Number.isSafeInteger(ret.toCents) && ret.toCents !== ret.fromCents;
+  // The submit that found the trip changed leads with the settled sentence (Stage 1 lead decisions), then
+  // says what changed. A trip with an option gone cannot be sent as it is, so it is not asked to be.
+  const LEAD = 'This trip changed before it was sent.';
+  const next = pick ? 'Pick another option below, or plan the trip again.' : 'Plan the trip again to choose new options.';
   let text;
   if (ret.why === 'unavailable') {
     text = waiting
-      ? (self ? 'An option in this trip is no longer in the demo data, so it came back to you. Nothing was approved. Pick another option below or plan the trip again.' : `An option in this trip is no longer in the demo data, so it went back to ${first}. Nothing was approved.`)
-      : 'An option in this trip is no longer in the demo data. Pick another option below or plan the trip again.';
+      ? (self ? `An option in this trip is no longer in the demo data, so it came back to you. Nothing was approved. ${next}` : `An option in this trip is no longer in the demo data, so it went back to ${first}. Nothing was approved.`)
+      : `${LEAD} An option in it is no longer in the demo data. ${next}`;
   } else if (priced) {
     text = waiting
       ? (self ? 'The price changed while this was waiting, so it came back to you. Nothing was approved. Review the new total and request approval again.' : `The price changed while this was waiting, so it went back to ${first}. Nothing was approved.`)
-      : 'The price changed before this was sent. Review the new total and send it again.';
+      : `${LEAD} Review it and send it again. The price changed.`;
   } else {
     text = waiting
       ? (self ? 'The fare or room terms changed while this was waiting, so it came back to you. The price is the same. Nothing was approved. Review the trip and request approval again.' : `The fare or room terms changed while this was waiting, so it went back to ${first}. The price is the same. Nothing was approved.`)
-      : 'The fare or room terms changed before this was sent. The price is the same. Review the trip and send it again.';
+      : `${LEAD} Review it and send it again. The fare or room terms changed. The price is the same.`;
   }
   const body = html`<div class="alert alert-warning bz-alert bz-returned" role="note">${icon('alert')}<div><p>${text}</p>${priced ? html`<p class="bz-returned-price">Was ${p.amount(ret.fromCents)}, now ${p.amount(ret.toCents)}.</p>` : ''}</div></div>`;
   return priced ? p.demoBox(body, { pricedAt: r.pricedAt, timeZone, cls: 'bz-returned-box' }) : body;
@@ -110,25 +152,59 @@ function namedViolations(violations) {
   return list.map(v => (seen.get(v.text) > 1 && PART_LABELS[v.component] ? { ...v, text: `${PART_LABELS[v.component]}: ${v.text}` } : v));
 }
 
-/** The policy verdict and its reasons. */
-function policyBlock(r, view, { org, timeZone }) {
+/**
+ * The stored reasons speak to the traveler ("above your limit", "Your policy allows"). Anyone else reads
+ * them about the traveler: "above Sam's limit", "Sam's policy allows".
+ */
+function forViewer(violations, view, first) {
+  const list = Array.isArray(violations) ? violations : [];
+  if (view.self || !first) return list;
+  const who = `${first}'s`;
+  return list.map(v => ({ ...v, text: String(v.text).replace(/\byour\b/g, who).replace(/\bYour\b/g, who) }));
+}
+
+/** Is every reason that blocks this trip an option gone from the demo data (not the company's policy)? */
+function goneOnly(ev) {
+  const blocking = (ev.violations || []).filter(v => v.severity === 'block');
+  return ev.status === 'blocked' && blocking.length > 0 && blocking.every(v => v.rule === 'inventory.unavailable');
+}
+
+/** An option gone from the demo data, said as which part it is. */
+const goneText = v => (v.rule === 'inventory.unavailable' && PART_LABELS[v.component] ? { ...v, text: `${PART_LABELS[v.component]}: no longer in the demo data.` } : v);
+
+/** The policy verdict and its reasons. `again` is the "Plan this trip again" link, for a draft that has no way forward here. */
+function policyBlock(r, view, { org, timeZone, pick = false, again = '' }) {
   const ev = r.evaluation || { status: 'within', violations: [] };
   const n = (ev.violations || []).length;
+  const first = firstName(r.travelerName);
+  const reasons = p.violationList(namedViolations(forViewer(ev.violations, view, first).map(goneText)), { pricedAt: r.pricedAt, timeZone });
+  const changed = view.policyChanged ? html`<p class="bz-note">${icon('info')}<span>Policy updated since this request (v${String(view.policyChanged.from)} → v${String(view.policyChanged.to)}). It was checked against v${String(view.policyChanged.from)}.</span></p>` : '';
+  if (goneOnly(ev)) {
+    // Availability, not policy: no "Blocked by policy" badge, and the way forward that really exists.
+    const text = "An option in this trip is no longer in the demo data, so the trip can't be sent as it is.";
+    return html`<section class="bz-policy-check" aria-label="Policy check">
+      <div class="bz-verdict bz-verdict-blocked">${icon('alert')}<p class="bz-verdict-text">${text}</p></div>
+      ${reasons}
+      ${again}
+      ${changed}
+    </section>`;
+  }
   let text;
   if (ev.status === 'within') text = view.status === 'draft' && view.self ? "Every part of this trip is inside your policy. Confirm and it's approved to book." : 'Every part of this trip is inside the policy.';
   else if (ev.status === 'out') text = `Out of policy: ${f.plural(n, 'reason')}`;
   else if (view.status === 'draft' && !view.self) text = `This trip can't be requested under ${org.name}'s policy.`;
-  else if (view.status === 'draft') text = (r.alternatives || []).length ? `This trip can't be requested under ${org.name}'s policy. Pick one of the options below.` : `This trip can't be requested under ${org.name}'s policy. Plan it again with options marked Within Policy.`;
+  else if (view.status === 'draft') text = pick ? `This trip can't be requested under ${org.name}'s policy. Pick one of the options below.` : `This trip can't be requested under ${org.name}'s policy. Plan it again with options marked Within Policy.`;
   else text = 'Blocked by policy.';
   return html`<section class="bz-policy-check" aria-label="Policy check">
     ${p.verdict(ev.status, text)}
-    ${p.violationList(namedViolations(ev.violations), { pricedAt: r.pricedAt, timeZone })}
-    ${view.policyChanged ? html`<p class="bz-note">${icon('info')}<span>Policy updated since this request (v${String(view.policyChanged.from)} → v${String(view.policyChanged.to)}). It was checked against v${String(view.policyChanged.from)}.</span></p>` : ''}
+    ${reasons}
+    ${ev.status === 'blocked' ? again : ''}
+    ${changed}
   </section>`;
 }
 
 /** The status banner of a request that is not a draft. */
-function statusBanner(ctx, r, view, { org, member, base, timeZone }) {
+function statusBanner(ctx, r, view, { member, base, timeZone, expiredSaid = false }) {
   const now = ctx.now();
   const first = firstName(r.travelerName);
   const ap = r.approval || {};
@@ -175,7 +251,8 @@ function statusBanner(ctx, r, view, { org, member, base, timeZone }) {
       </div></div>`;
     }
     case 'expired': {
-      const when = r.expiresAt ? f.dateTimeIn(timeZone, r.expiresAt) : null;
+      // A refused decision already said when it expired, in the error above: the time is said once.
+      const when = r.expiresAt && !expiredSaid ? f.dateTimeIn(timeZone, r.expiresAt) : null;
       return html`<div class="bz-status bz-status-expired">${icon('clock')}<div>
         <p>${when ? `Expired at ${when}.` : 'Expired.'} Nothing was approved.</p>
         ${view.self ? again : html`<p>${first} can plan it again.</p>`}
@@ -186,10 +263,12 @@ function statusBanner(ctx, r, view, { org, member, base, timeZone }) {
 }
 
 /** The trip's parts and its total, with every price line one tap away. */
-function tripParts(r, { timeZone, map }) {
+function tripParts(r, view, { timeZone, map }) {
   const evals = (r.evaluation && r.evaluation.components) || {};
   const basis = evals.hotel && evals.hotel.cap && evals.hotel.cap.basis ? evals.hotel.cap.basis : 'incl_taxes';
-  const cards = COMPONENTS.filter(c => r.rows && r.rows[c]).map(c => p.rowCard({ row: r.rows[c], evaluation: evals[c] || { status: null, violations: [] } }, { timeZone, level: 3, basis }));
+  const first = firstName(r.travelerName);
+  const evalOf = c => (evals[c] ? { ...evals[c], violations: forViewer(evals[c].violations, view, first) } : { status: null, violations: [] });
+  const cards = COMPONENTS.filter(c => r.rows && r.rows[c]).map(c => p.rowCard({ row: r.rows[c], evaluation: evalOf(c) }, { timeZone, level: 3, basis }));
   const label = c => {
     if (c === 'out') return `Outbound flight, ${routeText(map, r.query.from, r.query.to)}`;
     if (c === 'back') return `Return flight, ${routeText(map, r.query.to, r.query.from)}`;
@@ -198,15 +277,18 @@ function tripParts(r, { timeZone, map }) {
   };
   const parts = COMPONENTS.filter(c => r.rows && r.rows[c]);
   const missing = parts.some(c => !r.rows[c].available || !Number.isSafeInteger(r.rows[c].totalCents));
-  const saved = Number.isSafeInteger(r.originalTotalCents) && r.originalTotalCents > r.totalCents && (r.history || []).some(h => h.action === 'swapped')
-    ? r.originalTotalCents - r.totalCents : 0;
+  // What switching saved is the swaps' own savings (as reports.savedBySwitching counts it): a supplier's
+  // later price move, either way, is not something the traveler saved.
+  const saved = (r.history || [])
+    .filter(h => h.action === 'swapped' && Number.isSafeInteger(h.savedCents) && h.savedCents > 0)
+    .reduce((n, h) => n + h.savedCents, 0);
   const lines = html`<dl class="bz-lines">
     ${parts.map(c => {
     const row = r.rows[c];
     const ok = row.available && Number.isSafeInteger(row.totalCents);
     return html`<div class="bz-line"><dt>${label(c)}</dt><dd>${ok ? p.amount(row.totalCents) : html`<span class="bz-unavailable">${p.UNAVAILABLE}</span>`}</dd></div>`;
   })}
-    <div class="bz-line bz-line-total"><dt>${missing ? 'Total of the options still available' : 'Trip total'}</dt><dd>${p.amount(r.totalCents)}</dd></div>
+    <div class="bz-line bz-line-total"><dt>${missing ? 'Total without the missing option' : 'Trip total'}</dt><dd>${p.amount(r.totalCents)}</dd></div>
   </dl>
   ${saved > 0 ? html`<p class="bz-saved">${icon('check')}<span>Saved ${p.amount(saved)} by switching to cheaper options.</span></p>` : ''}
   <p class="bz-total-note">The total is everything charged for these options: each fee and tax is under Price details.</p>`;
@@ -267,13 +349,15 @@ function deciderPanel(ctx, r, view, { base, timeZone, form, failed, refusal, err
   const now = ctx.now();
   const first = firstName(r.travelerName);
   const live = view.live;
+  // Approve on a trip that changed sends it back instead: the button says so.
+  const sendsBack = !!live && live.status !== 'same';
   let check;
   if (!live) {
     check = html`<p>${icon('info')}<span>We couldn't check the price again just now. Approving checks it once more.</span></p>`;
   } else {
     const at = f.whenIn(timeZone, live.at, { now });
     if (live.status === 'same') check = html`<p>${icon('check')}<span>Price checked again at ${at}: unchanged.</span></p>`;
-    else if (live.status === 'unavailable') check = html`<p>${icon('alert')}<span>Price checked again at ${at}: an option is no longer in the demo data. If you approve, it goes back to ${first} to pick another option.</span></p>`;
+    else if (live.status === 'unavailable') check = html`<p>${icon('alert')}<span>Price checked again at ${at}: an option is no longer in the demo data. Approving sends it back to ${first}, and nothing is approved.</span></p>`;
     else if (Number.isSafeInteger(live.newTotalCents) && live.newTotalCents !== r.totalCents) check = html`<p>${icon('alert')}<span>Price checked again at ${at}: now ${p.amount(live.newTotalCents)} (was ${p.amount(r.totalCents)}). If you approve, it goes back to ${first} to confirm the new price.</span></p>`;
     else check = html`<p>${icon('alert')}<span>Price checked again at ${at}: the fare or room terms changed. The price is the same. If you approve, it goes back to ${first} to confirm.</span></p>`;
   }
@@ -288,7 +372,14 @@ function deciderPanel(ctx, r, view, { base, timeZone, form, failed, refusal, err
       ${p.dataTable({ caption: 'Requested vs cheapest option inside policy', columns: [{ label: 'Detail' }, { label: 'Requested' }, { label: 'Cheapest inside policy' }], rows })}
       ${c.totalCents.delta < 0 ? html`<p class="bz-compare-delta">The option inside the policy costs ${p.amount(-c.totalCents.delta)} less.</p>` : ''}`, { pricedAt: r.cheapestWithin && r.cheapestWithin.rows && r.cheapestWithin.rows.out ? r.cheapestWithin.rows.out.pricedAt : r.pricedAt, timeZone, tag: 'section', cls: 'bz-compare', label: 'Requested vs cheapest option inside policy' });
   } else {
-    compare = html`<section class="bz-compare" aria-label="Cheapest option inside policy"><h3 class="bz-block-title">Requested vs cheapest option inside policy</h3><p>No option inside the policy turned up when ${first} searched.</p></section>`;
+    // A search in a cabin above the limit fetched no fare in the allowed cabin, so there was nothing to
+    // compare with: say that, rather than that nothing inside the policy exists.
+    const cabin = ((r.evaluation && r.evaluation.violations) || []).find(v => v.rule === 'flight.cabin' && CABIN_LABELS[v.limit]);
+    const searched = r.query && CABIN_LABELS[r.query.cabin];
+    const none = cabin && searched && r.query.cabin !== cabin.limit
+      ? `${first} searched ${searched} class, so there is no ${CABIN_LABELS[cabin.limit]} fare to compare.`
+      : `No option inside the policy turned up when ${first} searched.`;
+    compare = html`<section class="bz-compare" aria-label="Cheapest option inside policy"><h3 class="bz-block-title">Requested vs cheapest option inside policy</h3><p>${none}</p></section>`;
   }
 
   const reason = r.reason && r.reason.text
@@ -301,11 +392,18 @@ function deciderPanel(ctx, r, view, { base, timeZone, form, failed, refusal, err
   const mine = failed === 'decide';
   const noteError = mine && (refusal === 'note_required' || refusal === 'card_number' || refusal === 'self_approval') ? error : null;
   const ackError = mine && refusal === 'over_budget' ? error : null;
-  const overText = over > 0 && b
-    ? html`<span class="bz-demo-price" data-price-source="demo">Approve even though ${b.departmentName} goes ${p.amount(over)} over its ${b.periodLabel} budget (demo prices). ${p.priceNote(r.pricedAt, timeZone, { inline: true })}</span>`
-    : html`<span>Approve even though it goes over the department's budget.</span>`;
+  // The box's label is one sentence; the one demo note sits under it, in the same demo container.
+  const ackInput = html`<input id="d-ack" type="checkbox" name="ackOverBudget" value="1"${mine && form.ack ? html` checked` : ''}${ackError ? html` aria-invalid="true" aria-describedby="d-ack-err"` : ''}>`;
+  const ackErr = ackError ? html`<p class="field-error" id="d-ack-err">${ackError}</p>` : '';
+  let ack = '';
+  if (showAck && over > 0 && b) {
+    ack = html`<div class="bz-ack">${p.demoBox(html`<div class="bz-choices${ackError ? ' is-invalid' : ''}"><label class="bz-choice" for="d-ack">${ackInput}<span>Approve even though ${b.departmentName} goes ${p.amount(over)} over its ${b.periodLabel} budget.</span></label>${ackErr}</div>`, { pricedAt: r.pricedAt, timeZone, cls: 'bz-ack-box' })}</div>`;
+  } else if (showAck) {
+    ack = html`<div class="bz-choices${ackError ? ' is-invalid' : ''}"><label class="bz-choice" for="d-ack">${ackInput}<span>Approve even though it goes over the department's budget.</span></label>${ackErr}</div>`;
+  }
   const assigned = view.approver ? view.approver.name : null;
   const action = `${base}/trips/${r.id}/decide`;
+  const hint = view.can.override ? `Needed: at least ${NOTE_MIN_CHARS} characters. ${first} sees this note.` : `Needed to deny: tell ${first} why, in at least ${NOTE_MIN_CHARS} characters. ${first} sees this note.`;
   return html`<section class="bz-card bz-decide" id="decide" aria-labelledby="bz-decide-title">
     <h2 id="bz-decide-title">Your decision</h2>
     ${view.can.override ? html`<p class="bz-note">${icon('shield')}<span>You're deciding as ${LABELS[role] || 'an admin'}${assigned ? ` for ${assigned}, the assigned approver` : ''}. Add a note of at least ${String(NOTE_MIN_CHARS)} characters.</span></p>` : ''}
@@ -317,23 +415,32 @@ function deciderPanel(ctx, r, view, { base, timeZone, form, failed, refusal, err
       <input type="hidden" name="rev" value="${String(r.rev)}">
       <div class="field">
         <label for="d-note">Note to ${first}</label>
-        <textarea id="d-note" name="note" maxlength="500" data-count="d-note-count" aria-describedby="d-note-count${noteError ? ' d-note-err' : ''}"${noteError ? html` aria-invalid="true"` : ''}>${mine ? form.note || '' : ''}</textarea>
-        <p class="field-hint" id="d-note-count">${view.can.override ? `Needed: at least ${NOTE_MIN_CHARS} characters. ${first} sees this note.` : `Needed to deny: tell ${first} why, in at least ${NOTE_MIN_CHARS} characters. ${first} sees this note.`}</p>
+        <textarea id="d-note" name="note" maxlength="500" data-count="d-note-count" aria-describedby="d-note-hint d-note-count${noteError ? ' d-note-err' : ''}"${noteError ? html` aria-invalid="true"` : ''}>${mine ? form.note || '' : ''}</textarea>
+        <p class="field-hint" id="d-note-hint">${hint}</p>
+        ${p.charCount('d-note-count', { max: 500 })}
         ${noteError ? html`<p class="field-error" id="d-note-err">${noteError}</p>` : ''}
+        ${view.can.message ? html`<p class="bz-ask-line"><a class="bz-ask" href="#message">${icon('mail')}<span>Ask ${first} a question</span></a></p>` : ''}
       </div>
-      ${showAck ? html`<div class="bz-choices${ackError ? ' is-invalid' : ''}"><label class="bz-choice" for="d-ack"><input id="d-ack" type="checkbox" name="ackOverBudget" value="1"${mine && form.ack ? html` checked` : ''}${ackError ? html` aria-invalid="true" aria-describedby="d-ack-err"` : ''}>${overText}</label>${ackError ? html`<p class="field-error" id="d-ack-err">${ackError}</p>` : ''}</div>` : ''}
-      ${p.actionBar(html`<button class="btn btn-navy bz-btn" type="submit" name="action" value="approve">${icon('check')}<span>Approve</span></button>
-        <button class="btn btn-ghost bz-btn" type="submit" name="action" value="deny">${icon('close')}<span>Deny</span></button>
-        <a class="btn btn-ghost bz-btn" href="#message">${icon('mail')}<span>Ask a question</span></a>`)}
+      ${ack}
+      ${p.actionBar(html`<button class="btn btn-navy bz-btn" type="submit" name="action" value="approve">${sendsBack ? html`${icon('arrow')}<span>Send back to ${first}</span>` : html`${icon('check')}<span>Approve</span>`}</button>
+        <button class="btn btn-ghost bz-btn" type="submit" name="action" value="deny">${icon('close')}<span>Deny</span></button>`)}
     </form>
   </section>`;
 }
 
 /** The traveler's primary action on a draft: Confirm trip, Request Approval, or what to do instead. */
-function submitPanel(r, view, { org, member, base, form, failed, refusal, error }) {
+function submitPanel(r, view, { org, member, base, form, failed, refusal, error, soon = false }) {
   const ev = r.evaluation || { status: 'within' };
   const action = `${base}/trips/${r.id}/submit`;
   const hours = org.settings && Number.isInteger(org.settings.approvalHours) ? org.settings.approvalHours : 24;
+  if (ev.status === 'out' && soon) {
+    // Leaving today: a request would expire before anyone could decide it, so there is no form to fill in.
+    return html`<section class="bz-card bz-submit" aria-labelledby="bz-submit-title">
+      <h2 id="bz-submit-title">Request Approval</h2>
+      <p>This trip leaves today, too soon to wait for an approval. Choose an option inside your policy, or plan the trip again with a later date.</p>
+      <p><a class="btn btn-ghost bz-btn" href="${base}/trips/new?${searchQuery(r.query)}">${icon('arrow')}<span>Plan it again with new dates</span></a></p>
+    </section>`;
+  }
   if (ev.status === 'within') {
     return html`<section class="bz-card bz-submit" aria-labelledby="bz-submit-title">
       <h2 id="bz-submit-title">Confirm your trip</h2>
@@ -352,6 +459,10 @@ function submitPanel(r, view, { org, member, base, form, failed, refusal, error 
   }
   const min = org.settings && Number.isInteger(org.settings.reasonMinChars) ? org.settings.reasonMinChars : REASON_MIN_CHARS;
   const mine = failed === 'submit';
+  // A trip that came back keeps what the traveler wrote: the form starts from it.
+  const kept = r.reason || {};
+  const reasonValue = mine ? form.reason || '' : kept.text || '';
+  const categoryValue = mine ? form.category : kept.category;
   const reasonError = mine && (refusal === 'reason_too_short' || refusal === 'card_number') ? error : null;
   const rule = { approver: 'your approver', manager: 'your manager', admin: org.name ? `${org.name}'s admins` : 'your admins' }[view.approver.rule] || 'your approver';
   return html`<section class="bz-card bz-submit" aria-labelledby="bz-submit-title">
@@ -361,7 +472,7 @@ function submitPanel(r, view, { org, member, base, form, failed, refusal, error 
       <input type="hidden" name="rev" value="${String(r.rev)}">
       <div class="field">
         <label for="s-reason">Why does this trip need an exception?</label>
-        <textarea id="s-reason" name="reason" required minlength="${String(min)}" maxlength="${String(REASON_MAX_CHARS)}" data-count="s-reason-count" aria-describedby="s-reason-count${reasonError ? ' s-reason-err' : ''}"${reasonError ? html` aria-invalid="true"` : ''}>${mine ? form.reason || '' : ''}</textarea>
+        <textarea id="s-reason" name="reason" required minlength="${String(min)}" maxlength="${String(REASON_MAX_CHARS)}" data-count="s-reason-count" aria-describedby="s-reason-count${reasonError ? ' s-reason-err' : ''}"${reasonError ? html` aria-invalid="true"` : ''}>${reasonValue}</textarea>
         ${p.charCount('s-reason-count', { min, max: REASON_MAX_CHARS })}
         ${reasonError ? html`<p class="field-error" id="s-reason-err">${reasonError}</p>` : ''}
       </div>
@@ -369,7 +480,7 @@ function submitPanel(r, view, { org, member, base, form, failed, refusal, error 
         <label for="s-category">Category</label>
         <select id="s-category" name="category">
           <option value="">Choose one (optional)</option>
-          ${REASON_CATEGORIES.map(c => html`<option value="${c}"${mine && form.category === c ? html` selected` : ''}>${REASON_CATEGORY_LABELS[c]}</option>`)}
+          ${REASON_CATEGORIES.map(c => html`<option value="${c}"${categoryValue === c ? html` selected` : ''}>${REASON_CATEGORY_LABELS[c]}</option>`)}
         </select>
       </div>
       <p class="bz-muted">If no one decides within ${f.plural(hours, 'hour')}, the request expires and nothing is approved. We don't send emails yet: ${firstName(view.approver.name)} sees it under Approvals.</p>
@@ -378,33 +489,66 @@ function submitPanel(r, view, { org, member, base, form, failed, refusal, error 
   </section>`;
 }
 
-/** Cancel, as the status and the viewer allow. */
-function cancelPanel(r, view, { base }) {
+/**
+ * Cancel, as the status and the viewer allow. An approved trip takes two steps: a link to ?confirm=cancel,
+ * where the page says what is lost and the button is marked as destructive.
+ */
+function cancelPanel(r, view, { base, confirm = '', dest = '' }) {
   if (!view.can.cancel) return '';
   const action = `${base}/trips/${r.id}/cancel`;
   if (view.status === 'draft') return html`<div class="bz-cancel">${revForm(action, r.rev, 'Cancel this trip')}</div>`;
   if (view.status === 'pending') return html`<div class="bz-cancel">${revForm(action, r.rev, 'Cancel request')}<p class="bz-muted">Cancelling withdraws it from your approver. Nothing was booked or charged.</p></div>`;
-  return html`<div class="bz-cancel">${revForm(action, r.rev, view.self ? 'Cancel this trip' : 'Cancel this approved trip')}<p class="bz-muted">Cancelling releases what this trip holds of the department's budget. Nothing was booked or charged.</p></div>`;
+  const here = `${base}/trips/${r.id}`;
+  if (confirm !== 'cancel') {
+    return html`<div class="bz-cancel" id="cancel"><a class="btn btn-ghost bz-btn" href="${here}?confirm=cancel#cancel">${view.self ? 'Cancel this trip' : 'Cancel this approved trip'}</a></div>`;
+  }
+  const ap = r.approval || {};
+  const where = dest ? ` to ${dest}` : '';
+  let text;
+  if (!view.self) text = `Cancel ${r.travelerName}'s approved trip${where}? Its approval ends, and ${firstName(r.travelerName)} would need to request it again. What it holds of the department's budget is released. Nothing was booked or charged.`;
+  else if (ap.mode === 'manual' && ap.decidedBy && ap.decidedBy.name) text = `Cancel your approved trip${where}? ${ap.decidedBy.name}'s approval is lost, and you'd need to request it again. Nothing was booked or charged.`;
+  else text = `Cancel your approved trip${where}? Its approval ends, and you'd need to plan and confirm it again. Nothing was booked or charged.`;
+  return html`<section class="bz-card bz-cancel-confirm" id="cancel" aria-labelledby="bz-cancel-title">
+    <h2 id="bz-cancel-title">Cancel this trip?</h2>
+    <p>${text}</p>
+    <div class="bz-cancel-actions">${revForm(action, r.rev, 'Yes, cancel this trip', { cls: 'btn bz-btn bz-btn-danger' })}<a class="btn btn-ghost bz-btn" href="${here}">Keep this trip</a></div>
+  </section>`;
 }
 
 /** Messages and the form to write one. */
-function messagesPanel(ctx, r, view, { base, timeZone, form, failed, refusal, error, member }) {
+function messagesPanel(ctx, r, view, { base, timeZone, form, failed, refusal, error, member, canRequest = false }) {
   const list = r.messages || [];
-  if (!list.length && !view.can.message) return '';
+  // The form shows only when a named person reads the thread (messageTo): never "your approver" on a draft
+  // that is in nobody's inbox, or on a trip approved by policy, which has no approver.
+  const to = view.can.message ? messageTo(r, view) : null;
+  if (!list.length && !to) {
+    return view.self && view.status === 'draft' && canRequest
+      ? html`<section class="bz-messages" id="message" aria-labelledby="bz-msg-title"><h2 id="bz-msg-title">Messages</h2><p class="bz-muted">Messages open once you send this for approval.</p></section>`
+      : '';
+  }
   const now = ctx.now();
   const mine = failed === 'message';
   const textError = mine && (refusal === 'invalid_message' || refusal === 'card_number' || refusal === 'too_many_messages') ? error : null;
+  const first = firstName(r.travelerName);
+  let label, reads;
+  if (view.self) {
+    label = `Write to ${to}`;
+    reads = view.status === 'pending' ? `We don't send emails yet. ${to} sees it on this trip under Approvals.` : `We don't send emails yet. ${to} sees it on this trip.`;
+  } else {
+    label = view.can.decide ? `Ask ${first} a question` : `Write to ${first}`;
+    reads = `We don't send emails yet. ${first} sees it on this trip.`;
+  }
   return html`<section class="bz-messages" id="message" aria-labelledby="bz-msg-title">
     <h2 id="bz-msg-title">Messages</h2>
     ${list.length ? html`<ol class="bz-thread">${list.map(m => html`<li class="bz-msg"><p class="bz-msg-head"><b>${m.by === member.userId ? 'You' : m.name}</b><span>${f.whenIn(timeZone, m.at, { now })}</span></p><p>${m.text}</p></li>`)}</ol>` : html`<p class="bz-muted">No messages yet.</p>`}
-    ${view.can.message ? html`<form class="bz-form" method="post" action="${base}/trips/${r.id}/message">
+    ${to ? html`<form class="bz-form" method="post" action="${base}/trips/${r.id}/message">
       <div class="field">
-        <label for="m-text">${view.self ? 'Write to your approver' : `Ask ${firstName(r.travelerName)} a question`}</label>
+        <label for="m-text">${label}</label>
         <textarea id="m-text" name="text" required minlength="${String(MESSAGE_CHARS[0])}" maxlength="${String(MESSAGE_CHARS[1])}" data-count="m-text-count" aria-describedby="m-text-count${textError ? ' m-text-err' : ''}"${textError ? html` aria-invalid="true"` : ''}>${mine ? form.text || '' : ''}</textarea>
         ${p.charCount('m-text-count', { min: MESSAGE_CHARS[0], max: MESSAGE_CHARS[1] })}
         ${textError ? html`<p class="field-error" id="m-text-err">${textError}</p>` : ''}
       </div>
-      <p class="bz-muted">We don't send emails yet. They'll see it on this page.</p>
+      <p class="bz-muted">${reads}</p>
       <div><button class="btn btn-ghost bz-btn" type="submit">${icon('mail')}<span>Send message</span></button></div>
     </form>` : ''}
   </section>`;
@@ -415,7 +559,8 @@ function historyPanel(ctx, r, { timeZone, member }) {
   const list = r.history || [];
   if (!list.length) return '';
   const now = ctx.now();
-  const first = firstName(r.travelerName);
+  // The trip went back to its traveler: "you" on the traveler's own page, their first name for anyone else.
+  const back = r.travelerId === member.userId ? 'you' : firstName(r.travelerName);
   const line = h => {
     const who = actorName(h.by, { self: member.userId });
     switch (h.action) {
@@ -426,7 +571,7 @@ function historyPanel(ctx, r, { timeZone, member }) {
       case 'auto_approved': return 'Approved by policy.';
       case 'approved': return `${who} approved it.`;
       case 'denied': return `${who} denied it.`;
-      case 'returned': return `It went back to ${who === 'You' ? 'you' : first} to confirm: the trip changed while it was waiting.`;
+      case 'returned': return `It went back to ${back} to confirm: the trip changed while it was waiting.`;
       case 'cancelled': return `${who} cancelled it.`;
       case 'expired': return 'It expired with no decision.';
       default: return `${who}: ${h.action}`;
@@ -438,24 +583,112 @@ function historyPanel(ctx, r, { timeZone, member }) {
   </section>`;
 }
 
+const LEG_NAMES = Object.freeze({ out: 'Outbound flight', back: 'Return flight' });
+
+/**
+ * Alternatives whose titles would repeat get what tells them apart (the heading list never shows one title
+ * twice): the leg for a flight change ("Return flight: One stop via Istanbul"), the hotel or room for a stay
+ * ("Another hotel in London: Kestrel Yard Hotel"), then the departure time for two flights on one leg. The
+ * pinned "Cheapest option inside your policy" is unique already and is never renamed.
+ */
+function distinctTitles(list) {
+  const counts = l => l.reduce((m, a) => m.set(a.label, (m.get(a.label) || 0) + 1), new Map());
+  const pass = (l, rename) => {
+    const seen = counts(l);
+    return l.map(a => (seen.get(a.label) > 1 && a.label !== p.CHEAPEST_WITHIN_LABEL ? { ...a, label: rename(a) || a.label } : a));
+  };
+  const partOf = a => (a.change && a.change.component) || null;
+  let out = pass(list, a => {
+    const c = partOf(a);
+    const row = c && a.rows ? a.rows[c] : null;
+    if (LEG_NAMES[c]) return `${LEG_NAMES[c]}: ${a.label}`;
+    if (c === 'hotel' && row && a.kind === 'room' && row.room && row.room.name) return `${a.label}: ${row.room.name}`;
+    if (c === 'hotel' && row && row.name) return `${a.label}: ${row.name}`;
+    return null;
+  });
+  out = pass(out, a => {
+    const c = partOf(a);
+    const row = c && a.rows ? a.rows[c] : null;
+    const seg = row && Array.isArray(row.segments) && row.segments[0];
+    const at = seg ? f.clock24(seg.departLocal) : '';
+    return at ? `${a.label}, leaves ${at}` : null;
+  });
+  // Anything still the same (two identical changes) is numbered, in the order shown.
+  const seen = counts(out);
+  const n = new Map();
+  return out.map(a => {
+    if (seen.get(a.label) < 2 || a.label === p.CHEAPEST_WITHIN_LABEL) return a;
+    n.set(a.label, (n.get(a.label) || 0) + 1);
+    return { ...a, label: `${a.label} (option ${n.get(a.label)})` };
+  });
+}
+
+/**
+ * The explainer's summary, without a sentence that offers to request approval when this draft cannot be
+ * requested (nobody to approve it, a blocked trip, a date that has passed).
+ */
+function summaryFor(summary, { canRequest, hasAlternatives }) {
+  const text = String(summary || '');
+  if (canRequest) return text;
+  const kept = (text.match(/[^.!?]+[.!?]+/g) || []).map(x => x.trim()).filter(x => !/request(ing)? approval/i.test(x)).join(' ');
+  return kept || (hasAlternatives ? '' : 'No cheaper option inside your policy turned up in this search.');
+}
+
+/** "Plan this trip again": the same search, to choose new options. */
+const againLink = (base, r) => html`<p class="bz-again"><a class="btn btn-ghost bz-btn" href="${base}/trips/search?${searchQuery(r.query)}">${icon('arrow')}<span>Plan this trip again</span></a></p>`;
+
 /**
  * @param {object} ctx
  * @param {{ org: object, member: object, view: import('../../business/types').RequestView, departmentName: string|null,
- *   ok?: string, error?: string|null, failed?: string|null, form?: object, refusal?: string|null, base: string }} m
+ *   ok?: string, error?: string|null, failed?: string|null, form?: object, refusal?: string|null, base: string,
+ *   confirm?: string }} m confirm 'cancel' shows the second step of cancelling an approved trip
  */
-function requestView(ctx, { org, member, view, departmentName = null, ok = '', error = null, failed = null, form = {}, refusal = null, base }) {
+function requestView(ctx, { org, member, view, departmentName = null, ok = '', error = null, failed = null, form = {}, refusal = null, base, confirm = '' }) {
   const r = view.request;
   const timeZone = f.safeZone(view.timezone || org.timezone);
   const map = places(ctx);
   const dest = r.rows && r.rows.hotel ? r.rows.hotel.city : cityOf(map, r.query.to);
   const title = view.self ? (view.status === 'draft' ? 'Review your trip' : `Your trip to ${dest}`) : `${r.travelerName}'s trip to ${dest}`;
   const deciding = view.can.decide;
+  const first = firstName(r.travelerName);
+  const evStatus = r.evaluation ? r.evaluation.status : 'within';
+  const draftSelf = view.status === 'draft' && view.self;
 
-  // A field-level refusal shows at its field; the box at the top says where to look.
-  const FIELD = { submit: ['reason_too_short', 'card_number'], decide: ['note_required', 'card_number', 'over_budget'], message: ['invalid_message', 'card_number', 'too_many_messages'] };
+  // A draft whose departure date has passed (in the company's time zone) can't be sent: the page says so and
+  // links to plan it again, with no form that would only fail. Leaving today is fine inside policy, and too
+  // soon to wait for an approval outside it.
+  const today = tz.localDate(timeZone, ctx.now());
+  const depart = r.query && r.query.departDate;
+  const late = draftSelf && typeof depart === 'string' && depart < today;
+  const soon = draftSelf && !late && depart === today && evStatus === 'out';
+  const canRequest = evStatus === 'out' && !!view.approver && !late && !soon;
+
+  // The alternatives this draft offers: none once the date has passed, and never one a swap just found gone.
+  const goneId = refusal === 'alternative_gone' && form.altId ? form.altId : null;
+  const altList = late ? [] : (r.alternatives || []).filter(a => a.id !== goneId);
+  const showAlts = view.status === 'draft' && !late && (evStatus === 'out' || (evStatus === 'blocked' && altList.length));
+  const pick = !!view.can.swap && altList.length > 0 && showAlts;
+
+  // A field-level refusal shows at its field; the box at the top says what is wrong and links to it.
+  const FIELD = {
+    submit: { reason_too_short: 's-reason', card_number: 's-reason' },
+    decide: { note_required: 'd-note', card_number: 'd-note', self_approval: 'd-note', over_budget: 'd-ack' },
+    message: { invalid_message: 'm-text', card_number: 'm-text', too_many_messages: 'm-text' },
+  };
+  const field = error && failed && FIELD[failed] ? FIELD[failed][refusal] : null;
   let topError = error;
-  if (error && failed && (FIELD[failed] || []).includes(refusal)) topError = 'Check the highlighted field below.';
-  if (refusal === 'request_expired' && failed === 'decide' && r.expiresAt) topError = `This request expired at ${f.dateTimeIn(timeZone, r.expiresAt)}. Ask ${firstName(r.travelerName)} to plan it again.`;
+  if (field) topError = html`<a href="#${field}">${error}</a>`;
+  const expiredSaid = refusal === 'request_expired' && failed === 'decide' && !!r.expiresAt;
+  if (expiredSaid) topError = `This request expired at ${f.dateTimeIn(timeZone, r.expiresAt)}. Ask ${first} to plan it again.`;
+  if (goneId) {
+    topError = altList.length
+      ? `That option isn't available anymore. ${canRequest ? 'Pick another one, or request approval for the trip as it is.' : 'Pick another one, or plan the trip again.'}`
+      : `That option isn't available anymore. ${canRequest ? 'You can request approval for the trip as it is, or plan it again.' : 'Plan the trip again to choose new options.'}`;
+  }
+  // The traveler's own second click (or another tab) is not "someone else".
+  if (refusal === 'conflict' && view.self) topError = 'This trip changed since you opened this page, maybe in another tab or with a second click. Here is where it stands now.';
+  // The late banner says what too_late says, with the way forward.
+  if (refusal === 'too_late' && late) topError = null;
 
   const facts = p.kvList([
     ['Traveler', view.self ? '' : r.travelerName],
@@ -466,16 +699,23 @@ function requestView(ctx, { org, member, view, departmentName = null, ok = '', e
     ['Planned', f.whenIn(timeZone, r.at, { now: ctx.now(), zone: true })],
   ]);
 
-  const draftSelf = view.status === 'draft' && view.self;
-  const evStatus = r.evaluation ? r.evaluation.status : 'within';
-  // A blocked trip with no alternative has nothing to offer here: its verdict already says to plan it again
-  // (the stored summary may suggest requesting approval, which a blocked trip cannot do).
-  const altList = r.alternatives || [];
-  const alts = view.status === 'draft' && (evStatus === 'out' || (evStatus === 'blocked' && altList.length))
+  // What the traveler wrote when they asked: on their own pages once sent, and for anyone else who is not
+  // deciding (the decider's panel shows it already).
+  const reasonBlock = r.reason && r.reason.text && view.status !== 'draft' && (view.self || !deciding)
+    ? html`<section class="bz-card bz-reason-block" aria-labelledby="bz-reason-title"><h2 class="bz-block-title" id="bz-reason-title">${view.self ? 'Your reason' : `${first}'s reason`}</h2><blockquote class="bz-quote">“${r.reason.text}”</blockquote>${r.reason.category ? html`<p class="bz-muted">Category: ${REASON_CATEGORY_LABELS[r.reason.category] || r.reason.category}</p>` : ''}</section>`
+    : '';
+
+  const lateBanner = late
+    ? html`<div class="alert alert-warning bz-alert bz-late" role="${refusal === 'too_late' ? 'alert' : 'note'}">${icon('alert')}<div><p>This trip was planned to leave on ${f.day(depart)}, which has passed, so it can't be sent. Plan it again with new dates.</p><p><a class="btn btn-ghost bz-btn" href="${base}/trips/new?${searchQuery(r.query)}">${icon('arrow')}<span>Plan it again with new dates</span></a></p></div></div>`
+    : '';
+
+  const alts = showAlts
     ? p.alternativesPanel(
       {
-        alternatives: altList.map(a => (a.evaluation ? { ...a, evaluation: { ...a.evaluation, violations: namedViolations(a.evaluation.violations) } } : a)),
-        cheapestWithin: r.cheapestWithin || null, truncated: !!r.alternativesTruncated, summary: r.explanation ? r.explanation.summary : '',
+        alternatives: distinctTitles(altList).map(a => (a.evaluation ? { ...a, evaluation: { ...a.evaluation, violations: namedViolations(forViewer(a.evaluation.violations, view, first)) } } : a)),
+        cheapestWithin: r.cheapestWithin && altList.some(a => a.id === r.cheapestWithin.id) ? r.cheapestWithin : null,
+        truncated: !!r.alternativesTruncated,
+        summary: summaryFor(r.explanation ? r.explanation.summary : '', { canRequest: canRequest || !view.self, hasAlternatives: altList.length > 0 }),
       },
       { timeZone, action: view.can.swap ? `${base}/trips/${r.id}/swap` : null, rev: r.rev, level: 2 },
     )
@@ -483,20 +723,26 @@ function requestView(ctx, { org, member, view, departmentName = null, ok = '', e
   const selfCannotDecide = view.self && view.status === 'pending' && roleCan(member.role, 'approval.decide')
     ? html`<p class="bz-note">${icon('info')}<span>You can't decide your own trip.</span></p>` : '';
 
+  const banner = view.status === 'draft' ? returnedBanner(r, { self: view.self, timeZone, pick }) : statusBanner(ctx, r, view, { member, base, timeZone, expiredSaid });
+  // A self draft that can't be sent and has nothing to pick here gets the way to plan it again.
+  const again = draftSelf && !late && !pick ? againLink(base, r) : '';
+
   return html`${p.pageHead({ title, sub: `${routeText(map, r.query.from, r.query.to)} · ${datesText(r.query.departDate, r.query.returnDate)}`, actions: p.statusPill(view.status) })}
-  ${p.notice(okText(ok, r, view))}
+  ${okNotice(ok, r, view, { banner })}
   ${p.errorBox(topError)}
-  ${view.status === 'draft' ? returnedBanner(r, { self: view.self, timeZone }) : statusBanner(ctx, r, view, { org, member, base, timeZone })}
-  ${policyBlock(r, view, { org, timeZone })}
+  ${lateBanner}
+  ${banner}
+  ${policyBlock(r, view, { org, timeZone, pick, again })}
   ${selfCannotDecide}
   ${deciding ? deciderPanel(ctx, r, view, { base, timeZone, form, failed, refusal, error, role: member.role, budget: budgetBlock(r, view, { org, departmentName, timeZone, deciding, level: 3 }) }) : ''}
   ${facts ? html`<div class="bz-card bz-facts">${facts}</div>` : ''}
-  ${tripParts(r, { timeZone, map })}
+  ${reasonBlock}
+  ${tripParts(r, view, { timeZone, map })}
   ${deciding ? '' : budgetBlock(r, view, { org, departmentName, timeZone, deciding, level: 2 })}
   ${alts}
-  ${draftSelf ? submitPanel(r, view, { org, member, base, form, failed, refusal, error }) : ''}
-  ${cancelPanel(r, view, { base })}
-  ${messagesPanel(ctx, r, view, { base, timeZone, form, failed, refusal, error, member })}
+  ${draftSelf && !late ? submitPanel(r, view, { org, member, base, form, failed, refusal, error, soon }) : ''}
+  ${cancelPanel(r, view, { base, confirm, dest })}
+  ${messagesPanel(ctx, r, view, { base, timeZone, form, failed, refusal, error, member, canRequest })}
   ${historyPanel(ctx, r, { timeZone, member })}`;
 }
 

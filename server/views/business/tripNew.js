@@ -1,7 +1,8 @@
 // "Plan a work trip" (/business/o/:orgId/trips/new, plan §B4, §B6, §F3): the search form. It is a GET form to
 // /trips/search, so a search can be shared, bookmarked and run again; nothing is stored until the traveler
 // picks options and presses Review trip. With no supplier connected it shows the "Supplier not connected yet"
-// panel and the form disabled. A search the form must fix comes back here with each field's message.
+// panel, the fields disabled and no Search button. A search the form must fix comes back here with each
+// field's message.
 const { html } = require('../../lib/html');
 const { icon } = require('../icons');
 const tz = require('../../business/tz');
@@ -104,15 +105,17 @@ function tripNewView(ctx, { org, inventory, values, errors = {}, error = null, d
       <label class="bz-choice" for="t-flex"><input id="t-flex" type="checkbox" name="flex" value="1"${v.flex ? html` checked` : ''}><span>My dates can move by up to 3 days</span></label>
       ${errText('t-flex', errors.flex)}
     </div>
-    <p class="bz-search-who">${icon('shield')}<span>Your department: ${departmentName || 'None yet'} · Your policy: ${tierLabel}</span></p>
   </fieldset>`;
+  // Outside the fieldset, so a form that is off (no supplier) never dims this line with its controls.
+  const who = html`<p class="bz-search-who">${icon('shield')}<span>Your department: ${departmentName || 'None yet'} · Your policy: ${tierLabel}</span></p>`;
 
   return html`${p.pageHead({ title: 'Plan a work trip', sub: 'Your policy shows on every option as you search. Nothing is booked.' })}
   ${off ? p.supplierPanel() : ''}
   ${p.errorBox(error)}
   <form class="bz-card bz-search" method="get" action="${base}/trips/search">
     ${fields}
-    ${p.actionBar(html`<button class="btn btn-navy bz-btn" type="submit"${off ? html` disabled` : ''}>${icon('search')}<span>Search</span></button>`)}
+    ${who}
+    ${off ? '' : p.actionBar(html`<button class="btn btn-navy bz-btn" type="submit">${icon('search')}<span>Search</span></button>`)}
   </form>`;
 }
 

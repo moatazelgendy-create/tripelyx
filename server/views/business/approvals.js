@@ -1,8 +1,10 @@
 // The approvals inbox (/business/o/:orgId/approvals, plan §B4, §H2): tabs "Waiting for you (n)" (oldest
 // first) · "Decided by you" · "Company" (approval.override: every pending request) · "Expired" (no actions).
 // Each row: traveler, route and dates, the demo-labelled total, "2 policy reasons", waiting since, and
-// "Expires in 6 h". Writes nothing; an expired request shows as expired without being stored as such.
+// when it expires ("in 6 h" under Expires). Writes nothing; an expired request shows as expired without
+// being stored as such.
 const { html } = require('../../lib/html');
+const { icon } = require('../icons');
 const f = require('./format');
 const p = require('./parts');
 const { places, tripCell, totalCell } = require('./trips');
@@ -12,12 +14,21 @@ const TAB_LABELS = Object.freeze({ waiting: 'Waiting for you', decided: 'Decided
 /** "2 policy reasons" ("Within policy" when none). */
 const reasonsText = n => (n > 0 ? f.plural(n, 'policy reason') : 'Within policy');
 
-/** "Expires in 6 h", or "Expired" once the moment has passed. */
+/**
+ * "in 6 h" (under the column or label "Expires"), or "Expired" once the moment has passed.
+ * @param {Date} now
+ * @param {string|null} expiresAt
+ */
 function expiresText(now, expiresAt) {
   if (!expiresAt) return '';
   const left = f.timeLeft(now, expiresAt);
-  return left ? `Expires in ${left}` : 'Expired';
+  return left ? `in ${left}` : 'Expired';
 }
+
+/** The fixed text of each ?ok= code the inbox answers (a decision whose request the decider can no longer open). */
+const OK_TEXT = Object.freeze({
+  returned: 'The trip changed while it waited, so it went back to the traveler to confirm. Nothing was approved.',
+});
 
 /**
  * The inbox rows as a table, for one tab.
@@ -44,9 +55,10 @@ function inboxTable(ctx, { base, rows, tab, timeZone, caption, empty = 'Nothing 
 
 /**
  * @param {object} ctx
- * @param {{ org: object, member: object, inbox: import('../../business/types').InboxView, override: boolean }} m
+ * @param {{ org: object, member: object, inbox: import('../../business/types').InboxView, override: boolean, ok?: string }} m
+ *   ok: a ?ok= code from a decision ('returned'), shown as fixed text
  */
-function approvalsView(ctx, { org, inbox, override }) {
+function approvalsView(ctx, { org, inbox, override, ok = '' }) {
   const base = `/business/o/${org.id}`;
   const timeZone = f.safeZone(org.timezone);
   const tab = inbox.tab;
@@ -71,7 +83,9 @@ function approvalsView(ctx, { org, inbox, override }) {
     company: 'As an admin you can decide any pending request but your own. A note is needed.',
     expired: 'These expired before anyone decided them. Nothing was approved, and there is nothing to do here.',
   };
+  const okText = Object.hasOwn(OK_TEXT, ok) ? OK_TEXT[ok] : null;
   return html`${p.pageHead({ title: 'Approvals', sub: subs[tab] || '' })}
+  ${okText ? html`<div class="alert alert-info bz-alert" role="status">${icon('info')}<span>${okText}</span></div>` : ''}
   ${p.tabs(items, { label: 'Approvals' })}
   ${rows.length ? inboxTable(ctx, { base, rows, tab, timeZone, caption: captions[tab] }) : p.emptyState(empties[tab])}
   ${p.pager(inbox.cursor ? `${base}/approvals?tab=${tab}&cursor=${encodeURIComponent(inbox.cursor)}` : null)}`;

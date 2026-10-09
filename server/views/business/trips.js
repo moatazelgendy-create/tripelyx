@@ -79,6 +79,9 @@ function tripTable({ base, map, rows, timeZone, caption, traveler = false, empty
   });
 }
 
+/** The Company list's filters, as the query string and listRequests name them. */
+const LIST_FILTER_FIELDS = Object.freeze(['status', 'departmentId', 'travelerId', 'period']);
+
 const STATUS_FILTERS = Object.freeze([
   ['draft', 'Draft'], ['pending', 'Waiting for approval'], ['approved', 'Approved to book'], ['denied', 'Denied'],
   ['cancelled', 'Cancelled'], ['expired', 'Expired'], ['past', 'Past trip'],
@@ -101,6 +104,8 @@ function select({ id, name, label, value, options, error }) {
  * @param {object} ctx
  * @param {{ org: object, member: object, scope: 'mine'|'team'|'all', scopes: string[],
  *   list: { rows: object[], cursor: string|null }, filters: object, query: object,
+ *   (filters: the ones the list was read with; a refused filter is left out, so no select shows a filter that
+ *   was not applied)
  *   options: { departments: object[], travelers: Array<{ userId: string, name: string }>, periods: string[] }|null,
  *   filterError?: string|null, filterErrors?: Record<string, string> }} m
  */
@@ -160,4 +165,4 @@ function tripsView(ctx, { org, scope, scopes, list, filters = {}, options = null
   ${p.pager(list.cursor ? `${base}/trips?${next.toString()}` : null)}`;
 }
 
-module.exports = { tripsView, tripTable, tripCell, totalCell, places, cityOf, routeText, datesText, searchQuery, nightsBetween, STATUS_FILTERS };
+module.exports = { tripsView, tripTable, tripCell, totalCell, places, cityOf, routeText, datesText, searchQuery, nightsBetween, STATUS_FILTERS, LIST_FILTER_FIELDS };

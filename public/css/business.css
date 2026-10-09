@@ -152,7 +152,7 @@ span.bz-price-note { display: inline; margin: 0; }
 .bz-row-kicker { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: var(--muted); }
 .bz-row-kicker .icon { width: 15px; height: 15px; color: var(--blue-500); }
 .bz-app .bz-row-title { font-size: 20px; letter-spacing: -0.01em; overflow-wrap: anywhere; }
-.bz-plus { font-size: 12px; font-weight: 700; color: #b26a00; margin-left: 2px; }
+.bz-plus { font-size: 12px; font-weight: 700; color: #9a5b00; margin-left: 2px; }
 .bz-row-sub { color: var(--text); font-size: 14.5px; overflow-wrap: anywhere; }
 .bz-row-meta { color: var(--muted); font-size: 13.5px; overflow-wrap: anywhere; }
 .bz-opts { display: grid; gap: 10px; }
@@ -311,6 +311,16 @@ div.bz-opt-label { cursor: default; padding-top: 0; }
 .bz-goes .icon { width: 17px; height: 17px; flex: none; color: var(--blue-500); }
 .bz-choices.is-invalid .bz-choice { color: var(--danger); }
 .bz-cancel { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.bz-cancel-confirm > * + * { margin-top: 12px; }
+.bz-cancel-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+.bz-btn-danger { background: var(--danger); border: 1px solid var(--danger); color: #fff; }
+.bz-btn-danger:hover, .bz-btn-danger:focus-visible { background: #a93226; border-color: #a93226; color: #fff; }
+.bz-ask-line { margin-top: 6px; }
+.bz-ask { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; font-weight: 600; }
+.bz-ask .icon { width: 16px; height: 16px; flex: none; }
+.bz-late > div > * + *, .bz-again { margin-top: 8px; }
+/* .bz-choice (the shared rule, later in this file) sets padding: 10px 0; the No hotel box keeps its inset. */
+.bz-choice.bz-nohotel { padding: 10px 14px; }
 .bz-messages > * + *, .bz-history > * + * { margin-top: 12px; }
 .bz-msg p + p { margin-top: 2px; }
 :where(.bz-thread) { margin: 0; padding: 0; list-style: none; }
@@ -322,8 +332,15 @@ div.bz-opt-label { cursor: default; padding-top: 0; }
   .bz-home-block + .bz-home-block { margin-top: 24px; }
   .bz-status { padding: 12px 14px; }
   .bz-filter-actions .btn, .bz-cancel form, .bz-cancel .btn { flex: 1 1 100%; width: 100%; }
+  .bz-cancel-actions form, .bz-cancel-actions .btn { flex: 1 1 100%; width: 100%; }
   .bz-table .bz-demo-price { text-align: right; }
   .bz-nights { max-width: none; }
+  /* The decision bar holds Approve and Deny side by side (one row, not three stacked buttons). */
+  .bz-decide-form .bz-actionbar .btn { flex: 1 1 0; min-width: 0; padding: 6px 12px; white-space: normal; line-height: 1.25; text-align: center; }
+  .bz-decide-form .bz-actionbar .btn .icon { flex: none; }
+  /* Tabs stay on one line and scroll sideways inside their own strip. */
+  .bz-tabs { overflow-x: auto; overscroll-behavior-x: contain; }
+  .bz-tabs .bz-tabs-list { flex-wrap: nowrap; }
 }
 
 /* ---------- Supplier panel and Coming soon ---------- */
