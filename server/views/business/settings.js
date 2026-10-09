@@ -40,11 +40,15 @@ function settingsView(ctx, shell, { org, rev = null, canCompany, canTravel, self
   const mode = pick(values, 'outOfPolicy', s.outOfPolicy) === 'block' ? 'block' : 'approval';
   const [minH, maxH] = APPROVAL_HOURS_RANGE;
   const warnRename = org.status === 'active' && !selfServe;
+  // Demo price times exist only with demo inventory (production has none to show).
+  const zoneHint = ctx.business && ctx.business.inventory && ctx.business.inventory.status === 'demo'
+    ? 'Approval deadlines, activity and demo price times show in this zone.'
+    : 'Approval deadlines and activity show in this zone.';
   const company = canCompany
     ? html`<fieldset class="bz-fieldset bz-stack"><legend>Company</legend>
         ${warnRename ? html`<div class="alert alert-warning bz-alert" role="note" id="bz-set-name-warning">${icon('alert')}<span>${RENAME_WARNING}</span></div>` : ''}
         ${textField({ id: 'bz-set-name', name: 'name', label: 'Company name', value: pick(values, 'name', org.name), error: errors.name, maxlength: 80, required: true, autocomplete: 'organization' })}
-        ${selectField({ id: 'bz-set-zone', name: 'timezone', label: 'Time zone', options: TIMEZONES.map(z => [z, zoneOption(z)]), value: pick(values, 'timezone', org.timezone), error: errors.timezone, hint: 'Approval deadlines, activity and demo price times show in this zone.' })}
+        ${selectField({ id: 'bz-set-zone', name: 'timezone', label: 'Time zone', options: TIMEZONES.map(z => [z, zoneOption(z)]), value: pick(values, 'timezone', org.timezone), error: errors.timezone, hint: zoneHint })}
       </fieldset>`
     : html`<section class="bz-card bz-stack" aria-labelledby="bz-set-company"><h2 id="bz-set-company">Company</h2>
         ${kvList([['Name', org.name], ['Time zone', zoneOption(f.safeZone(org.timezone))]])}

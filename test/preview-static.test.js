@@ -181,7 +181,7 @@ test('the instructions only promise ways GitHub can start this workflow while it
   assert.ok(section.length > 500);
   assert.doesNotMatch(section, /Private preview → Run|run the workflow once|run the workflow again/i);
   assert.match(section, /\*\*Re-run all jobs\*\*/);
-  assert.match(section, /gh workflow run preview\.yml --ref claude\/travel-by-budget-uv85qf/);
+  assert.ok(section.includes(`gh workflow run preview.yml --ref ${BRANCH}`));
   assert.match(section, /only shows a \*\*Run workflow\*\* button for\s+workflows that are on the default branch/);
   const notices = code(workflow).split('\n').filter(l => /MSG="/.test(l));
   assert.equal(notices.length, 2);
@@ -248,7 +248,7 @@ test('the stack: a micro Lightsail service, a 5-image registry, a generated pass
     `repo:\${GitHubOwner}@\${GitHubOwnerId}/\${GitHubRepo}@\${GitHubRepoId}:ref:refs/heads/${BRANCH}`,
   ]);
   assert.match(body, /StringEquals:\n\s+token\.actions/);
-  assert.match(body, /\n {16}token\.actions\.githubusercontent\.com:job_workflow_ref: !Sub \$\{GitHubOwner\}\/\$\{GitHubRepo\}\/\.github\/workflows\/preview\.yml@refs\/heads\/claude\/travel-by-budget-uv85qf\n/,
+  assert.ok(body.includes(`\n${' '.repeat(16)}token.actions.githubusercontent.com:job_workflow_ref: !Sub \${GitHubOwner}/\${GitHubRepo}/.github/workflows/preview.yml@refs/heads/${BRANCH}\n`),
     'only the preview workflow file on the development branch can use the role');
   const trust = body.slice(body.indexOf('AssumeRolePolicyDocument:'), body.indexOf('Policies:'));
   assert.deepEqual([...trust.matchAll(/^\s+(token\.actions\.githubusercontent\.com:[a-z_]+):/gm)].map(m => m[1]), [

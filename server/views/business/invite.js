@@ -63,7 +63,7 @@ function inviteView(ctx, { landing, token, user = null, error = null, emailTaken
     main = html`<section class="bz-pub-section" aria-labelledby="bz-join-title">
         <h2 id="bz-join-title">Create your account to join</h2>
         <form class="bz-form bz-pub-form" method="post" action="${here}/join">
-          <div class="field"><span class="label">Email</span><p class="bz-pub-fixed">${inv.email}</p><p class="field-hint">The invite was sent to this address, so your account uses it.</p></div>
+          <div class="field"><span class="label">Email</span><p class="bz-pub-fixed">${inv.email}</p><p class="field-hint">This invite is for this address, so your account uses it.</p></div>
           ${textField({ id: 'bz-join-name', name: 'name', label: 'Your name', value: values.name, error: errors.name, required: true, maxlength: 80, autocomplete: 'name' })}
           ${textField({ id: 'bz-join-password', name: 'password', label: 'Password', type: 'password', error: errors.password, required: true, minlength: 10, maxlength: 200, autocomplete: 'new-password', hint: 'At least 10 characters.' })}
           <div class="bz-inline"><button class="btn btn-navy bz-btn" type="submit">Create account and join</button></div>

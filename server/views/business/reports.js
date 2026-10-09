@@ -105,7 +105,10 @@ function reportsView(ctx, shell, { dash, choices, list, filters = {}, department
       ${filters.travelerId ? html`<input type="hidden" name="travelerId" value="${filters.travelerId}">` : ''}
       <button class="btn btn-navy bz-btn" type="submit">Download CSV</button>
     </form>` : '';
-  const body = html`${pageHead({ title: `Reports for ${label}`, sub: 'Money here is calculated on demo prices. Nothing is charged.', actions: exportForm })}
+  // Demo prices only with demo inventory; with none (production) the figures are the company's own budgets.
+  const demo = Boolean(ctx.business && ctx.business.inventory && ctx.business.inventory.status === 'demo');
+  const sub = demo ? 'Money here is calculated on demo prices. Nothing is charged.' : 'Nothing is charged.';
+  const body = html`${pageHead({ title: `Reports for ${label}`, sub, actions: exportForm })}
     ${tabs(choices.map(k => ({ href: `${base}/reports?period=${encodeURIComponent(k)}`, label: periodLabel(k), current: k === dash.periodKey })), { label: 'Report period' })}
     ${t.truncated ? html`<p class="bz-meta">Based on the ${SCAN_CAP.toLocaleString('en-US')} most recent requests.</p>` : ''}
     ${total ? '' : emptyState({ title: `No requests in ${label} yet.`, text: 'Tiles fill in as your team plans trips.', iconName: 'chart' })}

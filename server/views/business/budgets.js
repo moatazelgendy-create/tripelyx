@@ -3,6 +3,7 @@
 // "Spent: shows once real bookings exist". A period switcher; budget.edit holders set each department's
 // budget for the period (POST /budgets, 303 back). A Manager sees only their own department (listBudgets).
 // Every amount sits in a demo container (§F6): committed and awaiting sum demo prices, so the whole table does.
+// With no demo inventory (production) they are the company's own figures, with no demo label.
 const { html } = require('../../lib/html');
 const { pageHead, tabs, dataTable, emptyState, amount, budgetBar, demoBox } = require('./parts');
 const f = require('./format');
@@ -50,8 +51,11 @@ function budgetsView(ctx, shell, { rows, periodKey, choices, canEdit, periodKind
     amount(r.awaitingCents),
     r.remainingCents === null ? 'No budget set' : amount(r.remainingCents),
   ]);
+  // With no supplier (or a live one) the figures are the company's own, so no demo label (as home.js budgetTable).
+  const demo = Boolean(ctx.business && ctx.business.inventory && ctx.business.inventory.status === 'demo');
+  const box = (body, opts) => (demo ? demoBox(body, opts) : html`<section aria-label="${opts.label}">${body}</section>`);
   const table = rows.length
-    ? demoBox(html`${dataTable({
+    ? box(html`${dataTable({
       caption: `Budgets for ${label}`,
       columns: [{ label: 'Department' }, { label: 'Budget', num: true }, { label: 'Committed', num: true }, { label: 'Awaiting approval', num: true }, { label: 'Remaining', num: true }],
       rows: tableRows,

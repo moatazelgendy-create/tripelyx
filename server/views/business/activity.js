@@ -1,7 +1,8 @@
 // /business/o/:orgId/activity (audit.view, plan §B4, §C7): H1 "Activity", newest first, 50 a page with an
 // opaque cursor ("Show older"), a group filter. Each row is the entry's plain-English summary, who did it and
 // when, in the company's time zone. Budget entries name amounts the company set and trip entries can name
-// trips priced on demo data, so the list sits in one demo container with a note saying so (§F6).
+// trips priced on demo data, so with demo inventory the list sits in one demo container with a note saying so
+// (§F6); with none, the amounts are the company's own budgets and carry no demo label.
 const { html } = require('../../lib/html');
 const { pageHead, tabs, pager, emptyState } = require('./parts');
 const f = require('./format');
@@ -58,11 +59,16 @@ function activityView(ctx, shell, { page, group, moreHref }) {
       <p class="bz-meta">${icon('clock')}<span><time datetime="${e.at}">${f.whenIn(tz, e.at, { now })}</time>${who && !named ? ` · ${who}` : ''} · ${GROUP_LABELS[e.group] || e.group}</span></p>
     </li>`;
   });
-  const list = rows.length
+  // With no supplier (or a live one) the amounts are budgets the company set, never demo prices.
+  const demo = Boolean(ctx.business && ctx.business.inventory && ctx.business.inventory.status === 'demo');
+  const shown = demo
     ? html`<div class="bz-demo-box bz-activity" data-price-source="demo">
         <ul class="bz-activity-list">${rows}</ul>
         <p class="bz-price-note">${icon('info')}<span>${AMOUNTS_NOTE}</span></p>
       </div>`
+    : html`<div class="bz-activity"><ul class="bz-activity-list">${rows}</ul></div>`;
+  const list = rows.length
+    ? shown
     : emptyState({ title: EMPTY, text: group ? 'Try another filter.' : 'Changes your team makes show up here.', iconName: 'clock' });
   const body = html`${pageHead({ title: TITLE, sub: `Times shown in ${f.zoneLabel(tz)}.` })}
     ${filter}
