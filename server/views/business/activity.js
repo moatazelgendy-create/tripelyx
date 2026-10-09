@@ -26,6 +26,16 @@ function actorText(a) {
 }
 
 /**
+ * The summary as a row shows it: when it opens with the actor's name, their own trip is "their trip"
+ * ("Sam Rivera asked for approval of their trip", not "... of Sam Rivera's trip").
+ */
+function summaryText(summary, who) {
+  const text = String(summary || '');
+  if (!who || !text.startsWith(`${who} `)) return text;
+  return who + text.slice(who.length).split(`${who}'s trip`).join('their trip');
+}
+
+/**
  * @param {object} ctx
  * @param {import('../../business/types').ShellModel} shell
  * @param {{ page: import('../../business/types').Page<import('../../business/types').AuditEntry>, group: string|null, moreHref: string|null }} v
@@ -41,9 +51,11 @@ function activityView(ctx, shell, { page, group, moreHref }) {
   ], { label: 'Show activity for' });
   const rows = page.rows.map(e => {
     const who = actorText(e.actor);
+    // The meta line names who did it only when the summary doesn't already start with them.
+    const named = who && String(e.summary || '').startsWith(`${who} `);
     return html`<li class="bz-activity-row">
-      <p class="bz-activity-text">${e.summary}</p>
-      <p class="bz-meta">${icon('clock')}<span><time datetime="${e.at}">${f.whenIn(tz, e.at, { now })}</time>${who ? ` · ${who}` : ''} · ${GROUP_LABELS[e.group] || e.group}</span></p>
+      <p class="bz-activity-text">${summaryText(e.summary, who)}</p>
+      <p class="bz-meta">${icon('clock')}<span><time datetime="${e.at}">${f.whenIn(tz, e.at, { now })}</time>${who && !named ? ` · ${who}` : ''} · ${GROUP_LABELS[e.group] || e.group}</span></p>
     </li>`;
   });
   const list = rows.length
@@ -59,4 +71,4 @@ function activityView(ctx, shell, { page, group, moreHref }) {
   return shellView(ctx, shell, { title: TITLE, body });
 }
 
-module.exports = { activityView, actorText, TITLE, EMPTY, GROUP_LABELS, AMOUNTS_NOTE };
+module.exports = { activityView, actorText, summaryText, TITLE, EMPTY, GROUP_LABELS, AMOUNTS_NOTE };

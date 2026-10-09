@@ -13,6 +13,7 @@ const businessRoutes = require('../server/routes/business');
 const businessPlatform = require('../server/routes/businessPlatform');
 const { KINDS } = require('../server/business/constants');
 const { ACCOUNT_LIMIT } = require('../server/business/limits');
+const table = require('../server/routes/business/table');
 
 const ROUTERS = Object.freeze({
   public: require('../server/routes/business/public'),
@@ -50,7 +51,7 @@ async function setup({ env = {}, clock = null } = {}) {
 // ---------------------------------------------------------------------------------------------------------
 // The route table
 
-test('routes: ROUTES lists every public, admin and platform route, and each Express route runs exactly limiter → sameOrigin → form → gate → handler', async t => {
+test('routes: ROUTES lists every public, admin and platform route, and each Express route runs exactly headers → limiter → sameOrigin → form → gate → handler', async t => {
   const { app } = await setup();
   t.after(app.close);
   assert.deepEqual(businessRoutes.ROUTES, [...ROUTERS.public.ROUTES, ...ROUTERS.traveler.ROUTES, ...ROUTERS.admin.ROUTES]);
@@ -77,6 +78,8 @@ test('routes: ROUTES lists every public, admin and platform route, and each Expr
   // The Express stack, built with real deps, against the table: nothing more, nothing less, in order.
   const deps = businessRoutes.createRouterDeps(app.ctx);
   const GATES = { anyone: ['publicHeaders'], user: ['publicHeaders', 'requireUserPage'], member: ['bizMemberGate'], platform: ['bizPlatformGate'] };
+  // The first middleware only sets headers (so a 403 or 429 before the gate is no-store and noindex too).
+  const HEADERS = { public: table.bizPublicHeaders, admin: table.bizPrivateHeaders, platform: table.bizPrivateHeaders };
   const check = (router, routes, label) => {
     const layers = router.stack.filter(l => l.route);
     const seen = layers.flatMap(l => Object.keys(l.route.methods).filter(m => l.route.methods[m]).map(m => `${m.toUpperCase()} ${l.route.path}`));
@@ -84,10 +87,10 @@ test('routes: ROUTES lists every public, admin and platform route, and each Expr
     for (const r of routes) {
       const layer = layers.find(l => l.route.path === r.path && l.route.methods[r.method.toLowerCase()]);
       const chain = layer.route.stack.map(s => s.handle);
-      const want = [...r.limiter.filter(l => l !== 'bizAuthAccount').map(l => deps.limits[l])];
+      const want = [HEADERS[label], ...r.limiter.filter(l => l !== 'bizAuthAccount').map(l => deps.limits[l])];
       if (r.method === 'POST') want.push(deps.sameOrigin, deps.form);
       if (r.limiter.includes('bizAuthAccount')) want.push(deps.limits.bizAuthAccount);
-      assert.deepEqual(chain.slice(0, want.length), want, `${label} ${key(r)}: limiters, sameOrigin and the form parser first`);
+      assert.deepEqual(chain.slice(0, want.length), want, `${label} ${key(r)}: headers, limiters, sameOrigin and the form parser first`);
       const rest = chain.slice(want.length).map(fn => fn.name);
       assert.deepEqual(rest.slice(0, -1), GATES[r.who], `${label} ${key(r)}: then the gate`);
       assert.ok(rest.at(-1) && !GATES[r.who].includes(rest.at(-1)), `${label} ${key(r)}: then its handler`);
@@ -99,10 +102,10 @@ test('routes: ROUTES lists every public, admin and platform route, and each Expr
   // The sign-in chain by name: the email limiter reads the parsed form, so it sits after the parser.
   const signin = ROUTERS.public.router(app.ctx, deps).stack.find(l => l.route && l.route.path === '/signin' && l.route.methods.post);
   assert.deepEqual(signin.route.stack.map(s => s.handle === deps.limits.bizAuthIp ? 'bizAuthIp' : s.handle === deps.limits.bizAuthAccount ? 'bizAuthAccount' : s.handle.name),
-    ['bizAuthIp', 'sameOrigin', 'urlencodedParser', 'bizAuthAccount', 'publicHeaders', 'signinPost']);
+    ['bizPublicHeaders', 'bizAuthIp', 'sameOrigin', 'urlencodedParser', 'bizAuthAccount', 'publicHeaders', 'signinPost']);
 });
 
-test('routes: a cross-site POST to every Business route (walked from ROUTES) answers 403 and writes nothing', async t => {
+test('routes: a cross-site POST to every Business route (walked from ROUTES) answers 403, no-store and noindex (public ones with no referrer), and writes nothing', async t => {
   const { app, svc, ops, actor } = await setup();
   t.after(app.close);
   const owner = await seedUser(app, { name: 'Olivia Owner' });
@@ -114,8 +117,9 @@ test('routes: a cross-site POST to every Business route (walked from ROUTES) ans
     assert.ok(Object.hasOwn(params, k), `a value for :${k}`);
     return encodeURIComponent(params[k]);
   });
+  const publicKeys = new Set(ROUTERS.public.ROUTES.map(r => `${r.method} ${r.path}`));
   const routes = [
-    ...businessRoutes.ROUTES.map(r => ({ ...r, url: businessRoutes.MOUNT + fill(r.path), cookie: owner.cookie })),
+    ...businessRoutes.ROUTES.map(r => ({ ...r, url: businessRoutes.MOUNT + fill(r.path), cookie: owner.cookie, public: publicKeys.has(`${r.method} ${r.path}`) })),
     ...businessPlatform.ROUTES.map(r => ({ ...r, url: businessPlatform.MOUNT + (r.path === '/' ? '' : fill(r.path)), cookie: ops.cookie })),
   ].filter(r => r.method === 'POST');
   assert.ok(routes.length >= 16, 'the walk covers the 2A POST routes');
@@ -126,6 +130,9 @@ test('routes: a cross-site POST to every Business route (walked from ROUTES) ans
       const res = await client(app.base, cookie).post(r.url, form, { headers: { 'sec-fetch-site': 'cross-site' } });
       assert.equal(res.status, 403, `${r.method} ${r.url} (${cookie ? 'signed in' : 'signed out'})`);
       assert.match(textOf(res.text), /This request was blocked\./, r.url);
+      // The refusal comes before the gate, from the app's error page: the Business headers are set anyway.
+      privatePage(res, `403 ${r.url}`);
+      if (r.public) assert.equal(res.headers.get('referrer-policy'), 'no-referrer', `403 ${r.url}: no referrer (an invite token can be in it)`);
     }
   }
   assert.deepEqual(storeSnapshot(app), before, 'nothing was written');
@@ -229,6 +236,13 @@ test('sign-up: bad fields come back 422 with each message, and nothing is create
   }
   assert.match(res.text, /aria-invalid="true"/);
   assert.doesNotMatch(res.text, /value="short"/);
+  // The company fields speak like the others; the card says it is the preview; the zone hint is plain.
+  assert.ok(text.includes("Choose your company's size."), 'the size message');
+  const noName = await client(app.base).post('/business/start', { name: 'Dana Lee', email: 'dana@acme.example', password: PASSWORD, companyName: '  ', size: '1-10 people', ack: '1' });
+  assert.equal(noName.status, 422);
+  assert.ok(textOf(noName.text).includes("Enter your company's name."), 'the name message');
+  assert.match(mainOf(res.text), /<p class="eyebrow bz-pub-eyebrow">Tripelyx Business · Preview<\/p>/);
+  assert.ok(textOf(res.text).includes('We show times, like when a request expires, in this time zone.'), 'the zone hint');
   assert.equal(recordsOf(app, 'user').length, 1, 'only the platform admin');
   assert.equal(recordsOf(app, KINDS.org).length, 0);
 });
@@ -252,6 +266,55 @@ test('sign-up: a signed-in person adds a company under their own account; at the
   const again = await c.post('/business/start', { companyName: 'Beta Inc', size: '1-10 people', ack: '1' });
   assert.equal(again.status, 422);
   assert.equal(recordsOf(app, KINDS.org).length, 1);
+  // At the limit the page is headed by what it says, not by "Create your company workspace".
+  assert.match(mainOf(capped.text), /<h1>You&#39;ve reached the company limit<\/h1>/);
+  assert.doesNotMatch(mainOf(capped.text), /<h1>Create your company workspace<\/h1>/);
+});
+
+test('sign-up: a double-submitted form makes one company, and both answers land on its welcome page (signed in and signed out)', async t => {
+  const { app, svc } = await setup();
+  t.after(app.close);
+  // Signed in: two posts at once.
+  const fay = await seedUser(app, { name: 'Fay Finance', email: 'fay@acme.example' });
+  const c = client(app.base, fay.cookie);
+  const form = { companyName: 'Fay Ventures', size: '1-10 people', timezone: 'Africa/Cairo', ack: '1' };
+  const both = await Promise.all([c.post('/business/start', form), c.post('/business/start', form)]);
+  assert.deepEqual(both.map(r => r.status), [303, 303]);
+  assert.equal(both[0].location, both[1].location, 'the same welcome page');
+  assert.equal((await svc.listCompaniesFor({ user: fay.user })).filter(o => o.name === 'Fay Ventures').length, 1, 'one company');
+  // A resubmit a moment later (the back button) lands there too, without a second company.
+  const later = await c.post('/business/start', { ...form, companyName: 'fay ventures' });
+  assert.equal(later.status, 303);
+  assert.equal(later.location, both[0].location);
+  assert.equal((await svc.listCompaniesFor({ user: fay.user })).length, 1);
+  // Signed out: the second post finds the account the first one made; the right password signs it in.
+  const anon = client(app.base);
+  const signup = { name: 'Nia New', email: 'nia@new.example', password: PASSWORD, companyName: 'Nia Labs', size: '1-10 people', ack: '1' };
+  const pair = await Promise.all([anon.post('/business/start', signup), anon.post('/business/start', signup)]);
+  assert.deepEqual(pair.map(r => r.status), [303, 303]);
+  assert.equal(pair[0].location, pair[1].location);
+  for (const r of pair) assert.ok(sessionOf(r), 'each answer signs the browser in');
+  assert.equal(recordsOf(app, KINDS.org).filter(o => o.name === 'Nia Labs').length, 1);
+  // The wrong password is still the "sign in instead" answer: a resubmit is no way to learn a password.
+  const wrong = await anon.post('/business/start', { ...signup, password: 'not-the-password' });
+  assert.equal(wrong.status, 409);
+  assert.match(textOf(wrong.text), /An account with this email already exists\. Sign in to add your company to it\./);
+});
+
+test('sign-up: a signed-in post that carries another account\'s email and password is refused, and nothing is created', async t => {
+  const { app, svc } = await setup();
+  t.after(app.close);
+  const fay = await seedUser(app, { name: 'Fay Finance', email: 'fay@acme.example' });
+  const users = recordsOf(app, 'user').length;
+  const res = await client(app.base, fay.cookie).post('/business/start', { name: 'Brand New', email: 'brandnew@other.example', password: PASSWORD, companyName: 'Brand New Co', size: '1-10 people', ack: '1' });
+  assert.equal(res.status, 409);
+  assert.match(textOf(res.text), /You're signed in as fay@acme\.example\. Sign out to create the company with a new account\./);
+  assert.equal((await svc.listCompaniesFor({ user: fay.user })).length, 0);
+  assert.equal(recordsOf(app, 'user').length, users);
+  assert.doesNotMatch(res.text, new RegExp(PASSWORD), 'the password is never echoed');
+  // The same email (any case) is this account: that works.
+  const same = await client(app.base, fay.cookie).post('/business/start', { email: 'FAY@acme.example', companyName: 'Fay Co', size: '1-10 people', ack: '1' });
+  assert.equal(same.status, 303);
 });
 
 // ---------------------------------------------------------------------------------------------------------
@@ -282,6 +345,23 @@ test('sign-in: a wrong password is 401 with the message; a good one goes to a /b
   const skip = await signedIn.get('/business/signin?next=%2Fbusiness%2Fstart');
   assert.equal(skip.status, 303);
   assert.equal(skip.location, '/business/start');
+  // A next that leaves /business once dot segments are resolved (as the browser would) is ignored.
+  const inBusiness = loc => {
+    const path = new URL(loc, 'http://site.example').pathname;
+    return path === '/business' || path.startsWith('/business/');
+  };
+  for (const next of ['/business/../admin', '/business/%2e%2e/admin', '/business/..//evil.example', '/business/.%2E/my-trips', '/business\\..\\admin']) {
+    const post = await c.post('/business/signin', { email: 'dana@acme.example', password: PASSWORD, next });
+    assert.equal(post.status, 303, next);
+    assert.ok(inBusiness(post.location), `POST next ${next} → ${post.location}`);
+    const get = await signedIn.get(`/business/signin?next=${encodeURIComponent(next)}`);
+    assert.equal(get.status, 303, next);
+    assert.ok(inBusiness(get.location), `GET next ${next} → ${get.location}`);
+    assert.equal(get.location, '/business/app', next);
+  }
+  // A clean /business path is kept as resolved.
+  const dots = await signedIn.get(`/business/signin?next=${encodeURIComponent('/business/./start')}`);
+  assert.equal(dots.location, '/business/start');
 });
 
 test('sign-in limits: the email limiter reads the parsed form and counts only failures; the IP limiter caps sign-ups', async t => {
@@ -296,6 +376,8 @@ test('sign-in limits: the email limiter reads the parsed form and counts only fa
   const blocked = await c.post('/business/signin', { email: ' DANA@acme.example ', password: PASSWORD });
   assert.equal(blocked.status, 429, 'the right password too, once the address is over its limit, in any spelling');
   assert.match(textOf(blocked.text), /Too many requests in a short time\./);
+  privatePage(blocked, 'the sign-in 429');
+  assert.equal(blocked.headers.get('referrer-policy'), 'no-referrer');
   assert.equal((await c.post('/business/signin', { email: 'sam@acme.example', password: 'wrong-password' })).status, 401, 'another address is not limited');
 
   const small = await setup({ env: { BUSINESS_AUTH_LIMIT: '3' } });
@@ -347,7 +429,10 @@ test('invite, signed out: one join state offers "Create your account" and "Alrea
   assert.match(text, /Create your account to join/);
   assert.match(text, /Already have an account\? Sign in with it to join Acme Inc\./);
   assert.match(page.text, new RegExp(`href="/business/signin\\?next=${encodeURIComponent(here).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`));
-  assert.match(text, /If an account with this email isn't yours, write to go@tripelyx\.com\./);
+  // "Not yours?" belongs to the account-exists answer and the other-account state, not to a fresh landing.
+  assert.doesNotMatch(text, /If an account with this email isn't yours/);
+  // How long is left (the same in every zone), then the moment in UTC: the landing has no company time zone.
+  assert.match(text, /This link works once and expires in [67] days, at 9:00 AM, Fri 16 Oct \(UTC\)\./);
   assert.doesNotMatch(page.text, /name="email"/, 'the email is fixed by the invite');
   // A bad password: 422, nothing created, the name kept.
   const short = await c.post(`${here}/join`, { name: 'Sam Doe', password: 'short' });
@@ -372,6 +457,7 @@ test('invite, signed out: one join state offers "Create your account" and "Alrea
   // The link is used now.
   const used = await c.get(here);
   assert.equal(used.status, 410);
+  assert.match(mainOf(used.text), /<h1>This invite link can&#39;t be used<\/h1>/);
   assert.match(textOf(used.text), /This invite link can't be used anymore\. Ask your company's travel admin for a new one\./);
 });
 
@@ -389,6 +475,13 @@ test('invite: joining with an email that already has an account answers 409 "Thi
   assert.match(text, /This email already has an account\. Sign in instead\./);
   assert.match(res.text, new RegExp(`href="/business/signin\\?next=${encodeURIComponent(here)}"`));
   assert.equal(res.headers.getSetCookie().some(x => x.startsWith('txs=')), false, 'no session');
+  // Signing in is the way in now: no second create-account form, "Sign in to join" is the main button,
+  // the message is said once, and "not yours?" is a mail link.
+  const main = mainOf(res.text);
+  assert.doesNotMatch(main, new RegExp(`action="${here}/join"`), 'no create-account form after the 409');
+  assert.match(main, new RegExp(`<a class="btn btn-navy bz-btn" href="/business/signin\\?next=${encodeURIComponent(here)}">Sign in to join</a>`));
+  assert.equal(textOf(main).split('This email already has an account. Sign in instead.').length - 1, 1);
+  assert.match(main, /If an account with this email isn't yours, write to <a href="mailto:go@tripelyx\.com">go@tripelyx\.com<\/a>\./);
   assert.equal(await svc.repo.get(KINDS.member, `${org.id}.${sam.user.id}`), null);
   // Signing in, then accepting, works.
   const signin = await client(app.base).post('/business/signin', { email: 'sam@acme.example', password: PASSWORD, next: here });
@@ -418,8 +511,12 @@ test('invite, signed in: another account sees the masked address and a sign-out;
   assert.doesNotMatch(asOther.text, /sam@acme\.example/, 'another account never sees the full invited address');
   assert.match(asOther.text, /action="\/business\/signout"/);
   assert.match(asOther.text, new RegExp(`name="next" value="${here}"`));
+  // The masked address once, in the alert; the lead names who sent it without repeating it.
+  assert.equal(textOf(mainOf(asOther.text)).match(/s\*+@acme\.example/g).length, 1);
+  assert.match(t1, /Dana Lee sent an invite to join as Employee\./);
   const refused = await client(app.base, other.cookie).post(`${here}/accept`, {});
   assert.equal(refused.status, 403, 'the wrong account cannot accept');
+  assert.equal(textOf(mainOf(refused.text)).split('This invite is for ').length - 1, 1, 'the refusal is said once');
   const asOwner = await client(app.base, owner.cookie).get(here);
   assert.match(textOf(asOwner.text), /You're already in Acme Inc\./);
   // Revoked.
@@ -444,6 +541,32 @@ test('invite, signed in: another account sees the masked address and a sign-out;
   assert.equal(pausedSignedIn.status, 403);
   assert.match(pausedSignedIn.text, /href="\/business\/app">Your companies</, 'signed in: their companies, not Sign in');
   assert.doesNotMatch(pausedSignedIn.text, /href="\/business\/signin"/);
+});
+
+test('invite: accepting for a company Tripelyx has not confirmed says so once; a double-submitted join lands both answers in the company', async t => {
+  const { app, svc, actor } = await setup();
+  t.after(app.close);
+  const owner = await seedUser(app, { name: 'Dana Lee' });
+  const pending = await seedOrg(app, owner, { name: 'Wait Co', status: 'pending' });
+  const sam = await seedUser(app, { name: 'Sam Doe', email: 'sam@acme.example' });
+  const inv = await svc.invite(actor(pending.id, owner), { email: 'sam@acme.example', role: 'employee' });
+  const res = await client(app.base, sam.cookie).post(`/business/invite/${inv.token}/accept`, {});
+  assert.equal(res.status, 409);
+  assert.equal(textOf(mainOf(res.text)).split('Wait Co is waiting for Tripelyx to confirm it.').length - 1, 1, 'the pending text once');
+  // Join, twice at once (a double click): one account, one member, and both answers open the company.
+  const org = await seedOrg(app, owner, { name: 'Acme Inc' });
+  const { token } = await svc.invite(actor(org.id, owner), { email: 'kim@acme.example', role: 'employee' });
+  const anon = client(app.base);
+  const both = await Promise.all([1, 2].map(() => anon.post(`/business/invite/${token}/join`, { name: 'Kim Lee', password: PASSWORD })));
+  assert.deepEqual(both.map(r => r.status), [303, 303]);
+  for (const r of both) {
+    assert.equal(r.location, `/business/o/${org.id}`);
+    assert.ok(sessionOf(r));
+  }
+  assert.equal(recordsOf(app, 'user').filter(u => u.email === 'kim@acme.example').length, 1);
+  // The used link with the wrong password is still "can't be used": nothing about the account.
+  const wrong = await anon.post(`/business/invite/${token}/join`, { name: 'Kim Lee', password: 'not-the-password' });
+  assert.equal(wrong.status, 410);
 });
 
 // ---------------------------------------------------------------------------------------------------------
@@ -473,7 +596,15 @@ test('/business/app: no company offers to create one, one company opens it, two 
   assert.doesNotMatch(two.text, /\/admin\/business/, 'no platform link for a customer');
   const asOps = await client(app.base, ops.cookie).get('/business/app');
   assert.equal(asOps.status, 200, 'a platform admin is never sent into a company');
-  assert.match(textOf(asOps.text), /Companies waiting for confirmation \(1\)/);
+  const opsText = textOf(asOps.text);
+  assert.match(opsText, /Waiting for confirmation \(1\)/);
+  assert.match(opsText, /1 company waiting for you to confirm\./);
+  // Headed "Your companies" for everyone; creating one is a section under it.
+  assert.match(mainOf(asOps.text), /<h1>Your companies<\/h1>/);
+  assert.match(mainOf(none.text), /<h1>Your companies<\/h1>/);
+  assert.match(mainOf(none.text), /<h2 id="bz-create-title">Create your company workspace<\/h2>/);
+  // The waiting count comes before the create section.
+  assert.ok(mainOf(asOps.text).indexOf('Waiting for confirmation') < mainOf(asOps.text).indexOf('bz-create-title'));
 });
 
 test('with Travel by Budget off, sign-up, sign-in and the platform page still work', async t => {

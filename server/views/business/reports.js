@@ -53,7 +53,9 @@ function reportsView(ctx, shell, { dash, choices, list, filters = {}, department
     ${tile('Committed vs budget', !total
     ? html`<p>${NO_REQUESTS}</p>`
     : budgets.length
-      ? demoBox(html`<ul class="bz-lines-text">${budgets.map(b => html`<li>${b.department.name}: ${amount(b.committedCents)} of ${amount(b.amountCents)}${budgetBar(b)}</li>`)}</ul>`, { pricedAt: null, timeZone: tz })
+      // Both parts of the bar named: committed (approved while the budget was set) and awaiting approval.
+      ? demoBox(html`<ul class="bz-lines-text">${budgets.map(b => html`<li><span class="bz-budget-name">${b.department.name}</span>${amount(b.committedCents)} committed and ${amount(b.awaitingCents)} awaiting approval, of ${amount(b.amountCents)}${budgetBar(b)}</li>`)}</ul>
+        <p class="bz-meta">Committed counts trips approved while their department had a budget for ${label}.</p>`, { pricedAt: null, timeZone: tz })
       : html`<p>No budgets set for ${label}.</p>`)}
     ${tile('Saved by switching to cheaper options', !total
     ? html`<p>${NO_REQUESTS}</p>`
@@ -63,11 +65,12 @@ function reportsView(ctx, shell, { dash, choices, list, filters = {}, department
   </div>
   <div class="bz-tiles">${t.comingSoon.map(c => comingSoon(c.label, COMING_TEXT[c.key] || '', { level: 2 }))}</div>`;
   const travelers = t.byTraveler.length
-    ? demoBox(dataTable({
+    ? demoBox(html`${dataTable({
       caption: `Requests by traveler, ${label}`, captionVisible: false,
-      columns: [{ label: 'Traveler' }, { label: 'Requests', num: true }, { label: 'Committed', num: true }],
+      columns: [{ label: 'Traveler' }, { label: 'Requests', num: true }, { label: 'Approved', num: true }],
       rows: t.byTraveler.map(x => [x.name, String(x.requests), amount(x.committedCents)]),
-    }), { pricedAt: null, timeZone: tz, tag: 'section', label: 'Requests by traveler' })
+    })}
+    <p class="bz-meta">Approved: the total of each traveler's approved trips departing in ${label}, whether or not a budget counts them.</p>`, { pricedAt: null, timeZone: tz, tag: 'section', label: 'Requests by traveler' })
     : '';
   const statusOptions = [['', 'Any status'], ...STATUS_ORDER.map(s => [s, statusLabel(s)])];
   const depOptions = [['', 'Every department'], ...departments.map(d => [d.id, d.archivedAt ? `${d.name} (archived)` : d.name])];

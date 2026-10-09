@@ -322,7 +322,11 @@ test('policies: every tier at a glance in a demo container; the editor round-tri
   assert.equal(bad.status, 422);
   assert.match(bad.text, /name="hotel\.default"[^>]*value="lots"/);
   assert.match(bad.text, /aria-invalid="true"/);
-  assert.match(textOf(bad.text), /Check the highlighted fields\./);
+  // One box: the list naming each field, linked to it (no second "Check the highlighted fields." above it).
+  assert.equal((mainOf(bad.text).match(/class="alert alert-error/g) || []).length, 1, 'one error box');
+  assert.match(textOf(bad.text), /Check the highlighted fields: Hotel limit everywhere else : Enter an amount/);
+  assert.match(bad.text, /<a href="#bz-pol-hotel-default">Hotel limit everywhere else<\/a>/);
+  assert.match(bad.text, /id="bz-pol-hotel-default"/, 'the link lands on the field');
   // Unknown tier: 404.
   assert.equal((await c.get(`${w.o}/policies/platinum`)).status, 404);
   // How trips outside the policy are handled, from the policies page.
@@ -498,7 +502,11 @@ test('settings: the Owner is warned that a rename sends the company back to Trip
   assert.match(text, /Book first, approver can cancel within 24 hours\. Available once booking is live\./);
   assert.match(page.text, /<input[^>]*name="outOfPolicyLater"[^>]*disabled/);
   assert.match(text, /US dollars \(USD\)\. More currencies later\./);
-  assert.match(text, /To delete this company's data, write to go@tripelyx\.com\./);
+  assert.match(text, /To delete this company's data, write to go@tripelyx\.com \./);
+  assert.match(page.text, /write to <a href="mailto:go@tripelyx\.com">go@tripelyx\.com<\/a>\./);
+  // The rename warning is a warning above the name field, not a grey hint.
+  assert.match(page.text, /<div class="alert alert-warning bz-alert" role="note" id="bz-set-name-warning">[\s\S]*?Changing the name sends your company back to Tripelyx to confirm\.[\s\S]*?<\/div>\s*<div class="field">\s*<label for="bz-set-name">/);
+  assert.doesNotMatch(page.text, /id="bz-set-name-hint"/);
   noInline('settings', page.text);
   const action = `${w.o}/settings`;
   const fields = formOf(page.text, action);
@@ -557,6 +565,8 @@ test('platform: only platform admins see /admin/business; confirming is audited 
   await w.app.store.savePartnerLead({ id: 'lead_test1', name: 'Lena Lead', company: 'Lead Co', email: 'lena@lead.example', type: '51-200 people', message: 'We want to try it with our sales team.', createdAt: '2026-10-08T10:00:00.000Z', kind: 'business' });
   const newcomer = await seedUser(w.app, { name: 'Nina New' });
   const { org: pending } = await w.svc.createCompany({ user: newcomer.user }, { name: 'Acme, Inc.', size: '1-10 people', ack: '1' });
+  const lookalike = await seedUser(w.app, { name: 'Lou Look' });
+  await w.svc.createCompany({ user: lookalike.user }, { name: 'Acme Incorporated', size: '1-10 people', ack: '1' });
   const ops = client(w.app.base, w.ops.cookie);
   // Everyone else: 404, signed out too, GET and POST.
   for (const who of [w.owner, newcomer, null]) {
@@ -568,9 +578,14 @@ test('platform: only platform admins see /admin/business; confirming is audited 
   const page = await ops.get('/admin/business');
   assert.equal(page.status, 200);
   const text = textOf(page.text);
-  assert.ok(text.indexOf('Waiting for confirmation (1)') < text.indexOf('Active (1)'), 'pending first');
+  assert.ok(text.indexOf('Waiting for confirmation (2)') < text.indexOf('Active (1)'), 'pending first');
   assert.match(text, /Acme, Inc\./);
   assert.match(text, /Similar name: Acme Inc/);
+  // A name that starts with the same word is flagged too, and the zone reads as on the sign-up form.
+  const card = (page.text.match(/<li class="bz-card bz-stack" id="org-[^"]+">(?:(?!<\/li>)[\s\S])*Acme Incorporated(?:(?!<\/li>)[\s\S])*<\/li>/) || [''])[0];
+  assert.match(textOf(card), /Similar name: Acme, Inc\., Acme Inc /, 'Acme Incorporated is flagged against Acme Inc');
+  assert.match(text, /Cairo time \(Africa\/Cairo\)/);
+  assert.doesNotMatch(text, / · Africa\/Cairo · /, 'not the raw zone id');
   assert.match(text, /Company enquiries \(1\)/);
   assert.match(text, /Lena Lead/);
   assert.match(text, /We want to try it with our sales team\./);
@@ -582,24 +597,34 @@ test('platform: only platform admins see /admin/business; confirming is audited 
   // Confirm.
   const confirm = await ops.post(`/admin/business/${pending.id}/status`, { status: 'active', rev: String(pending.rev) });
   assert.equal(confirm.status, 303);
-  assert.equal(confirm.location, '/admin/business?ok=active');
+  assert.equal(confirm.location, `/admin/business?ok=active&org=${pending.id}`);
+  // A double click: the second Confirm (now at an old rev) finds the change made and lands the same way.
+  const twice = await ops.post(`/admin/business/${pending.id}/status`, { status: 'active', rev: String(pending.rev) });
+  assert.equal(twice.status, 303);
+  assert.equal(twice.location, confirm.location);
   const entry = (await w.svc.listAudit({ org: { id: pending.id }, user: newcomer.user }, { group: 'org' })).rows[0];
   assert.equal(entry.action, 'org.confirmed');
   assert.deepEqual(entry.actor, { platformAdmin: w.ops.user.id, name: 'Tripelyx' });
   assert.equal(entry.summary, 'Tripelyx confirmed Acme, Inc.');
-  assert.match(textOf((await ops.get(confirm.location)).text), /Done\. The company is active, and its people can join by invite\./);
+  assert.match(textOf((await ops.get(confirm.location)).text), /Done\. Acme, Inc\. is active, and its people can join by invite\./, 'the notice names the company');
   // Pause: a note is required; a stale form is 409.
   const cur = await w.svc.repo.get(KINDS.org, w.org.id);
   const noNote = await ops.post(`/admin/business/${w.org.id}/status`, { status: 'suspended', rev: String(cur.rev), note: '' });
   assert.equal(noNote.status, 422);
   assert.match(textOf(noNote.text), /Write a short note on why this company is paused\./);
   assert.match(noNote.text, /<details class="bz-more" open>/);
-  assert.equal((await ops.post(`/admin/business/${w.org.id}/status`, { status: 'suspended', rev: String(cur.rev - 1), note: 'Checking' })).status, 409);
+  // A Pause at an old rev (the company changed since): the shared stale copy, the latest data, the note kept.
+  const stalePause = await ops.post(`/admin/business/${w.org.id}/status`, { status: 'suspended', rev: String(cur.rev - 1), note: 'Checking' });
+  assert.equal(stalePause.status, 409);
+  assert.match(textOf(stalePause.text), new RegExp(escRe(STALE)));
+  assert.doesNotMatch(textOf(stalePause.text), /Someone else just changed this/);
+  assert.match(stalePause.text, />Checking<\/textarea>/);
+  assert.match(noNote.text, /<textarea[^>]*name="note"[^>]*required/, 'the note is required in the form too');
   const paused = await ops.post(`/admin/business/${w.org.id}/status`, { status: 'suspended', rev: String(cur.rev), note: 'Checking the company details' });
   assert.equal(paused.status, 303);
   const locked = await w.c(w.owner).get(`${w.o}/settings`);
   assert.equal(locked.status, 403);
-  assert.match(textOf(locked.text), /Tripelyx has paused this company workspace\. Write to go@tripelyx\.com\./);
+  assert.match(textOf(locked.text), /Tripelyx has paused this company workspace\. Write to go@tripelyx\.com ?\./, 'the address is a link, so the text has a tag break before the period');
   assert.doesNotMatch(textOf(locked.text), /Checking the company details/, 'the note stays with Tripelyx');
   assert.equal((await w.c(w.owner).post(`${w.o}/departments`, { name: 'Ops' })).status, 403);
   // Reactivate.
@@ -612,6 +637,262 @@ test('platform: only platform admins see /admin/business; confirming is audited 
   for (const p of ['/welcome', '/people', '/settings', '/reports', '/activity', '/budgets', '/policies']) assert.equal((await ops.get(w.o + p)).status, 404, p);
   assert.equal((await ops.post(`${w.o}/settings`, { rev: '0', approvalHours: '30' })).status, 404);
   assert.equal((await ops.post(`${w.o}/settings/export`, {})).status, 404);
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// Review fixes (Stage 2A review): each test fails on the reviewed build and states the behaviour asked for.
+
+/** A member's card on the People page ('' when the page has none). */
+const cardOf = (page, userId) => (String(page).match(new RegExp(`<li class="bz-card bz-stack" id="person-${userId}">[\\s\\S]*?</li>`)) || [''])[0];
+
+/** One within-policy trip for `who`, approved by the policy at submit. */
+async function approvedTrip(w, who) {
+  const pick = (sv, leg, f) => sv.legs[leg].rows.find(f).row.key;
+  const sv = await w.svc.searchTrip(who.actor, Q);
+  const ok = r => r.row.available && r.row.carrier.code === 'ZA' && r.evaluation.status === 'within';
+  const draft = await w.svc.createRequest(who.actor, {
+    query: Q, purpose: 'Client workshop in London',
+    selection: { out: pick(sv, 'out', ok), back: pick(sv, 'back', ok), hotelKey: pick(sv, 'hotel', r => r.row.available && r.row.stars === 3 && r.evaluation.status === 'within') },
+  });
+  const done = (await w.svc.submit(who.actor, draft.id, { rev: draft.rev })).request;
+  assert.equal(done.status, 'approved');
+  return done;
+}
+
+test('people: a removed member leaves the list, and a second Remove lands as the first did; Remove is its own step', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const c = w.c(w.owner);
+  const page = await c.get(`${w.o}/people`);
+  // Remove sits in its own disclosure, apart from Save, with a "Yes, remove" button that says what happens.
+  const card = cardOf(page.text, w.sam.user.id);
+  assert.match(card, /<summary>Change role, department or tier<span class="sr-only"> for Sam Rivera<\/span><\/summary>/);
+  assert.match(card, /<details class="bz-more bz-remove">\s*<summary>Remove Sam Rivera<\/summary>/);
+  assert.match(card, /<button class="btn bz-btn bz-btn-danger" type="submit">Yes, remove Sam Rivera<\/button>/);
+  assert.match(textOf(card), /Sam Rivera loses access to Acme Inc right away\./);
+  const editForm = /<details class="bz-more">[\s\S]*?<\/details>/.exec(card)[0];
+  assert.doesNotMatch(editForm, /\/remove"/, 'the remove form is not inside the edit form\'s disclosure');
+  const action = `${w.o}/people/${w.sam.user.id}/remove`;
+  const pairs = formOf(page.text, action);
+  assert.equal((await postPairs(c, action, pairs)).status, 303);
+  const after = await c.get(`${w.o}/people?ok=removed`);
+  assert.match(textOf(after.text), /4 people in Acme Inc/);
+  assert.equal(cardOf(after.text, w.sam.user.id), '', 'no card for a removed member');
+  assert.ok(!after.text.includes(`action="${w.o}/people/${w.sam.user.id}"`), 'no edit form');
+  assert.ok(!after.text.includes(action), 'no remove form');
+  assert.doesNotMatch(after.text, /sam@acme\.example/);
+  assert.equal(cardOf((await w.c(w.fay).get(`${w.o}/people`)).text, w.sam.user.id), '', 'Finance sees the same list');
+  // The same form again (a resubmit, a slow double tap): Sam is already gone, so it lands where the first did.
+  const again = await postPairs(c, action, pairs);
+  assert.equal(again.status, 303);
+  assert.equal(again.location, `${w.o}/people?ok=removed`);
+  // An id that was never a member is still the not-found page.
+  assert.equal((await c.post(`${w.o}/people/usr_AAAAAAAAAAAAAAAA/remove`, { rev: '0' })).status, 404);
+});
+
+test('people: each card says who approves the trips as the rule works; a removed manager is said as removed; warnings end with a period and say "You"', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const c = w.c(w.owner);
+  let page = await c.get(`${w.o}/people`);
+  assert.match(textOf(cardOf(page.text, w.sam.user.id)), /Manager Dana Lee Approver Dana Lee \(their manager\)/);
+  assert.match(textOf(cardOf(page.text, w.fay.user.id)), /Manager None Approver Company admins/, 'no manager: the company admins decide');
+  assert.doesNotMatch(page.text, /Their manager</, 'never "Their manager" for someone without one');
+  // Dana is removed: Sam's card no longer names her as his manager, and his trips go to the admins.
+  await postPairs(c, `${w.o}/people/${w.dana.user.id}/remove`, formOf(page.text, `${w.o}/people/${w.dana.user.id}/remove`));
+  page = await c.get(`${w.o}/people`);
+  assert.match(textOf(cardOf(page.text, w.sam.user.id)), /Manager None \(Dana Lee was removed\) Approver Company admins/);
+  // Tom (the only other admin) is removed: no one can approve Olivia's trips, and the page says so to her.
+  await postPairs(c, `${w.o}/people/${w.tom.user.id}/remove`, formOf(page.text, `${w.o}/people/${w.tom.user.id}/remove`));
+  page = await c.get(`${w.o}/people`);
+  const text = textOf(page.text);
+  assert.match(text, /Check who approves these trips: You have no one who can approve your trips\./);
+  assert.doesNotMatch(text, /Olivia Owner has no one/);
+  assert.match(cardOf(page.text, w.owner.user.id), /<span class="bz-warn-text">No one yet: set a manager or an approver<\/span>/);
+  // Another viewer reads it in the third person, with the period.
+  const fin = textOf((await w.c(w.fay).get(`${w.o}/people`)).text);
+  assert.match(fin, /Olivia Owner has no one who can approve their trips\./);
+});
+
+test('departments: a blank or taken name marks the field and keeps what was typed; the saved notice sits in its section', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const c = w.c(w.owner);
+  const blank = await c.post(`${w.o}/departments`, { name: '   ' });
+  assert.equal(blank.status, 422);
+  assert.match(blank.text, /<input id="bz-dep-new" name="name" type="text" value="   "[^>]*aria-invalid="true" aria-describedby="bz-dep-new-error">/);
+  assert.match(blank.text, /<p class="field-error" id="bz-dep-new-error">Fill in this field\.<\/p>/);
+  assert.match(textOf(mainOf(blank.text)), /Check the highlighted fields\./);
+  assert.doesNotMatch(textOf(mainOf(blank.text)), /Check the highlighted fields\. Fill in this field\./, 'the field says why, once');
+  // A rename to a taken name: that department's field shows the typed name and the message.
+  const sales = await w.svc.saveDepartment(w.owner.actor, { name: 'Sales' });
+  const taken = await c.post(`${w.o}/departments`, { departmentId: sales.id, rev: String(sales.rev), name: 'engineering' });
+  assert.equal(taken.status, 409);
+  assert.match(taken.text, new RegExp(`<input id="bz-dep-${sales.id}" name="name" type="text" value="engineering"[^>]*aria-invalid="true"`));
+  assert.match(taken.text, new RegExp(`id="bz-dep-${sales.id}-error">There is already a department with this name\\.`));
+  // The 303 lands on #departments: the notice is drawn there (not at the top, scrolled out of view).
+  const saved = await c.get(`${w.o}/people?ok=department`);
+  const section = /<section class="bz-section" id="departments"[\s\S]*?<\/section>/.exec(saved.text)[0];
+  assert.match(section, /role="status">[\s\S]*?Department saved\./);
+  assert.equal(textOf(mainOf(saved.text)).split('Department saved.').length - 1, 1, 'once');
+  // The same for a revoked invite, in #invites.
+  const { invite } = await w.svc.invite(w.owner.actor, { email: 'kim@acme.example', role: 'employee' });
+  const rev = await c.post(`${w.o}/people/invites/${invite.publicId}/revoke`, {});
+  const revoked = await c.get(rev.location.split('#')[0]);
+  const invites = /<section class="bz-section" id="invites"[\s\S]*?<\/section>/.exec(revoked.text)[0];
+  assert.match(invites, /Invite revoked\. That link no longer works\./);
+  assert.equal(textOf(mainOf(revoked.text)).split('Invite revoked.').length - 1, 1);
+  // Other notices stay at the top.
+  assert.match(textOf((await c.get(`${w.o}/people?ok=member`)).text), /Changes saved\./);
+});
+
+test('budgets: a monthly company on a quarter link is offered months; approved trips a budget does not count are said, and Reports names both parts', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  // Nina (Operations) travels before Operations has a budget, then Finance sets one: the trip took no hold.
+  const ops = await w.svc.saveDepartment(w.owner.actor, { name: 'Operations' });
+  const nina = await w.join('Nina Ops', 'nina@acme.example', 'employee', { departmentId: ops.id });
+  const trip = await approvedTrip(w, nina);
+  await w.svc.setBudget(w.fay.actor, ops.id, '2026-Q4', null, '10000');
+  const fin = w.c(w.fay);
+  const page = await fin.get(`${w.o}/budgets`);
+  const text = textOf(page.text);
+  assert.match(text, /Committed: trips departing in Q4 2026, approved while their department had a budget for it\. A trip approved before its department had a budget for the period isn't counted\./);
+  assert.doesNotMatch(text, /Committed: trips approved to depart/);
+  const money = `$${(trip.totalCents / 100).toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
+  assert.ok(text.includes(`Approved before this budget was set, not counted: ${money}`), `the uncounted ${money}`);
+  assertDemoMoney(page.text, 'budgets with an uncounted trip');
+  // Reports: the committed and awaiting parts are named; By traveler is "Approved", said what it counts.
+  const rep = textOf((await fin.get(`${w.o}/reports?period=2026-Q4`)).text);
+  assert.match(rep, /Operations \$0 committed and \$0 awaiting approval, of \$10,000/);
+  assert.match(rep, /Traveler Requests Approved/);
+  assert.match(rep, /Approved: the total of each traveler's approved trips departing in Q4 2026, whether or not a budget counts them\./);
+  // Months: on a quarter link, the month tabs (so "Pick a month above" can be done) and the quarter in view.
+  const settings = await w.svc.getOrg(w.owner.actor);
+  await w.svc.saveSettings(w.owner.actor, { rev: String(settings.rev), budgetPeriod: 'month' });
+  const q = await w.c(w.owner).get(`${w.o}/budgets?period=2026-Q4`);
+  assert.equal(q.status, 200);
+  const nav = /<nav[^>]*aria-label="Budget period"[\s\S]*?<\/nav>/.exec(q.text)[0];
+  for (const m of ['August 2026', 'October 2026', 'January 2027', 'Q4 2026']) assert.match(textOf(nav), new RegExp(m), m);
+  assert.match(textOf(q.text), /Acme Inc sets budgets by month\. Pick a month above to change them\./);
+  assert.ok(textOf(nav).indexOf('September 2026') < textOf(nav).indexOf('Q4 2026'), 'in time order');
+});
+
+test('reports and CSV: another company\'s department or traveler id answers 404, and the CSV writes nothing', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const bee = await seedUser(w.app, { name: 'Bea Other', email: 'bea@other.example' });
+  const { org: other } = await w.svc.createCompany({ user: bee.user }, { name: 'Other Co', size: '1-10 people', ack: '1' });
+  const theirs = await w.svc.saveDepartment({ org: { id: other.id }, user: bee.user }, { name: 'Their team' });
+  const fin = w.c(w.fay);
+  const before = (await w.svc.listAudit(w.owner.actor, { group: 'reports' })).rows.length;
+  for (const q of [`departmentId=${theirs.id}`, `travelerId=${bee.user.id}`, 'departmentId=dep_AAAAAAAAAAAAAAAA', 'travelerId=usr_AAAAAAAAAAAAAAAA']) {
+    assert.equal((await fin.get(`${w.o}/reports?period=2026-Q4&${q}`)).status, 404, `GET ${q}`);
+    const [k, v] = q.split('=');
+    assert.equal((await fin.post(`${w.o}/reports/export`, { period: '2026-Q4', [k]: v })).status, 404, `POST ${q}`);
+  }
+  assert.equal((await w.svc.listAudit(w.owner.actor, { group: 'reports' })).rows.length, before, 'no export was written');
+  // This company's own ids still work.
+  assert.equal((await fin.get(`${w.o}/reports?period=2026-Q4&departmentId=${w.eng.id}&travelerId=${w.sam.user.id}`)).status, 200);
+  assert.equal((await fin.post(`${w.o}/reports/export`, { period: '2026-Q4', departmentId: w.eng.id })).status, 200);
+  // A malformed id is still the form's 422.
+  assert.equal((await fin.get(`${w.o}/reports?period=2026-Q4&departmentId=nope`)).status, 422);
+});
+
+test('export: Tripelyx staff actions read "Tripelyx", never the staff account id', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const exp = await w.c(w.owner).post(`${w.o}/settings/export`, {});
+  assert.equal(exp.status, 200);
+  assert.ok(!exp.text.includes(w.ops.user.id), 'the platform admin\'s account id is not in the download');
+  const data = JSON.parse(exp.text);
+  const confirmed = data.audit.find(e => e.action === 'org.confirmed');
+  assert.deepEqual(confirmed.actor, { platformAdmin: true, name: 'Tripelyx' });
+  assert.ok(data.members.length >= 5, 'the rest is unchanged');
+});
+
+test('policies: add-country offers only countries not listed; every filled price-limit field must read; countries fold into summaries; Save stays in reach', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const c = w.c(w.owner);
+  const action = `${w.o}/policies/standard`;
+  let page = await c.get(action);
+  // Every demo country is listed already: the add row says so instead of offering a dead end.
+  assert.match(textOf(page.text), /Every country in the demo data already has its own limits\./);
+  assert.match(page.text, /<details class="bz-more bz-pol-country"><summary>France: 240 US dollars a night, 1 city<span class="sr-only">, change<\/span><\/summary>/);
+  assert.match(textOf(page.text), /To drop this country, choose Remove this country\./);
+  assert.match(page.text, /<div class="bz-actionbar"><button class="btn btn-navy bz-btn" type="submit">Save as version 2<\/button><\/div>\s*<\/form>/, 'Save in the sticky bar, inside the form');
+  for (const label of ['No limit', 'Fixed amount', 'Search median + %', 'Search median + amount']) assert.match(page.text, new RegExp(`>${escRe(label)}</option>`), label);
+  // Drop Egypt: then the add row offers Egypt, and only Egypt.
+  let pairs = formOf(page.text, action);
+  const egypt = pairs.find(([k, v]) => /^country\.\d+\.name$/.test(k) && v === 'Egypt')[0].split('.')[1];
+  pairs = pairs.map(([k, v]) => [k, k.startsWith(`country.${egypt}.`) ? '' : v]);
+  assert.equal((await postPairs(c, action, pairs)).status, 303);
+  page = await c.get(action);
+  const add = /<legend>Add a country<\/legend>[\s\S]*?<\/select>/.exec(page.text)[0];
+  assert.deepEqual([...add.matchAll(/<option value="([^"]*)"/g)].map(m => m[1]), ['', 'Egypt']);
+  // A price-limit field the chosen limit doesn't use is still checked, so a typo there is not dropped.
+  const typo = setPair(setPair(formOf(page.text, action), 'short.capMode', 'none'), 'short.capAmount', 'abc');
+  const bad = await postPairs(c, action, typo);
+  assert.equal(bad.status, 422);
+  assert.match(bad.text, /<a href="#bz-pol-short-capAmount">Shorter flights, amount<\/a>: Enter an amount in dollars, like 25 or 25\.50\./);
+  assert.match(bad.text, /name="short\.capAmount"[^>]*value="abc"/);
+  assert.match(textOf(bad.text), /Used by Fixed amount \(the limit\) and Search median \+ amount \(what is added\)\./);
+});
+
+test('policy history: airlines by name, routes by city, and version 1 said once as Tripelyx\'s starting rules', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const c = w.c(w.owner);
+  const action = `${w.o}/policies/standard`;
+  const page = await c.get(action);
+  const route = /name="(route\.\d+)\.from"/.exec(page.text)[1];
+  const pairs = [...setPair(setPair(setPair(setPair(formOf(page.text, action), `${route}.from`, 'CAI'), `${route}.to`, 'LHR'), `${route}.capMode`, 'fixed'), `${route}.capAmount`, '900'), ['blockedCarriers', 'ZM']];
+  const saved = await postPairs(c, action, pairs);
+  assert.equal(saved.status, 303, textOf(saved.text).slice(0, 300));
+  const hist = await c.get(`${action}/history`);
+  const text = textOf(hist.text);
+  assert.match(text, /Airlines your company doesn't use: None → changed to Mediterra Airways \(ZM\)/);
+  assert.match(text, /Route exception Cairo to London: None → changed to Cairo to London: Up to \$900/);
+  assert.doesNotMatch(text, /CAI-LHR/);
+  const v1 = /<li class="bz-card bz-stack">\s*<div class="bz-card-head"><h2>Version 1<\/h2>[\s\S]*?<\/li>/.exec(hist.text)[0];
+  assert.match(textOf(v1), /Starting rules suggested by Tripelyx, created when Olivia Owner set up the company\./);
+  assert.doesNotMatch(textOf(v1), /by Olivia Owner|What changed|The starting rules\./);
+  assertDemoMoney(hist.text, 'history');
+});
+
+test('activity: a row names who did it once, and their own trip is "their trip"', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  await trips(w);
+  const page = await w.c(w.owner).get(`${w.o}/activity`);
+  const text = textOf(page.text);
+  assert.match(text, /Sam Rivera asked for approval of their trip to London/);
+  assert.doesNotMatch(text, /Sam Rivera asked for approval of Sam Rivera's trip/);
+  const row = /<li class="bz-activity-row">\s*<p class="bz-activity-text">Fay Finance set the Engineering budget[\s\S]*?<\/li>/.exec(page.text)[0];
+  assert.doesNotMatch(textOf(row), / · Fay Finance · /, 'the actor is not repeated in the meta line');
+  assert.match(text, /Tripelyx confirmed Acme Inc/);
+});
+
+test('a role that cannot open an admin page gets a Business page that says why, with the way back', async t => {
+  const w = await world();
+  t.after(w.app.close);
+  const res = await w.c(w.sam).get(`${w.o}/people`);
+  assert.equal(res.status, 403);
+  assert.match(res.headers.get('cache-control'), /no-store/);
+  const main = mainOf(res.text);
+  assert.match(main, /<h1>Your role can&#39;t open this page<\/h1>/);
+  assert.match(textOf(main), /Your role \(Employee\) can't open this page\. Ask a travel admin at Acme Inc if you need it\./);
+  assert.match(main, /<a class="btn btn-navy bz-btn" href="\/business\/app">Your companies<\/a>/);
+  assert.doesNotMatch(textOf(main), /We couldn.t do that|Back to home/, 'not the app\'s generic error page');
+  noInline('403', res.text);
+  const org = await w.svc.platformSetStatus(w.admin, w.org.id, { status: 'suspended', rev: (await w.svc.repo.get(KINDS.org, w.org.id)).rev, note: 'Checking' });
+  assert.equal(org.status, 'suspended');
+  const paused = await w.c(w.owner).get(`${w.o}/people`);
+  assert.equal(paused.status, 403);
+  const pm = mainOf(paused.text);
+  assert.match(pm, /<h1>This workspace is paused<\/h1>/);
+  assert.match(pm, /Write to <a href="mailto:go@tripelyx\.com">go@tripelyx\.com<\/a>\./, 'the address is a mailto link');
 });
 
 test('every admin page: no inline style or script, no em dash, every amount labelled demo, nav marks the page', async t => {

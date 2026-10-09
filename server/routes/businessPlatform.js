@@ -26,13 +26,17 @@ const TABLE = [
 /** This router's routes (types.RouteEntry, who 'platform'). */
 const ROUTES = assertRoutes(routesOf(TABLE), { mount: MOUNT });
 
-/** ?ok= codes → the notice. */
+/** ?ok= codes → the notice, naming the company (?org=<id>) when it is still listed. */
 const NOTICES = Object.freeze({
-  active: 'Done. The company is active, and its people can join by invite.',
-  suspended: 'Done. The company is paused. Its members see that Tripelyx paused it.',
+  active: name => `Done. ${name} is active, and its people can join by invite.`,
+  suspended: name => `Done. ${name} is paused. Its members see that Tripelyx paused it.`,
 });
+/** A lost compare-and-set (a double click, or a form loaded before another change): the page shows the latest. */
+const STALE = 'Someone changed this while you were looking. Here is the latest version.';
+const ORG_ID = /^org_[A-Za-z0-9_-]{16}$/;
 
 const one = v => (typeof v === 'string' ? v : '');
+const okHref = (status, orgId) => `${MOUNT}?ok=${status === 'suspended' ? 'suspended' : 'active'}${ORG_ID.test(orgId) ? `&org=${orgId}` : ''}`;
 
 /**
  * @param {object} ctx the app context (ctx.business is the BusinessService)
@@ -51,21 +55,32 @@ function router(ctx, deps) {
   }
   const gate = () => [bizPlatformGate];
 
-  async function render(req, res, { status = 200, notice = null, error = null, form = null } = {}) {
-    let data;
+  /** The company list, or null when the service answers 404 (not a platform admin after all). */
+  async function listOrgs(req) {
     try {
-      data = await svc.platformListOrgs({ user: req.user });
+      return await svc.platformListOrgs({ user: req.user });
     } catch (e) {
-      if (clientError(e) && e.status === 404) return sendNotFound(ctx, res);
+      if (clientError(e) && e.status === 404) return null;
       throw e;
     }
-    return send(res, status, platformView(ctx, { data, notice, error, form }));
+  }
+
+  async function render(req, res, { status = 200, notice = null, error = null, form = null, data = null } = {}) {
+    const list = data || await listOrgs(req);
+    if (!list) return sendNotFound(ctx, res);
+    const text = typeof notice === 'function' ? notice(list) : notice;
+    return send(res, status, platformView(ctx, { data: list, notice: text, error, form }));
   }
 
   const handlers = {
     async listPage(req, res) {
       const ok = one(req.query.ok);
-      return render(req, res, { notice: Object.hasOwn(NOTICES, ok) ? NOTICES[ok] : null });
+      const orgId = one(req.query.org);
+      const notice = Object.hasOwn(NOTICES, ok) ? list => {
+        const o = (list.orgs || []).find(x => x.id === orgId);
+        return NOTICES[ok](o ? o.name : 'The company');
+      } : null;
+      return render(req, res, { notice });
     },
 
     async statusPost(req, res) {
@@ -74,10 +89,19 @@ function router(ctx, deps) {
       const status = one(b.status);
       try {
         const org = await svc.platformSetStatus({ user: req.user }, orgId, { status, note: one(b.note), rev: one(b.rev) });
-        return res.redirect(303, `${MOUNT}?ok=${org.status === 'suspended' ? 'suspended' : 'active'}`);
+        return res.redirect(303, okHref(org.status, org.id));
       } catch (e) {
         if (!clientError(e)) throw e;
         if (e.status === 404) return sendNotFound(ctx, res);
+        if (e.code === 'conflict') {
+          // A double click: the first post already made the change asked for, so this one lands where it did.
+          // Otherwise someone (or this admin in another tab) changed the company first: the latest, with the note kept.
+          const data = await listOrgs(req);
+          if (!data) return sendNotFound(ctx, res);
+          const now = (data.orgs || []).find(o => o.id === orgId);
+          if (now && (status === 'active' || status === 'suspended') && now.status === status) return res.redirect(303, okHref(status, orgId));
+          return render(req, res, { status: 409, error: STALE, data, form: one(b.note) ? { orgId, note: one(b.note), errors: {} } : null });
+        }
         return render(req, res, {
           status: e.status,
           error: e.message,

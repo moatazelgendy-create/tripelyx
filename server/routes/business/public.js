@@ -16,13 +16,23 @@
 // Express stack and ROUTES cannot disagree: a GET runs the gate then the handler; a POST runs its limiters →
 // sameOrigin → the form parser → (bizAuthAccount, which keys on the parsed email) → the gate → the handler.
 // The gate for 'anyone' is noStore (Cache-Control no-store, X-Robots-Tag noindex); 'user' adds requireUser.
-// Every public page also sends Referrer-Policy no-referrer (an invite token can sit in the URL or in next).
+// Every public page also sends Referrer-Policy no-referrer (an invite token can sit in the URL or in next):
+// bizPublicHeaders runs first in every chain, so the app's 403, 429 and 4xx pages carry it too.
+//
+// A double-clicked or resubmitted form never does its work twice. POST /start runs one at a time per account
+// (per email when signed out) and per invite token for /join, in this process. Signed in, a company the same
+// account created under the same name in the last 10 minutes is answered with a 303 to its welcome page
+// instead of a second company. Signed out, the losing submit finds the email taken: when the posted password
+// is that account's and it has just created that company, it is signed in and sent to the same page (no
+// password is checked otherwise, so the 409 stays the answer for any other existing account). A /join whose
+// invite was just used by this process with the posted password signs in and opens the workspace.
 // The /o/:orgId home and /o/:orgId/policy are in traveler.js (2B); /o/:orgId/welcome is in admin.js (2A).
+const crypto = require('node:crypto');
 const express = require('express');
 const { AppError } = require('../../lib/errors');
 const { str, EMAIL } = require('../../lib/validate');
 const { gates: makeGates } = require('../../business/http');
-const { send, clientError, routesOf, mountTable, publicHeaders } = require('./table');
+const { send, clientError, routesOf, mountTable, publicHeaders, bizPublicHeaders } = require('./table');
 const { safeLocal, text, oneOf, collect } = require('../../business/validate');
 const { COMPANY_SIZES, TIMEZONES, DEFAULT_TIMEZONE } = require('../../business/constants');
 const { startView, signinView } = require('../../views/business/auth');
@@ -32,10 +42,50 @@ const { chooserView } = require('../../views/business/chooser');
 // ---------------------------------------------------------------------------------------------------------
 // Helpers
 
-/** A same-site path under /business to land on after signing in or out, or null. */
+/**
+ * A same-site path under /business to land on after signing in or out, or null. The path is resolved the way
+ * a browser resolves it (dot segments, also as %2e, and backslashes), and the resolved path is both what is
+ * checked and what is returned, so "/business/../admin" can't step out of /business.
+ */
 function businessNext(n) {
   const p = safeLocal(typeof n === 'string' ? n : null, null);
-  return p && (p === '/business' || p.startsWith('/business/') || p.startsWith('/business?')) ? p : null;
+  if (!p) return null;
+  const base = 'http://next.invalid';
+  let u;
+  try {
+    u = new URL(p, base);
+  } catch {
+    return null;
+  }
+  if (u.origin !== base) return null;
+  if (u.pathname !== '/business' && !u.pathname.startsWith('/business/')) return null;
+  return u.pathname + u.search;
+}
+
+/** A company name's key as team.js keeps it (letters and digits, lowercased): "Acme, Inc." and "acme inc" match. */
+const nameKeyOf = name => String(name ?? '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+/** How long a just-made company or a just-used invite answers a resubmitted form as done. */
+const RESUBMIT_MS = 10 * 60 * 1000;
+
+/**
+ * Run fn for one key at a time, in this process: a second submit of the same form waits until the first has
+ * finished, so it sees what the first one did.
+ */
+function serialized() {
+  const tails = new Map();
+  return async function serial(key, fn) {
+    const prev = tails.get(key) || Promise.resolve();
+    let done;
+    const mine = new Promise(resolve => { done = resolve; });
+    tails.set(key, mine);
+    try {
+      await prev;
+      return await fn();
+    } finally {
+      done();
+      if (tails.get(key) === mine) tails.delete(key);
+    }
+  };
 }
 
 /** The signed-in user as routes and the service see it (no password hash). */
@@ -67,17 +117,25 @@ const ROUTES = routesOf(TABLE);
 
 const fieldError = message => new AppError('invalid_field', message, 422);
 const ACK_MESSAGE = "Tick this box to confirm you won't enter real employee travel plans yet.";
+const NAME_MESSAGE = "Enter your company's name.";
+const SIZE_MESSAGE = "Choose your company's size.";
+/** A signed-in sign-up that carries another email (a form opened while signed out, sent after signing in). */
+const signedInAsText = email => `You're signed in as ${email}. Sign out to create the company with a new account.`;
 
 /** The company fields' messages, keyed as createCompany keys them ({} when they look right). */
 function companyProblems(c) {
   try {
     collect('invalid_company', {
       name: () => {
+        if (typeof c.name !== 'string' || !c.name.trim()) throw fieldError(NAME_MESSAGE);
         const s = text(c.name, 80, { required: true });
         if (s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '').includes('tripelyx')) throw fieldError("Choose your own company's name.");
         return s;
       },
-      size: () => oneOf(c.size, COMPANY_SIZES),
+      size: () => {
+        if (!COMPANY_SIZES.includes(c.size)) throw fieldError(SIZE_MESSAGE);
+        return c.size;
+      },
       timezone: () => oneOf(c.timezone, TIMEZONES, { blank: DEFAULT_TIMEZONE }),
       ack: () => { if (c.ack !== '1') throw fieldError(ACK_MESSAGE); return true; },
     });
@@ -116,6 +174,11 @@ function router(ctx, deps) {
   const g = makeGates(ctx);
 
   const gate = row => (row.who === 'user' ? [publicHeaders, g.requireUser] : [publicHeaders]);
+  const serial = serialized();
+  /** Invites this process just used through /join: sha256(token) → { email, orgId, until (ms) }. */
+  const joined = new Map();
+  const tokenKey = token => crypto.createHash('sha256').update(String(token)).digest('hex');
+  const nowMs = () => ctx.now().getTime();
 
   /** The sign-up form's values to show again (never the password). */
   const startValues = b => ({
@@ -125,6 +188,49 @@ function router(ctx, deps) {
   async function capFor(user) {
     const companies = await svc.listCompaniesFor({ user });
     return companies.length >= biz.maxOrgsPerUser ? tooManyText(biz.maxOrgsPerUser) : null;
+  }
+
+  /** A company this account created under the same name in the last RESUBMIT_MS (a resubmitted form), or null. */
+  async function justCreated(user, companyName) {
+    const key = nameKeyOf(companyName);
+    if (!key) return null;
+    for (const c of await svc.listCompaniesFor({ user })) {
+      if (c.role !== 'owner' || nameKeyOf(c.name) !== key) continue;
+      let org;
+      try {
+        org = await svc.getOrg({ org: { id: c.id }, user });
+      } catch (e) {
+        if (clientError(e)) continue;
+        throw e;
+      }
+      const age = nowMs() - Date.parse(org.at);
+      if (org.createdBy === user.id && age >= 0 && age < RESUBMIT_MS) return org;
+    }
+    return null;
+  }
+
+  /** Remember an invite used through /join, for a second submit of the same form (bounded, short-lived). */
+  function rememberJoin(token, email, orgId) {
+    const now = nowMs();
+    for (const [k, v] of joined) if (v.until <= now || joined.size > 500) joined.delete(k);
+    joined.set(tokenKey(token), { email, orgId, until: now + RESUBMIT_MS });
+  }
+
+  /**
+   * A signed-out sign-up whose email was taken by the same form a moment ago: the posted password is that
+   * account's and it created this company in the last RESUBMIT_MS. Returns { user, org } or null (then the
+   * page answers 409 as for any existing account; a wrong password changes nothing).
+   */
+  async function sameSubmit(b) {
+    let user;
+    try {
+      user = publicUser(await accounts.authenticate({ email: b.email, password: b.password }));
+    } catch (e) {
+      if (clientError(e)) return null;
+      throw e;
+    }
+    const org = await justCreated(user, b.companyName);
+    return org ? { user, org } : null;
   }
 
   /** The invite landing again, for the current visitor, or the problem page when it can't be shown. */
@@ -148,6 +254,53 @@ function router(ctx, deps) {
     return send(res, e.status, inviteProblemView(ctx, { message: e.message, user }));
   }
 
+  /** POST /invite/:token/join, one at a time per token. */
+  async function join(req, res, token) {
+    const b = req.body || {};
+    let view;
+    try {
+      view = await svc.inviteByToken({ user: null }, token);
+    } catch (e) {
+      // The same form sent twice: this process just used the invite with this password.
+      const memo = clientError(e) && e.status === 410 ? joined.get(tokenKey(token)) : null;
+      if (memo && memo.until > nowMs()) {
+        try {
+          const user = await accounts.authenticate({ email: memo.email, password: b.password });
+          await accounts.createSession(res, user);
+          return res.redirect(303, `/business/o/${memo.orgId}`);
+        } catch (err) {
+          if (!clientError(err)) throw err;
+        }
+      }
+      return inviteProblem(req, res, e);
+    }
+    if (view.state !== 'join') return send(res, view.state === 'pending_company' ? 409 : 200, inviteView(ctx, { landing: view, token }));
+    const values = { name: str(b.name, 80) };
+    let user;
+    try {
+      user = publicUser(await accounts.register(
+        { name: b.name, email: view.invite.email, password: b.password },
+        { emailProof: { via: 'invite', orgId: view.org.id, at: ctx.now().toISOString() } },
+      ));
+    } catch (e) {
+      if (!clientError(e)) throw e;
+      if (e.code === 'email_taken') return send(res, 409, inviteView(ctx, { landing: view, token, emailTaken: true, values }));
+      return send(res, e.status, inviteView(ctx, { landing: view, token, values, errors: e.details || {}, error: e.message }));
+    }
+    await accounts.createSession(res, user);
+    try {
+      const { org } = await svc.acceptInvite({ user }, token);
+      rememberJoin(token, view.invite.email, org.id);
+      return res.redirect(303, `/business/o/${org.id}`);
+    } catch (e) {
+      if (!clientError(e)) throw e;
+      // The account exists and is signed in now: show the landing as they see it from here on.
+      req.user = user;
+      if (e.code === 'invite_gone' || e.code === 'org_suspended' || e.status === 404) return inviteProblem(req, res, e);
+      return landing(req, res, { error: e.message, status: e.status });
+    }
+  }
+
   const handlers = {
     async startPage(req, res) {
       const user = req.user || null;
@@ -158,36 +311,52 @@ function router(ctx, deps) {
       const b = req.body || {};
       const values = startValues(b);
       const company = { name: b.companyName, size: b.size, timezone: b.timezone, ack: b.ack };
-      let user = req.user || null;
-      let accountReady = false;
-      if (!user) {
-        const companyErrors = companyProblems(company);
-        const accountErrors = accountProblems(b);
-        if (Object.keys(companyErrors).length || Object.keys(accountErrors).length) {
-          return send(res, 422, startView(ctx, { values, accountErrors, companyErrors, error: 'Check the highlighted fields.', selfServe: biz.selfServe }));
+      const signedIn = req.user || null;
+      const postedEmail = str(b.email, 120).toLowerCase();
+      if (signedIn && postedEmail && postedEmail !== String(signedIn.email || '').toLowerCase()) {
+        return send(res, 409, startView(ctx, { user: signedIn, values, error: signedInAsText(signedIn.email), selfServe: biz.selfServe }));
+      }
+      const companyErrors = companyProblems(company);
+      const accountErrors = signedIn ? {} : accountProblems(b);
+      if (Object.keys(companyErrors).length || Object.keys(accountErrors).length) {
+        return send(res, 422, startView(ctx, { user: signedIn, values, accountErrors, companyErrors, error: 'Check the highlighted fields.', selfServe: biz.selfServe }));
+      }
+      return serial(signedIn ? `u:${signedIn.id}` : `e:${postedEmail}`, async () => {
+        let user = signedIn;
+        let accountReady = false;
+        if (!user) {
+          try {
+            user = publicUser(await accounts.register({ name: b.name, email: b.email, password: b.password }));
+          } catch (e) {
+            if (!clientError(e)) throw e;
+            if (e.code === 'email_taken') {
+              // The same form sent twice: the first submit made this account and company a moment ago.
+              const again = await sameSubmit(b);
+              if (again) {
+                await accounts.createSession(res, again.user);
+                return res.redirect(303, `/business/o/${again.org.id}/welcome`);
+              }
+              return send(res, 409, startView(ctx, { values, emailTaken: true, accountErrors: { email: 'An account with this email already exists.' }, selfServe: biz.selfServe }));
+            }
+            return send(res, e.status, startView(ctx, { values, accountErrors: e.details || {}, error: e.message, selfServe: biz.selfServe }));
+          }
+          await accounts.createSession(res, user);
+          accountReady = true;
+        } else {
+          const org = await justCreated(user, company.name);
+          if (org) return res.redirect(303, `/business/o/${org.id}/welcome`);
         }
         try {
-          user = publicUser(await accounts.register({ name: b.name, email: b.email, password: b.password }));
+          const { org } = await svc.createCompany({ user }, company);
+          return res.redirect(303, `/business/o/${org.id}/welcome`);
         } catch (e) {
           if (!clientError(e)) throw e;
-          if (e.code === 'email_taken') {
-            return send(res, 409, startView(ctx, { values, emailTaken: true, accountErrors: { email: 'An account with this email already exists.' }, selfServe: biz.selfServe }));
-          }
-          return send(res, e.status, startView(ctx, { values, accountErrors: e.details || {}, error: e.message, selfServe: biz.selfServe }));
+          const atCap = e.code === 'too_many_companies' ? e.message : null;
+          return send(res, e.status, startView(ctx, {
+            user, values, companyErrors: e.details || {}, error: atCap ? null : e.message, accountReady, atCap, selfServe: biz.selfServe,
+          }));
         }
-        await accounts.createSession(res, user);
-        accountReady = true;
-      }
-      try {
-        const { org } = await svc.createCompany({ user }, company);
-        return res.redirect(303, `/business/o/${org.id}/welcome`);
-      } catch (e) {
-        if (!clientError(e)) throw e;
-        const atCap = e.code === 'too_many_companies' ? e.message : null;
-        return send(res, e.status, startView(ctx, {
-          user, values, companyErrors: e.details || {}, error: atCap ? null : e.message, accountReady, atCap, selfServe: biz.selfServe,
-        }));
-      }
+      });
     },
 
     async signinPage(req, res) {
@@ -234,37 +403,7 @@ function router(ctx, deps) {
       const token = req.params.token;
       // Signed in: the landing offers the accept form (or explains why not).
       if (req.user) return res.redirect(303, `/business/invite/${encodeURIComponent(token)}`);
-      let view;
-      try {
-        view = await svc.inviteByToken({ user: null }, token);
-      } catch (e) {
-        return inviteProblem(req, res, e);
-      }
-      if (view.state !== 'join') return send(res, view.state === 'pending_company' ? 409 : 200, inviteView(ctx, { landing: view, token }));
-      const b = req.body || {};
-      const values = { name: str(b.name, 80) };
-      let user;
-      try {
-        user = publicUser(await accounts.register(
-          { name: b.name, email: view.invite.email, password: b.password },
-          { emailProof: { via: 'invite', orgId: view.org.id, at: ctx.now().toISOString() } },
-        ));
-      } catch (e) {
-        if (!clientError(e)) throw e;
-        if (e.code === 'email_taken') return send(res, 409, inviteView(ctx, { landing: view, token, emailTaken: true, values }));
-        return send(res, e.status, inviteView(ctx, { landing: view, token, values, errors: e.details || {}, error: e.message }));
-      }
-      await accounts.createSession(res, user);
-      try {
-        const { org } = await svc.acceptInvite({ user }, token);
-        return res.redirect(303, `/business/o/${org.id}`);
-      } catch (e) {
-        if (!clientError(e)) throw e;
-        // The account exists and is signed in now: show the landing as they see it from here on.
-        req.user = user;
-        if (e.code === 'invite_gone' || e.code === 'org_suspended' || e.status === 404) return inviteProblem(req, res, e);
-        return landing(req, res, { error: e.message, status: e.status });
-      }
+      return serial(`t:${tokenKey(token)}`, () => join(req, res, token));
     },
 
     async appPage(req, res) {
@@ -284,7 +423,7 @@ function router(ctx, deps) {
     },
   };
 
-  return mountTable(r, TABLE, { deps, gate, handlers });
+  return mountTable(r, TABLE, { deps, gate, handlers, headers: bizPublicHeaders });
 }
 
 module.exports = { router, ROUTES };

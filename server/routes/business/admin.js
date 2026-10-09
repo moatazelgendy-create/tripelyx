@@ -30,12 +30,16 @@
 // re-renders the page with what was typed and the message; a 403 from the service (a role this member may
 // not grant) re-renders People with the reason. GETs never write.
 const express = require('express');
+const { AppError } = require('../../lib/errors');
+const v = require('../../business/validate');
+const { LIMITS } = require('../../business/policy/schema');
 const { gates: makeGates } = require('../../business/http');
 const { send, clientError, routesOf, mountTable } = require('./table');
 const { can, LABELS } = require('../../business/roles');
-const { TIERS, MEMBER_CAP, PAGE_SIZE, AUDIT_GROUPS } = require('../../business/constants');
+const { TIERS, MEMBER_CAP, PAGE_SIZE, SCAN_CAP, AUDIT_GROUPS } = require('../../business/constants');
 const { periodChoices, currentPeriodKey, PERIOD_KEY_RE } = require('../../business/budgets');
 const { welcomeView } = require('../../views/business/welcome');
+const { workspaceForbiddenView } = require('../../views/business/auth');
 const { peopleView } = require('../../views/business/people');
 const { inviteLinkView } = require('../../views/business/inviteLink');
 const { policiesView, policyEditView, policyHistoryView } = require('../../views/business/policies');
@@ -103,6 +107,71 @@ const POLICY_FIELDS_SKIP = new Set(['rev', 'note', '__proto__', 'constructor', '
 const STALE = 'Someone changed this while you were looking. Here is the latest version.';
 
 /**
+ * The company export with every Tripelyx staff action said as "Tripelyx": an audit actor
+ * { platformAdmin: <staff user id>, name } becomes { platformAdmin: true, name: 'Tripelyx' }, since member
+ * views never name who at Tripelyx changed the status (plan §I8; Activity prints 'Tripelyx' the same way).
+ */
+function withoutStaffIds(json) {
+  const data = JSON.parse(json);
+  const walk = x => {
+    if (Array.isArray(x)) { x.forEach(walk); return; }
+    if (!x || typeof x !== 'object') return;
+    if (Object.hasOwn(x, 'platformAdmin') && x.platformAdmin !== true && x.platformAdmin !== false) {
+      x.platformAdmin = true;
+      x.name = 'Tripelyx';
+    }
+    Object.values(x).forEach(walk);
+  };
+  walk(data);
+  return JSON.stringify(data, null, 2);
+}
+
+/** The price-limit fields a band or route exception carries, and how each is read. */
+const CAP_FIELD = /^(?:short|long|route\.\d{1,3})\.(capAmount|capPct|fallback)$/;
+
+/**
+ * Every filled price-limit amount must read as one, even one the chosen limit doesn't use (the editor says
+ * which limit uses which field). The service reads only the fields of the chosen limit and ignores the rest,
+ * so without this a typo in an unused field would vanish on save. → { field: message } (empty when all read).
+ */
+function capFieldProblems(form) {
+  const out = {};
+  for (const [key, raw] of Object.entries(form || {})) {
+    const m = CAP_FIELD.exec(key);
+    if (!m || typeof raw !== 'string' || raw.trim() === '') continue;
+    try {
+      if (m[1] === 'capPct') v.percentTenths(raw, { max: LIMITS.pctTenths[1] });
+      else v.dollarsToCents(raw);
+    } catch (e) {
+      if (!clientError(e)) throw e;
+      out[key] = e.message;
+    }
+  }
+  return out;
+}
+
+/** Well-formed ids (as requests.js and repo.js check them): a malformed one is the service's 422, not a 404. */
+const DEPARTMENT_ID = /^dep_[A-Za-z0-9_-]{16}$/;
+const USER_ID = /^usr_[A-Za-z0-9_-]{16}$/;
+
+/** A period key's first month as a number, to order a quarter and a month key together. */
+function periodStart(key) {
+  const m = /^(\d{4})-(?:Q([1-4])|(\d{2}))$/.exec(key);
+  return m ? Number(m[1]) * 12 + (m[2] ? (Number(m[2]) - 1) * 3 : Number(m[3]) - 1) : 0;
+}
+
+/**
+ * The period switcher: the company's own kind (month or quarter) around today, plus the key asked for when it
+ * is not among them (an old link, or a quarter link after switching to months), so every tab offered can be
+ * used and the page in view still has its tab.
+ */
+function periodTabs(org, now, key) {
+  const near = periodChoices(currentPeriodKey(org, now));
+  if (!key || near.includes(key)) return near;
+  return [...near, key].sort((a, b) => periodStart(a) - periodStart(b));
+}
+
+/**
  * @param {object} ctx the app context
  * @param {import('../../business/types').RouterDeps} deps
  * @returns {import('express').Router}
@@ -111,7 +180,7 @@ function router(ctx, deps) {
   const r = express.Router();
   const svc = ctx.business;
   const biz = ctx.config.business;
-  const g = makeGates(ctx);
+  const g = makeGates(ctx, { forbiddenView: workspaceForbiddenView });
   const gate = row => [g.memberGate(row.perm)];
 
   const actorOf = req => req.biz.actor;
@@ -167,12 +236,41 @@ function router(ctx, deps) {
     }
     key = key || current;
     const rows = await svc.listBudgets(actor, key);
-    const near = periodChoices(current);
-    const choices = near.includes(key) ? near : periodChoices(key);
+    const choices = periodTabs(org, ctx.now(), key);
+    const uncounted = can(roleOf(req), 'request.view.all') ? await uncountedByDepartment(actor, key, rows) : null;
     return page(req, res, status, budgetsView, {
       rows, periodKey: key, choices, canEdit: can(roleOf(req), 'budget.edit'), periodKind: org.settings && org.settings.budgetPeriod === 'month' ? 'month' : 'quarter',
-      ownOnly: !can(roleOf(req), 'budget.view.all'), values, errors, notice, error,
+      ownOnly: !can(roleOf(req), 'budget.view.all'), uncounted, values, errors, notice, error,
     });
+  }
+
+  /**
+   * Per department with a budget: the approved trips of the period its budget does not count (approved before
+   * the budget was set, so no hold was taken, plan §C6), in cents: Σ approved and past totals − committed.
+   * null when the requests could not all be read (then the page says nothing rather than a wrong figure).
+   */
+  async function uncountedByDepartment(actor, periodKey, rows) {
+    const withBudget = rows.filter(r => r.budgetId);
+    if (!withBudget.length) return {};
+    const approved = {};
+    let cursor = null;
+    for (let i = 0; i < Math.ceil(SCAN_CAP / PAGE_SIZE); i += 1) {
+      const p = await svc.listRequests(actor, { scope: 'all', period: periodKey, cursor });
+      for (const x of p.rows) {
+        if ((x.status === 'approved' || x.status === 'past') && x.departmentId && Number.isSafeInteger(x.totalCents)) {
+          approved[x.departmentId] = (approved[x.departmentId] || 0) + x.totalCents;
+        }
+      }
+      cursor = p.cursor;
+      if (!cursor) break;
+    }
+    if (cursor) return null;
+    const out = {};
+    for (const r of withBudget) {
+      const gap = (approved[r.department.id] || 0) - r.committedCents;
+      if (gap > 0) out[r.department.id] = gap;
+    }
+    return out;
   }
 
   // ---- people ----
@@ -191,12 +289,45 @@ function router(ctx, deps) {
     return all;
   }
 
-  async function renderPeople(req, res, { status = 200, cursor = null, invite = {}, notice = null, error = null } = {}) {
+  async function renderPeople(req, res, { status = 200, cursor = null, invite = {}, notice = null, noticeAt = null, department = null, error = null } = {}) {
     const actor = actorOf(req);
     const people = await svc.listMembers(actor, { cursor: cursor || null });
     const all = await everyone(actor, people, cursor);
     const moreHref = people.cursor ? `${baseOf(req)}/people?cursor=${encodeURIComponent(people.cursor)}` : null;
-    return page(req, res, status, peopleView, { people, everyone: all, moreHref, invite, notice, error });
+    return page(req, res, status, peopleView, { people, everyone: all, moreHref, invite, notice, noticeAt, department, error });
+  }
+
+  /** A member of this company by user id, active or removed (paged in full), or null. */
+  async function findMember(actor, userId) {
+    let next = null;
+    for (let i = 0; i <= Math.ceil(MEMBER_CAP / PAGE_SIZE); i += 1) {
+      const p = await svc.listMembers(actor, { cursor: next });
+      const m = p.members.find(x => x.userId === userId);
+      if (m) return m;
+      next = p.cursor;
+      if (!next) return null;
+    }
+    return null;
+  }
+
+  /** Whether userId was a member of this company and has been removed (a second Remove of the same person). */
+  async function wasRemoved(actor, userId) {
+    const m = await findMember(actor, userId);
+    return !!m && m.status !== 'active';
+  }
+
+  /**
+   * Whether a report filter names something of another company (or nothing at all): a well-formed department
+   * or traveler id that is not this company's answers 404, like every other id on these paths (plan §I7),
+   * before anything is read for it or the CSV export writes its audit row.
+   */
+  async function foreignFilter(actor, { departmentId, travelerId }, departments = null) {
+    if (departmentId && DEPARTMENT_ID.test(departmentId)) {
+      const deps = departments || await svc.listDepartments(actor);
+      if (!deps.some(d => d.id === departmentId)) return true;
+    }
+    if (travelerId && USER_ID.test(travelerId) && !await findMember(actor, travelerId)) return true;
+    return false;
   }
 
   /** A People form's refusal: 403 here is a role this member may not grant, said on the page. */
@@ -212,6 +343,8 @@ function router(ctx, deps) {
     const org = req.biz.org;
     const q = query || {};
     const filters = { departmentId: one(q.departmentId), status: one(q.status), travelerId: one(q.travelerId) };
+    const departments = await svc.listDepartments(actor);
+    if (await foreignFilter(actor, filters, departments)) return g.notFound(res);
     let period = one(q.period);
     if (period && !PERIOD_KEY_RE.test(period)) {
       period = '';
@@ -228,9 +361,7 @@ function router(ctx, deps) {
       error = error || errorText(e);
       for (const k of Object.keys(e.details || {})) if (Object.hasOwn(filters, k)) filters[k] = '';
     }
-    const departments = await svc.listDepartments(actor);
-    const near = periodChoices(currentPeriodKey(org, ctx.now()));
-    const choices = near.includes(dash.periodKey) ? near : periodChoices(dash.periodKey);
+    const choices = periodTabs(org, ctx.now(), dash.periodKey);
     const params = new URLSearchParams({ period: dash.periodKey });
     for (const [k, v] of Object.entries(filters)) if (v) params.set(k, v);
     if (list.cursor) params.set('cursor', list.cursor);
@@ -283,6 +414,8 @@ function router(ctx, deps) {
       const tier = req.params.tier;
       const form = policyForm(b);
       try {
+        const stray = TIERS.includes(tier) ? capFieldProblems(form) : {};
+        if (Object.keys(stray).length) throw new AppError('invalid_policy', 'Check the highlighted fields.', 422, stray);
         const { version } = await svc.savePolicy(actor, tier, { form, rev: b.rev, note: one(b.note) });
         return res.redirect(303, `${baseOf(req)}/policies/${encodeURIComponent(tier)}?ok=${version ? 'saved' : 'unchanged'}`);
       } catch (e) {
@@ -295,7 +428,8 @@ function router(ctx, deps) {
           // What was typed, at the rev it was loaded at (a later change still answers 409 on the next save).
           const rev = /^\d{1,9}$/.test(one(b.rev)) ? Number(b.rev) : view.rev;
           return page(req, res, err.status, policyEditView, {
-            view: { ...view, rev }, form, errors: err.details || {}, note: one(b.note), error: err.details ? 'Check the highlighted fields.' : err.message,
+            // The list at the top of the editor names each field: no second box above it.
+            view: { ...view, rev }, form, errors: err.details || {}, note: one(b.note), error: err.details && Object.keys(err.details).length ? null : err.message,
           });
         });
       }
@@ -305,7 +439,7 @@ function router(ctx, deps) {
       try {
         const history = await svc.policyHistory(actorOf(req), req.params.tier, { before: one(req.query.before) || null });
         const view = await svc.getPolicy(actorOf(req), req.params.tier);
-        return page(req, res, 200, policyHistoryView, { history, tierLabel: view.tierLabel });
+        return page(req, res, 200, policyHistoryView, { history, tierLabel: view.tierLabel, refs: view.refs });
       } catch (e) {
         return refuse(req, res, e, () => g.notFound(res));
       }
@@ -334,8 +468,11 @@ function router(ctx, deps) {
     },
 
     async peoplePage(req, res) {
+      const code = one(req.query.ok);
+      // These 303s land on #departments or #invites: the notice is drawn in that section, where the browser is.
+      const noticeAt = code === 'department' || code === 'archived' ? 'departments' : code === 'revoked' ? 'invites' : null;
       try {
-        return await renderPeople(req, res, { cursor: one(req.query.cursor) || null, notice: okText('people', req.query.ok) });
+        return await renderPeople(req, res, { cursor: one(req.query.cursor) || null, notice: okText('people', code), noticeAt });
       } catch (e) {
         return refuse(req, res, e, () => g.notFound(res));
       }
@@ -384,10 +521,16 @@ function router(ctx, deps) {
     },
 
     async removePost(req, res) {
+      const actor = actorOf(req);
       try {
-        await svc.removeMember(actorOf(req), req.params.userId, { rev: one((req.body || {}).rev) });
+        await svc.removeMember(actor, req.params.userId, { rev: one((req.body || {}).rev) });
         return res.redirect(303, `${baseOf(req)}/people?ok=removed`);
       } catch (e) {
+        // A second Remove of the same person (a resubmit, a slow double tap) finds them already removed: that
+        // is the outcome asked for, so it lands where the first did. An id that never was a member stays 404.
+        if (clientError(e) && (e.status === 404 || e.code === 'conflict') && await wasRemoved(actor, req.params.userId)) {
+          return res.redirect(303, `${baseOf(req)}/people?ok=removed`);
+        }
         return refuse(req, res, e, peopleRefusal(req, res));
       }
     },
@@ -402,7 +545,12 @@ function router(ctx, deps) {
         });
         return res.redirect(303, `${baseOf(req)}/people?ok=${archive ? 'archived' : 'department'}#departments`);
       } catch (e) {
-        return refuse(req, res, e, err => renderPeople(req, res, { status: err.status, error: errorText(err) }));
+        return refuse(req, res, e, err => {
+          // An add or rename the service refused because of the name: that field shows what was typed and why.
+          const why = err.details && typeof err.details.name === 'string' ? err.details.name : err.code === 'department_exists' ? err.message : null;
+          const department = !archive && Object.hasOwn(b, 'name') && why ? { departmentId: one(b.departmentId), name: one(b.name), error: why } : null;
+          return renderPeople(req, res, { status: err.status, department, error: department ? 'Check the highlighted fields.' : errorText(err) });
+        });
       }
     },
 
@@ -419,6 +567,7 @@ function router(ctx, deps) {
       const b = req.body || {};
       const filters = { period: one(b.period), departmentId: one(b.departmentId), status: one(b.status), travelerId: one(b.travelerId) };
       try {
+        if (await foreignFilter(actorOf(req), filters)) return g.notFound(res);
         const out = await svc.exportCsv(actorOf(req), filters);
         return download(res, { type: 'text/csv; charset=utf-8', filename: safeName(out.filename, 'tripelyx-requests.csv'), body: out.body });
       } catch (e) {
@@ -471,7 +620,7 @@ function router(ctx, deps) {
     async exportPost(req, res) {
       try {
         const out = await svc.exportCompany(actorOf(req));
-        return download(res, { type: 'application/json; charset=utf-8', filename: safeName(out.filename, 'tripelyx-company.json'), body: out.json });
+        return download(res, { type: 'application/json; charset=utf-8', filename: safeName(out.filename, 'tripelyx-company.json'), body: withoutStaffIds(out.json) });
       } catch (e) {
         return refuse(req, res, e, err => renderSettings(req, res, { status: err.status, error: err.message }));
       }

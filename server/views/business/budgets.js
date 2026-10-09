@@ -13,6 +13,9 @@ const { SCAN_CAP } = require('../../business/constants');
 
 const TITLE = 'Budgets';
 const SPENT = 'Spent: shows once real bookings exist.';
+/** What Committed counts (plan §C6: a trip approved while its department had no budget for the period takes no hold). */
+const committedText = label => `Committed: trips departing in ${label}, approved while their department had a budget for it. A trip approved before its department had a budget for the period isn't counted.`;
+const uncountedText = cents => html`Approved before this budget was set, not counted: ${amount(cents)}`;
 const noBudgets = label => `No budgets for ${label}. Without a budget, trips are checked against the policy only.`;
 
 /** Cents as the budget form shows dollars: 2000000 → "20000", 1050 → "10.50". */
@@ -26,11 +29,12 @@ function dollarsText(cents) {
  * @param {object} ctx
  * @param {import('../../business/types').ShellModel} shell
  * @param {{ rows: import('../../business/types').BudgetRow[], periodKey: string, choices: string[], canEdit: boolean,
- *   periodKind: 'quarter'|'month', ownOnly: boolean, values?: Record<string, string>, errors?: Record<string, Record<string, string>>,
- *   notice?: string|null, error?: string|null }} v
- *   ownOnly: the member sees only their own department; values/errors: keyed by department id after a 422
+ *   periodKind: 'quarter'|'month', ownOnly: boolean, uncounted?: Record<string, number>|null,
+ *   values?: Record<string, string>, errors?: Record<string, Record<string, string>>, notice?: string|null, error?: string|null }} v
+ *   ownOnly: the member sees only their own department; uncounted: per department id, the approved trips of the
+ *   period its budget doesn't count, in cents (null when unknown); values/errors: keyed by department id after a 422
  */
-function budgetsView(ctx, shell, { rows, periodKey, choices, canEdit, periodKind, ownOnly, values = {}, errors = {}, notice = null, error = null }) {
+function budgetsView(ctx, shell, { rows, periodKey, choices, canEdit, periodKind, ownOnly, uncounted = null, values = {}, errors = {}, notice = null, error = null }) {
   const { org } = shell;
   const base = `/business/o/${org.id}`;
   const tz = f.safeZone(org.timezone);
@@ -40,7 +44,7 @@ function budgetsView(ctx, shell, { rows, periodKey, choices, canEdit, periodKind
   const truncated = rows.some(r => r.truncated);
   const switcher = tabs(choices.map(k => ({ href: `${base}/budgets?period=${encodeURIComponent(k)}`, label: periodLabel(k), current: k === periodKey })), { label: 'Budget period' });
   const tableRows = rows.map(r => [
-    html`<span class="bz-budget-name">${r.department.name}${r.department.archived ? ' (archived)' : ''}</span>${budgetBar(r)}`,
+    html`<span class="bz-budget-name">${r.department.name}${r.department.archived ? ' (archived)' : ''}</span>${budgetBar(r)}${uncounted && uncounted[r.department.id] > 0 ? html`<span class="bz-meta bz-budget-note">${uncountedText(uncounted[r.department.id])}</span>` : ''}`,
     r.amountCents === null ? 'No budget set' : amount(r.amountCents),
     amount(r.committedCents),
     amount(r.awaitingCents),
@@ -52,7 +56,7 @@ function budgetsView(ctx, shell, { rows, periodKey, choices, canEdit, periodKind
       columns: [{ label: 'Department' }, { label: 'Budget', num: true }, { label: 'Committed', num: true }, { label: 'Awaiting approval', num: true }, { label: 'Remaining', num: true }],
       rows: tableRows,
     })}
-      <p class="bz-meta">Committed: trips approved to depart in ${label}. Awaiting approval: trips waiting for a decision, not counted as committed.${truncated ? ` Awaiting approval counts the ${SCAN_CAP.toLocaleString('en-US')} most recent requests.` : ''}</p>
+      <p class="bz-meta">${committedText(label)} Awaiting approval: trips waiting for a decision, not counted as committed.${truncated ? ` Awaiting approval counts the ${SCAN_CAP.toLocaleString('en-US')} most recent requests.` : ''}</p>
       <p class="bz-meta">${SPENT}</p>`, { pricedAt: null, timeZone: tz, tag: 'section', label: `Budgets for ${label}` })
     : emptyState({ title: ownOnly ? "You're not in a department yet, so there's no budget to show." : 'No departments yet.', text: ownOnly ? 'Ask a travel admin to add you to one.' : 'Add departments on the People page, then set their budgets here.', iconName: 'wallet' });
   const editable = rows.filter(r => !r.department.archived);
@@ -81,4 +85,4 @@ function budgetsView(ctx, shell, { rows, periodKey, choices, canEdit, periodKind
   return shellView(ctx, shell, { title: TITLE, body, notice, error });
 }
 
-module.exports = { budgetsView, dollarsText, TITLE, SPENT, noBudgets };
+module.exports = { budgetsView, dollarsText, committedText, TITLE, SPENT, noBudgets };

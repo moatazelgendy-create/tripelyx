@@ -18,6 +18,9 @@ const SIGNIN = '/business/signin';
 
 /** The sign-up copy (§B6). */
 const START_TITLE = 'Create your company workspace';
+const AT_CAP_TITLE = "You've reached the company limit";
+const ZONE_HINT = 'We show times, like when a request expires, in this time zone.';
+const EYEBROW = 'Tripelyx Business · Preview';
 const START_LEAD = 'Set up your travel policy, budgets and team. Tripelyx confirms each new company before teammates can join.';
 const START_LEAD_SELF_SERVE = 'Set up your travel policy, budgets and team.';
 const ACK_TEXT = "I understand this is a preview with demo data, and I won't enter real employee travel plans yet.";
@@ -73,13 +76,13 @@ function textField(f) {
 /**
  * A labelled textarea.
  * @param {{ id: string, name: string, label: string, value?: string|null, error?: string|null, hint?: *,
- *   maxlength?: number, rows?: number, count?: string }} f count: the id of a parts.charCount hint
+ *   maxlength?: number, rows?: number, count?: string, required?: boolean }} f count: the id of a parts.charCount hint
  */
 function textArea(f) {
   const id = idPart(f.id);
   return html`<div class="field">
     <label for="${id}">${f.label}</label>
-    <textarea id="${id}" name="${f.name}" rows="${String(f.rows || 3)}"${f.maxlength ? html` maxlength="${String(f.maxlength)}"` : ''}${f.count ? html` data-count="${f.count}"` : ''}${f.error ? raw(' aria-invalid="true"') : ''}${described(id, f)}>${f.value === null || f.value === undefined ? '' : String(f.value)}</textarea>
+    <textarea id="${id}" name="${f.name}" rows="${String(f.rows || 3)}"${f.required ? raw(' required') : ''}${f.maxlength ? html` maxlength="${String(f.maxlength)}"` : ''}${f.count ? html` data-count="${f.count}"` : ''}${f.error ? raw(' aria-invalid="true"') : ''}${described(id, f)}>${f.value === null || f.value === undefined ? '' : String(f.value)}</textarea>
     ${f.hint ? html`<div id="${id}-hint">${f.hint}</div>` : ''}
     ${fieldError(id, f.error)}
   </div>`;
@@ -140,12 +143,30 @@ function publicPage(ctx, { title, body, wide = false, description }) {
 
 /** The eyebrow and heading of a public card. */
 function cardHead(title, lead) {
-  return html`<p class="eyebrow bz-pub-eyebrow">Tripelyx Business</p><h1>${title}</h1>${lead ? html`<p class="bz-pub-lead">${lead}</p>` : ''}`;
+  return html`<p class="eyebrow bz-pub-eyebrow">${EYEBROW}</p><h1>${title}</h1>${lead ? html`<p class="bz-pub-lead">${lead}</p>` : ''}`;
 }
 
 /** The sign-out button (POST /business/signout), with where to land afterwards. */
 function signOutForm({ next = '', label = 'Sign out' } = {}) {
   return html`<form class="bz-inline-form" method="post" action="/business/signout">${next ? html`<input type="hidden" name="next" value="${next}">` : ''}<button class="btn btn-ghost bz-btn" type="submit">${label}</button></form>`;
+}
+
+/**
+ * The 403 page of the company admin pages (http.gates forbiddenView): a Business page saying why, with the
+ * way back to the member's companies, instead of the app's generic error page. The gate passes no company,
+ * so it cannot draw the workspace shell itself.
+ * @param {object} ctx
+ * @param {{ message: string, reason?: 'role'|'suspended' }} info
+ */
+function workspaceForbiddenView(ctx, { message, reason = 'role' } = {}) {
+  const title = reason === 'suspended' ? 'This workspace is paused' : "Your role can't open this page";
+  const text = String(message || '');
+  const at = text.indexOf(BUSINESS_EMAIL);
+  const said = at < 0 ? text : html`${text.slice(0, at)}<a href="mailto:${BUSINESS_EMAIL}">${BUSINESS_EMAIL}</a>${text.slice(at + BUSINESS_EMAIL.length)}`;
+  const body = html`${cardHead(title, '')}
+    <div class="alert alert-info bz-alert" role="status">${icon('info')}<span>${said}</span></div>
+    <p class="bz-inline"><a class="btn btn-navy bz-btn" href="/business/app">Your companies</a></p>`;
+  return publicPage(ctx, { title, body });
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -159,7 +180,7 @@ function companyFields(values, errors) {
     <div class="bz-stack">
       ${textField({ id: 'bz-company', name: 'companyName', label: 'Company name', value: values.companyName, error: errors.name, required: true, maxlength: 80, autocomplete: 'organization' })}
       ${selectField({ id: 'bz-size', name: 'size', label: 'Company size', options: sizes, value: values.size, error: errors.size, required: true })}
-      ${selectField({ id: 'bz-timezone', name: 'timezone', label: 'Company time zone', options: zones, value: values.timezone || DEFAULT_TIMEZONE, error: errors.timezone, hint: 'Times on your workspace, like when a request expires, read in this zone.' })}
+      ${selectField({ id: 'bz-timezone', name: 'timezone', label: 'Company time zone', options: zones, value: values.timezone || DEFAULT_TIMEZONE, error: errors.timezone, hint: ZONE_HINT })}
       <div class="field"><span class="label">Currency</span><p class="bz-pub-fixed">${CURRENCY_TEXT}</p></div>
     </div>
   </fieldset>`;
@@ -196,7 +217,8 @@ function startView(ctx, { user = null, values = {}, accountErrors = {}, companyE
     ${checkField({ id: 'bz-ack', name: 'ack', label: ACK_TEXT, checked: values.ack === '1', error: companyErrors.ack, required: true })}
     <div class="bz-inline"><button class="btn btn-navy bz-btn" type="submit">Create workspace</button></div>
   </form>`;
-  const body = html`${cardHead(START_TITLE, lead)}
+  const title = atCap ? AT_CAP_TITLE : START_TITLE;
+  const body = html`${cardHead(title, lead)}
     ${accountReady ? html`<div class="alert alert-info bz-alert" role="status">${icon('info')}<span>${ACCOUNT_READY}</span></div>` : ''}
     ${takenBox}${errorBox(error)}
     ${atCap ? html`<div class="alert alert-info bz-alert" role="status">${icon('info')}<span>${atCap}</span></div><p><a class="btn btn-navy bz-btn" href="/business/app">Your companies</a></p>` : ''}
@@ -208,7 +230,7 @@ function startView(ctx, { user = null, values = {}, accountErrors = {}, companyE
       <p>${INVITE_HINT}</p>
       <p>Questions: <a href="mailto:${BUSINESS_EMAIL}">${BUSINESS_EMAIL}</a></p>
     </div>`;
-  return publicPage(ctx, { title: START_TITLE, body });
+  return publicPage(ctx, { title, body });
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -237,7 +259,7 @@ function signinView(ctx, { values = {}, error = null, next = null, invite = fals
 }
 
 module.exports = {
-  startView, signinView, publicPage, cardHead, signOutForm, maskEmail, zoneOption,
+  startView, signinView, publicPage, cardHead, signOutForm, maskEmail, zoneOption, workspaceForbiddenView,
   textField, textArea, selectField, checkField, fieldError,
-  START, SIGNIN, START_TITLE, START_LEAD, ACK_TEXT, CURRENCY_TEXT, EMAIL_TAKEN, ACCOUNT_READY, SIGNIN_TITLE, INVITE_HINT,
+  START, SIGNIN, START_TITLE, AT_CAP_TITLE, ZONE_HINT, EYEBROW, START_LEAD, ACK_TEXT, CURRENCY_TEXT, EMAIL_TAKEN, ACCOUNT_READY, SIGNIN_TITLE, INVITE_HINT,
 };

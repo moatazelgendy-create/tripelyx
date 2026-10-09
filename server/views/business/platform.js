@@ -9,7 +9,7 @@ const { html } = require('../../lib/html');
 const { layout } = require('../layout');
 const { statusPill, notice, errorBox, dataTable, emptyState } = require('./parts');
 const f = require('./format');
-const { textArea } = require('./auth');
+const { textArea, zoneOption } = require('./auth');
 const { adminTabs } = require('../trips/admin');
 
 const TITLE = 'Companies';
@@ -20,9 +20,24 @@ const SECTIONS = Object.freeze([
   ['suspended', 'Paused', 'No paused companies.'],
 ]);
 const NOTE_HINT = 'Required. Only Tripelyx staff see this note; the company sees that Tripelyx paused it.';
+/** Words too common to make two company names alike on their own. */
+const COMMON_WORDS = new Set(['the', 'and', 'company', 'group', 'travel', 'global', 'international', 'inc', 'ltd', 'llc', 'co']);
+
+/** A name's words, lower case, letters and digits only ("Acme, Inc." → ['acme', 'inc']). */
+const wordsOf = name => String(name || '').normalize('NFKC').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+
+/**
+ * Other listed companies whose name starts with the same distinctive word as this one ("Acme Incorporated"
+ * and "Acme Inc"), added to the service's similarNames, so a likely duplicate is easy to spot.
+ */
+function alsoSimilar(o, orgs) {
+  const first = wordsOf(o.name)[0];
+  if (!first || first.length < 3 || COMMON_WORDS.has(first)) return [];
+  return orgs.filter(x => x.id !== o.id && wordsOf(x.name)[0] === first).map(x => x.name);
+}
 
 /** One company with its actions. `form`: the posted values and messages after a 422 for this company. */
-function orgCard(o, form) {
+function orgCard(o, form, orgs = []) {
   const e = (form && form.errors) || {};
   const idp = `bz-plat-${o.id}`;
   const confirm = o.status === 'active' ? '' : html`<form class="bz-inline-form" method="post" action="${MOUNT}/${o.id}/status">
@@ -33,15 +48,16 @@ function orgCard(o, form) {
       <summary>Pause this company<span class="sr-only"> (${o.name})</span></summary>
       <form class="bz-stack" method="post" action="${MOUNT}/${o.id}/status">
         <input type="hidden" name="status" value="suspended"><input type="hidden" name="rev" value="${String(o.rev)}">
-        ${textArea({ id: `${idp}-note`, name: 'note', label: 'Why is it paused?', value: form ? form.note : '', error: e.note || e.status, maxlength: 300, rows: 2, hint: html`<p class="field-hint">${NOTE_HINT}</p>` })}
+        ${textArea({ id: `${idp}-note`, name: 'note', label: 'Why is it paused?', value: form ? form.note : '', error: e.note || e.status, maxlength: 300, rows: 2, required: true, hint: html`<p class="field-hint">${NOTE_HINT}</p>` })}
         <div class="bz-inline"><button class="btn btn-ghost bz-btn" type="submit">Pause ${o.name}</button></div>
       </form>
     </details>`;
+  const similar = [...new Set([...(o.similarNames || []), ...alsoSimilar(o, orgs)])];
   return html`<li class="bz-card bz-stack" id="org-${o.id}">
     <div class="bz-card-head"><h3>${o.name}</h3>${statusPill(o.status, { kind: 'org' })}</div>
-    <p class="bz-meta">${o.size || 'Size not given'} · ${f.plural(o.memberCount, 'member')} · ${o.timezone} · created ${f.dateTimeIn('UTC', o.at)}</p>
+    <p class="bz-meta">${o.size || 'Size not given'} · ${f.plural(o.memberCount, 'member')} · ${zoneOption(f.safeZone(o.timezone))} · created ${f.dateTimeIn('UTC', o.at)}</p>
     <p class="bz-meta">Created by ${o.creatorEmail || 'an account that has left'}</p>
-    ${o.similarNames && o.similarNames.length ? html`<p class="alert alert-warning bz-alert" role="note">Similar name: ${o.similarNames.join(', ')}</p>` : ''}
+    ${similar.length ? html`<p class="alert alert-warning bz-alert" role="note">Similar name: ${similar.join(', ')}</p>` : ''}
     ${confirm || pause ? html`<div class="bz-stack">${confirm ? html`<div class="bz-inline">${confirm}</div>` : ''}${pause}</div>` : ''}
   </li>`;
 }
@@ -58,7 +74,7 @@ function platformView(ctx, { data, notice: ok = null, error = null, form = null 
     const list = orgs.filter(o => o.status === status);
     return html`<section class="bz-section" aria-labelledby="bz-plat-${status}">
       <h2 id="bz-plat-${status}">${label} (${String(list.length)})</h2>
-      ${list.length ? html`<ul class="bz-grid">${list.map(o => orgCard(o, form && form.orgId === o.id ? form : null))}</ul>` : html`<p class="bz-meta">${empty}</p>`}
+      ${list.length ? html`<ul class="bz-grid">${list.map(o => orgCard(o, form && form.orgId === o.id ? form : null, orgs))}</ul>` : html`<p class="bz-meta">${empty}</p>`}
     </section>`;
   });
   const enquiries = html`<section class="bz-section" aria-labelledby="bz-plat-leads">
@@ -89,4 +105,4 @@ function platformView(ctx, { data, notice: ok = null, error = null, form = null 
   return layout({ title: `${TITLE} · Admin`, body, ctx, noindex: true, corporate: true, styles: ['/css/business.css'], bodyClass: 'bz-pub' });
 }
 
-module.exports = { platformView, TITLE, NOTE_HINT };
+module.exports = { platformView, alsoSimilar, TITLE, NOTE_HINT };

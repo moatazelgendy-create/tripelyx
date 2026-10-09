@@ -6,6 +6,7 @@
 // confirmed company is warned before saving that a new name goes back to Tripelyx to confirm (§I6).
 const { html, raw } = require('../../lib/html');
 const { pageHead, kvList } = require('./parts');
+const { icon } = require('../icons');
 const f = require('./format');
 const { shellView } = require('./shell');
 const { textField, selectField, zoneOption, CURRENCY_TEXT } = require('./auth');
@@ -17,6 +18,8 @@ const RENAME_WARNING = 'Changing the name sends your company back to Tripelyx to
 const BOOK_FIRST = 'Book first, approver can cancel within 24 hours. Available once booking is live.';
 const PERIODS = Object.freeze([['quarter', 'Quarter'], ['month', 'Month']]);
 const DELETE_TEXT = `To delete this company's data, write to ${BUSINESS_EMAIL}.`;
+/** DELETE_TEXT with the address as a mailto link. */
+const deleteLine = () => html`To delete this company's data, write to <a href="mailto:${BUSINESS_EMAIL}">${BUSINESS_EMAIL}</a>.`;
 
 /** A form value as text: what was posted (after a 422) or else the saved value. */
 function pick(values, key, saved) {
@@ -39,7 +42,8 @@ function settingsView(ctx, shell, { org, rev = null, canCompany, canTravel, self
   const warnRename = org.status === 'active' && !selfServe;
   const company = canCompany
     ? html`<fieldset class="bz-fieldset bz-stack"><legend>Company</legend>
-        ${textField({ id: 'bz-set-name', name: 'name', label: 'Company name', value: pick(values, 'name', org.name), error: errors.name, maxlength: 80, required: true, autocomplete: 'organization', hint: warnRename ? RENAME_WARNING : '' })}
+        ${warnRename ? html`<div class="alert alert-warning bz-alert" role="note" id="bz-set-name-warning">${icon('alert')}<span>${RENAME_WARNING}</span></div>` : ''}
+        ${textField({ id: 'bz-set-name', name: 'name', label: 'Company name', value: pick(values, 'name', org.name), error: errors.name, maxlength: 80, required: true, autocomplete: 'organization' })}
         ${selectField({ id: 'bz-set-zone', name: 'timezone', label: 'Time zone', options: TIMEZONES.map(z => [z, zoneOption(z)]), value: pick(values, 'timezone', org.timezone), error: errors.timezone, hint: 'Approval deadlines, activity and demo price times show in this zone.' })}
       </fieldset>`
     : html`<section class="bz-card bz-stack" aria-labelledby="bz-set-company"><h2 id="bz-set-company">Company</h2>
@@ -78,7 +82,7 @@ function settingsView(ctx, shell, { org, rev = null, canCompany, canTravel, self
     ? html`<section class="bz-card bz-stack" aria-labelledby="bz-set-data"><h2 id="bz-set-data">Your company's data</h2>
         <p>Download everything ${org.name} keeps in Tripelyx Business as one JSON file: settings, people, departments, policies, budgets, trip requests and activity.</p>
         <form class="bz-inline-form" method="post" action="${base}/settings/export"><button class="btn btn-ghost bz-btn" type="submit">Download company data</button></form>
-        <p class="bz-meta">${DELETE_TEXT}</p>
+        <p class="bz-meta">${deleteLine()}</p>
       </section>`
     : html`<p class="bz-meta">An Owner can download ${org.name}'s data or ask Tripelyx to delete it.</p>`;
   const sub = canCompany || canTravel ? `How ${org.name} works in Tripelyx Business.` : `How ${org.name} works in Tripelyx Business. Owners and Travel Admins can change these.`;
