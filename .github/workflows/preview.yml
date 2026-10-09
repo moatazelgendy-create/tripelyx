@@ -14,8 +14,8 @@
 # role must still be named tripelyx-github-preview). Optional secrets: DUFFEL_TEST_TOKEN (a Duffel test token,
 # duffel_test_...) and LITEAPI_SANDBOX_KEY (a LiteAPI sandbox key, sand_...). With DUFFEL_TEST_TOKEN set, the
 # preview's Business flights come from Duffel's test system (and its hotels from LiteAPI's sandbox when both
-# are set); without it, demo data. A run stops before anything else when either secret is set to anything but
-# a test key, so a live key never reaches the preview. The platform admin is always the demo address
+# are set); without it, demo data. A run stops before anything is built or deployed when either secret is set
+# to anything but a test key, so a live key never reaches the preview. The platform admin is always the demo address
 # platform.admin@tripelyx-demo.example, so no real address is ever in this public run's log.
 name: Private preview
 

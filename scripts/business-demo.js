@@ -26,15 +26,15 @@
 //   Sales and Engineering with budgets for this quarter (and the trips' quarter, when that is a later one);
 //   the Standard policy plus a Cairo to London route exception and the blocked demo airline ZS (Sahara Wings)
 //   (each only when the inventory lists those airports and that airline);
-// - only when Business prices come from demo data (inventory.source 'demo'), trip requests in every state: approved by policy, waiting for approval, approved by a manager, denied,
-//   cancelled, waiting with a question from the manager, a draft with cheaper alternatives, and two test
-//   scenarios, captioned "Test scenario" at the start of their purpose (on each one's request page, in the log
-//   and in the command's output; the trip lists show route, dates and status, not the purpose): one that
-//   expired (made under a clock set two days back) and one sent back because its hotel price changed (the
-//   hotel provider is wrapped so that one room on those dates prices $29 more, and the log says so); after
-//   the expired one is made, approvers get 7 days (Settings), so the waiting requests stay waiting for a week
-//   after the preview starts. With any other source (the suppliers' test systems on the preview, or no
-//   supplier) it makes no trips, so it never calls a supplier, and the log says why;
+// - only when Business prices come from demo data (inventory.source 'demo'), trip requests in every state: approved
+//   by policy, waiting for approval, approved by a manager, denied, cancelled, waiting with a question from the
+//   manager, a draft with cheaper alternatives, and two test scenarios, captioned "Test scenario" at the start of
+//   their purpose (on each one's request page, in the log and in the command's output; the trip lists show route,
+//   dates and status, not the purpose): one that expired (made under a clock set two days back) and one sent back
+//   because its hotel price changed (the hotel provider is wrapped so that one room on those dates prices $29 more,
+//   and the log says so); after the expired one is made, approvers get 7 days (Settings), so the waiting requests
+//   stay waiting for a week after the preview starts. With any other source (the suppliers' test systems on the
+//   preview, or no supplier) it makes no trips, so it never calls a supplier, and the log says why;
 // - "Second Demo Company (preview)", which shares one employee, so the company switcher has two companies.
 // Every name is fictional, every address is on the reserved .example domain, and every trip it makes is priced
 // from demo data.
