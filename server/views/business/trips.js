@@ -5,8 +5,11 @@
 //
 // Amounts: each total is its own demo container (parts.demoPrice) that says "Demo price · Priced at …" in the
 // company's time zone, so no amount on these pages stands without its demo label (or, for a request priced by
-// a supplier's test system, "Supplier test data, not a real price" with the TEST DATA tag). The status filter
-// says "Approved", not "Approved to book", once the workspace or a listed request is on supplier prices.
+// a supplier's test system, "Supplier test data, not a real price" with the TEST DATA tag; on live prices "US
+// dollars, from the airline · Priced at … · Can change until booked"). The status filter says "Approved", not
+// "Approved to book", once the workspace or a listed request is on supplier prices. With live prices a company
+// Tripelyx has not confirmed yet cannot search (go-live design §5.5): no "Plan a trip" button, and the empty
+// state says search opens once Tripelyx confirms the company.
 const { html } = require('../../lib/html');
 const { icon } = require('../icons');
 const f = require('./format');
@@ -56,9 +59,16 @@ function searchQuery(q) {
 
 /**
  * A row's total with its price label (one container per amount): the request's own source (RequestRow.source,
- * real-suppliers design §2.3), so a supplier test data total says so; an old row without one reads as demo.
+ * real-suppliers design §2.3), so a supplier test data total says so; an old row without one reads as demo. A
+ * live total says who priced it (go-live design §5.6): "US dollars, from the airline" for a one-way flight ("the
+ * airline and the hotel supplier" with a hotel); a return's two tickets may be on one airline or two, which the
+ * row doesn't say, so it reads "from our airline suppliers" ("our airline and hotel suppliers" with a hotel).
  */
-const totalCell = (row, timeZone) => p.demoPrice(row.totalCents, { pricedAt: row.pricedAt, timeZone, source: f.isSource(row.source) ? row.source : 'demo' });
+function totalCell(row, timeZone) {
+  const source = f.isSource(row.source) ? row.source : 'demo';
+  const kind = source === 'live' ? f.requestRowKind(row) : 'price';
+  return p.demoPrice(row.totalCents, { pricedAt: row.pricedAt, timeZone, source, kind });
+}
 
 /** The trip cell of a list: route (a link to the request), dates, and the hotel city when there is one. */
 function tripCell(base, map, row) {
@@ -126,7 +136,9 @@ function tripsView(ctx, { org, scope, scopes, list, filters = {}, options = null
   const filtered = scope === 'all' && Object.values(filters).some(Boolean);
   const rows = list.rows || [];
   // With no supplier there is no search to plan a trip with: no "Plan a trip" button (as on the home page).
-  const searchable = f.searchable(ctx);
+  // Nor while live search waits for the company's confirmation.
+  const searchable = f.searchOpen(ctx, org);
+  const waiting = f.awaitingConfirmation(ctx, org);
   // Supplier prices in the workspace or in the list: the approved filter says "Approved" (none can be booked yet).
   const workspace = f.ctxSource(ctx);
   const supplier = (!!workspace && workspace !== 'demo') || rows.some(r => f.isSource(r.source) && r.source !== 'demo');
@@ -134,7 +146,7 @@ function tripsView(ctx, { org, scope, scopes, list, filters = {}, options = null
   let body;
   if (!rows.length && scope === 'mine') {
     body = p.emptyState({
-      title: p.NO_TRIPS.title, text: searchable ? p.NO_TRIPS.text : p.NO_TRIPS.textNoSupplier, iconName: 'plane',
+      title: p.NO_TRIPS.title, text: searchable ? p.NO_TRIPS.text : waiting ? p.NO_TRIPS.textWaiting : p.NO_TRIPS.textNoSupplier, iconName: 'plane',
       action: searchable ? { href: `${base}/trips/new`, label: 'Plan a trip' } : null,
     });
   } else if (!rows.length) {

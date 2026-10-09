@@ -36,7 +36,7 @@ const { SupplierUsage, opensAtText } = require('../server/business/usage');
 const { withCompany, currentScope } = require('../server/business/scope');
 const { SEARCH_CLOSED } = require('../server/business/source');
 const { KINDS, SUPPLIER_CAPS } = require('../server/business/constants');
-const { LIVE_RIBBON, NO_SUPPLIER } = require('../server/views/business/parts');
+const { LIVE_RIBBON, NO_SUPPLIER, AWAITING_CONFIRMATION } = require('../server/views/business/parts');
 const { id: newId } = require('../server/lib/ids');
 
 const ROOT = path.join(__dirname, '..');
@@ -932,7 +932,7 @@ test('a company Tripelyx has not confirmed makes no supplier call: the form says
   let res = await pending.c.sam.get(`${pending.B}/trips/new`);
   assert.equal(res.status, 200);
   let main = textMain(res.text);
-  assert.ok(main.includes('Not open yet') && main.includes(SEARCH_CLOSED), main.slice(0, 400));
+  assert.ok(main.includes(`${AWAITING_CONFIRMATION.title} ${SEARCH_CLOSED}`), main.slice(0, 400));
   assert.ok(!main.includes(NO_SUPPLIER.title), 'the reason is the company, not the supplier');
   assert.match(res.text, /<fieldset class="bz-search-fields" disabled>/);
   res = await pending.c.sam.get(`${pending.B}/trips/search?${qs(Q)}`);

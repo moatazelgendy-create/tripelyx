@@ -11,8 +11,9 @@
 //     nothing links to /business/start or /business/signin;
 //   - the Business inventory's status: 'demo' (demo flights and hotels), 'sandbox' (our suppliers' test
 //     systems: prices are test data, not real fares; real-suppliers design §2.3), 'none' ("Supplier not
-//     connected yet") or 'live' (real airline and hotel connections; never today), for the preview note and
-//     "Where it stands today".
+//     connected yet") or 'live' (go-live L2: live prices from the airline and hotel suppliers, in US dollars,
+//     for confirmed companies, with booking not open yet; go-live design §5.5, §5.6), for the preview note,
+//     the savings note, the example request and "Where it stands today".
 const { html } = require('../../lib/html');
 const { icon } = require('../icons');
 const { layout } = require('../layout');
@@ -65,8 +66,14 @@ const PREVIEW_NOW_NO_SUPPLIER = Object.freeze([
   'Travel policies for flights and hotels, in three tiers',
   'Department budgets for the month or quarter',
 ]);
-/** With real airline and hotel connections (inventory status 'live'): nothing on demo data any more. */
-const PREVIEW_NOW_LIVE = Object.freeze(PREVIEW_NOW.map(t => t.replace(' on demo data', '')));
+/**
+ * With live prices (inventory status 'live'): search first, then the rest with nothing on demo data any more.
+ * Search runs for companies Tripelyx has confirmed (go-live design §5.5).
+ */
+const PREVIEW_NOW_LIVE = Object.freeze([
+  'Flight and hotel search with live prices in US dollars, once Tripelyx confirms your company',
+  ...PREVIEW_NOW.map(t => t.replace(' on demo data', '')),
+]);
 /** With the suppliers' test systems (inventory status 'sandbox'): the same, on their test data. */
 const PREVIEW_NOW_SANDBOX = Object.freeze(PREVIEW_NOW.map(t => t.replace(' on demo data', " on our suppliers' test data")));
 const COMING_NEXT = Object.freeze([
@@ -87,7 +94,7 @@ const NOTES = Object.freeze({
   demo: 'Preview: flights, hotels and prices are demo data while we connect suppliers. Nothing is booked or charged yet.',
   sandbox: "In this preview, flights and hotels come from our suppliers' test systems, so prices are test data, not real fares. Nothing is booked or charged yet.",
   none: 'Trip search turns on once we connect airlines and hotels. Nothing is booked or charged yet.',
-  live: "Booking isn't open yet, so nothing is booked or charged.",
+  live: "Prices are live from our airline and hotel suppliers, in US dollars, and can change until booked. Booking isn't open yet, so nothing is booked or charged.",
   off: "Preview: company workspaces aren't open on this site right now. Nothing is booked or charged.",
 });
 
@@ -112,6 +119,8 @@ const SAVINGS = 'Each request keeps the cheapest option inside your policy that 
 const SAVINGS_DEMO = 'In the preview these are demo prices.';
 /** Added to SAVINGS while the inventory is the suppliers' test data. */
 const SAVINGS_SANDBOX = 'In the preview these are supplier test data, not real fares.';
+/** Added to SAVINGS with live prices. */
+const SAVINGS_LIVE = 'These are live supplier prices in US dollars, as each search found them.';
 const AI_BODY = 'When a pick goes over policy, Tripelyx AI looks through the same search for a cheaper way to make the trip: another fare on the same flight, a lower cabin, one stop instead of nonstop, a day or three earlier or later if your dates can move, or a hotel under your limit in the same city. Each option is a priced result from that search, with what it saves and what you give up. It never makes up a price.';
 const AI_SMALL = 'How it works today: Tripelyx AI runs on rules we write and test, and your trip data stays with Tripelyx.';
 
@@ -129,8 +138,15 @@ function pathCard(p, live) {
     : html`<li><div class="bz-mk-path is-static">${inner}</div></li>`;
 }
 
+/**
+ * The approved step of the example request: "Approved to book", or "Approved" with live prices, where booking
+ * isn't open yet (go-live design §5.6).
+ */
+const EXAMPLE_APPROVED = Object.freeze({ live: 'Approved' });
+const exampleApproved = status => EXAMPLE_APPROVED[status] || 'Approved to book';
+
 /** The three product examples (§B5.4): tagged "Example", with no amounts. */
-function examples() {
+function examples(status) {
   return html`<div class="bz-mk-examples">
     <article class="bz-mk-ex" aria-labelledby="bz-ex-flight">
       <p class="bz-mk-ex-head"><span class="bz-mk-ex-kind">${icon('plane')}Flight</span><span class="bz-mk-ex-tag">Example</span></p>
@@ -149,7 +165,7 @@ function examples() {
       <h3 id="bz-ex-request" class="bz-mk-ex-title">Request Approval</h3>
       <ol class="bz-mk-steps">
         <li><span class="bz-mk-step-dot" aria-hidden="true"></span><span>Waiting for your manager</span></li>
-        <li><span class="bz-mk-step-dot is-done" aria-hidden="true"></span><span>Approved to book</span></li>
+        <li><span class="bz-mk-step-dot is-done" aria-hidden="true"></span><span>${exampleApproved(status)}</span></li>
       </ol>
     </article>
   </div>`;
@@ -193,7 +209,7 @@ function businessMarketingView(ctx) {
     <p class="eyebrow">The platform</p>
     <h2 id="bz-platform-title" class="section-title">Every work trip in one place.</h2>
     <p class="section-lead">Each trip carries its flights, its hotel, the policy check and the approval, so the traveler, the approver and finance all see the same thing.</p>
-    ${examples()}
+    ${examples(status)}
   </div>
 </section>
 <section class="section" id="bz-pillars" aria-labelledby="bz-pillars-title">
@@ -230,7 +246,7 @@ function businessMarketingView(ctx) {
     <div>
       <p class="eyebrow">Savings</p>
       <h2 id="bz-savings-title" class="section-title">Every choice measured against your own limits.</h2>
-      <p class="section-lead">${SAVINGS}${status === 'demo' ? ` ${SAVINGS_DEMO}` : status === 'sandbox' ? ` ${SAVINGS_SANDBOX}` : ''}</p>
+      <p class="section-lead">${SAVINGS}${status === 'demo' ? ` ${SAVINGS_DEMO}` : status === 'sandbox' ? ` ${SAVINGS_SANDBOX}` : status === 'live' ? ` ${SAVINGS_LIVE}` : ''}</p>
     </div>
     <div class="bz-mk-beat" aria-label="How the Price to Beat is set">
       <p class="bz-mk-beat-row"><span class="card-icon">${icon('shield')}</span><span><b>Your nightly limit</b><span>From your travel policy, for that city or country.</span></span></p>
@@ -295,5 +311,5 @@ function businessMarketingView(ctx) {
 module.exports = {
   businessMarketingView, SECTIONS, PATHS, PILLARS, PERSONAS, PREVIEW_NOW, PREVIEW_NOW_NO_SUPPLIER, PREVIEW_NOW_LIVE, COMING_NEXT,
   COMING_NEXT_NO_SUPPLIER, COMING_NEXT_LIVE, NOTES, AI_BODY, AI_SMALL, SAVINGS, SAVINGS_DEMO, PREVIEW_NOW_SANDBOX, SAVINGS_SANDBOX,
-  PREVIEW_WORDS, OPEN_WORDS, wordsFor,
+  PREVIEW_WORDS, OPEN_WORDS, wordsFor, SAVINGS_LIVE, EXAMPLE_APPROVED,
 };

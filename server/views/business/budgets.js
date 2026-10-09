@@ -1,6 +1,7 @@
 // /business/o/:orgId/budgets?period=2026-Q4 (budget.view.dept or budget.view.all, plan §B4, §B6, §H4): per
 // department its budget, what approved trips committed, what is awaiting approval, what is left, and a bar;
-// "Spent: shows once real bookings exist" ("once booking is open" with no supplier). A period switcher;
+// "Spent: shows once real bookings exist" ("once booking is open" with no supplier, and with live prices while
+// booking is not open in Tripelyx, go-live design §5.6). A period switcher;
 // budget.edit holders set each department's budget for the period (POST /budgets, 303 back). A Manager sees
 // only their own department (listBudgets).
 // Every amount sits in a demo container (§F6): committed and awaiting sum demo prices, so the whole table does.
@@ -17,7 +18,10 @@ const { SCAN_CAP } = require('../../business/constants');
 
 const TITLE = 'Budgets';
 const SPENT = 'Spent: shows once real bookings exist.';
-/** With no supplier there is no other kind of booking for "real" to set apart: say when it shows instead. */
+/**
+ * With no supplier there is no other kind of booking for "real" to set apart, and with live prices every price
+ * is real but booking is not open yet: say when it shows instead.
+ */
 const SPENT_NO_SUPPLIER = 'Spent: shows once booking is open.';
 /** What Committed counts (plan §C6: a trip approved while its department had no budget for the period takes no hold). */
 const committedText = label => `Committed: trips departing in ${label}, approved while their department had a budget for it. A trip approved before its department had a budget for the period isn't counted.`;
@@ -69,7 +73,7 @@ function budgetsView(ctx, shell, { rows, periodKey, choices, canEdit, periodKind
       rows: tableRows,
     })}
       <p class="bz-meta">${committedText(label)} Awaiting approval: trips waiting for a decision, not counted as committed.${truncated ? ` Awaiting approval counts the ${SCAN_CAP.toLocaleString('en-US')} most recent requests.` : ''}</p>
-      <p class="bz-meta">${f.searchable(ctx) ? SPENT : SPENT_NO_SUPPLIER}</p>`, { pricedAt: null, timeZone: tz, tag: 'section', label: `Budgets for ${label}`, source: priceSource, totals: true })
+      <p class="bz-meta">${f.searchable(ctx) && f.ctxSource(ctx) !== 'live' ? SPENT : SPENT_NO_SUPPLIER}</p>`, { pricedAt: null, timeZone: tz, tag: 'section', label: `Budgets for ${label}`, source: priceSource, totals: true })
     : emptyState({ title: ownOnly ? "You're not in a department yet, so there's no budget to show." : 'No departments yet.', text: ownOnly ? 'Ask a travel admin to add you to one.' : 'Add departments on the People page, then set their budgets here.', iconName: 'wallet' });
   const editable = rows.filter(r => !r.department.archived);
   const forms = canEdit && editable.length

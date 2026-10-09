@@ -17,7 +17,9 @@
 // (leg.skipped: fares in another currency, mixed cabins, fees paid in another currency, hotels with no
 // name), that it shows the 40 lowest-priced hotels when the supplier sent that many, that each way of a
 // return trip is its own one-way ticket, and, when the hotel supplier failed (leg.error), that the flights
-// can still be requested. Demo pages are unchanged.
+// can still be requested. Demo pages are unchanged. On live prices (go-live design §5.6) each card says "US
+// dollars, from the airline · Priced at … · Can change until booked" ("from the hotel supplier" for a hotel),
+// and the limits bar names who priced the search its amounts come from.
 const { html } = require('../../lib/html');
 const { icon } = require('../icons');
 const f = require('./format');
@@ -295,7 +297,7 @@ function resultsView(ctx, { org, view, all = false, pick = null, error = null, e
     actions: html`<a class="btn btn-ghost bz-btn" href="${base}/trips/new?${searchQuery(q)}">${icon('sliders')}<span>Change search</span></a>`,
   })}
   ${p.errorBox(missing && missing.length ? missingText(missing) : error)}
-  ${p.limitsBar(view.limits, { pricedAt: view.pricedAt, timeZone, level: 2, source })}
+  ${p.limitsBar(view.limits, { pricedAt: view.pricedAt, timeZone, level: 2, source, kind: f.liveKind(source, legRows) })}
   ${notes}
   ${form}`;
 }

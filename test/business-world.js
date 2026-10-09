@@ -29,6 +29,12 @@
 // has the shape the pages read. The clock is held at FIXED_NOW (the expired request is sent two days back,
 // the past one planned in September). Every person's name, email, department and trip purpose names its
 // company, so a page of one company can be searched for any trace of the other.
+//
+// world({ live: true }) seeds the same requests on live prices (go-live design §5.6): the demo providers moved
+// into the live namespace by test/business-sandbox.js useLive, inventory status 'live'. A fixture over the demo
+// data, for the live label tests and screenshots: no supplier is called. Live search runs only inside a
+// confirmed company's scope (search.js, as memberGate sets it on every workspace request), so the seed's own
+// service calls run in it too (w.inScope(C, fn)), the way a request through the pages would.
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const { startApp, FIXED_NOW } = require('./helpers');
@@ -36,6 +42,8 @@ const { seedUser, seedOrg, seedMember, mutableClock } = require('./business-help
 const { MemoryStore } = require('../server/booking/MemoryStore');
 const { KINDS } = require('../server/business/constants');
 const { AppError } = require('../server/lib/errors');
+const { withCompany } = require('../server/business/scope');
+const { useLive } = require('./business-sandbox');
 
 const OPS_EMAIL = 'ops@tripelyx.example';
 /** Limits high enough that a walk over every route never meets a 429 (the limiters stay in the chains). */
@@ -79,7 +87,7 @@ const addDays = (date, n) => new Date(Date.parse(`${date}T00:00:00Z`) + n * 8640
  *   PostgresStore); unique: a random part in every email domain, for a shared database that keeps the accounts
  *   of earlier runs (the company words, Acme and Globex, stay the same)
  */
-async function world({ production = false, env = {}, store = null, unique = false } = {}) {
+async function world({ production = false, env = {}, store = null, unique = false, live = false } = {}) {
   const clock = mutableClock(FIXED_NOW);
   const suffix = unique ? `-${crypto.randomBytes(4).toString('hex')}` : '';
   const opsEmail = unique ? `ops${suffix}@tripelyx.example` : OPS_EMAIL;
@@ -87,6 +95,7 @@ async function world({ production = false, env = {}, store = null, unique = fals
     ENABLE_BUSINESS: 'true', ADMIN_EMAILS: opsEmail, ...ROOMY, ...(production ? PRODUCTION : {}), ...env,
   }, { now: clock.now, store: store || new MemoryStore() });
   const svc = app.business;
+  if (live) useLive(app);
   const demo = !production;
   // `connection: close`: a test may spend seconds checking pages between two requests, longer than the
   // server's keep-alive timeout, and a reused socket the server already closed fails the next fetch.
@@ -98,7 +107,10 @@ async function world({ production = false, env = {}, store = null, unique = fals
   ops.http = http(ops.cookie);
 
   const quotes = demo ? hotelOverrides(svc) : null;
-  const ctx = { app, svc, clock, http, demo, quotes };
+  // A company's service calls as its pages make them: in its scope, confirmed (memberGate's withCompany). Live
+  // search refuses a call outside one; the other inventories are called as before.
+  const inScope = (C, fn) => (live ? withCompany(C.id, fn, { confirmed: true, timezone: C.timezone }) : fn());
+  const ctx = { app, svc, clock, http, demo, quotes, inScope };
   const A = await company(ctx, { name: 'Acme Inc', word: 'Acme', domain: `acme${suffix}.example`, timezone: 'Africa/Cairo', depNames: ['Acme Engineering', 'Acme Sales'] });
   const B = await company(ctx, { name: 'Globex Ltd', word: 'Globex', domain: `globex${suffix}.example`, timezone: 'Europe/London', depNames: ['Globex Research', 'Globex Marketing'] });
 
@@ -117,13 +129,13 @@ async function world({ production = false, env = {}, store = null, unique = fals
   await svc.updateMember(B.people.owner.actor, B.people.finance.user.id, { approverId: both.user.id, rev: fin.rev });
 
   if (demo) {
-    await acmeExtras(ctx, A, both);
-    await globexExtras(ctx, B, both);
+    await inScope(A, () => acmeExtras(ctx, A, both));
+    await inScope(B, () => globexExtras(ctx, B, both));
   }
   // Personal records of the consumer app, which no company page may show.
   const personal = [await personalRecords(app, A.people.employee.user, 'ACMEEMP'), await personalRecords(app, both.user, 'PATBOTH')];
   for (const C of [A, B]) C.org = await app.store.getRecord(KINDS.org, C.id);
-  return { app, svc, clock, ops, A, B, both, http, production, quotes, personal, close: app.close };
+  return { app, svc, clock, ops, A, B, both, http, production, quotes, personal, inScope, close: app.close };
 }
 
 /** A fetch client like business-helpers.client, with extra headers on every request. */
@@ -214,7 +226,7 @@ async function company(ctx, { name, word, domain, timezone, depNames }) {
     id: org.id, org: null, name, word, domain, timezone, general: org.general, deps, people, budgets, invite: invited, requests: {}, expected: {},
     shape, B: `/business/o/${org.id}`,
   };
-  if (demo) await baseRequests(ctx, C);
+  if (demo) await ctx.inScope(C, () => baseRequests(ctx, C));
   return C;
 }
 

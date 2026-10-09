@@ -76,7 +76,8 @@ const EXPORT_CAP = 20000;
 const PRICE_SOURCE_LABELS = Object.freeze({ demo: 'Demo price', sandbox: 'Supplier test data', live: 'Supplier price' });
 /**
  * The export's note: with only demo requests (or none, under demo inventory) the preview note word for word;
- * with any supplier request, that each request's price_source names where its amounts came from; with no
+ * with any supplier request, that each request's price_source names where its amounts came from; with only
+ * live requests (www at go-live L2, design §5.6), that they are supplier prices, never "preview"; with no
  * request and no demo inventory (www and production today: go-live design §3.4), the plain export note, which
  * names nothing that isn't there.
  */
@@ -84,6 +85,7 @@ const EXPORT_NOTES = Object.freeze({
   demo: `Tripelyx Business preview. Amounts are whole US cents from demo prices: nothing was booked or charged. Questions: ${BUSINESS_EMAIL}.`,
   supplier: `Tripelyx Business preview. Amounts are whole US cents from demo prices, supplier test data or supplier prices, as each request's price_source says: nothing was booked or charged. Questions: ${BUSINESS_EMAIL}.`,
   plain: `Tripelyx Business export. Amounts are whole US cents. Nothing was booked or charged. Questions: ${BUSINESS_EMAIL}.`,
+  live: `Tripelyx Business export. Amounts are whole US cents from supplier prices, as each request was priced. Nothing was booked or charged. Questions: ${BUSINESS_EMAIL}.`,
 });
 /** A request as the export carries it: its own fields, with price_source (the CSV's words) for its stored source. */
 function exportedRequest(r) {
@@ -99,6 +101,7 @@ function exportedRequest(r) {
  * company's own).
  */
 function exportNote(requests, inventory) {
+  if (requests.length && requests.every(r => requestSource(r) === 'live')) return EXPORT_NOTES.live;
   if (requests.some(r => requestSource(r) !== 'demo')) return EXPORT_NOTES.supplier;
   if (requests.length || (inventory && inventory.status === 'demo')) return EXPORT_NOTES.demo;
   return EXPORT_NOTES.plain;

@@ -1,9 +1,12 @@
 // /business/o/:orgId/welcome (plan §B4 "Workspace entry", settings.company): the setup checklist, ticked from
 // data (reports.checklist through service.dashboard): Review your policy · Add departments and budgets · Invite
 // your team · Try a demo trip (only when demo inventory runs: with no supplier there is no trip to try). With a
-// supplier's test system (real-suppliers design §2.3) the last step is "Try a trip with supplier test data".
+// supplier's test system (real-suppliers design §2.3) the last step is "Try a trip with supplier test data";
+// with live prices "Try a trip", once Tripelyx has confirmed the company (go-live design §5.5: until then there
+// is no search to try).
 const { html } = require('../../lib/html');
 const { pageHead, checklist } = require('./parts');
+const { awaitingConfirmation } = require('./format');
 const { shellView } = require('./shell');
 
 const TITLE = 'Welcome to Tripelyx Business';
@@ -35,7 +38,7 @@ function welcomeItems(orgId, c, { demo, source = 'demo' }) {
  */
 function welcomeView(ctx, shell, { checklist: c, demo, source = 'demo', notice = null }) {
   const { org } = shell;
-  const items = welcomeItems(org.id, c, { demo, source });
+  const items = welcomeItems(org.id, c, { demo: demo && !awaitingConfirmation(ctx, org), source });
   const left = items.filter(i => !i.done).length;
   const body = html`${pageHead({ title: TITLE, sub: `Set up ${org.name} in a few steps. Each one ticks itself once it's done.` })}
     <section class="bz-section" aria-labelledby="bz-setup-title">
