@@ -294,6 +294,12 @@ test('SUPPLIER_ERRORS and supplierError: the §2.4 codes, statuses and copy', ()
     },
     supplier_busy: { status: 429, message: 'Your company has run a lot of searches in the last hour. Please try again in a few minutes.' },
     live_check_skipped: { status: 503, message: 'The price is checked again when you approve.' },
+    supplier_daily_limit: {
+      status: 429,
+      company: "Your company has reached today's search limit. Search opens again at {opensAt}.",
+      total: 'Search is paused for the rest of today. It opens again at {opensAt}.',
+    },
+    company_not_confirmed: { status: 409, message: 'Search opens once Tripelyx confirms your company.' },
   });
   assert.ok(Object.isFrozen(SUPPLIER_ERRORS) && Object.values(SUPPLIER_ERRORS).every(Object.isFrozen));
   const f = supplierError('supplier_unavailable', { vertical: 'flights' });
@@ -305,10 +311,19 @@ test('SUPPLIER_ERRORS and supplierError: the §2.4 codes, statuses and copy', ()
   assert.deepEqual([b.code, b.status, b.message], ['supplier_busy', 429, SUPPLIER_ERRORS.supplier_busy.message]);
   const s = supplierError('live_check_skipped');
   assert.deepEqual([s.code, s.status, s.message], ['live_check_skipped', 503, 'The price is checked again when you approve.']);
+  const d = supplierError('supplier_daily_limit', { limit: 'company', opensAt: '2:00 AM tomorrow (Cairo time)' });
+  assert.deepEqual([d.code, d.status, d.message], ['supplier_daily_limit', 429, "Your company has reached today's search limit. Search opens again at 2:00 AM tomorrow (Cairo time)."]);
+  const t = supplierError('supplier_daily_limit', { limit: 'total', opensAt: '7:00 PM today (Los Angeles time)' });
+  assert.equal(t.message, 'Search is paused for the rest of today. It opens again at 7:00 PM today (Los Angeles time).');
+  for (const bad of [{}, { limit: 'company' }, { opensAt: 'x' }, { limit: 'hourly', opensAt: 'x' }, { limit: 'total', opensAt: '' }]) {
+    assert.throws(() => supplierError('supplier_daily_limit', bad), TypeError, JSON.stringify(bad));
+  }
   assert.throws(() => supplierError('supplier_unavailable'), TypeError);
   assert.throws(() => supplierError('supplier_unavailable', { vertical: 'cars' }), TypeError);
   for (const code of ['no_supplier', 'unsupported_currency', 'toString', undefined]) assert.throws(() => supplierError(code), TypeError, String(code));
-  assert.deepEqual([...LIVE_ERROR_CODES], ['supplier_unavailable', 'supplier_busy', 'live_check_skipped', 'unsupported_currency']);
+  const c = supplierError('company_not_confirmed');
+  assert.deepEqual([c.code, c.status, c.message], ['company_not_confirmed', 409, 'Search opens once Tripelyx confirms your company.']);
+  assert.deepEqual([...LIVE_ERROR_CODES], ['supplier_unavailable', 'supplier_busy', 'live_check_skipped', 'unsupported_currency', 'supplier_daily_limit', 'company_not_confirmed']);
   assert.ok(Object.isFrozen(LIVE_ERROR_CODES));
 });
 
@@ -318,6 +333,12 @@ test('PRICE_CHECK_COPY: the request and results page copy around a price check',
     failed: "We couldn't check the price just now. It is checked again when you approve.",
     unchanged: "The price couldn't be checked just now, so nothing changed. Try again in a few minutes.",
     hotelsLeg: 'Hotels are not available right now. You can still request the flights.',
+    // Live search (go-live design §5.5, §5.7): the hotel supplier's daily cap, and live search turned off.
+    hotelsLimit: "Hotel search has reached today's limit. You can still request the flights.",
+    searchOff: "Trip search is off right now, so the price can't be checked and nothing changed.",
+    searchOffDecide: "Trip search is off right now, so the price can't be checked and this trip can't be approved yet. You can still deny it or send a message.",
+    searchOffConfirm: "Trip search is off right now, so the price can't be checked and this trip can't be confirmed yet.",
+    searchOffRequest: "Trip search is off right now, so the price can't be checked and this trip can't be sent for approval yet.",
   });
   assert.ok(Object.isFrozen(PRICE_CHECK_COPY));
 });

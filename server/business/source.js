@@ -232,6 +232,9 @@ const changesUnconfirmed = terms => says(terms, TERMS.changesUnknown, TERMS.chan
 // ---------------------------------------------------------------------------------------------------------
 // Supplier errors (design §2.4, §4.3, §5.1). A configured real supplier that fails never serves demo or stale data.
 
+/** What a company Tripelyx hasn't confirmed sees instead of a live search (go-live design §5.5). */
+const SEARCH_CLOSED = 'Search opens once Tripelyx confirms your company.';
+
 const SUPPLIER_ERRORS = Object.freeze({
   // Timeouts, 5xx, 429 beyond the retry budget, an open breaker, refused credentials, a mode mismatch, a body over the cap.
   supplier_unavailable: Object.freeze({
@@ -246,10 +249,20 @@ const SUPPLIER_ERRORS = Object.freeze({
   }),
   // A page-view ('peek') price check that would need a supplier search.
   live_check_skipped: Object.freeze({ status: 503, message: 'The price is checked again when you approve.' }),
+  // The persisted daily caps on live keys (go-live design §5.5, added with L2): the company's own calls to one
+  // supplier today, or every company's together. {opensAt} is the next UTC midnight in the company's zone.
+  supplier_daily_limit: Object.freeze({
+    status: 429,
+    company: "Your company has reached today's search limit. Search opens again at {opensAt}.",
+    total: 'Search is paused for the rest of today. It opens again at {opensAt}.',
+  }),
+  // Live search calls suppliers only for companies Tripelyx has confirmed (go-live design §5.5): a pending
+  // company's search, price check or re-check stops here, before any supplier call.
+  company_not_confirmed: Object.freeze({ status: 409, message: SEARCH_CLOSED }),
 });
 
 /** The live-check errors getRequest shows as RequestView.liveError instead of failing the page (it rethrows others). */
-const LIVE_ERROR_CODES = Object.freeze(['supplier_unavailable', 'supplier_busy', 'live_check_skipped', 'unsupported_currency']);
+const LIVE_ERROR_CODES = Object.freeze(['supplier_unavailable', 'supplier_busy', 'live_check_skipped', 'unsupported_currency', 'supplier_daily_limit', 'company_not_confirmed']);
 
 /** Page copy around a price check (design §2.4). */
 const PRICE_CHECK_COPY = Object.freeze({
@@ -261,21 +274,43 @@ const PRICE_CHECK_COPY = Object.freeze({
   unchanged: "The price couldn't be checked just now, so nothing changed. Try again in a few minutes.",
   // Results page, hotel leg error 'unavailable' (the flights still show).
   hotelsLeg: 'Hotels are not available right now. You can still request the flights.',
+  // Results page, hotel leg error 'limit': the hotel supplier's daily cap (the flights still show).
+  hotelsLimit: "Hotel search has reached today's limit. You can still request the flights.",
+  // Live prices with live search off (turned off, or a mode mismatch; inventory status 'none'), for a trip priced
+  // on live prices: nothing can be checked until a platform admin turns live search on again, so no page says
+  // "try again in a few minutes" or that suppliers were never connected (go-live design §5.4, §5.7).
+  // Submit or decide refused (the request is untouched).
+  searchOff: "Trip search is off right now, so the price can't be checked and nothing changed.",
+  // Approver page, instead of the price check line (no Approve button).
+  searchOffDecide: "Trip search is off right now, so the price can't be checked and this trip can't be approved yet. You can still deny it or send a message.",
+  // The traveler's draft inside the policy, instead of the Confirm form.
+  searchOffConfirm: "Trip search is off right now, so the price can't be checked and this trip can't be confirmed yet.",
+  // The traveler's draft over the policy, instead of the Request Approval form.
+  searchOffRequest: "Trip search is off right now, so the price can't be checked and this trip can't be sent for approval yet.",
 });
 
 /**
  * The AppError a real supplier path throws.
- * @param {'supplier_unavailable'|'supplier_busy'|'live_check_skipped'} code
- * @param {{ vertical?: 'flights'|'hotels' }} [opts] vertical: required for supplier_unavailable
+ * @param {'supplier_unavailable'|'supplier_busy'|'live_check_skipped'|'supplier_daily_limit'|'company_not_confirmed'} code
+ * @param {{ vertical?: 'flights'|'hotels', limit?: 'company'|'total', opensAt?: string }} [opts] vertical:
+ *   required for supplier_unavailable; limit and opensAt (e.g. "2:00 AM tomorrow (Cairo time)"): required for
+ *   supplier_daily_limit
  * @returns {AppError}
- * @throws {TypeError} for another code, or supplier_unavailable without a vertical
+ * @throws {TypeError} for another code, supplier_unavailable without a vertical, or supplier_daily_limit
+ *   without its limit and time
  */
-function supplierError(code, { vertical = null } = {}) {
+function supplierError(code, { vertical = null, limit = null, opensAt = null } = {}) {
   const e = Object.prototype.hasOwnProperty.call(SUPPLIER_ERRORS, code) ? SUPPLIER_ERRORS[code] : null;
   if (!e) throw new TypeError(`[business] ${code} is not a supplier error`);
   if (code === 'supplier_unavailable') {
     if (vertical !== 'flights' && vertical !== 'hotels') throw new TypeError('[business] supplier_unavailable names flights or hotels');
     return new AppError(code, e[vertical], e.status);
+  }
+  if (code === 'supplier_daily_limit') {
+    if ((limit !== 'company' && limit !== 'total') || typeof opensAt !== 'string' || !opensAt) {
+      throw new TypeError('[business] supplier_daily_limit names its limit and when search opens again');
+    }
+    return new AppError(code, e[limit].replace('{opensAt}', opensAt), e.status);
   }
   return new AppError(code, e.message, e.status);
 }
@@ -283,5 +318,5 @@ function supplierError(code, { vertical = null } = {}) {
 module.exports = {
   SOURCES, NAMESPACES, isSource, sourceOf, offerPrefix, leastReal, requestSource,
   NEEDS_VERIFICATION, TERMS, saysNoChanges, refundsUnconfirmed, changesUnconfirmed,
-  SUPPLIER_ERRORS, LIVE_ERROR_CODES, PRICE_CHECK_COPY, supplierError,
+  SUPPLIER_ERRORS, LIVE_ERROR_CODES, PRICE_CHECK_COPY, SEARCH_CLOSED, supplierError,
 };

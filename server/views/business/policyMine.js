@@ -4,7 +4,8 @@
 // are compared with; with no supplier (production) they are the company's own limits, never "Demo price".
 // With a real supplier (real-suppliers design §2.3) the box says what the company's limits are checked
 // against (parts.LIMITS_CHECKED, the /policies wording): supplier test data (dashed, "TEST DATA") or supplier
-// prices. The limits themselves are never called "not a real price".
+// prices. The limits themselves are never called "not a real price". While live search waits for Tripelyx to
+// confirm the company (go-live design §5.5) there is no "Plan a trip" button.
 const { html } = require('../../lib/html');
 const { icon } = require('../icons');
 const f = require('./format');
@@ -30,7 +31,7 @@ function policyMineView(ctx, { org, policy }) {
   return html`${p.pageHead({
     title: d.title || 'Your travel policy',
     sub: d.sub || `${policy.tierLabel} policy, version ${policy.version}`,
-    actions: searchable ? html`<a class="btn btn-navy bz-btn" href="${base}/trips/new">${icon('plane')}<span>Plan a trip</span></a>` : '',
+    actions: searchable && !f.awaitingConfirmation(ctx, org) ? html`<a class="btn btn-navy bz-btn" href="${base}/trips/new">${icon('plane')}<span>Plan a trip</span></a>` : '',
   })}
   ${(body => (demo
     ? p.demoBox(body, { pricedAt: null, timeZone: f.safeZone(org.timezone), tag: 'section', cls: 'bz-card bz-policy', label: 'What your policy allows', source, limits: true })

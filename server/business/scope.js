@@ -15,15 +15,23 @@ const ORG_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 /**
  * Run `fn` with `orgId` as the current company (for everything it awaits too).
  * @template T
- * @param {string} orgId a company id (org_…)
+ * @param {string} orgId a company id (org_…), or 'platform' for the platform admin's live check
  * @param {() => T} fn
+ * @param {{ confirmed?: boolean, timezone?: string }} [about] what memberGate knows of the company: whether
+ *   Tripelyx has confirmed it (status 'active'; live search calls no supplier for any other, go-live §5.5) and
+ *   its time zone (the daily limit says when search opens again in it). Left out, both read as unknown.
  * @returns {T} what fn returns
  * @throws {TypeError} for an id that is not a company id (a programming error)
  */
-function withCompany(orgId, fn) {
+function withCompany(orgId, fn, about = {}) {
   if (typeof orgId !== 'string' || !ORG_ID_RE.test(orgId)) throw new TypeError('[business] withCompany needs a company id');
   if (typeof fn !== 'function') throw new TypeError('[business] withCompany needs a function');
-  return storage.run(Object.freeze({ orgId }), fn);
+  const a = about && typeof about === 'object' ? about : {};
+  return storage.run(Object.freeze({
+    orgId,
+    confirmed: typeof a.confirmed === 'boolean' ? a.confirmed : null,
+    timezone: typeof a.timezone === 'string' && a.timezone ? a.timezone : null,
+  }), fn);
 }
 
 /**
@@ -35,4 +43,13 @@ function currentCompany() {
   return s ? s.orgId : null;
 }
 
-module.exports = { withCompany, currentCompany };
+/**
+ * What the current scope says of its company: { orgId, confirmed, timezone } (confirmed and timezone null when
+ * not given), or null outside any withCompany().
+ * @returns {{ orgId: string, confirmed: boolean|null, timezone: string|null }|null}
+ */
+function currentScope() {
+  return storage.getStore() || null;
+}
+
+module.exports = { withCompany, currentCompany, currentScope };

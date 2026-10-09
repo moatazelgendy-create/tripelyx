@@ -258,10 +258,13 @@ function router(ctx, deps) {
     // off ('none') leaves its requests' label in place; with no supplier and nothing counted it is null, and the
     // table shows the company's own figures with no price label.
     const sources = scan ? scan.sources : rows.length ? await readableSources(actor, roleOf(req), key) : [];
+    // counted: the table adds up requests priced somewhere; false when it holds only the budgets set (a live
+    // container then says so, not that the amounts came from the suppliers).
+    const counted = Boolean(totalsSource(sources));
     const priceSource = totalsSource(sources) || inventorySource();
     return page(req, res, status, budgetsView, {
       rows, periodKey: key, choices, canEdit: can(roleOf(req), 'budget.edit'), periodKind: org.settings && org.settings.budgetPeriod === 'month' ? 'month' : 'quarter',
-      ownOnly: !can(roleOf(req), 'budget.view.all'), uncounted: scan ? scan.uncounted : null, values, errors, notice, error, priceSource,
+      ownOnly: !can(roleOf(req), 'budget.view.all'), uncounted: scan ? scan.uncounted : null, values, errors, notice, error, priceSource, counted,
     });
   }
 

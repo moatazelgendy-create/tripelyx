@@ -209,7 +209,8 @@ class DuffelFlights {
     if (mode !== 'sandbox' && mode !== 'live') throw new TypeError('[suppliers] DuffelFlights needs a mode');
     this.name = 'DuffelFlights';
     this.vertical = 'flights';
-    this.isDemo = true;
+    // Not demo inventory when it runs on live keys (the provider contract's flag; Business itself reads row.demo).
+    this.isDemo = mode !== 'live';
     this.mode = mode;
     this.prefix = offerPrefix('flight', mode);
     this.http = http;

@@ -7,7 +7,12 @@
 //   GET  /                platform  -          → platformListOrgs (pending first; company enquiries; Tripelyx's own company)
 //   POST /:orgId/status   platform  bizWrite   → platformSetStatus (status=active|suspended, note, rev) → 303 /admin/business?ok=…
 //   POST /house           platform  bizWrite   → platformCreateHouseCompany ("Create Tripelyx Inc") → 303 /admin/business?ok=house|house_exists
+//   POST /suppliers/check platform  bizWrite   → platformCheckSuppliers ("Check live connection", at most 3 an hour)
+//                                                → 303 /admin/business?ok=check_passed|check_failed|check_mismatch
+//   POST /suppliers/live  platform  bizWrite   → platformSetLive (on=1|0, rev) → 303 /admin/business?ok=live_on|live_off
 //
+// The Suppliers panel (go-live design §5.4) shows only on a live-keys stack (platformSuppliers answers null
+// anywhere else, and the page is as it was); the two POSTs refuse there with the page and a 409.
 // Mounted from TABLE by routes/business/table.mountTable: a POST runs bizWrite → sameOrigin → the form
 // parser → the platform gate → the handler. The gate sends no-store and noindex on every answer.
 const express = require('express');
@@ -24,6 +29,8 @@ const TABLE = [
   { method: 'GET', path: '/', perm: null, own: false, limiter: [], who: 'platform', handler: 'listPage' },
   { method: 'POST', path: '/:orgId/status', perm: null, own: false, limiter: ['bizWrite'], who: 'platform', handler: 'statusPost' },
   { method: 'POST', path: '/house', perm: null, own: false, limiter: ['bizWrite'], who: 'platform', handler: 'housePost' },
+  { method: 'POST', path: '/suppliers/check', perm: null, own: false, limiter: ['bizWrite'], who: 'platform', handler: 'checkPost' },
+  { method: 'POST', path: '/suppliers/live', perm: null, own: false, limiter: ['bizWrite'], who: 'platform', handler: 'livePost' },
 ];
 
 /** This router's routes (types.RouteEntry, who 'platform'). */
@@ -35,6 +42,14 @@ const NOTICES = Object.freeze({
   suspended: name => `Done. ${name} is paused. Its members see that Tripelyx paused it.`,
   house: () => `Done. ${HOUSE_COMPANY_NAME} is active, and you're its Owner.`,
   house_exists: () => `${HOUSE_COMPANY_NAME} already exists, so nothing new was made.`,
+  check_passed: () => 'Done. The live check passed. You can turn live search on.',
+  live_on: () => 'Done. Live search is on. Confirmed companies now search live prices.',
+  live_off: () => 'Done. Live search is off. Companies see "Supplier not connected yet".',
+});
+/** ?ok= codes for a live check that did not pass: shown as a problem, not a notice. */
+const CHECK_PROBLEMS = Object.freeze({
+  check_failed: 'The live check did not pass, so live search stays off. What it found is under Suppliers.',
+  check_mismatch: 'A supplier answered in test mode, so live search is off. Check the key in AWS, then run the live check again.',
 });
 /** A lost compare-and-set (a double click, or a form loaded before another change): the page shows the latest. */
 const STALE = 'Someone changed this while you were looking. Here is the latest version.';
@@ -73,8 +88,10 @@ function router(ctx, deps) {
   async function render(req, res, { status = 200, notice = null, error = null, form = null, data = null } = {}) {
     const list = data || await listOrgs(req);
     if (!list) return sendNotFound(ctx, res);
+    // The Suppliers panel: null anywhere but a live-keys stack (the page is then as it was).
+    const suppliers = await svc.platformSuppliers({ user: req.user });
     const text = typeof notice === 'function' ? notice(list) : notice;
-    return send(res, status, platformView(ctx, { data: list, notice: text, error, form }));
+    return send(res, status, platformView(ctx, { data: { ...list, suppliers }, notice: text, error, form }));
   }
 
   const handlers = {
@@ -85,7 +102,7 @@ function router(ctx, deps) {
         const o = (list.orgs || []).find(x => x.id === orgId);
         return NOTICES[ok](o ? o.name : 'The company');
       } : null;
-      return render(req, res, { notice });
+      return render(req, res, { notice, error: Object.hasOwn(CHECK_PROBLEMS, ok) ? CHECK_PROBLEMS[ok] : null });
     },
 
     async statusPost(req, res) {
@@ -123,6 +140,37 @@ function router(ctx, deps) {
       } catch (e) {
         if (!clientError(e)) throw e;
         if (e.status === 404) return sendNotFound(ctx, res);
+        return render(req, res, { status: e.status, error: e.message });
+      }
+    },
+
+    /** "Check live connection": the result is stored with the switch, so the page after the 303 shows it. */
+    async checkPost(req, res) {
+      try {
+        const r = await svc.platformCheckSuppliers({ user: req.user });
+        return res.redirect(303, `${MOUNT}?ok=${r.passed ? 'check_passed' : r.mismatch ? 'check_mismatch' : 'check_failed'}`);
+      } catch (e) {
+        if (!clientError(e)) throw e;
+        if (e.status === 404) return sendNotFound(ctx, res);
+        return render(req, res, { status: e.status, error: e.message });
+      }
+    },
+
+    /** "Turn on live search" / "Turn off live search". A double click lands where the first one did. */
+    async livePost(req, res) {
+      const b = req.body || {};
+      const on = one(b.on);
+      try {
+        const doc = await svc.platformSetLive({ user: req.user }, { on, rev: one(b.rev) });
+        return res.redirect(303, `${MOUNT}?ok=${doc.on === true ? 'live_on' : 'live_off'}`);
+      } catch (e) {
+        if (!clientError(e)) throw e;
+        if (e.status === 404) return sendNotFound(ctx, res);
+        if (e.code === 'conflict') {
+          const now = await svc.platformSuppliers({ user: req.user });
+          if (now && now.stored && (on === '1' || on === '0') && now.stored.on === (on === '1')) return res.redirect(303, `${MOUNT}?ok=${on === '1' ? 'live_on' : 'live_off'}`);
+          return render(req, res, { status: 409, error: STALE });
+        }
         return render(req, res, { status: e.status, error: e.message });
       }
     },

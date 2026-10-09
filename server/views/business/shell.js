@@ -18,7 +18,9 @@
 // data ("Preview with supplier test data: …", marked bz-ribbon-test) or live prices; the pending ribbon then
 // offers "a trip with supplier test data". With no demo inventory (live prices or none) the first ribbon is
 // bz-ribbon-note, styled as the demo one, so no page there carries the word demo even in a class name; with no
-// supplier it says booking isn't open yet (NO_BOOKING_RIBBON).
+// supplier it says booking isn't open yet (NO_BOOKING_RIBBON). With live prices (go-live design §5.5, §5.6) the
+// first ribbon is LIVE_RIBBON, and the pending ribbon says trip search opens once the company is confirmed:
+// only confirmed companies search live prices.
 const { html, raw } = require('../../lib/html');
 const { sprite, icon } = require('../icons');
 const { logo } = require('../layout');
@@ -43,11 +45,14 @@ const NO_BOOKING_RIBBON = "Booking isn't open yet, so nothing is booked or charg
 /**
  * The pending-company ribbon (§B3). It offers a demo trip only when demo inventory runs here: with no
  * supplier (production) or a live one there is no demo trip to try, as with the demo ribbon. With supplier
- * test data it offers a trip with that.
+ * test data it offers a trip with that. With live prices, trip search waits for the confirmation too.
  * @param {string} name the company's
- * @param {{ demo?: boolean, sandbox?: boolean }} [opts] demo: the inventory status is 'demo'; sandbox: 'sandbox'
+ * @param {{ demo?: boolean, sandbox?: boolean, live?: boolean }} [opts] demo: the inventory status is 'demo';
+ *   sandbox: 'sandbox'; live: 'live'
  */
-const pendingRibbon = (name, { demo = false, sandbox = false } = {}) => `Tripelyx is confirming ${name}. You can set up policies, departments and budgets${demo ? ' and try a demo trip' : sandbox ? ' and try a trip with supplier test data' : ''} now. Teammates can join once it's confirmed.`;
+const pendingRibbon = (name, { demo = false, sandbox = false, live = false } = {}) => (live
+  ? `Tripelyx is confirming ${name}. You can set up policies, departments and budgets now. Teammates can join, and trip search opens, once it's confirmed.`
+  : `Tripelyx is confirming ${name}. You can set up policies, departments and budgets${demo ? ' and try a demo trip' : sandbox ? ' and try a trip with supplier test data' : ''} now. Teammates can join once it's confirmed.`);
 
 const inventoryStatus = ctx => (ctx.business && ctx.business.inventory && ctx.business.inventory.status) || 'none';
 
@@ -64,7 +69,7 @@ function ribbons(ctx, shell, { searchPage }) {
   const first = firstRibbon(status);
   return html`<div class="bz-ribbons">
     <p class="${first.cls}" role="note">${icon('info')}${first.tag ? html`<span class="bz-test-tag">TEST DATA</span>` : ''}<span>${first.text}</span></p>
-    ${shell.org.status === 'pending' ? html`<p class="bz-ribbon bz-ribbon-pending" role="note">${icon('clock')}<span>${pendingRibbon(shell.org.name, { demo: status === 'demo', sandbox: status === 'sandbox' })}</span></p>` : ''}
+    ${shell.org.status === 'pending' ? html`<p class="bz-ribbon bz-ribbon-pending" role="note">${icon('clock')}<span>${pendingRibbon(shell.org.name, { demo: status === 'demo', sandbox: status === 'sandbox', live: status === 'live' })}</span></p>` : ''}
     ${searchPage && status === 'none' ? html`<p class="bz-ribbon bz-ribbon-supplier" role="note">${icon('plug')}<span><b>${NO_SUPPLIER.title}</b> ${NO_SUPPLIER.text}</span></p>` : ''}
   </div>`;
 }

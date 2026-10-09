@@ -25,7 +25,9 @@
 //   recheck() pass the check level as pq.check ('auto', 'peek', 'confirm', 'final') and getOffer gets the
 //   selected option as a third argument ({ optionId }); quote() gets the offer it prices (`offer`). A hotel
 //   search that answers 503 supplier_unavailable leaves the flights standing: the hotel leg is
-//   { rows: [], benchmark, truncated: false, error: 'unavailable' }. "Priced at" is when the supplier answered:
+//   { rows: [], benchmark, truncated: false, error: 'unavailable' }; one that answers 429 supplier_daily_limit
+//   (the hotel supplier's daily cap, go-live design §5.5, §5.7: the flights' supplier has its own) does too,
+//   with `limit: true` added. "Priced at" is when the supplier answered:
 //   a leg's rows carry the earliest details.answeredAt of its offers, and SearchResult/PriceResult.pricedAt is
 //   the earliest over the rows, falling back to now() when no offer says (demo). variants() spends at most
 //   inventory.maxVariantSearches searches (4 with real suppliers; demo keeps 20).
@@ -47,6 +49,8 @@
 //   variants() makes counts: at most maxSearches (20) in all, spent on the pick's legs first, then cabin,
 //   then the date shifts closest first; `searches` is the number that ran. At most POOL_CAP (200)
 //   candidates. truncated when either cap cuts anything. Never a different destination or route.
+// - Live prices (inventory status 'live', go-live design §5.5): every call needs a confirmed company in scope
+//   (scope.js), else 409 'company_not_confirmed' before any supplier is asked.
 const { AppError } = require('../lib/errors');
 const { isIsoDate, addDays, daysBetween } = require('../lib/dates');
 const { validateOffer, validateQuote } = require('../providers/contracts');
@@ -54,6 +58,8 @@ const { CABINS, CABIN_RANK, CABIN_LABELS } = require('./constants');
 const dto = require('./dto');
 const { recheck } = require('./recheck');
 const tz = require('./tz');
+const { currentScope } = require('./scope');
+const { supplierError } = require('./source');
 
 /** The most options priced per leg. */
 const MAX_PRICED_PER_LEG = 60;
@@ -319,6 +325,19 @@ function earliest(list, fallback) {
 }
 
 /** A gone component's row: the stored row with no price (recheck's "no longer in the demo data"). */
+/**
+ * The hotel leg for a hotel supplier failure that leaves the flights standing (an outage, or its daily cap:
+ * error 'unavailable', with `limit: true` for the cap), else null (the error is rethrown).
+ * @param {unknown} e
+ * @returns {object|null} a HotelLegResult with no rows
+ */
+function failedHotelLeg(e) {
+  if (!(e instanceof AppError) || (e.code !== 'supplier_unavailable' && e.code !== 'supplier_daily_limit')) return null;
+  const leg = { rows: [], benchmark: hotelBenchmarks([]), truncated: false, error: 'unavailable' };
+  if (e.code === 'supplier_daily_limit') leg.limit = true;
+  return leg;
+}
+
 function goneRow(prev, key, component, pricedAt) {
   if (!prev || prev.key !== key || (component === 'hotel') !== (prev.kind === 'hotel')) return null;
   const row = { ...structuredClone(prev), lines: [], totalCents: null, available: false, pricedAt };
@@ -565,6 +584,12 @@ class TripComposer {
   _ready() {
     const inv = this.inventory;
     if (!inv || inv.status === 'none' || !inv.flights) throw noSupplier();
+    // Live prices only for a company Tripelyx has confirmed (go-live design §5.5): the scope memberGate set
+    // says so ('platform', the admin's live check, is confirmed). requests.js refuses first, in its own words.
+    if (inv.status === 'live') {
+      const scope = currentScope();
+      if (!scope || scope.confirmed !== true) throw supplierError('company_not_confirmed');
+    }
   }
 
   _pricedAt() {
@@ -589,7 +614,8 @@ class TripComposer {
 
   /**
    * The hotel leg: the hotels of that city (exactly), every room priced, sorted, with both benchmarks. A
-   * supplier outage (503 supplier_unavailable) leaves the flights standing: the leg says error 'unavailable'.
+   * supplier outage (503 supplier_unavailable) leaves the flights standing: the leg says error 'unavailable';
+   * so does the hotel supplier's daily cap (429 supplier_daily_limit), with `limit: true` too.
    */
   async _hotelLeg(stay, fallback) {
     const provider = this.inventory.hotels;
@@ -599,7 +625,8 @@ class TripComposer {
     try {
       found = await searchOf(provider, pq);
     } catch (e) {
-      if (e instanceof AppError && e.code === 'supplier_unavailable') return { rows: [], benchmark: hotelBenchmarks([]), truncated: false, error: 'unavailable' };
+      const failed = failedHotelLeg(e);
+      if (failed) return failed;
       throw e;
     }
     const offers = found.offers.filter(o => {
@@ -612,7 +639,8 @@ class TripComposer {
       built = await this._rows(provider, 'hotels', offers, pq,
         (offer, option, quote) => dto.hotelRow(offer, option, quote, { pricedAt, checkIn: stay.checkIn, checkOut: stay.checkOut }));
     } catch (e) {
-      if (e instanceof AppError && e.code === 'supplier_unavailable') return { rows: [], benchmark: hotelBenchmarks([]), truncated: false, error: 'unavailable' };
+      const failed = failedHotelLeg(e);
+      if (failed) return failed;
       throw e;
     }
     const { rows, truncated, skipped } = built;

@@ -35,9 +35,16 @@
 // swap, submit or decide re-renders the request page, untouched. When the price check at submit or decide
 // could not run, the page says "The price couldn't be checked just now, so nothing changed." (503) or the
 // supplier_busy text (429): a request is never approved without a check, nor sent back because of an outage.
+// Live prices (go-live design §5.5) add the daily limit ('supplier_daily_limit', 429, naming when search opens
+// again) and a company Tripelyx hasn't confirmed ('company_not_confirmed', 409), said the same way.
+// A failure that left search off (inventory status 'none' after it: a mode mismatch turns live search off until
+// a platform admin turns it on again) never says "try again in a few minutes": a search or a new draft gets the
+// trip form with its "Supplier not connected yet" panel alone, and a submit or decide says trip search is off
+// and nothing changed (PRICE_CHECK_COPY.searchOff), as it does for a trip priced on live prices refused with
+// 503 'no_supplier' while live search is off.
 const express = require('express');
 const { AppError } = require('../../lib/errors');
-const { PRICE_CHECK_COPY } = require('../../business/source');
+const { PRICE_CHECK_COPY, requestSource } = require('../../business/source');
 const { gates } = require('../../business/http');
 const roles = require('../../business/roles');
 const { TIER_LABELS } = require('../../business/constants');
@@ -96,8 +103,12 @@ function rawQuery(src) {
 /** A refusal the page itself explains (a 4xx AppError other than 404, 403 and 429). */
 const shown = e => e instanceof AppError && e.status >= 400 && e.status < 500 && ![403, 404, 429].includes(e.status);
 const isStatus = (e, status) => e instanceof AppError && e.status === status;
-/** A real supplier that failed (503) or the company's supplier limit (429): said on the page, never thrown. */
-const supplierFail = e => e instanceof AppError && (e.code === 'supplier_unavailable' || e.code === 'supplier_busy');
+/**
+ * A real supplier that failed (503), the company's hourly or daily supplier limit (429), or live search for a
+ * company Tripelyx hasn't confirmed (409): said on the page, never thrown.
+ */
+const SUPPLIER_FAILS = Object.freeze(['supplier_unavailable', 'supplier_busy', 'supplier_daily_limit', 'company_not_confirmed']);
+const supplierFail = e => e instanceof AppError && SUPPLIER_FAILS.includes(e.code);
 
 function send(res, status, page) {
   res.status(status).type('html').send(String(page));
@@ -116,6 +127,8 @@ function router(ctx, deps) {
   const svc = () => ctx.business;
   const NO_INVENTORY = Object.freeze({ status: 'none', airports: () => [], cityFor: () => null });
   const inventory = () => (ctx.business && ctx.business.inventory) || NO_INVENTORY;
+  /** Search is off now (read after a failure: a mode mismatch turns it off during the call). */
+  const searchOff = () => inventory().status === 'none';
 
   /** Answer an AppError with the app's 404 or 403 page; anything else goes to the app's error handler. */
   function refuse(res, next, e) {
@@ -196,8 +209,9 @@ function router(ctx, deps) {
       view = await svc().searchTrip(req.biz.actor, raw);
     } catch (e) {
       if (isStatus(e, 422)) return formPage(req, res, 422, { values: formValues(raw), errors: e.details || {}, error: e.message });
-      // A supplier that failed, or the company's supplier limit: the form, the query kept, the message.
-      if (supplierFail(e)) return formPage(req, res, e.status, { values: formValues(raw), error: e.message });
+      // A supplier that failed, or the company's supplier limit: the form, the query kept, the message. A
+      // failure that turned search off: the form's own panel says so, alone.
+      if (supplierFail(e)) return formPage(req, res, e.status, { values: formValues(raw), error: searchOff() ? null : e.message });
       if (isStatus(e, 503)) return formPage(req, res, 503, { values: formValues(raw) });
       throw e;
     }
@@ -231,7 +245,7 @@ function router(ctx, deps) {
     } catch (e) {
       // A supplier failure is said on the trip form (the query kept): nothing was written, and searching
       // again for the results page would only ask the failing supplier once more.
-      if (supplierFail(e)) return formPage(req, res, e.status, { values: formValues(raw), error: e.message });
+      if (supplierFail(e)) return formPage(req, res, e.status, { values: formValues(raw), error: searchOff() ? null : e.message });
       if (!shown(e) && !isStatus(e, 503)) throw e;
       return resultsPage(req, res, raw, { status: e.status, pick: pick(), error: e.message, errors: e.details || {} });
     }
@@ -355,8 +369,12 @@ function router(ctx, deps) {
           // The alternative a 410 swap refused: the page leaves it out instead of offering it again.
           altId: e.code === 'alternative_gone' ? one(b.altId) : '',
         };
-        // The price check at submit or decide could not reach the supplier: the request is untouched.
-        const error = e.code === 'supplier_unavailable' && (failed === 'submit' || failed === 'decide') ? PRICE_CHECK_COPY.unchanged : e.message;
+        // The price check at submit or decide could not reach the supplier: the request is untouched. With
+        // search off now (the check met a mode mismatch, or a trip priced on live prices met search turned
+        // off), trying again in a few minutes can't help.
+        const checks = failed === 'submit' || failed === 'decide';
+        const off = checks && searchOff() && (e.code === 'supplier_unavailable' || (e.code === 'no_supplier' && requestSource(req.biz.request) === 'live'));
+        const error = off ? PRICE_CHECK_COPY.searchOff : e.code === 'supplier_unavailable' && checks ? PRICE_CHECK_COPY.unchanged : e.message;
         return requestPage(req, res, { status: e.status, error, failed, form, refusal: e.code });
       }
     });

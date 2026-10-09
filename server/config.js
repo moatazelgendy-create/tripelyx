@@ -4,6 +4,7 @@
 // payments are in test mode, never a key, URL with credentials, or provider name it doesn't need.
 const { VERTICALS } = require('./verticals');
 const { passwordDigest } = require('./lib/previewGate');
+const crypto = require('node:crypto');
 
 const APP_ENVS = ['development', 'staging', 'production'];
 
@@ -35,9 +36,12 @@ function oneOf(value, list, name) {
   return v;
 }
 
-// Tripelyx Business suppliers (real-suppliers design §1.3). Round 1 accepts only test keys.
+// Tripelyx Business suppliers (real-suppliers design §1.3; go-live design §5.3). Without BUSINESS_SUPPLIER_LIVE
+// only test keys are accepted (round 1, the preview); with BUSINESS_SUPPLIER_LIVE=true (the www stack) only live
+// keys are, and a test prefix is a problem, never test data.
 const SUPPLIER_TEST_PREFIX = Object.freeze({ duffel: 'duffel_test_', liteapi: 'sand_' });
 const SUPPLIER_KEY_RE = /^[\x21-\x7e]{1,512}$/;
+const SUPPLIER_KEY_PLACEHOLDER = 'unset';
 
 // A whole number from min to max, or the fallback when unset; null when it is anything else (never throws).
 function range(value, fallback, min, max) {
@@ -63,18 +67,27 @@ function businessSuppliers(env, appEnv) {
   const cacheSeconds = range(env.BUSINESS_SUPPLIER_CACHE_SECONDS, 300, 0, 900);
   const companyCallsPerHour = range(env.BUSINESS_SUPPLIER_COMPANY_CALLS_PER_HOUR, 120, 1, 100000);
   const variantSearches = range(env.BUSINESS_SUPPLIER_VARIANT_SEARCHES, 4, 0, 20);
-  const allowTest = bool(env.BUSINESS_ALLOW_SUPPLIER_TEST, appEnv === 'development');
-  const token = text(env.DUFFEL_ACCESS_TOKEN), key = text(env.LITEAPI_API_KEY);
+  const live = bool(env.BUSINESS_SUPPLIER_LIVE, false);
+  const allowTest = bool(env.BUSINESS_ALLOW_SUPPLIER_TEST, appEnv === 'development' && !live);
+  // The www stack creates both key secrets holding the placeholder "unset" (infra/app.yaml) until the owner pastes a
+  // key over it; exactly that word reads as not set.
+  const keyText = v => (text(v) === SUPPLIER_KEY_PLACEHOLDER ? '' : text(v));
+  const token = keyText(env.DUFFEL_ACCESS_TOKEN), key = keyText(env.LITEAPI_API_KEY);
   const isKey = (value, prefix) => SUPPLIER_KEY_RE.test(value) && value.startsWith(prefix) && value.length > prefix.length;
   const problems = [
     [flightName !== '' && flightName !== 'duffel', 'BUSINESS_FLIGHT_SUPPLIER must be duffel or empty.'],
     [hotelName !== '' && hotelName !== 'liteapi', 'BUSINESS_HOTEL_SUPPLIER must be liteapi or empty.'],
     [hotelName !== '' && flightName === '', 'BUSINESS_HOTEL_SUPPLIER needs a working flight supplier (BUSINESS_FLIGHT_SUPPLIER).'],
     [flightName === 'duffel' && !token, 'DUFFEL_ACCESS_TOKEN is not set.'],
-    [flightName === 'duffel' && token && !isKey(token, SUPPLIER_TEST_PREFIX.duffel), 'DUFFEL_ACCESS_TOKEN is not a Duffel test token.'],
+    [live && flightName === 'duffel' && token.startsWith(SUPPLIER_TEST_PREFIX.duffel), 'DUFFEL_ACCESS_TOKEN is a test token; this site takes live keys only.'],
+    [live && flightName === 'duffel' && !SUPPLIER_KEY_RE.test(token), 'DUFFEL_ACCESS_TOKEN is not a Duffel access token.'],
+    [!live && flightName === 'duffel' && token && !isKey(token, SUPPLIER_TEST_PREFIX.duffel), 'DUFFEL_ACCESS_TOKEN is not a Duffel test token.'],
     [hotelName === 'liteapi' && !key, 'LITEAPI_API_KEY is not set.'],
-    [hotelName === 'liteapi' && key && !isKey(key, SUPPLIER_TEST_PREFIX.liteapi), 'LITEAPI_API_KEY is not a LiteAPI sandbox key.'],
-    [!allowTest, 'BUSINESS_ALLOW_SUPPLIER_TEST is not true, so supplier test data stays off on this site.'],
+    [live && hotelName === 'liteapi' && key.startsWith(SUPPLIER_TEST_PREFIX.liteapi), 'LITEAPI_API_KEY is a sandbox key; this site takes live keys only.'],
+    [live && hotelName === 'liteapi' && !SUPPLIER_KEY_RE.test(key), 'LITEAPI_API_KEY is not a LiteAPI key.'],
+    [!live && hotelName === 'liteapi' && key && !isKey(key, SUPPLIER_TEST_PREFIX.liteapi), 'LITEAPI_API_KEY is not a LiteAPI sandbox key.'],
+    [live && allowTest, 'BUSINESS_ALLOW_SUPPLIER_TEST must not be true when BUSINESS_SUPPLIER_LIVE is true.'],
+    [!live && !allowTest, 'BUSINESS_ALLOW_SUPPLIER_TEST is not true, so supplier test data stays off on this site.'],
     [!/^[A-Z]{2}$/.test(nationality), 'BUSINESS_GUEST_NATIONALITY must be a two-letter country code.'],
     [cacheSeconds === null, 'BUSINESS_SUPPLIER_CACHE_SECONDS must be a whole number from 0 to 900.'],
     [companyCallsPerHour === null, 'BUSINESS_SUPPLIER_COMPANY_CALLS_PER_HOUR must be a whole number of 1 or more.'],
@@ -82,10 +95,25 @@ function businessSuppliers(env, appEnv) {
   ];
   const found = configured ? problems.find(([bad]) => bad) : null;
   const problem = found ? found[1] : null;
+  // What each key is, in words (go-live §5.4, the /admin/business Suppliers panel), never the key: 'not_set',
+  // 'test_key' (a test prefix on a live stack), 'not_valid' (unreadable, or not a test key where only test keys
+  // are taken) or 'set'; null for a supplier that isn't named.
+  const stateOf = (named, value, prefix) => {
+    if (!named) return null;
+    if (!value) return 'not_set';
+    if (live && value.startsWith(prefix)) return 'test_key';
+    if (!SUPPLIER_KEY_RE.test(value) || (!live && !isKey(value, prefix))) return 'not_valid';
+    return 'set';
+  };
+  const keyState = Object.freeze({
+    duffel: stateOf(flightName === 'duffel', token, SUPPLIER_TEST_PREFIX.duffel),
+    liteapi: stateOf(hotelName === 'liteapi', key, SUPPLIER_TEST_PREFIX.liteapi),
+  });
   const out = {
     configured,
     flights: flightName === 'duffel' ? 'duffel' : null,
     hotels: hotelName === 'liteapi' ? 'liteapi' : null,
+    live,
     allowTest,
     guestNationality: /^[A-Z]{2}$/.test(nationality) ? nationality : 'US',
     cacheSeconds: cacheSeconds ?? 300,
@@ -93,9 +121,15 @@ function businessSuppliers(env, appEnv) {
     variantSearches: variantSearches ?? 4,
     problem,
   };
+  Object.defineProperty(out, 'keyState', { value: keyState, enumerable: false });
   if (configured && !problem) {
     Object.defineProperty(out, 'duffelToken', { value: token, enumerable: false });
     if (out.hotels) Object.defineProperty(out, 'liteapiKey', { value: key, enumerable: false });
+    // Which keys these are, without them (go-live §5.4): the first 8 hex characters of each key's sha256,
+    // "duffel:<8 hex>" and, with hotels, " liteapi:<8 hex>". A passing live check is tied to it, so live
+    // search needs a new check after a key changes.
+    const print = (name, value) => `${name}:${crypto.createHash('sha256').update(value, 'utf8').digest('hex').slice(0, 8)}`;
+    Object.defineProperty(out, 'keyPrint', { value: [print('duffel', token), ...(out.hotels ? [print('liteapi', key)] : [])].join(' '), enumerable: false });
   }
   return Object.freeze(out);
 }

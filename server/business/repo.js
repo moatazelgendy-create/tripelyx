@@ -9,10 +9,13 @@
 // - times are ISO strings from the injected clock; the store's own createdAt is never read, and cursors
 //   follow store order only;
 // - documents are plain JSON (no top-level arrays, undefined, NaN, Infinity, Date or functions), so the
-//   memory store and Postgres hold the same thing.
+//   memory store and Postgres hold the same thing;
+// - Tripelyx's own platform records (constants.PLATFORM_KINDS: the live search switch, the supplier usage
+//   per day, the platform audit) belong to no company: only the narrow supplier methods below read or write
+//   them, never get, getIn, list, page, insert, cas or commit.
 const crypto = require('node:crypto');
 const { AppError } = require('../lib/errors');
-const { KINDS, LIST_LIMIT, HOUSE_ID } = require('./constants');
+const { KINDS, LIST_LIMIT, HOUSE_ID, PLATFORM_KINDS, LIVE_SWITCH_ID } = require('./constants');
 const { jsonProblem } = require('../booking/MemoryStore');
 
 /** An owner scope: org_, usr_ or mbr_ followed by 16 base64url characters (lib/ids.id() or memberScope()). */
@@ -40,7 +43,15 @@ const NEVER_DELETED = Object.freeze([...INSERT_ONLY, KINDS.member, KINDS.org]);
 const validId = id => typeof id === 'string' && id.length > 0 && id.length <= 200 && !/[\u0000-\u001f\u007f]/.test(id);
 /** Ids written by Business: composite ids join parts with '.', never ':'. */
 const checkNewId = id => { if (!validId(id) || id.includes(':')) throw new Error('[business] bad record id'); };
-const checkKind = kind => { if (typeof kind !== 'string' || !/^biz_[a-z_]+$/.test(kind)) throw new Error('[business] bad record kind'); };
+const PLATFORM_KIND_LIST = Object.freeze(Object.values(PLATFORM_KINDS));
+const checkKind = kind => {
+  if (typeof kind !== 'string' || !/^biz_[a-z_]+$/.test(kind)) throw new Error('[business] bad record kind');
+  if (PLATFORM_KIND_LIST.includes(kind)) throw new Error('[business] platform records go through the supplier methods only');
+};
+const SUPPLIERS = Object.freeze(['duffel', 'liteapi']);
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+/** A usage record's company key: a company id, 'platform' (the admin's live check) or 'unscoped'. */
+const USAGE_KEY_RE = /^(?:org_[A-Za-z0-9_-]{16}|platform|unscoped)$/;
 
 /** A plain object: not null, not an array, not a class instance or Date. */
 const isPlainObject = v => !!v && typeof v === 'object' && !Array.isArray(v) && Object.getPrototypeOf(v) === Object.prototype;
@@ -370,6 +381,119 @@ class Repo {
   }
 
   // -------------------------------------------------------------------------------------------------
+  // Platform records (go-live design §5.4, §5.5): the narrow methods, the only way to them.
+
+  /**
+   * The live search switch: { id, on, keyPrint, onAt, onBy, offAt, offBy, offReason, mismatch, lastCheck,
+   * checks, updatedAt, rev }, or null before its first write. For inventory.js only.
+   * @returns {Promise<object|null>}
+   */
+  async supplierSwitch() {
+    return this.store.getRecord(PLATFORM_KINDS.supplierSwitch, LIVE_SWITCH_ID);
+  }
+
+  /**
+   * Change the live search switch and write its platform audit entry, in one commit. `fn(draft)` changes a
+   * copy in place (the first write starts from { id }); the switch's id stays, and anything fn throws stops the
+   * write. `rev` is the rev the caller saw (a form's, so a stale page loses), or null to use the one read now
+   * (a conflict is then retryable). `audit` null writes no entry (counting a live check before it runs).
+   * @param {number|string|null} rev
+   * @param {(draft: object) => void} fn
+   * @param {{ action: string, actor: object, summary: string }|null} audit
+   * @returns {Promise<object>} the written switch (with its new rev)
+   * @throws {AppError} 409 'conflict'
+   */
+  async writeSupplierSwitch(rev, fn, audit) {
+    if (typeof fn !== 'function') throw new Error('[business] writeSupplierSwitch needs a fn');
+    const kind = PLATFORM_KINDS.supplierSwitch;
+    const cur = await this.store.getRecord(kind, LIVE_SWITCH_ID);
+    const fromServer = rev === null || rev === undefined;
+    const seen = fromServer ? (cur ? cur.rev ?? 0 : 0) : parseRev(rev);
+    if (!Number.isInteger(seen) || seen !== (cur ? cur.rev ?? 0 : 0)) throw conflict({ retryable: fromServer });
+    const draft = cur ? structuredClone(cur) : { id: LIVE_SWITCH_ID };
+    const returned = fn(draft);
+    if (returned !== undefined) throw new Error('[business] writeSupplierSwitch fn changes the draft in place');
+    const { rev: _drop, ...doc } = draft; // eslint-disable-line no-unused-vars
+    doc.id = LIVE_SWITCH_ID;
+    assertDoc(doc);
+    const entry = audit === null ? null : this._platformAudit(audit);
+    const res = await this.store.commit({
+      checks: [],
+      updates: cur ? [{ kind, id: LIVE_SWITCH_ID, expectedRev: seen, next: doc }] : [],
+      inserts: [...(cur ? [] : [{ kind, id: LIVE_SWITCH_ID, data: { ...doc, rev: 0 }, userId: null }]), ...(entry ? [entry] : [])],
+      deletes: [],
+    });
+    if (!res.ok) throw conflict({ retryable: fromServer });
+    return res.docs[`${kind}:${LIVE_SWITCH_ID}`];
+  }
+
+  /**
+   * The newest platform audit entries (what was done to the live search switch), newest first.
+   * @param {{ limit?: number }} [opts] 1 to 50
+   * @returns {Promise<object[]>}
+   */
+  async listPlatformAudit({ limit = 10 } = {}) {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new RangeError('[business] listPlatformAudit limit must be 1 to 50');
+    return this.store.listRecords(PLATFORM_KINDS.platformAudit, { limit });
+  }
+
+  /**
+   * One UTC day's supplier usage: { day, supplier, total, companies: { <key>: calls }, updatedAt, rev } per
+   * supplier, or null where nothing was counted yet.
+   * @param {string} day 'YYYY-MM-DD' (UTC)
+   * @returns {Promise<{ duffel: object|null, liteapi: object|null }>}
+   */
+  async supplierUsage(day) {
+    if (typeof day !== 'string' || !DAY_RE.test(day)) throw new Error('[business] supplierUsage needs a day');
+    const [duffel, liteapi] = await Promise.all(SUPPLIERS.map(s => this.store.getRecord(PLATFORM_KINDS.supplierUsage, `${day}.${s}`)));
+    return { duffel, liteapi };
+  }
+
+  /**
+   * Count up to `want` calls ahead for one company and supplier on one UTC day (go-live §5.5): compare-and-set
+   * on that day's record (inserted on its first call), so tasks and restarts share one count. Grants what
+   * fits under both caps, else nothing.
+   * @param {{ day: string, supplier: 'duffel'|'liteapi', company: string, want: number,
+   *   caps: { company: number, total: number } }} spec company: an org id, 'platform' or 'unscoped'
+   * @returns {Promise<{ granted: number, limit: 'company'|'total'|null, total: number, companyCount: number }>}
+   *   limit: which cap left nothing (granted 0)
+   * @throws {AppError} 409 'conflict' (retryable) after 8 lost races in a row
+   */
+  async reserveSupplierUsage({ day, supplier, company, want, caps } = {}) {
+    if (typeof day !== 'string' || !DAY_RE.test(day) || !SUPPLIERS.includes(supplier) || typeof company !== 'string' || !USAGE_KEY_RE.test(company)) {
+      throw new Error('[business] reserveSupplierUsage needs a day, a supplier and a company key');
+    }
+    if (!Number.isInteger(want) || want < 1 || !caps || !Number.isInteger(caps.company) || !Number.isInteger(caps.total)) {
+      throw new Error('[business] reserveSupplierUsage needs a whole number to count and the caps');
+    }
+    const kind = PLATFORM_KINDS.supplierUsage;
+    const id = `${day}.${supplier}`;
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const cur = await this.store.getRecord(kind, id);
+      const companies = cur && isPlainObject(cur.companies) ? cur.companies : {};
+      const used = Number.isInteger(companies[company]) ? companies[company] : 0;
+      const total = cur && Number.isInteger(cur.total) ? cur.total : 0;
+      const k = Math.min(want, caps.company - used, caps.total - total);
+      if (k <= 0) return { granted: 0, limit: caps.company - used <= 0 ? 'company' : 'total', total, companyCount: used };
+      const next = { id, day, supplier, total: total + k, companies: { ...companies, [company]: used + k }, updatedAt: this.iso() };
+      const ok = cur
+        ? await this.store.updateRecord(kind, id, cur.rev ?? 0, next)
+        : await this.store.insertRecord(kind, id, { ...next, rev: 0 }, { userId: null });
+      if (ok) return { granted: k, limit: null, total: total + k, companyCount: used + k };
+    }
+    throw conflict({ retryable: true });
+  }
+
+  /** A platform audit entry for the store's commit (insert-only, owned by no company). */
+  _platformAudit({ action, actor, summary } = {}) {
+    if (typeof action !== 'string' || !/^suppliers\.[a-z_]+$/.test(action) || typeof summary !== 'string' || !summary || !isPlainObject(actor)) {
+      throw new Error('[business] a platform audit entry needs an action, an actor and a summary');
+    }
+    const id = `pau_${crypto.randomBytes(12).toString('base64url')}`;
+    const data = { id, at: this.iso(), action, actor, summary };
+    assertDoc(data);
+    return { kind: PLATFORM_KINDS.platformAudit, id, data, userId: null };
+  }
 
   /** Validate an insert and return the store's insert entry. */
   _insertOp({ kind, id, data, owner = null } = {}) {
