@@ -235,14 +235,9 @@ active `platform_admin` record for that email. Adding an address to `ADMIN_EMAIL
   node scripts/platform-admin.js revoke --email ops@example.com --sign-out
   ```
 
-  On AWS, run it as a one-off task of the app's task definition (the container is `web`) and read its output
-  in the task's log stream:
-
-  ```sh
-  aws ecs run-task --cluster <cluster> --task-definition <app task definition> --launch-type FARGATE \
-    --network-configuration '<the service network configuration>' \
-    --overrides '{"containerOverrides":[{"name":"web","command":["node","scripts/platform-admin.js","list"]}]}'
-  ```
+  On AWS, run it as a one-off task of the admin task definition (family `tripelyx-<env>-admin`, container
+  `admin`, never the site's own task definition) and read its output in the task's log stream; see
+  [One-off admin tasks](#one-off-admin-tasks).
 
 ### The demo
 
@@ -352,7 +347,8 @@ Every push to `main` runs the tests, builds the Docker image, pushes it to Amazo
 - ECS Fargate running the app behind an Application Load Balancer, with health checks on `/healthz`
   and automatic rollback if a new version fails them.
 - Its own private, encrypted PostgreSQL database on RDS. RDS keeps the password in Secrets Manager,
-  and the app receives it at start-up; it never appears in GitHub or in the image.
+  and the app receives it at start-up; it never appears in GitHub or in the image. Deletion protection
+  and 14 days of backups are on in every environment (see [Protecting the database](#protecting-the-database)).
 - Logs in CloudWatch (`/tripelyx/staging`).
 
 GitHub signs in to AWS with OpenID Connect, so no AWS keys are stored in GitHub. The deploy role only
@@ -373,12 +369,122 @@ To deploy into a different AWS account, do this **one-time setup (about 5 minute
    15 minutes, mostly creating the database. The run summary shows the site's address.
 
 Optional repository variables: `APP_ENV=production` deploys a separate `tripelyx-production` stack
-with its own database (Multi-AZ, deletion protection). `CERTIFICATE_ARN` is an ACM certificate for
+with its own database (Multi-AZ). `CERTIFICATE_ARN` is an ACM certificate for
 your domain, which turns on HTTPS. Then point the domain at the load balancer with a CNAME.
+
+**www.tripelyx.com is the `tripelyx-staging` stack**, with `APP_ENV=staging` on purpose: in production
+every vertical is off by default. "Staging" here names the live site, so keep the `staging` default in
+`deploy.yml` (a static test pins it) and never point another experiment at that stack.
 
 Staging runs demo inventory with `PAYMENT_MODE=test`, so it is safe to share. A staging stack
 costs roughly USD 40 to 50 a month (load balancer, a small database, one small container). If a
-first deploy fails, delete the `tripelyx-staging` stack in CloudFormation before running it again.
+first deploy fails, delete the `tripelyx-staging` stack in CloudFormation before running it again
+(turn off the database's deletion protection first: RDS console, **Modify**).
+
+#### Repository settings the deploy reads
+
+- `ENABLE_BUSINESS` (variable, default `false`): Tripelyx Business on or off. The deploy job's first step
+  trims and lowercases it; any value but `true` or `false` stops the run before the build with
+  "ENABLE_BUSINESS must be true or false (lowercase).", so a typo never reaches CloudFormation (which
+  allows exactly those two and would block every later deploy).
+- `ADMIN_EMAILS`: a repository **secret**, never a variable. The repository is public and so are its run
+  logs; a secret is masked in them, a variable prints in clear. The workflow still reads
+  `secrets.ADMIN_EMAILS || vars.ADMIN_EMAILS`, but when only the variable is set the first step stops the
+  run before anything prints it ("ADMIN_EMAILS is set as a repository variable..."): move the addresses to
+  the secret and delete the variable. A variable of that name must never hold real addresses.
+- `PUBLIC_BASE_URL` (default `https://www.tripelyx.com`), `APP_ENV`, `CERTIFICATE_ARN`, `AWS_ROLE_ARN`,
+  `AWS_REGION` as above.
+
+Every deploy also prints, before and after "Deploy the stack", the status code and sha256 of `/`, `/book`
+and `/ai-travel-agent` (with the `?v=` asset versions removed), read through the stack's own `SiteUrl`
+output, and "same" or "changed". After the deploy it opens `/healthz` and, with Business on, `/business`
+and a Business 404. A page that answers anything but 200, or another status than before the deploy, gets
+a "Page status" warning. It only reports: the run turns red when `/healthz` does not answer 200 or a
+Business page shows demo wording or the environment banner, and it never undoes anything. It prints status
+codes and hashes only.
+
+A second run on the same commit (the flip, the undo, **Re-run jobs**) reuses the image that commit already
+pushed to ECR instead of building it again: the repository's image tags are immutable, so a rebuild under
+the same tag would be refused.
+
+#### Tripelyx Business on www: dark deploy, flip, undo
+
+1. **Stack policy first.** After the change set preview and before the merge, apply the stack policy
+   ([Protecting the database](#protecting-the-database)). The dark deploy is the first update
+   CloudFormation makes to the database, so it already runs with the database protected against an
+   unexpected replacement. The policy allows in-place changes, so it does not stop that deploy.
+2. **Dark deploy.** Merge with `ENABLE_BUSINESS` unset, so Business is off. Add the secret `ADMIN_EMAILS`
+   in the same sitting, never earlier: until this code runs, the site's `/admin` check is the email alone
+   (see [Platform admins](#platform-admins)). The page hashes of
+   `/`, `/book` and `/ai-travel-agent` should read "same", with no "Page status" warning. Then run `list`
+   on the admin task ([One-off admin tasks](#one-off-admin-tasks)).
+3. **The flip.** Add the repository variable `ENABLE_BUSINESS` = `true` (lowercase), then run
+   **Actions → Deploy to AWS → Run workflow**. A variable reaches the site only with a deploy. Only the
+   container's environment changes; the check step then also opens `/business` and a Business 404. The
+   three pages above now differ by the approved "Business" header item and trip footer link only, so
+   they read "changed"; a "Page status" warning means a page answered something other than 200.
+4. **Undo.** Set `ENABLE_BUSINESS` to `false` and run the deploy again. Company data stays in the
+   database. A failed deploy rolls itself back (ECS circuit breaker, then CloudFormation).
+5. **Never undo with a git revert.** A revert would bring back the older email-only `/admin` check while
+   `ADMIN_EMAILS` is set, and turn the database's deletion protection off. If code ever has to be
+   reverted, keep the accounts code, `ProtectDatabase`, the admin task definition and every secret
+   resource, and remove `ADMIN_EMAILS` first.
+
+#### Protecting the database
+
+- **`ProtectDatabase`** (stack parameter, default `true`) turns on deletion protection and 14 days of
+  automated backups whatever `APP_ENV` is (production always has them). Both change in place, with no
+  replacement and no outage (RDS only has an outage when backups go from 0 days to some or back).
+  `deploy.yml` does not pass it, so every deploy keeps the stack's current value. Set it to `false` only
+  when deleting a stack on purpose: one update with `ProtectDatabase=false`, then the delete.
+- **The stack policy** `infra/www-stack-policy.json` denies `Update:Replace` and `Update:Delete` on the
+  `Database` resource and allows every other update. With it in place, a deploy whose change set would
+  replace or remove the database fails and rolls back, and the database stays as it is. The deploy role
+  cannot set it: it is applied once after the change set preview and before the merge that brings this
+  code (so the dark deploy already runs under it), by whoever runs the go-live (with the owner's
+  approval), and again each time the file changes (later stages add their secrets to the deny list):
+
+  ```bash
+  aws cloudformation set-stack-policy --region us-east-1 --stack-name tripelyx-staging \
+    --stack-policy-body file://infra/www-stack-policy.json
+  aws cloudformation get-stack-policy --region us-east-1 --stack-name tripelyx-staging   # check it
+  ```
+
+- **A deliberate database migration** (a change that replaces the instance) overrides the policy for one
+  update only, never through the deploy workflow (`aws cloudformation deploy` has no override, so a
+  deploy can never replace the database). With the owner's approval: take a manual snapshot, plan how the
+  data moves (a replacement starts a new, empty instance; `UpdateReplacePolicy: Snapshot` keeps a snapshot
+  of the old one), then run one update with a temporary policy. Every parameter keeps its current value
+  except what the migration changes:
+
+  ```bash
+  aws cloudformation update-stack --region us-east-1 --stack-name tripelyx-staging \
+    --template-body file://infra/app.yaml --capabilities CAPABILITY_IAM \
+    --role-arn arn:aws:iam::<account id>:role/tripelyx-cfn-execution \
+    --parameters ParameterKey=AppEnv,UsePreviousValue=true ParameterKey=ImageUri,UsePreviousValue=true ... \
+    --stack-policy-during-update-body '{"Statement":[{"Effect":"Allow","Action":"Update:*","Principal":"*","Resource":"*"}]}'
+  ```
+
+  The stored policy applies again to the next update without being set again.
+
+#### One-off admin tasks
+
+`AdminTaskDefinition` (family `tripelyx-<env>-admin`, container `admin`) runs the same image as the site
+with `node scripts/platform-admin.js list` by default. It gets `APP_ENV`, `ADMIN_EMAILS` and the
+database settings, the database secret and nothing else; it has no task role (so no AWS credentials)
+and its own execution role, which can only pull the image, read the database secret and write its own
+log streams. Every one-off task runs on it, never on the site's task definition, so a mistaken command
+can never print a key the site holds. On the web service's network:
+
+```bash
+NET=$(aws ecs describe-services --region us-east-1 --cluster tripelyx-staging --services web \
+  --query 'services[0].networkConfiguration' --output json)
+aws ecs run-task --region us-east-1 --cluster tripelyx-staging --task-definition tripelyx-staging-admin \
+  --launch-type FARGATE --network-configuration "$NET" \
+  --overrides '{"containerOverrides":[{"name":"admin","command":["node","scripts/platform-admin.js","list"]}]}'
+```
+
+Its output is in the log group `/tripelyx/staging`, in the stream `admin/admin/<task id>`.
 
 ### Private preview
 

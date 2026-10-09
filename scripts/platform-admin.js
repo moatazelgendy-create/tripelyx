@@ -18,12 +18,14 @@
 // Every command prints the account's name and creation date, so you can see it is the right account.
 //
 // It refuses to run on the in-memory store, where it would change nothing the site can see. On AWS, run it
-// as a one-off task of the app's task definition with a command override (the container is "web"; the
-// image must contain this file, which the Dockerfile copies to /app/scripts):
-//   aws ecs run-task --cluster <cluster> --task-definition <app task definition> --launch-type FARGATE \
-//     --network-configuration '<the service network configuration>' \
-//     --overrides '{"containerOverrides":[{"name":"web","command":["node","scripts/platform-admin.js","list"]}]}'
-// and read its output in the task's log stream.
+// as a one-off task of the admin task definition (family tripelyx-<env>-admin, container "admin"), never
+// the site's own task definition: the admin task gets the database secret and nothing else, so a mistaken
+// command can never print a key the site holds. The image must contain this file (the Dockerfile copies it
+// to /app/scripts). See "One-off admin tasks" in README.md for the network configuration:
+//   aws ecs run-task --cluster tripelyx-<env> --task-definition tripelyx-<env>-admin --launch-type FARGATE \
+//     --network-configuration '<the web service network configuration>' \
+//     --overrides '{"containerOverrides":[{"name":"admin","command":["node","scripts/platform-admin.js","list"]}]}'
+// and read its output in the log group /tripelyx/<env>, stream admin/admin/<task id>.
 const { loadConfig } = require('../server/config');
 const { createStore } = require('../server/booking');
 const { Accounts, PLATFORM_ADMIN, ADMIN_SEED_BEFORE, seedPending } = require('../server/accounts');

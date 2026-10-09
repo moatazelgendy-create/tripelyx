@@ -49,10 +49,18 @@ Parameters:
     Type: String
     Default: db.t3.micro
     Description: db.t4g.micro is not offered for Postgres 17 in every region (for example us-east-1).
+  ProtectDatabase:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'true'
+    Description: >-
+      Deletion protection and 14 days of automated backups on the database, in every environment
+      (www.tripelyx.com runs on the staging stack). Set 'false' only to delete a stack on purpose.
 
 Conditions:
   HasCertificate: !Not [!Equals [!Ref CertificateArn, '']]
   IsProduction: !Equals [!Ref AppEnv, production]
+  Protected: !Or [!Condition IsProduction, !Equals [!Ref ProtectDatabase, 'true']]
 
 Resources:
   # ---------- Network: 2 public subnets (load balancer, app) and 2 private subnets (database) ----------
@@ -163,8 +171,10 @@ Resources:
       VPCSecurityGroups: [!Ref DatabaseSecurityGroup]
       PubliclyAccessible: false
       MultiAZ: !If [IsProduction, true, false]
-      BackupRetentionPeriod: !If [IsProduction, 14, 3]
-      DeletionProtection: !If [IsProduction, true, false]
+      # Both change in place, never by replacement: DeletionProtection "Update requires: No interruption";
+      # BackupRetentionPeriod "Some interruptions", which RDS only has between 0 and a nonzero value (3 to 14 has none).
+      BackupRetentionPeriod: !If [Protected, 14, 3]
+      DeletionProtection: !If [Protected, true, false]
       AutoMinorVersionUpgrade: true
 
   # ---------- Containers ----------
@@ -231,6 +241,8 @@ Resources:
             - { Name: ALLOW_DEMO_INVENTORY, Value: !Ref AllowDemoInventory }
             - { Name: ENABLE_TRIPS, Value: !Ref EnableTrips }
             - { Name: ENABLE_BUSINESS, Value: !Ref EnableBusiness }
+            # Business's own demo flights and hotels: never on this site (ALLOW_DEMO_INVENTORY stays for /book).
+            - { Name: BUSINESS_DEMO_INVENTORY, Value: 'false' }
             - { Name: ADMIN_EMAILS, Value: !Ref AdminEmails }
             - { Name: PUBLIC_BASE_URL, Value: !Ref PublicBaseUrl }
             - { Name: DATABASE_ENV, Value: !Ref AppEnv }
@@ -248,6 +260,79 @@ Resources:
               awslogs-group: !Ref LogGroup
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: web
+
+  # ---------- One-off admin tasks (scripts/platform-admin.js) ----------
+  # Run with ecs run-task on the web service's network configuration; nothing runs it on a schedule.
+  # It gets the database and nothing else: no other secret, no task role (so no AWS credentials), and an
+  # execution role that can pull the image, read the database secret and write only its own log streams.
+  AdminExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: run-admin-task
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: EcrLogin
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
+              - Sid: PullAppImage
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Resource: !Sub 'arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/tripelyx'
+              - Sid: WriteAdminLogStreams
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${LogGroup}:log-stream:admin/*'
+              - Sid: ReadDatabaseSecret
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !GetAtt Database.MasterUserSecret.SecretArn
+  AdminTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub 'tripelyx-${AppEnv}-admin'
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: '256'
+      Memory: '512'
+      RuntimePlatform: { OperatingSystemFamily: LINUX, CpuArchitecture: X86_64 }
+      ExecutionRoleArn: !GetAtt AdminExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: admin
+          Image: !Ref ImageUri
+          Essential: true
+          Command: [node, scripts/platform-admin.js, list]
+          Environment:
+            - { Name: APP_ENV, Value: !Ref AppEnv }
+            - { Name: ADMIN_EMAILS, Value: !Ref AdminEmails }
+            - { Name: DATABASE_ENV, Value: !Ref AppEnv }
+            - { Name: DATABASE_HOST, Value: !GetAtt Database.Endpoint.Address }
+            - { Name: DATABASE_PORT, Value: !GetAtt Database.Endpoint.Port }
+            - { Name: DATABASE_NAME, Value: tripelyx }
+            - { Name: DATABASE_SSL, Value: 'true' }
+            - { Name: DATABASE_SSL_CA_FILE, Value: /app/certs/rds-global-bundle.pem }
+          Secrets:
+            - { Name: DATABASE_USER, ValueFrom: !Sub '${Database.MasterUserSecret.SecretArn}:username::' }
+            - { Name: DATABASE_PASSWORD, ValueFrom: !Sub '${Database.MasterUserSecret.SecretArn}:password::' }
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: admin
 
   # ---------- Load balancer ----------
   LoadBalancer:
