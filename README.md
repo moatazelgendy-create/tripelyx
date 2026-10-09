@@ -277,8 +277,8 @@ The private preview's boot hook (`PREVIEW_SEED=business`, on an in-memory stagin
 calls the same `seed()` from this file, with the app and its config. The demo accounts then use the
 preview's own password: `config.preview.password` when the config carries one, else `PREVIEW_PASSWORD` when
 its SHA-256 matches the preview gate's digest (`config.preview.gate.passwordDigest`), else
-`preview-only-password`. The platform admin is the first `ADMIN_EMAILS` address, so the preview needs
-`ADMIN_EMAILS` set. `seed()` logs every demo account with its role and company, and the path of each test
+`preview-only-password`. The platform admin is the first `ADMIN_EMAILS` address; the preview workflow always
+sets it to the demo address `platform.admin@tripelyx-demo.example`, never a real one. `seed()` logs every demo account with its role and company, and the path of each test
 scenario, so the preview log says who to sign in as. It throws on any store but the in-memory one and in
 production, and never logs a password.
 
@@ -339,7 +339,8 @@ These suppliers serve Business only: `/book`, `/` and the rest of the site never
   working flight supplier), `BUSINESS_ALLOW_SUPPLIER_TEST` (true by default only in development, so every
   deployed stack switches test data on by hand), `BUSINESS_GUEST_NATIONALITY`, `BUSINESS_SUPPLIER_CACHE_SECONDS`,
   `BUSINESS_SUPPLIER_COMPANY_CALLS_PER_HOUR` and `BUSINESS_SUPPLIER_VARIANT_SEARCHES`.
-- **Keys only from the environment:** GitHub secrets for CI, AWS Secrets Manager for the preview stack. No key
+- **Keys only from the environment:** GitHub secrets for CI and for the private preview (its workflow writes them
+  into the Lightsail container's settings, see [Private preview](#private-preview)). No key
   is ever in the repo, a log, an error page or `/api/config` (test fixtures use placeholders such as
   `duffel_test_PLACEHOLDER`).
 - **A bad setting never stops the app.** A missing key, a key that is not a test key, an unknown supplier name or
@@ -563,8 +564,21 @@ aws cloudformation deploy --region us-east-1 --stack-name tripelyx-preview \
 
 It uses the GitHub identity provider that `tripelyx-bootstrap` already created. When it finishes, open the
 latest **Private preview** run (the one that ended with "not set up yet") and choose **Re-run all jobs**,
-or push to the branch. Optional repository secrets `DUFFEL_TEST_TOKEN` and `LITEAPI_SANDBOX_KEY`
-(supplier test keys) are passed to the preview only when they are set.
+or push to the branch.
+
+**Supplier test keys (optional).** Two repository secrets switch the preview's Business prices from demo data to
+the suppliers' test systems. The workflow writes them into the container's settings only when they are set:
+
+| Secret | Container settings |
+| --- | --- |
+| `DUFFEL_TEST_TOKEN` (a Duffel test token, `duffel_test_...`) | `BUSINESS_FLIGHT_SUPPLIER=duffel`, `DUFFEL_ACCESS_TOKEN`, `BUSINESS_ALLOW_SUPPLIER_TEST=true` |
+| `LITEAPI_SANDBOX_KEY` (a LiteAPI sandbox key, `sand_...`), with `DUFFEL_TEST_TOKEN` | `BUSINESS_HOTEL_SUPPLIER=liteapi`, `LITEAPI_API_KEY` |
+
+Hotels need flights, so `LITEAPI_SANDBOX_KEY` alone changes nothing. Before anything is built, the run stops
+when either secret is set to anything but a test key (a Duffel token not starting with `duffel_test_`, a
+LiteAPI key not starting with `sand_`); the message names the secret, never its value. The preview's
+`ADMIN_EMAILS` is always the demo address `platform.admin@tripelyx-demo.example`, so no real address is in
+this public repository's run log.
 
 **Reading the password:** in the console, open **Secrets Manager → `tripelyx-preview/password` →
 Retrieve secret value**, or:

@@ -1,8 +1,9 @@
-# Deploys the private preview (Tripelyx Business on, demo inventory, in-memory data) to its own Amazon
-# Lightsail container service on every push to the development branch. To run it again without a push, open
-# the latest "Private preview" run and choose "Re-run all jobs" (same commit and branch; GitHub allows it for
-# 30 days), or, once it has run at least once, `gh workflow run preview.yml --ref <the branch>`. GitHub shows
-# the "Run workflow" button only for workflows on the default branch (main), so this file has none until then.
+# Deploys the private preview (Tripelyx Business on, demo inventory or supplier test data, in-memory data)
+# to its own Amazon Lightsail container service on every push to the development branch. To run it again
+# without a push, open the latest "Private preview" run and choose "Re-run all jobs" (same commit and branch;
+# GitHub allows it for 30 days), or, once it has run at least once, `gh workflow run preview.yml --ref <the
+# branch>`. GitHub shows the "Run workflow" button only for workflows on the default branch (main), so this
+# file has none until then.
 # It never runs on main, never uses the tripelyx.com deploy role, and never touches the tripelyx-staging or
 # tripelyx-production stacks: it only pushes to the tripelyx-preview registry and deploys the
 # tripelyx-preview Lightsail service, both made by infra/preview.yaml (see "Private preview" in README.md).
@@ -10,8 +11,12 @@
 # here at deploy time; it is masked and never printed. An AWS account ID and a role name are identifiers,
 # not secrets: the preview role only trusts this repository's development branch.
 # Optional repository variables: PREVIEW_ROLE_ARN and PREVIEW_AWS_REGION (another account or region; the
-# role must still be named tripelyx-github-preview). Optional secrets: DUFFEL_TEST_TOKEN and
-# LITEAPI_SANDBOX_KEY (supplier test keys, passed to the preview only when they are set).
+# role must still be named tripelyx-github-preview). Optional secrets: DUFFEL_TEST_TOKEN (a Duffel test token,
+# duffel_test_...) and LITEAPI_SANDBOX_KEY (a LiteAPI sandbox key, sand_...). With DUFFEL_TEST_TOKEN set, the
+# preview's Business flights come from Duffel's test system (and its hotels from LiteAPI's sandbox when both
+# are set); without it, demo data. A run stops before anything else when either secret is set to anything but
+# a test key, so a live key never reaches the preview. The platform admin is always the demo address
+# platform.admin@tripelyx-demo.example, so no real address is ever in this public run's log.
 name: Private preview
 
 on:
@@ -63,6 +68,23 @@ jobs:
           case "$AWS_ROLE_ARN" in
             arn:aws:iam::*:role/tripelyx-github-preview) ;;
             *) echo "::error::The preview only signs in as tripelyx-github-preview, never another role."; exit 1 ;;
+          esac
+
+      # Supplier test keys only: a Duffel token that is set must start with duffel_test_, and a LiteAPI key that is
+      # set must start with sand_. Anything else stops the run here, before anything is built or deployed, and
+      # the message names the secret, never its value.
+      - name: Check that the supplier keys are test keys
+        env:
+          DUFFEL_TEST_TOKEN: ${{ secrets.DUFFEL_TEST_TOKEN }}
+          LITEAPI_SANDBOX_KEY: ${{ secrets.LITEAPI_SANDBOX_KEY }}
+        run: |
+          case "${DUFFEL_TEST_TOKEN:-}" in
+            ''|duffel_test_*) ;;
+            *) echo "::error::DUFFEL_TEST_TOKEN is not a Duffel test token (duffel_test_). The preview takes Duffel test tokens and LiteAPI sandbox keys only."; exit 1 ;;
+          esac
+          case "${LITEAPI_SANDBOX_KEY:-}" in
+            ''|sand_*) ;;
+            *) echo "::error::LITEAPI_SANDBOX_KEY is not a LiteAPI sandbox key (sand_). The preview takes Duffel test tokens and LiteAPI sandbox keys only."; exit 1 ;;
           esac
 
       # Before the tripelyx-preview stack exists the role does not exist either: that is not an error.
@@ -131,8 +153,6 @@ jobs:
         if: steps.service.outputs.ready == 'true'
         env:
           IMAGE: ${{ steps.image.outputs.uri }}
-          # The demo seed makes the first address the preview's platform admin; with no repo variable it is the demo one.
-          ADMIN_EMAILS: ${{ vars.ADMIN_EMAILS || 'platform.admin@tripelyx-demo.example' }}
           DUFFEL_TEST_TOKEN: ${{ secrets.DUFFEL_TEST_TOKEN }}
           LITEAPI_SANDBOX_KEY: ${{ secrets.LITEAPI_SANDBOX_KEY }}
         run: |
@@ -170,7 +190,11 @@ jobs:
           # The container's settings, written by jq from the environment (no value on a command line).
           # APP_ENV=staging with DATABASE_URL=memory is the throwaway demo config.js allows; production refuses
           # it, and refuses PREVIEW_PASSWORD and PREVIEW_SEED. ALLOW_DEMO_INVENTORY=true is Business's demo
-          # inventory switch. Supplier test keys are added only when those secrets are set.
+          # inventory switch. The demo seed makes ADMIN_EMAILS (always the demo address, never a real one) the
+          # preview's platform admin. The supplier settings are added only when their secrets are set (an empty
+          # key would switch Business to "Supplier not connected yet"): DUFFEL_TEST_TOKEN turns on Duffel's test
+          # system for flights (BUSINESS_ALLOW_SUPPLIER_TEST, since staging keeps supplier test data off by
+          # default), and with LITEAPI_SANDBOX_KEY as well, LiteAPI's sandbox for hotels (hotels need flights).
           jq -n '{
             web: {
               image: env.IMAGE,
@@ -185,12 +209,12 @@ jobs:
                 ALLOW_DEMO_INVENTORY: "true",
                 ENABLE_TRIPS: "true",
                 ENABLE_BUSINESS: "true",
-                ADMIN_EMAILS: (env.ADMIN_EMAILS // ""),
+                ADMIN_EMAILS: "platform.admin@tripelyx-demo.example",
                 PREVIEW_PASSWORD: env.PREVIEW_PASSWORD,
                 PREVIEW_SEED: "business"
               }
-              + (if (env.DUFFEL_TEST_TOKEN // "") != "" then { DUFFEL_TEST_TOKEN: env.DUFFEL_TEST_TOKEN } else {} end)
-              + (if (env.LITEAPI_SANDBOX_KEY // "") != "" then { LITEAPI_SANDBOX_KEY: env.LITEAPI_SANDBOX_KEY } else {} end))
+              + (if (env.DUFFEL_TEST_TOKEN // "") != "" then { BUSINESS_FLIGHT_SUPPLIER: "duffel", DUFFEL_ACCESS_TOKEN: env.DUFFEL_TEST_TOKEN, BUSINESS_ALLOW_SUPPLIER_TEST: "true" } else {} end)
+              + (if (env.DUFFEL_TEST_TOKEN // "") != "" and (env.LITEAPI_SANDBOX_KEY // "") != "" then { BUSINESS_HOTEL_SUPPLIER: "liteapi", LITEAPI_API_KEY: env.LITEAPI_SANDBOX_KEY } else {} end))
             }
           }' > "$WORK/containers.json"
           jq -n '{

@@ -1,11 +1,18 @@
 // Static checks on the private preview's workflow and stack (.github/workflows/preview.yml, infra/preview.yaml).
 // No YAML parser is installed, so these are careful text checks on the lines that matter: which branch runs it,
-// which role it uses, what it may touch, and that no secret value is written into either file.
+// which role it uses, what it may touch, and that no secret value is written into either file. Two of its
+// scripts also run here: the supplier key check under bash, and the container settings under jq (each skipped
+// when the tool is not installed), and the settings jq writes boot the app.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
+const { execFile, spawnSync } = require('node:child_process');
 const { loadConfig } = require('../server/config');
+const { createApp } = require('../server/app');
+const { quietLog } = require('./helpers');
+const { testKeys } = require('./supplier-fetch');
 
 const ROOT = path.join(__dirname, '..');
 const BRANCH = 'claude/travel-by-budget-uv85qf';
@@ -102,6 +109,48 @@ test('the workflow signs in only as the preview role and touches only the previe
   assert.match(body, /::notice title=Private preview::/);
 });
 
+/** The preview's platform admin: the demo seed's address, on a reserved .example domain. */
+const DEMO_ADMIN = 'platform.admin@tripelyx-demo.example';
+/** The two supplier lines of the container settings, each a whole jq term. */
+const SUPPLIER_LINES = Object.freeze({
+  flights: '+ (if (env.DUFFEL_TEST_TOKEN // "") != "" then { BUSINESS_FLIGHT_SUPPLIER: "duffel", DUFFEL_ACCESS_TOKEN: env.DUFFEL_TEST_TOKEN, BUSINESS_ALLOW_SUPPLIER_TEST: "true" } else {} end)',
+  hotels: '+ (if (env.DUFFEL_TEST_TOKEN // "") != "" and (env.LITEAPI_SANDBOX_KEY // "") != "" then { BUSINESS_HOTEL_SUPPLIER: "liteapi", LITEAPI_API_KEY: env.LITEAPI_SANDBOX_KEY } else {} end))',
+});
+/** What the key check says when a secret is not a test key: the secret's name, never its value. */
+const KEY_ERRORS = Object.freeze({
+  duffel: 'DUFFEL_TEST_TOKEN is not a Duffel test token (duffel_test_). The preview takes Duffel test tokens and LiteAPI sandbox keys only.',
+  liteapi: 'LITEAPI_SANDBOX_KEY is not a LiteAPI sandbox key (sand_). The preview takes Duffel test tokens and LiteAPI sandbox keys only.',
+});
+
+/** The lines of a step of the preview job, from its `- name:` line to the next step. */
+function stepLines(name) {
+  const lines = jobBlock('preview');
+  const start = lines.indexOf(`      - name: ${name}`);
+  assert.ok(start >= 0, `the step "${name}" is there`);
+  const end = lines.findIndex((l, i) => i > start && /^ {6}- /.test(l));
+  return lines.slice(start, end < 0 ? undefined : end);
+}
+
+/** A step's `run: |` script, as GitHub hands it to bash (the block's indentation removed). */
+function runScript(name) {
+  const lines = stepLines(name);
+  const at = lines.indexOf('        run: |');
+  assert.ok(at >= 0, `${name} has a run block`);
+  return `${lines.slice(at + 1).map(l => l.slice(10)).join('\n')}\n`;
+}
+
+const hasBash = spawnSync('bash', ['-c', 'true']).status === 0;
+const hasJq = spawnSync('jq', ['--version']).status === 0;
+function run(cmd, args, env) {
+  return new Promise(resolve => {
+    execFile(cmd, args, { env, encoding: 'utf8', timeout: 30000 }, (err, stdout, stderr) => {
+      resolve({ code: err ? (typeof err.code === 'number' ? err.code : -1) : 0, stdout, stderr });
+    });
+  });
+}
+/** A child's environment: PATH only, plus what the step gets. */
+const childEnv = extra => ({ PATH: process.env.PATH, ...extra });
+
 /** The workflow's code lines with shell continuations (a trailing backslash) joined into one line each. */
 function logicalLines() {
   return code(workflow).replace(/[ \t]*\\\n\s*/g, ' ').split('\n').map(l => l.trim()).filter(Boolean);
@@ -115,10 +164,17 @@ test('no secret value is written into the workflow, and the password is masked a
   assert.doesNotMatch(body, /\bprintenv\b|\benv\s*(?:\||>|$)|declare -p|export -p|^\s*set\s*$|compgen|\/proc\/[^\s]*environ|toJSON\((?:secrets|env)\)/m, 'nothing dumps the environment');
   const lines = logicalLines();
 
-  // (c) The password and the supplier keys are named on these lines only, in this order: the step's env
-  // mapping, the read from Secrets Manager, the empty check, the mask, the export for jq, the jq settings
-  // and the unset. Any other line naming one of them (a printf, a curl, a copy into another variable) fails.
+  // (c) The password and the supplier keys are named on these lines only, in this order: the key check's env
+  // mapping and its two case tests (whose errors name the secret, never its value), the deploy step's env
+  // mapping, the read from Secrets Manager, the empty check, the mask, the export for jq, the jq settings and
+  // the unset. Any other line naming one of them (a printf, a curl, a copy into another variable) fails.
   assert.deepEqual(lines.filter(l => /PREVIEW_PASSWORD|DUFFEL_TEST_TOKEN|LITEAPI_SANDBOX_KEY/.test(l)), [
+    'DUFFEL_TEST_TOKEN: ${{ secrets.DUFFEL_TEST_TOKEN }}',
+    'LITEAPI_SANDBOX_KEY: ${{ secrets.LITEAPI_SANDBOX_KEY }}',
+    'case "${DUFFEL_TEST_TOKEN:-}" in',
+    `*) echo "::error::${KEY_ERRORS.duffel}"; exit 1 ;;`,
+    'case "${LITEAPI_SANDBOX_KEY:-}" in',
+    `*) echo "::error::${KEY_ERRORS.liteapi}"; exit 1 ;;`,
     'DUFFEL_TEST_TOKEN: ${{ secrets.DUFFEL_TEST_TOKEN }}',
     'LITEAPI_SANDBOX_KEY: ${{ secrets.LITEAPI_SANDBOX_KEY }}',
     'PREVIEW_PASSWORD=$(aws secretsmanager get-secret-value --secret-id "$PASSWORD_SECRET" --query SecretString --output text)',
@@ -126,13 +182,16 @@ test('no secret value is written into the workflow, and the password is masked a
     'echo "::add-mask::${PREVIEW_PASSWORD}"',
     'export PREVIEW_PASSWORD',
     'PREVIEW_PASSWORD: env.PREVIEW_PASSWORD,',
-    '+ (if (env.DUFFEL_TEST_TOKEN // "") != "" then { DUFFEL_TEST_TOKEN: env.DUFFEL_TEST_TOKEN } else {} end)',
-    '+ (if (env.LITEAPI_SANDBOX_KEY // "") != "" then { LITEAPI_SANDBOX_KEY: env.LITEAPI_SANDBOX_KEY } else {} end))',
+    SUPPLIER_LINES.flights,
+    SUPPLIER_LINES.hotels,
     'unset PREVIEW_PASSWORD',
   ]);
-  // The supplier keys reach only the deploy step.
-  const deployStep = body.slice(body.indexOf('- name: Deploy the preview'), body.indexOf('run: |', body.indexOf('- name: Deploy the preview')));
-  assert.match(deployStep, /DUFFEL_TEST_TOKEN: \$\{\{ secrets\.DUFFEL_TEST_TOKEN \}\}\n\s+LITEAPI_SANDBOX_KEY: \$\{\{ secrets\.LITEAPI_SANDBOX_KEY \}\}\n/);
+  // The supplier keys reach two steps only: the key check, then the deploy step.
+  const stepEnv = name => body.slice(body.indexOf(`- name: ${name}`), body.indexOf('run: |', body.indexOf(`- name: ${name}`)));
+  for (const name of ['Check that the supplier keys are test keys', 'Deploy the preview']) {
+    assert.match(stepEnv(name), /DUFFEL_TEST_TOKEN: \$\{\{ secrets\.DUFFEL_TEST_TOKEN \}\}\n\s+LITEAPI_SANDBOX_KEY: \$\{\{ secrets\.LITEAPI_SANDBOX_KEY \}\}\n/, name);
+  }
+  assert.equal((workflow.match(/\$\{\{ secrets\./g) || []).length, 4, 'each key is read by those two steps only');
   assert.equal(lines.filter(l => /secretsmanager get-secret-value/.test(l)).length, 1, 'the password is read once');
 
   // (b) The settings file holds the password and keys: it is written by jq, handed to Lightsail and deleted,
@@ -197,15 +256,21 @@ test('the deployment settings boot the app with Business on, the memory store, d
   const env = Object.fromEntries([...block.matchAll(/^\s+([A-Z_]+): "([^"]*)"/gm)].map(m => [m[1], m[2]]));
   assert.deepEqual(env, {
     APP_ENV: 'staging', PORT: '4100', TRUST_PROXY: 'true', HTTPS_ONLY: 'true', DATABASE_URL: 'memory', PAYMENT_MODE: 'test',
-    ALLOW_DEMO_INVENTORY: 'true', ENABLE_TRIPS: 'true', ENABLE_BUSINESS: 'true', PREVIEW_SEED: 'business',
+    ALLOW_DEMO_INVENTORY: 'true', ENABLE_TRIPS: 'true', ENABLE_BUSINESS: 'true', ADMIN_EMAILS: DEMO_ADMIN, PREVIEW_SEED: 'business',
   });
   assert.match(block, /PREVIEW_PASSWORD: env\.PREVIEW_PASSWORD,/);
-  assert.match(block, /ADMIN_EMAILS: \(env\.ADMIN_EMAILS \/\/ ""\),/);
-  assert.match(workflow, /ADMIN_EMAILS: \$\{\{ vars\.ADMIN_EMAILS \|\| 'platform\.admin@tripelyx-demo\.example' \}\}/,
-    'the demo seed needs an admin address, so the preview falls back to the demo one');
-  assert.match(workflow, /if \(env\.DUFFEL_TEST_TOKEN \/\/ ""\) != "" then \{ DUFFEL_TEST_TOKEN: env\.DUFFEL_TEST_TOKEN \} else \{\} end/);
-  assert.match(workflow, /if \(env\.LITEAPI_SANDBOX_KEY \/\/ ""\) != "" then \{ LITEAPI_SANDBOX_KEY: env\.LITEAPI_SANDBOX_KEY \} else \{\} end/);
-  const config = loadConfig({ ...env, PREVIEW_PASSWORD: 'a-test-password-only', ADMIN_EMAILS: '' });
+  // The platform admin is always the demo address, written here: no repository variable or secret can put a real
+  // address into the container settings or the public run log.
+  assert.equal((code(workflow).match(/ADMIN_EMAILS/g) || []).length, 1, 'ADMIN_EMAILS is named once, on the demo address');
+  assert.doesNotMatch(workflow, /(?:vars|secrets|env)\.ADMIN_EMAILS/);
+  assert.match(DEMO_ADMIN, /@tripelyx-demo\.example$/, 'a reserved .example domain, never a real mailbox');
+  assert.equal(DEMO_ADMIN, require('../scripts/business-demo').DEMO_ADMIN_EMAIL, "the demo seed's own platform admin address");
+  // The supplier settings, exactly: flights with a Duffel test token (and supplier test data switched on, which
+  // staging keeps off by default), hotels only with both keys (hotels need flights).
+  const mapping = code(workflow).split('\n').map(l => l.trim()).filter(l => /^\+ \(if /.test(l));
+  assert.deepEqual(mapping, [SUPPLIER_LINES.flights, SUPPLIER_LINES.hotels]);
+  const config = loadConfig({ ...env, PREVIEW_PASSWORD: 'a-test-password-only' });
+  assert.deepEqual(config.trips.adminEmails, [DEMO_ADMIN]);
   assert.equal(config.appEnv, 'staging');
   assert.equal(config.databaseUrl, 'memory');
   assert.equal(config.business.enabled, true);
@@ -218,6 +283,97 @@ test('the deployment settings boot the app with Business on, the memory store, d
   assert.match(workflow, /"containerName":|containerName: "web"/);
   assert.match(workflow, /path: "\/healthz", successCodes: "200"/, 'the health check uses the open path');
   assert.match(workflow, /ports: \{ "4100": "HTTP" \}/);
+});
+
+test('the supplier key check runs before anything is built or deployed, after the role check only', () => {
+  const names = jobBlock('preview').filter(l => /^ {6}- (?:name|uses): /.test(l)).map(l => l.trim());
+  const at = names.indexOf('- name: Check that the supplier keys are test keys');
+  assert.deepEqual(names.slice(0, at + 2), [
+    '- uses: actions/checkout@v4', '- name: Check that this is the preview role', '- name: Check that the supplier keys are test keys',
+    '- name: Sign in to AWS as the preview role',
+  ]);
+  const lines = stepLines('Check that the supplier keys are test keys');
+  assert.ok(!lines.some(l => /^ {8}(?:if|continue-on-error):/.test(l)), 'it always runs, and a refusal stops the job');
+});
+
+test('the supplier key check stops the run on anything but a Duffel test token and a LiteAPI sandbox key, and never prints a key', { skip: !hasBash && 'bash is not installed' }, async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tx-preview-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'keys.sh');
+  fs.writeFileSync(file, runScript('Check that the supplier keys are test keys'));
+  const k = testKeys();
+  // GitHub hands an unset secret to the step as an empty string.
+  for (const [label, env] of [
+    ['no keys', { DUFFEL_TEST_TOKEN: '', LITEAPI_SANDBOX_KEY: '' }], ['neither variable', {}],
+    ['a Duffel test token', { DUFFEL_TEST_TOKEN: k.token, LITEAPI_SANDBOX_KEY: '' }],
+    ['both test keys', { DUFFEL_TEST_TOKEN: k.token, LITEAPI_SANDBOX_KEY: k.apiKey }],
+    ['a LiteAPI sandbox key alone', { DUFFEL_TEST_TOKEN: '', LITEAPI_SANDBOX_KEY: k.apiKey }],
+  ]) {
+    const r = await run('bash', ['-e', file], childEnv(env));
+    assert.equal(r.code, 0, `${label}: ${r.stdout}${r.stderr}`);
+    assert.equal(r.stdout + r.stderr, '', `${label}: nothing printed`);
+  }
+  const live = `duffel_live_${'Q7'.repeat(20)}`;
+  const prod = `prod_${'0a'.repeat(18)}`;
+  for (const [label, env, want] of [
+    ['a live Duffel token', { DUFFEL_TEST_TOKEN: live, LITEAPI_SANDBOX_KEY: k.apiKey }, 'duffel'],
+    ['a Duffel token with a space first', { DUFFEL_TEST_TOKEN: ` ${k.token}` }, 'duffel'],
+    ['a Duffel token in capitals', { DUFFEL_TEST_TOKEN: k.token.toUpperCase() }, 'duffel'],
+    ['a LiteAPI key as the Duffel token', { DUFFEL_TEST_TOKEN: k.apiKey }, 'duffel'],
+    ['a production LiteAPI key', { DUFFEL_TEST_TOKEN: k.token, LITEAPI_SANDBOX_KEY: prod }, 'liteapi'],
+    ['a LiteAPI key alone, not a sandbox one', { LITEAPI_SANDBOX_KEY: prod }, 'liteapi'],
+    ['a Duffel token as the LiteAPI key', { DUFFEL_TEST_TOKEN: k.token, LITEAPI_SANDBOX_KEY: k.token }, 'liteapi'],
+    ['a LiteAPI key in capitals', { LITEAPI_SANDBOX_KEY: k.apiKey.toUpperCase() }, 'liteapi'],
+  ]) {
+    const r = await run('bash', ['-e', file], childEnv(env));
+    assert.equal(r.code, 1, `${label}: the run stops`);
+    assert.equal(r.stdout, `::error::${KEY_ERRORS[want]}\n`, label);
+    for (const v of Object.values(env)) {
+      assert.ok(!(r.stdout + r.stderr).includes(v.trim()), `${label}: the key is never printed`);
+      assert.ok(!(r.stdout + r.stderr).includes(v.trim().slice(-8)), `${label}: nor its end`);
+    }
+  }
+});
+
+test('the container settings jq writes: supplier test data only with the keys, hotels only with flights, and the app boots on them with no supplier call', { skip: !hasJq && 'jq is not installed', timeout: 60000 }, async () => {
+  const script = runScript('Deploy the preview');
+  const start = script.indexOf("jq -n '{\n  web: {");
+  const end = script.indexOf(`}' > "$WORK/containers.json"`);
+  assert.ok(start >= 0 && end > start, 'the settings program');
+  const program = script.slice(start + "jq -n '".length, end + 1);
+  const k = testKeys();
+  const PASSWORD = 'a-test-password-only';
+  const settings = async env => {
+    const r = await run('jq', ['-n', program], childEnv({ IMAGE: 'registry.example/tripelyx-preview:abc', PREVIEW_PASSWORD: PASSWORD, ...env }));
+    assert.equal(r.code, 0, r.stderr);
+    return JSON.parse(r.stdout).web.environment;
+  };
+  const SUPPLIER = ['BUSINESS_FLIGHT_SUPPLIER', 'DUFFEL_ACCESS_TOKEN', 'BUSINESS_ALLOW_SUPPLIER_TEST', 'BUSINESS_HOTEL_SUPPLIER', 'LITEAPI_API_KEY'];
+  const cases = [
+    ['no keys', { DUFFEL_TEST_TOKEN: '', LITEAPI_SANDBOX_KEY: '' }, {}, { status: 'demo', hotels: true }],
+    ['a LiteAPI key alone (hotels need flights)', { DUFFEL_TEST_TOKEN: '', LITEAPI_SANDBOX_KEY: k.apiKey }, {}, { status: 'demo', hotels: true }],
+    ['a Duffel test token', { DUFFEL_TEST_TOKEN: k.token, LITEAPI_SANDBOX_KEY: '' },
+      { BUSINESS_FLIGHT_SUPPLIER: 'duffel', DUFFEL_ACCESS_TOKEN: k.token, BUSINESS_ALLOW_SUPPLIER_TEST: 'true' }, { status: 'sandbox', hotels: false }],
+    ['both test keys', { DUFFEL_TEST_TOKEN: k.token, LITEAPI_SANDBOX_KEY: k.apiKey },
+      { BUSINESS_FLIGHT_SUPPLIER: 'duffel', DUFFEL_ACCESS_TOKEN: k.token, BUSINESS_ALLOW_SUPPLIER_TEST: 'true', BUSINESS_HOTEL_SUPPLIER: 'liteapi', LITEAPI_API_KEY: k.apiKey },
+      { status: 'sandbox', hotels: true }],
+  ];
+  for (const [label, given, want, inventory] of cases) {
+    const env = await settings(given);
+    assert.deepEqual(Object.fromEntries(SUPPLIER.filter(n => n in env).map(n => [n, env[n]])), want, label);
+    assert.ok(!('DUFFEL_TEST_TOKEN' in env) && !('LITEAPI_SANDBOX_KEY' in env), `${label}: the app reads the keys by their own names only`);
+    assert.equal(env.ADMIN_EMAILS, DEMO_ADMIN, label);
+    assert.equal(env.PREVIEW_PASSWORD, PASSWORD, label);
+    // The app boots on exactly these settings, with Business on the source they name, and calls no supplier.
+    const calls = [];
+    const config = loadConfig(env);
+    const built = await createApp(config, { log: quietLog, businessFetch: async url => { calls.push(String(url)); throw new Error('no supplier call at boot'); } });
+    const inv = built.business.inventory;
+    assert.equal(inv.status, inventory.status, `${label}: Business on ${inventory.status}`);
+    assert.equal(inv.problem || null, null, `${label}: no settings problem`);
+    if (inventory.status === 'sandbox') assert.equal(Boolean(inv.hotelsConnected), inventory.hotels, `${label}: hotels connected`);
+    assert.deepEqual(calls, [], `${label}: no supplier call at boot`);
+  }
 });
 
 test('the stack: a micro Lightsail service, a 5-image registry, a generated password and a branch-only role', () => {
